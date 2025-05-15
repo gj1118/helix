@@ -210,10 +210,8 @@ pub struct Document {
     // large refactor that would make `&mut Editor` available on the `DocumentDidChange` event.
     pub color_swatch_controller: TaskController,
 
-    // NOTE: this field should eventually go away - we should use the Editor's syn_loader instead
-    // of storing a copy on every doc. Then we can remove the surrounding `Arc` and use the
-    // `ArcSwap` directly.
-    syn_loader: Arc<ArcSwap<syntax::Loader>>,
+    /// Whether to render the welcome screen when opening the document
+    pub is_welcome: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -727,7 +725,7 @@ impl Document {
             jump_labels: HashMap::new(),
             color_swatches: None,
             color_swatch_controller: TaskController::new(),
-            syn_loader,
+            is_welcome: false,
         }
     }
 
@@ -737,7 +735,17 @@ impl Document {
     ) -> Self {
         let line_ending: LineEnding = config.load().default_line_ending.into();
         let text = Rope::from(line_ending.as_str());
-        Self::from(text, None, config, syn_loader)
+        Self::from(text, None, config)
+    }
+
+    pub fn with_welcome(mut self) -> Self {
+        self.is_welcome = true;
+        self
+    }
+
+    pub fn with_welcome(mut self) -> Self {
+        self.is_welcome = true;
+        self
     }
 
     // TODO: async fn?
