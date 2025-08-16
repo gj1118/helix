@@ -21,6 +21,7 @@ This fork of Helix implements the following pull requests. Future pull requests 
 17. https://github.com/helix-editor/helix/pull/14072 (auto-scrolling bufferline)
 18. https://github.com/helix-editor/helix/pull/13821 (fix block cursor in terminal)
 19. https://github.com/helix-editor/helix/pull/13760 (support workspace commands)
+20.  https://github.com/helix-editor/helix/pull/13988 (add support to swap splits)
 
 ## Building
 ```bash
@@ -155,4 +156,7 @@ The line movement feature allows you to easily move the current line or multiple
 
 This feature eliminates the need for complex macros to achieve line movement and provides a smooth, predictable editing experience.
 
-
+## Running app locally on MacOS systems
+run the following command on the terminal
+`xattr -d com.apple.quarantine /path/to/your/app`
+(this removes the quarantine attribute)
