@@ -390,7 +390,7 @@ Show git blame information as virtual text next to the current line you're editi
 ```toml
 [editor]
 # Inline blame configuration (inline table form)
-inline-blame = { show = "cursor", format = "{author} • {time-ago} • {title}", auto-fetch = false }
+inline-blame = { show = "cursor-line", format = "{author} • {time-ago} • {title}", auto-fetch = false }
 ```
 
 Or in expanded format:
@@ -398,8 +398,8 @@ Or in expanded format:
 ```toml
 [editor.inline-blame]
 # Show inline blame on specific lines (default: "never")
-# Options: "cursor", "all", "never"
-show = "cursor"
+# Options: "cursor-line", "all", "never"
+show = "cursor-line"
 
 # Format string for blame display
 # Available placeholders: {author}, {commit}, {time-ago}, {title}
@@ -418,12 +418,12 @@ auto-fetch = false
 ```toml
 # Minimal blame display
 [editor.inline-blame]
-show = "cursor"
+show = "cursor-line"
 format = "{author} • {time-ago}"
 
 # Detailed blame information
 [editor.inline-blame]
-show = "cursor"
+show = "cursor-line"
 format = "{commit} - {author} ({time-ago}): {title}"
 
 # Show blame for all lines (can be noisy)
