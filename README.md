@@ -47,9 +47,23 @@ This fork of Helix implements the following pull requests. Future pull requests 
 21. https://github.com/helix-editor/helix/pull/13133 (Inline Git Blame - show commit info for current line)
 22. https://github.com/helix-editor/helix/pull/14453 (ruler chars)
 
-## Building
+## Setup
+
+[Docs](https://docs.helix-editor.com/building-from-source.html) on build it from source.
+Summary for commands:
+
 ```bash
-  cargo install --path helix-term --locked
+git clone https://github.com/gj1118/helix.git
+cd helix
+cargo install --path helix-term --locked
+
+```
+
+THEN THE IMPORTANT PART that is missing from the docs page(this way you get all the default themes and gramars), [source](https://github.com/helix-editor/helix/discussions/7549#discussioncomment-6948696)
+```bash
+cp -R runtime ~/.config/helix/
+hx -g fetch
+hx -g build
 ```
 
 **Full Height Mode:**
@@ -390,7 +404,7 @@ Show git blame information as virtual text next to the current line you're editi
 ```toml
 [editor]
 # Inline blame configuration (inline table form)
-inline-blame = { show = "cursor", format = "{author} • {time-ago} • {title}", auto-fetch = false }
+inline-blame = { show = "cursor-line", format = "{author} • {time-ago} • {title}", auto-fetch = false }
 ```
 
 Or in expanded format:
@@ -398,8 +412,8 @@ Or in expanded format:
 ```toml
 [editor.inline-blame]
 # Show inline blame on specific lines (default: "never")
-# Options: "cursor", "all", "never"
-show = "cursor"
+# Options: "cursor-line", "all", "never"
+show = "cursor-line"
 
 # Format string for blame display
 # Available placeholders: {author}, {commit}, {time-ago}, {title}
@@ -418,12 +432,12 @@ auto-fetch = false
 ```toml
 # Minimal blame display
 [editor.inline-blame]
-show = "cursor"
+show = "cursor-line"
 format = "{author} • {time-ago}"
 
 # Detailed blame information
 [editor.inline-blame]
-show = "cursor"
+show = "cursor-line"
 format = "{commit} - {author} ({time-ago}): {title}"
 
 # Show blame for all lines (can be noisy)
