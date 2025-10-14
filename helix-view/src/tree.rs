@@ -494,32 +494,56 @@ impl Tree {
                             let len_u16 = len as u16;
 
                             let inner_gap = 1u16;
-                            let total_gap = inner_gap * len_u16.saturating_sub(2);
+                            // There are (len - 1) inner gaps
+                            let total_gap = inner_gap * len_u16.saturating_sub(1);
 
                             let used_area = area.width.saturating_sub(total_gap);
 
                             let slots = container.calculate_slots_width();
                             let slot_width: f32 = used_area as f32 / slots as f32;
 
-                            let mut child_x = area.x;
-
-                            for (i, child) in container.children.iter().enumerate() {
+                            // Pre-compute child widths using floor, then distribute remaining pixels fairly
+                            let mut base_widths: Vec<u16> = Vec::with_capacity(len);
+                            let mut sum_widths: u16 = 0;
+                            for i in 0..len {
                                 let bounds = container.node_bounds[i];
-                                let width = match bounds.expand {
-                                    true => (40.0 * slot_width) as u16,
+                                let w = match bounds.expand {
+                                    true => (40.0 * slot_width).floor() as u16,
                                     false => (slot_width * bounds.width as f32).floor() as u16,
                                 };
+                                base_widths.push(w);
+                                sum_widths = sum_widths.saturating_add(w);
+                            }
 
+                            let mut remaining: u16 = used_area.saturating_sub(sum_widths);
+                            let mut widths = base_widths;
+                            // Distribute the remainder from left to right to avoid biasing the last pane
+                            let mut idx = 0usize;
+                            while remaining > 0 && len > 0 {
+                                widths[idx] = widths[idx].saturating_add(1);
+                                remaining -= 1;
+                                idx += 1;
+                                if idx >= len { idx = 0; }
+                            }
+
+                            let mut child_x = area.x;
+                            for (i, child) in container.children.iter().enumerate() {
+                                let width = widths[i];
                                 let mut area = Rect::new(
                                     child_x,
                                     container.area.y,
                                     width,
                                     container.area.height,
                                 );
-                                child_x += width + inner_gap;
 
-                                // last child takes the remaining width because we can get uneven
-                                // space from rounding
+                                // Advance x; add inner gap only between children
+                                if i < len - 1 {
+                                    child_x = child_x.saturating_add(width + inner_gap);
+                                } else {
+                                    child_x = child_x.saturating_add(width);
+                                }
+
+                                // Ensure last child takes any 1px drift due to rounding
                                 if i == len - 1 {
                                     area.width = container.area.x + container.area.width - area.x;
                                 }
