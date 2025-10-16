@@ -29,6 +29,44 @@ use tui::{
 
 use std::cmp::Reverse;
 
+use once_cell::sync::Lazy;
+use std::collections::HashMap;
+
+static COMPLETION_KIND_COLORS: Lazy<HashMap<&'static str, Color>> = Lazy::new(|| {
+    HashMap::from([
+        // Functions & Methods
+        ("function", Color::Rgb(198, 160, 246)), // Lavender
+        ("method", Color::Rgb(198, 160, 246)),   // Lavender
+        ("constructor", Color::Rgb(198, 160, 246)), // Lavender
+        // Variables & Properties
+        ("variable", Color::Rgb(156, 220, 254)), // Light Blue
+        ("field", Color::Rgb(156, 220, 254)),    // Light Blue
+        ("property", Color::Rgb(156, 220, 254)), // Light Blue
+        // Types & Structures
+        ("class", Color::Rgb(250, 225, 120)),       // Yellow
+        ("struct", Color::Rgb(250, 225, 120)),      // Yellow
+        ("interface", Color::Rgb(250, 225, 120)),   // Yellow
+        ("enum", Color::Rgb(250, 225, 120)),        // Yellow
+        ("enum_member", Color::Rgb(130, 212, 182)), // Teal
+        ("type_param", Color::Rgb(130, 212, 182)),  // Teal
+        // Keywords & Modules
+        ("keyword", Color::Rgb(210, 153, 225)), // Mauve
+        ("module", Color::Rgb(210, 153, 225)),  // Mauve
+        // Constants & Values
+        ("constant", Color::Rgb(250, 179, 135)), // Peach
+        ("value", Color::Rgb(250, 179, 135)),    // Peach
+        // Other
+        ("snippet", Color::Rgb(243, 139, 168)),   // Pink
+        ("file", Color::Rgb(137, 220, 235)),      // Sky
+        ("folder", Color::Rgb(137, 220, 235)),    // Sky
+        ("text", Color::Rgb(166, 227, 161)),      // Green
+        ("reference", Color::Rgb(156, 220, 254)), // Light Blue
+        ("operator", Color::Rgb(148, 226, 213)),  // Sapphire
+        ("unit", Color::Rgb(250, 179, 135)),      // Peach
+        ("event", Color::Rgb(250, 225, 120)),     // Yellow
+    ])
+});
+
 impl menu::Item for CompletionItem {
     type Data = Style;
 
@@ -110,19 +148,26 @@ impl menu::Item for CompletionItem {
         };
 
         let icons = ICONS.load();
-        let name = &kind.0[0].content;
+        let name = &kind.0[0].content.clone();
 
         let is_folder = kind.0[0].content == "folder";
+
+        let kind_color = COMPLETION_KIND_COLORS.get(name.as_ref());
 
         if let Some(icon) = icons.kind().get(name) {
             kind.0[0].content = format!("{}  {name}", icon.glyph()).into();
 
-            if let Some(color) = icon.color() {
+            if let Some(&color) = kind_color {
+                kind.0[0].style = Style::default().fg(color);
+            } else if let Some(color) = icon.color() {
                 kind.0[0].style = Style::default().fg(color);
             } else if is_folder {
                 kind.0[0].style = *dir_style;
             }
         } else {
+            if let Some(&color) = kind_color {
+                kind.0[0].style = Style::default().fg(color);
+            }
             kind.0[0].content = format!("{name}").into();
         }
 
