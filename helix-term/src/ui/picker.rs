@@ -8,7 +8,6 @@ use crate::{
     ui::{
         self,
         document::{render_document, LinePos, TextRenderer},
-        gradient_border::GradientBorder,
         picker::query::PickerQuery,
         text_decorations::DecorationManager,
         EditorView,
@@ -48,7 +47,7 @@ use helix_core::{
 use helix_view::{
     editor::Action,
     graphics::{CursorKind, Margin, Modifier, Rect},
-    input::{KeyCode, KeyEvent, KeyModifiers},
+    input::KeyEvent,
     theme::Style,
     view::ViewPosition,
     Document, DocumentId, Editor,
@@ -59,7 +58,6 @@ use self::handlers::{DynamicQueryChange, DynamicQueryHandler, PreviewHighlightHa
 pub const ID: &str = "picker";
 
 pub const MIN_AREA_WIDTH_FOR_PREVIEW: u16 = 72;
-pub const MIN_AREA_HEIGHT_FOR_PREVIEW: u16 = 24;
 /// Biggest file size to preview in bytes
 pub const MAX_FILE_SIZE_FOR_PREVIEW: u64 = 10 * 1024 * 1024;
 
@@ -261,7 +259,7 @@ pub struct Picker<T: 'static + Send + Sync, D: 'static> {
     widths: Vec<Constraint>,
 
     callback_fn: PickerCallback<T>,
-    default_action: Action,
+    custom_key_handlers: PickerKeyHandlers<T, D>,
 
     pub truncate_start: bool,
     /// Caches paths to documents
@@ -272,9 +270,6 @@ pub struct Picker<T: 'static + Send + Sync, D: 'static> {
     /// An event handler for syntax highlighting the currently previewed file.
     preview_highlight_handler: Sender<Arc<Path>>,
     dynamic_query_handler: Option<Sender<DynamicQueryChange>>,
-    title: Option<Spans<'static>>,
-    /// Gradient border renderer
-    gradient_border: Option<GradientBorder>,
 }
 
 impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
@@ -315,10 +310,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         F: Fn(&mut Context, &T, Action) + 'static,
     {
         let columns: Arc<[_]> = columns.into_iter().collect();
-        let matcher_columns = columns
-            .iter()
-            .filter(|col: &&Column<T, D>| col.filter)
-            .count() as u32;
+        let matcher_columns = columns.iter().filter(|col| col.filter).count() as u32;
         assert!(matcher_columns > 0);
         let matcher = Nucleo::new(
             Config::DEFAULT,
@@ -392,17 +384,20 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             truncate_start: true,
             show_preview: true,
             callback_fn: Box::new(callback_fn),
-            default_action: Action::Replace,
             completion_height: 0,
             widths,
             preview_cache: HashMap::new(),
+            custom_key_handlers: HashMap::new(),
             read_buffer: Vec::with_capacity(1024),
             file_fn: None,
             preview_highlight_handler: PreviewHighlightHandler::<T, D>::default().spawn(),
             dynamic_query_handler: None,
-            title: None,
-            gradient_border: None, // Will be initialized in render method
         }
+    }
+
+    pub fn with_key_handlers(mut self, handlers: PickerKeyHandlers<T, D>) -> Self {
+        self.custom_key_handlers = handlers;
+        self
     }
 
     pub fn injector(&self) -> Injector<T, D> {
@@ -418,11 +413,6 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
 
     pub fn truncate_start(mut self, truncate_start: bool) -> Self {
         self.truncate_start = truncate_start;
-        self
-    }
-
-    pub fn with_title(mut self, title: Spans<'static>) -> Self {
-        self.title = Some(title);
         self
     }
 
@@ -442,11 +432,6 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         self
     }
 
-    pub fn with_initial_cursor(mut self, cursor: u32) -> Self {
-        self.cursor = cursor;
-        self
-    }
-
     pub fn with_dynamic_query(
         mut self,
         callback: DynQueryCallback<T, D>,
@@ -460,11 +445,6 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         };
         helix_event::send_blocking(&handler, event);
         self.dynamic_query_handler = Some(handler);
-        self
-    }
-
-    pub fn with_default_action(mut self, action: Action) -> Self {
-        self.default_action = action;
         self
     }
 
@@ -511,6 +491,11 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             .saturating_sub(1);
     }
 
+    pub fn with_cursor(mut self, cursor: u32) -> Self {
+        self.cursor = cursor;
+        self
+    }
+
     pub fn selection(&self) -> Option<&T> {
         self.matcher
             .snapshot()
@@ -535,6 +520,17 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
 
     pub fn toggle_preview(&mut self) {
         self.show_preview = !self.show_preview;
+    }
+
+    fn custom_key_event_handler(&mut self, event: &KeyEvent, cx: &mut Context) -> EventResult {
+        if let (Some(callback), Some(selected)) =
+            (self.custom_key_handlers.get(event), self.selection())
+        {
+            callback(cx, selected, Arc::clone(&self.editor_data), self.cursor);
+            EventResult::Consumed(None)
+        } else {
+            EventResult::Ignored(None)
+        }
     }
 
     fn prompt_handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
@@ -613,7 +609,8 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                     // retrieve the `Arc<Path>` key. The `path` in scope here is a `&Path` and
                     // we can cheaply clone the key for the preview highlight handler.
                     let (path, preview) = self.preview_cache.get_key_value(path).unwrap();
-                    if matches!(preview, CachedPreview::Document(doc) if doc.syntax().is_none()) {
+                    if matches!(preview, CachedPreview::Document(doc) if doc.language_config().is_none())
+                    {
                         helix_event::send_blocking(&self.preview_highlight_handler, path.clone());
                     }
                     return Some((Preview::Cached(preview), range));
@@ -623,15 +620,11 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                 let preview = std::fs::metadata(&path)
                     .and_then(|metadata| {
                         if metadata.is_dir() {
-                            let files = super::directory_content(&path, editor)?;
+                            let files = super::directory_content(&path)?;
                             let file_names: Vec<_> = files
                                 .iter()
-                                .filter_map(|(file_path, is_dir)| {
-                                    let name = file_path
-                                        .strip_prefix(&path)
-                                        .map(|p| Some(p.as_os_str()))
-                                        .unwrap_or_else(|_| file_path.file_name())?
-                                        .to_string_lossy();
+                                .filter_map(|(path, is_dir)| {
+                                    let name = path.file_name()?.to_string_lossy();
                                     if *is_dir {
                                         Some((format!("{}/", name), true))
                                     } else {
@@ -655,27 +648,27 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                             if content_type.is_binary() {
                                 return Ok(CachedPreview::Binary);
                             }
-                            let mut doc = Document::open(
+                            Document::open(
                                 &path,
                                 None,
                                 false,
                                 editor.config.clone(),
                                 editor.syn_loader.clone(),
                             )
-                            .or(Err(std::io::Error::new(
-                                std::io::ErrorKind::NotFound,
-                                "Cannot open document",
-                            )))?;
-                            let loader = editor.syn_loader.load();
-                            if let Some(language_config) = doc.detect_language_config(&loader) {
-                                doc.language = Some(language_config);
-                                // Asynchronously highlight the new document
-                                helix_event::send_blocking(
-                                    &self.preview_highlight_handler,
-                                    path.clone(),
-                                );
-                            }
-                            Ok(CachedPreview::Document(Box::new(doc)))
+                            .map_or(
+                                Err(std::io::Error::new(
+                                    std::io::ErrorKind::NotFound,
+                                    "Cannot open document",
+                                )),
+                                |doc| {
+                                    // Asynchronously highlight the new document
+                                    helix_event::send_blocking(
+                                        &self.preview_highlight_handler,
+                                        path.clone(),
+                                    );
+                                    Ok(CachedPreview::Document(Box::new(doc)))
+                                },
+                            )
                         } else {
                             Err(std::io::Error::new(
                                 std::io::ErrorKind::NotFound,
@@ -712,43 +705,12 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         let background = cx.editor.theme.get("ui.background");
         surface.clear_with(area, background);
 
-        let config = &cx.editor.config().gradient_borders;
+        const BLOCK: Block<'_> = Block::bordered();
 
-        // Use gradient border if enabled, otherwise use default border
-        let inner = if config.enable {
-            // Initialize gradient border if needed
-            if self.gradient_border.is_none() {
-                self.gradient_border = Some(GradientBorder::from_theme(&cx.editor.theme, config));
-            }
+        // calculate the inner area inside the box
+        let inner = BLOCK.inner(area);
 
-            // Render gradient border with title support
-            if let Some(ref mut gradient_border) = self.gradient_border {
-                let title_text = self.title.as_ref().map(|spans| {
-                    spans.0.iter().map(|span| span.content.as_ref()).collect::<String>()
-                });
-                let rounded = cx.editor.config().rounded_corners;
-                gradient_border.render_with_title(area, surface, &cx.editor.theme, title_text.as_deref(), rounded);
-            }
-
-            // Calculate inner area manually (same as Block::inner)
-            Rect {
-                x: area.x + 1,
-                y: area.y + 1,
-                width: area.width.saturating_sub(2),
-                height: area.height.saturating_sub(2),
-            }
-        } else {
-            // Use traditional border
-            let border_type = BorderType::new(cx.editor.config().rounded_corners);
-            let block: Block<'_> = self.title.as_ref().map_or(
-                Block::bordered().border_type(border_type),
-                |title| Block::bordered().border_type(border_type).title(title.clone())
-            );
-
-            let inner = block.inner(area);
-            block.render(area, surface);
-            inner
-        };
+        BLOCK.render(area, surface);
 
         // -- Render the input bar:
 
@@ -879,11 +841,10 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             }))
         });
 
-        let binding = &cx.editor.config().picker_symbol;
         let mut table = Table::new(options)
             .style(text_style)
             .highlight_style(selected)
-            .highlight_symbol(&binding)
+            .highlight_symbol(" > ")
             .column_spacing(1)
             .widths(&self.widths);
 
@@ -933,43 +894,19 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         let directory = cx.editor.theme.get("ui.text.directory");
         surface.clear_with(area, background);
 
-        let config = &cx.editor.config().gradient_borders;
+        const BLOCK: Block<'_> = Block::bordered();
 
-        // Use gradient border for preview if enabled, otherwise use default border
-        let inner = if config.enable {
-            // For preview, we can reuse the same gradient border instance if it exists
-            if let Some(ref mut gradient_border) = self.gradient_border {
-                let rounded = cx.editor.config().rounded_corners;
-                gradient_border.render(area, surface, &cx.editor.theme, rounded);
-            }
-
-            // Calculate inner area manually (same as Block::inner)
-            let block_inner = Rect {
-                x: area.x + 1,
-                y: area.y + 1,
-                width: area.width.saturating_sub(2),
-                height: area.height.saturating_sub(2),
-            };
-            // 1 column gap on either side
-            let margin = Margin::horizontal(1);
-            block_inner.inner(margin)
-        } else {
-            // Use traditional border
-            let border_type = BorderType::new(cx.editor.config().rounded_corners);
-            let block: Block<'_> = Block::bordered().border_type(border_type);
-
-            let inner = block.inner(area);
-            // 1 column gap on either side
-            let margin = Margin::horizontal(1);
-            let inner = inner.inner(margin);
-            block.render(area, surface);
-            inner
-        };
+        // calculate the inner area inside the box
+        let inner = BLOCK.inner(area);
+        // 1 column gap on either side
+        let margin = Margin::horizontal(1);
+        let inner = inner.inner(margin);
+        BLOCK.render(area, surface);
 
         if let Some((preview, range)) = self.get_preview(cx.editor) {
             let doc = match preview.document() {
                 Some(doc)
-                    if range.is_none_or(|(start, end)| {
+                    if range.map_or(true, |(start, end)| {
                         start <= end && end <= doc.text().len_lines()
                     }) =>
                 {
@@ -1079,50 +1016,27 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
 
 impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I, D> {
     fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
-        // default render
-        // +--title--+ +---------+
+        // +---------+ +---------+
         // |prompt   | |preview  |
         // +---------+ |         |
         // |picker   | |         |
         // |         | |         |
         // +---------+ +---------+
-        //
-        // stack vertically
-        // +---------+
-        // |prompt   |
-        // +---------+
-        // |picker   |
-        // |         |
-        // +---------+
-        // |preview  |
-        // |         |
-        // |         |
-        // +---------+
 
-        let render_preview = self.show_preview
-            && self.file_fn.is_some()
-            && area.width >= MIN_AREA_WIDTH_FOR_PREVIEW
-            && area.height >= MIN_AREA_HEIGHT_FOR_PREVIEW;
-        let stack_vertically = area.width / 2 < MIN_AREA_WIDTH_FOR_PREVIEW;
+        let render_preview =
+            self.show_preview && self.file_fn.is_some() && area.width > MIN_AREA_WIDTH_FOR_PREVIEW;
 
-        let picker_area = if render_preview {
-            if stack_vertically {
-                area.with_height(area.height / 3)
-            } else {
-                area.with_width(area.width / 2)
-            }
+        let picker_width = if render_preview {
+            area.width / 2
         } else {
-            area
+            area.width
         };
 
+        let picker_area = area.with_width(picker_width);
         self.render_picker(picker_area, surface, cx);
 
         if render_preview {
-            let preview_area = if stack_vertically {
-                area.clip_top(picker_area.height)
-            } else {
-                area.clip_left(picker_area.width)
-            };
+            let preview_area = area.clip_left(picker_width);
             self.render_preview(preview_area, surface, cx);
         }
     }
@@ -1140,25 +1054,30 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
         let close_fn = |picker: &mut Self| {
             // if the picker is very large don't store it as last_picker to avoid
             // excessive memory consumption
-            let callback: compositor::Callback =
-                if picker.matcher.snapshot().item_count() > 1_000_000 {
-                    Box::new(|compositor: &mut Compositor, _ctx| {
-                        // remove the layer
-                        compositor.pop();
-                    })
-                } else {
-                    // stop streaming in new items in the background, really we should
-                    // be restarting the stream somehow once the picker gets
-                    // reopened instead (like for an FS crawl) that would also remove the
-                    // need for the special case above but that is pretty tricky
-                    picker.version.fetch_add(1, atomic::Ordering::Relaxed);
-                    Box::new(|compositor: &mut Compositor, _ctx| {
-                        // remove the layer
-                        compositor.last_picker = compositor.pop();
-                    })
-                };
+            let callback: compositor::Callback = if picker.matcher.snapshot().item_count() > 100_000
+            {
+                Box::new(|compositor: &mut Compositor, _ctx| {
+                    // remove the layer
+                    compositor.pop();
+                })
+            } else {
+                // stop streaming in new items in the background, really we should
+                // be restarting the stream somehow once the picker gets
+                // reopened instead (like for an FS crawl) that would also remove the
+                // need for the special case above but that is pretty tricky
+                picker.version.fetch_add(1, atomic::Ordering::Relaxed);
+                Box::new(|compositor: &mut Compositor, _ctx| {
+                    // remove the layer
+                    compositor.last_picker = compositor.pop();
+                })
+            };
             EventResult::Consumed(Some(callback))
         };
+
+        // handle custom keybindings, if exist
+        if let EventResult::Consumed(_) = self.custom_key_event_handler(&key_event, ctx) {
+            return EventResult::Consumed(None);
+        }
 
         match key_event {
             shift!(Tab) | key!(Up) | ctrl!('p') => {
@@ -1182,7 +1101,7 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
             key!(Esc) | ctrl!('c') => return close_fn(self),
             alt!(Enter) => {
                 if let Some(option) = self.selection() {
-                    (self.callback_fn)(ctx, option, self.default_action);
+                    (self.callback_fn)(ctx, option, Action::Replace);
                 }
             }
             key!(Enter) => {
@@ -1206,7 +1125,7 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
                     self.handle_prompt_change(true);
                 } else {
                     if let Some(option) = self.selection() {
-                        (self.callback_fn)(ctx, option, self.default_action);
+                        (self.callback_fn)(ctx, option, Action::Replace);
                     }
                     if let Some(history_register) = self.prompt.history_register() {
                         if let Err(err) = ctx
@@ -1236,10 +1155,6 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
                 self.toggle_preview();
             }
             _ => {
-                // Check if this is an Esc key that should close the picker
-                if let Event::Key(KeyEvent { code: KeyCode::Esc, modifiers: KeyModifiers::NONE }) = event {
-                    return close_fn(self);
-                }
                 self.prompt_handle_event(event, ctx);
             }
         }
@@ -1253,13 +1168,10 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
         let inner = block.inner(area);
 
         // prompt area
-        let render_preview = self.show_preview
-            && self.file_fn.is_some()
-            && area.width >= MIN_AREA_WIDTH_FOR_PREVIEW
-            && area.height >= MIN_AREA_HEIGHT_FOR_PREVIEW;
-        let stack_vertically = area.width / 2 < MIN_AREA_WIDTH_FOR_PREVIEW;
+        let render_preview =
+            self.show_preview && self.file_fn.is_some() && area.width > MIN_AREA_WIDTH_FOR_PREVIEW;
 
-        let picker_width = if render_preview && !stack_vertically {
+        let picker_width = if render_preview {
             area.width / 2
         } else {
             area.width
@@ -1286,3 +1198,5 @@ impl<T: 'static + Send + Sync, D> Drop for Picker<T, D> {
 }
 
 type PickerCallback<T> = Box<dyn Fn(&mut Context, &T, Action)>;
+pub type PickerKeyHandler<T, D> = Box<dyn Fn(&mut Context, &T, Arc<D>, u32) + 'static>;
+pub type PickerKeyHandlers<T, D> = HashMap<KeyEvent, PickerKeyHandler<T, D>>;

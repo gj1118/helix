@@ -154,8 +154,7 @@ fn open_impl(cx: &mut compositor::Context, args: Args, action: Action) -> anyhow
             let callback = async move {
                 let call: job::Callback = job::Callback::EditorCompositor(Box::new(
                     move |editor: &mut Editor, compositor: &mut Compositor| {
-                        let picker =
-                            ui::file_picker(editor, path.into_owned()).with_default_action(action);
+                        let picker = ui::file_picker(editor, path.into_owned());
                         compositor.push(Box::new(overlaid(picker)));
                     },
                 ));
@@ -1607,8 +1606,7 @@ fn lsp_workspace_command(
                         move |cx, (ls_id, command), _action| {
                             cx.editor.execute_lsp_command(command.clone(), *ls_id);
                         },
-                    )
-                    .with_title("LSP Commands".into());
+                    );
                     compositor.push(Box::new(overlaid(picker)))
                 },
             ));

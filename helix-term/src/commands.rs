@@ -2711,7 +2711,7 @@ fn global_search(cx: &mut Context) {
     })
     .with_history_register(Some(reg))
     .with_dynamic_query(get_files, Some(275))
-    .with_title("Search".into());
+    ;
 
     cx.push_layer(Box::new(overlaid(picker)));
 }
@@ -2953,7 +2953,7 @@ fn local_search_grep(cx: &mut Context) {
     })
     .with_history_register(Some(reg))
     .with_dynamic_query(get_files, Some(275))
-    .with_title("Local Search".into());
+    ;
     cx.push_layer(Box::new(overlaid(picker)));
 }
 
@@ -3089,7 +3089,7 @@ fn local_search_fuzzy(cx: &mut Context) {
     .with_preview(|_editor, FileResult { path, line_num, .. }| {
         Some((path.as_path().into(), Some((*line_num, *line_num))))
     })
-    .with_title("Local Fuzzy Search".into())
+    
     .with_history_register(Some(reg));
 
     let injector = picker.injector();
@@ -3529,7 +3529,7 @@ fn file_explorer(cx: &mut Context) {
         return;
     }
 
-    if let Ok(picker) = ui::file_explorer(root, cx.editor) {
+    if let Ok(picker) = ui::file_explorer(None, root, cx.editor) {
         cx.push_layer(Box::new(overlaid(picker)));
     }
 }
@@ -3556,7 +3556,7 @@ fn file_explorer_in_current_buffer_directory(cx: &mut Context) {
         }
     };
 
-    if let Ok(picker) = ui::file_explorer(path, cx.editor) {
+    if let Ok(picker) = ui::file_explorer(None, path, cx.editor) {
         cx.push_layer(Box::new(overlaid(picker)));
     }
 }
@@ -3569,7 +3569,7 @@ fn file_explorer_in_current_directory(cx: &mut Context) {
         return;
     }
 
-    if let Ok(picker) = ui::file_explorer(cwd, cx.editor) {
+    if let Ok(picker) = ui::file_explorer(None, cwd, cx.editor) {
         cx.push_layer(Box::new(overlaid(picker)));
     }
 }
@@ -3652,7 +3652,7 @@ fn buffer_picker(cx: &mut Context) {
     let picker = Picker::new(columns, 2, items, (), |cx, meta, action| {
         cx.editor.switch(meta.id, action);
     })
-    .with_initial_cursor(initial_cursor)
+    .with_cursor(initial_cursor)
     .with_preview(|editor, meta| {
         let doc = &editor.documents.get(&meta.id)?;
         let lines = doc.selections().values().next().map(|selection| {
@@ -3661,7 +3661,7 @@ fn buffer_picker(cx: &mut Context) {
         });
         Some((meta.id.into(), lines))
     })
-    .with_title("Buffers".into());
+    ;
     cx.push_layer(Box::new(overlaid(picker)));
 }
 
@@ -3774,7 +3774,7 @@ fn jumplist_picker(cx: &mut Context) {
         let line = meta.selection.primary().cursor_line(doc.text().slice(..));
         Some((meta.id.into(), Some((line, line))))
     })
-    .with_title("Jump List".into());
+    ;
     cx.push_layer(Box::new(overlaid(picker)));
 }
 
@@ -3873,7 +3873,7 @@ fn changed_file_picker(cx: &mut Context) {
         },
     )
     .with_preview(|_editor, meta| Some((meta.path().into(), None)))
-    .with_title("Changed Files".into());
+    ;
     let injector = picker.injector();
 
     cx.editor
@@ -3966,7 +3966,7 @@ pub fn command_palette(cx: &mut Context) {
                     }
                 }
             })
-            .with_title("Command Palette".into());
+            ;
             compositor.push(Box::new(overlaid(picker)));
         },
     ));
