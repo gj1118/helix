@@ -13,7 +13,7 @@ use crate::job;
 
 #[derive(Default)]
 pub struct BlameHandler {
-    file_blame: Option<anyhow::Result<FileBlame>>,
+    pending_path: Option<std::path::PathBuf>,
     doc_id: DocumentId,
     show_blame_for_line_in_statusline: Option<u32>,
 }
@@ -28,30 +28,28 @@ impl helix_event::AsyncHook for BlameHandler {
     ) -> Option<tokio::time::Instant> {
         self.doc_id = event.doc_id;
         self.show_blame_for_line_in_statusline = event.line;
-        self.file_blame = Some(FileBlame::try_new(event.path));
+        self.pending_path = Some(event.path);
         Some(Instant::now() + Duration::from_millis(50))
     }
 
     fn finish_debounce(&mut self) {
         let doc_id = self.doc_id;
         let line_blame = self.show_blame_for_line_in_statusline;
-        let result = mem::take(&mut self.file_blame);
-        if let Some(result) = result {
-            tokio::spawn(async move {
-                job::dispatch(move |editor, _| {
-                    let Some(doc) = editor.document_mut(doc_id) else {
-                        return;
-                    };
-                    doc.file_blame = Some(result);
-                    if !editor.config().inline_blame.auto_fetch {
-                        if let Some(line) = line_blame {
-                            crate::commands::blame_line_impl(editor, doc_id, line);
-                        } else {
-                            editor.set_status("Blame for this file is now available")
-                        }
+        let path = mem::take(&mut self.pending_path);
+        if let Some(path) = path {
+            job::dispatch_blocking(move |editor, _| {
+                let Some(doc) = editor.document_mut(doc_id) else {
+                    return;
+                };
+                let result = FileBlame::try_new(path);
+                doc.file_blame = Some(result);
+                if !editor.config().inline_blame.auto_fetch {
+                    if let Some(line) = line_blame {
+                        crate::commands::blame_line_impl(editor, doc_id, line);
+                    } else {
+                        editor.set_status("Blame for this file is now available")
                     }
-                })
-                .await;
+                }
             });
         }
     }
