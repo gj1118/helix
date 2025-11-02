@@ -473,3 +473,38 @@ signature-help-position = "above"
 
 # Or below cursor
 signature-help-position = "below"
+
+```
+
+## Auto reload buffers on focus / changes
+Implements automatic reloading of buffers when their corresponding files are changed on disk. This behavior can be configured to trigger when the editor window gains focus, at a periodic interval, or both.
+
+
+Here are some example snippets of configuration for this feature:
+```toml
+
+# Disable auto-reloading (default)
+[editor]
+auto-reload = false
+
+#or
+[editor.auto-reload]
+focus-gained = false
+
+# Auto-reload on focus
+[editor]
+auto-reload = true
+# or
+[editor.auto-reload]
+focus-gained = true
+
+# Auto-reload at some periodically at time interval (5 seconds in this example)
+[editor.auto-reload]
+periodic.enable = true
+periodic.interval = 5000
+
+# Of course, you could have it reload on focus and at an interval too:
+[editor.auto-reload]
+focus-gained = true
+periodic.enable = true
+periodic.interval = 5000
