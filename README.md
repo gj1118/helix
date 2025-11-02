@@ -1,15 +1,15 @@
-This is a just a fork of Helix. All claims rest with Helix maintainers and its copyright holders. I am just maintaining a fork. 
-For more information please see Helix's readme file. 
+This is a just a fork of Helix. All claims rest with Helix maintainers and its copyright holders. I am just maintaining a fork.
+For more information please see Helix's readme file.
 
 New Features
 1. Noice Cmdline
-   
+
    <img width="580" height="424" alt="image" src="https://github.com/user-attachments/assets/a91ef59a-0923-47ab-b35a-2d9cb22a6462" />
    <img width="1395" height="624" alt="image" src="https://github.com/user-attachments/assets/42c01975-b4a0-4d80-ab0e-8171dbf4df72" />
 
 
 3. Noice Notifications
-   
+
    <img width="713" height="760" alt="image" src="https://github.com/user-attachments/assets/cf78a977-1fd1-421f-acb2-fe359791b3d9" />
 
 3. Cutomizable Picker border changes (now supports the gradients and the border thickness)
@@ -17,11 +17,11 @@ New Features
    <img width="1916" height="980" alt="image" src="https://github.com/user-attachments/assets/abfeef4a-e633-489f-9236-3e9adbad05bb" />
 
 4. Show function name in the status bar
-   Add this following to your editor.statusline config 
+   Add this following to your editor.statusline config
    <img width="428" height="220" alt="image" src="https://github.com/user-attachments/assets/dea63278-a649-4561-a29a-b1c0eddacf9f" />
 
 
-   
+
 
 This fork of Helix implements the following pull requests. Future pull requests that are merged will be merged and listed here.
 1. https://github.com/helix-editor/helix/pull/13354 (index command)
@@ -61,7 +61,7 @@ cargo install --path helix-term --locked
 
 ```
 
-Or if you have `just` installed, you can simply run `just` recipes in the folder where you checked the source code. For more information please see the `justfile` 
+Or if you have `just` installed, you can simply run `just` recipes in the folder where you checked the source code. For more information please see the `justfile`
 
 THEN THE IMPORTANT PART that is missing from the docs page(this way you get all the default themes and gramars), [source](https://github.com/helix-editor/helix/discussions/7549#discussioncomment-6948696)
 ```bash
@@ -90,7 +90,7 @@ use-full-height = false
 
 **Window Resizing:**
 - `Alt+w h` or `Alt+w left` - Shrink window width
-- `Alt+w l` or `Alt+w right` - Grow window width  
+- `Alt+w l` or `Alt+w right` - Grow window width
 - `Alt+w j` or `Alt+w down` - Shrink window height
 - `Alt+w k` or `Alt+w up` - Grow window height
 
@@ -100,7 +100,7 @@ use-full-height = false
 **Sticky Mode:**
 Activate sticky mode with `Alt+W` (Alt + Shift + w), then use single keys for repeated resizing:
 - `h` or `left` - Shrink width
-- `l` or `right` - Grow width  
+- `l` or `right` - Grow width
 - `j` or `down` - Shrink height
 - `k` or `up` - Grow height
 - `f` - Toggle focus mode
@@ -473,3 +473,38 @@ signature-help-position = "above"
 
 # Or below cursor
 signature-help-position = "below"
+
+```
+
+## Auto reload buffers on focus / changes
+Implements automatic reloading of buffers when their corresponding files are changed on disk. This behavior can be configured to trigger when the editor window gains focus, at a periodic interval, or both.
+
+
+Here are some example snippets of configuration for this feature:
+```toml
+
+# Disable auto-reloading (default)
+[editor]
+auto-reload = false
+
+#or
+[editor.auto-reload]
+focus-gained = false
+
+# Auto-reload on focus
+[editor]
+auto-reload = true
+# or
+[editor.auto-reload]
+focus-gained = true
+
+# Auto-reload at some periodically at time interval (5 seconds in this example)
+[editor.auto-reload]
+periodic.enable = true
+periodic.interval = 5000
+
+# Of course, you could have it reload on focus and at an interval too:
+[editor.auto-reload]
+focus-gained = true
+periodic.enable = true
+periodic.interval = 5000
