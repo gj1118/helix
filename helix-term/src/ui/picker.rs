@@ -660,12 +660,19 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                                     std::io::ErrorKind::NotFound,
                                     "Cannot open document",
                                 )),
-                                |doc| {
-                                    // Asynchronously highlight the new document
-                                    helix_event::send_blocking(
-                                        &self.preview_highlight_handler,
-                                        path.clone(),
-                                    );
+                                |mut doc| {
+                                    let loader = editor.syn_loader.load();
+                                    if let Some(language_config) =
+                                        doc.detect_language_config(&loader)
+                                    {
+                                        doc.language = Some(language_config);
+
+                                        // Asynchronously highlight the new document
+                                        helix_event::send_blocking(
+                                            &self.preview_highlight_handler,
+                                            path.clone(),
+                                        );
+                                    }
                                     Ok(CachedPreview::Document(Box::new(doc)))
                                 },
                             )
