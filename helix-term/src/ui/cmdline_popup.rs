@@ -250,7 +250,7 @@ impl CmdlinePopup {
 
         // Render completion items with scrolling support
         let config = cx.editor.config();
-        let picker_symbol = config.picker_symbol.trim();
+        let picker_symbol = config.picker_symbol.as_str();
         let symbol_width = picker_symbol.width();
         
         let completions = self.prompt.completions();
@@ -289,11 +289,7 @@ impl CmdlinePopup {
                 completion_bg.patch(completion.style)
             };
 
-            let prefix = if is_selected {
-                picker_symbol.to_string()
-            } else {
-                " ".repeat(symbol_width)
-            };
+            let prefix = if is_selected { picker_symbol.to_string() } else { " ".repeat(symbol_width) };
             let text = format!("{}{}", prefix, completion.content);
             surface.set_stringn(
                 inner_area.x,

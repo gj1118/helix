@@ -11,6 +11,7 @@ use crate::{
         picker::query::PickerQuery,
         text_decorations::DecorationManager,
         EditorView,
+        gradient_border::GradientBorder,
     },
 };
 use futures_util::future::BoxFuture;
@@ -267,10 +268,12 @@ pub struct Picker<T: 'static + Send + Sync, D: 'static> {
     preview_cache: HashMap<Arc<Path>, CachedPreview>,
     read_buffer: Vec<u8>,
     /// Given an item in the picker, return the file path and line number to display.
-    file_fn: Option<FileCallback<T>>,
+    file_fn: Option<FileCallback<T>>, 
     /// An event handler for syntax highlighting the currently previewed file.
-    preview_highlight_handler: Sender<Arc<Path>>,
-    dynamic_query_handler: Option<Sender<DynamicQueryChange>>,
+    preview_highlight_handler: Sender<Arc<Path>>, 
+    dynamic_query_handler: Option<Sender<DynamicQueryChange>>, 
+    /// Cached gradient border for rendering when enabled in config
+    gradient_border: Option<GradientBorder>,
 }
 
 impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
@@ -393,6 +396,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             file_fn: None,
             preview_highlight_handler: PreviewHighlightHandler::<T, D>::default().spawn(),
             dynamic_query_handler: None,
+            gradient_border: None,
         }
     }
 
@@ -713,12 +717,33 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         let background = cx.editor.theme.get("ui.background");
         surface.clear_with(area, background);
 
-        const BLOCK: Block<'_> = Block::bordered();
+        // calculate the inner area inside the box (respect gradient border thickness)
+        let inner = if cx.editor.config().gradient_borders.enable {
+            if self.gradient_border.is_none() {
+                self.gradient_border = Some(GradientBorder::from_theme(
+                    &cx.editor.theme,
+                    &cx.editor.config().gradient_borders,
+                ));
+            }
 
-        // calculate the inner area inside the box
-        let inner = BLOCK.inner(area);
+            if let Some(ref mut gradient_border) = self.gradient_border {
+                let rounded = cx.editor.config().rounded_corners;
+                gradient_border.render(area, surface, &cx.editor.theme, rounded);
+            }
 
-        BLOCK.render(area, surface);
+            let t: u16 = cx.editor.config().gradient_borders.thickness as u16;
+            Rect {
+                x: area.x + t,
+                y: area.y + t,
+                width: area.width.saturating_sub(t * 2),
+                height: area.height.saturating_sub(t * 2),
+            }
+        } else {
+            let block = Block::bordered();
+            let inner_area = block.inner(area);
+            block.render(area, surface);
+            inner_area
+        };
 
         // -- Render the input bar:
 
@@ -849,10 +874,12 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             }))
         });
 
+        let cfg = cx.editor.config();
+        let picker_symbol = cfg.picker_symbol.as_str();
         let mut table = Table::new(options)
             .style(text_style)
             .highlight_style(selected)
-            .highlight_symbol(" > ")
+            .highlight_symbol(picker_symbol)
             .column_spacing(1)
             .widths(&self.widths);
 
@@ -902,14 +929,34 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         let directory = cx.editor.theme.get("ui.text.directory");
         surface.clear_with(area, background);
 
-        const BLOCK: Block<'_> = Block::bordered();
-
-        // calculate the inner area inside the box
-        let inner = BLOCK.inner(area);
+        // calculate the inner area inside the box (respect gradient border thickness)
+        let base_inner = if cx.editor.config().gradient_borders.enable {
+            if self.gradient_border.is_none() {
+                self.gradient_border = Some(GradientBorder::from_theme(
+                    &cx.editor.theme,
+                    &cx.editor.config().gradient_borders,
+                ));
+            }
+            if let Some(ref mut gradient_border) = self.gradient_border {
+                let rounded = cx.editor.config().rounded_corners;
+                gradient_border.render(area, surface, &cx.editor.theme, rounded);
+            }
+            let t: u16 = cx.editor.config().gradient_borders.thickness as u16;
+            Rect {
+                x: area.x + t,
+                y: area.y + t,
+                width: area.width.saturating_sub(t * 2),
+                height: area.height.saturating_sub(t * 2),
+            }
+        } else {
+            let block = Block::bordered();
+            let inner_area = block.inner(area);
+            block.render(area, surface);
+            inner_area
+        };
         // 1 column gap on either side
         let margin = Margin::horizontal(1);
-        let inner = inner.inner(margin);
-        BLOCK.render(area, surface);
+        let inner = base_inner.inner(margin);
 
         if let Some((preview, range)) = self.get_preview(cx.editor) {
             let doc = match preview.document() {
@@ -1195,9 +1242,19 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
     }
 
     fn cursor(&self, area: Rect, editor: &Editor) -> (Option<Position>, CursorKind) {
-        let block = Block::bordered();
-        // calculate the inner area inside the box
-        let inner = block.inner(area);
+        // calculate the inner area inside the box, honoring gradient border thickness
+        let inner = if editor.config().gradient_borders.enable {
+            let t: u16 = editor.config().gradient_borders.thickness as u16;
+            Rect {
+                x: area.x + t,
+                y: area.y + t,
+                width: area.width.saturating_sub(t * 2),
+                height: area.height.saturating_sub(t * 2),
+            }
+        } else {
+            let block = Block::bordered();
+            block.inner(area)
+        };
 
         // prompt area
         let render_preview = self.show_preview
@@ -1207,9 +1264,9 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
         let stack_vertically = area.width / 2 < MIN_AREA_WIDTH_FOR_PREVIEW;
 
         let picker_width = if render_preview && !stack_vertically {
-            area.width / 2
+            inner.width / 2
         } else {
-            area.width
+            inner.width
         };
         let area = inner.clip_left(1).with_height(1).with_width(picker_width);
 
