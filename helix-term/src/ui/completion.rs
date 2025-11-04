@@ -120,7 +120,7 @@ impl menu::Item for CompletionItem {
             .or_else(|| theme.try_get(&name))
             .unwrap_or_else(|| theme.get("ui.text"));
 
-        let kind_color = style.fg;
+        let kind_color = style.fg.map(|color| derive_color(color, &name));
 
         if let Some(icon) = icons.kind().get(name) {
             kind.0[0].content = format!("{}  {name}", icon.glyph()).into();
@@ -708,4 +708,113 @@ fn completion_changes(transaction: &Transaction, trigger_offset: usize) -> Vec<C
         .changes_iter()
         .filter(|(start, end, _)| (*start..=*end).contains(&trigger_offset))
         .collect()
+}
+
+fn derive_color(base_color: Color, kind_name: &str) -> Color {
+    const HUE_SHIFT_AMOUNT: f32 = 0.15;
+    const SHIFT_RANGE: u32 = 15;
+    const SATURATION_BOOST: f32 = 0.05;
+    const LIGHTNESS_BOOST: f32 = 0.05;
+
+    if let Color::Rgb(r, g, b) = base_color {
+        let (mut h, mut s, mut l) = rgb_to_hsl(r, g, b);
+
+        // 1. Generate a deterministic hash from the kind's name (e.g., "struct", "enum").
+        let hash = kind_name.as_bytes().iter().map(|&b| b as u32).sum::<u32>();
+
+        // 2. Use the hash to create a small, consistent hue shift.
+        // This gives us a range of small positive and negative shifts.
+        let shift: f32 =
+            ((hash % SHIFT_RANGE) as f32 - (SHIFT_RANGE / 2) as f32) * HUE_SHIFT_AMOUNT;
+        h = (h + shift).fract(); // .fract() handles wrapping around the color wheel (0.0 to 1.0)
+        if h < 0.0 {
+            h += 1.0;
+        }
+
+        // 3. Boost saturation and lightness to make it pop in the UI.
+        s = (s + SATURATION_BOOST).min(1.0);
+        l = (l + LIGHTNESS_BOOST).min(1.0);
+
+        let (new_r, new_g, new_b) = hsl_to_rgb(h, s, l);
+        Color::Rgb(new_r, new_g, new_b)
+    } else {
+        // Can't adjust non-RGB colors, so return them as is.
+        base_color
+    }
+}
+
+fn rgb_to_hsl(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
+    let r = r as f32 / 255.0;
+    let g = g as f32 / 255.0;
+    let b = b as f32 / 255.0;
+
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let l = (max + min) / 2.0;
+    let mut h;
+    let s;
+
+    if max == min {
+        h = 0.0;
+        s = 0.0;
+    } else {
+        let d = max - min;
+        s = if l > 0.5 {
+            d / (2.0 - max - min)
+        } else {
+            d / (max + min)
+        };
+        h = match max {
+            x if x == r => (g - b) / d + (if g < b { 6.0 } else { 0.0 }),
+            x if x == g => (b - r) / d + 2.0,
+            _ => (r - g) / d + 4.0,
+        };
+        h /= 6.0;
+    }
+    (h, s, l)
+}
+
+fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (u8, u8, u8) {
+    let (r, g, b);
+
+    if s == 0.0 {
+        r = l;
+        g = l;
+        b = l;
+    } else {
+        let q = if l < 0.5 {
+            l * (1.0 + s)
+        } else {
+            l + s - l * s
+        };
+        let p = 2.0 * l - q;
+        r = hue_to_rgb(p, q, h + 1.0 / 3.0);
+        g = hue_to_rgb(p, q, h);
+        b = hue_to_rgb(p, q, h - 1.0 / 3.0);
+    }
+
+    (
+        (r * 255.0).round() as u8,
+        (g * 255.0).round() as u8,
+        (b * 255.0).round() as u8,
+    )
+}
+
+fn hue_to_rgb(p: f32, q: f32, mut t: f32) -> f32 {
+    if t < 0.0 {
+        t += 1.0;
+    }
+    if t > 1.0 {
+        t -= 1.0;
+    }
+    if t < 1.0 / 6.0 {
+        return p + (q - p) * 6.0 * t;
+    }
+    if t < 1.0 / 2.0 {
+        return q;
+    }
+    if t < 2.0 / 3.0 {
+        return p + (q - p) * (2.0 / 3.0 - t) * 6.0;
+    }
+    p
 }
