@@ -62,7 +62,6 @@ use helix_view::{
 };
 
 use anyhow::{anyhow, bail, ensure, Context as _};
-use arc_swap::access::DynAccess;
 use insert::*;
 use movement::Movement;
 
