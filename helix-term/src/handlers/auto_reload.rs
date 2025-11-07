@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::fs;
 use std::sync::atomic::{self, AtomicBool, Ordering};
 use std::sync::Arc;
@@ -12,11 +11,10 @@ use helix_view::handlers::{AutoReloadEvent, Handlers};
 use helix_view::{Document, Editor};
 use tokio::time::Instant;
 
-use crate::compositor::Compositor;
+use crate::commands;
 use crate::events::OnModeSwitch;
-use crate::job;
-use crate::ui::{Prompt, PromptEvent};
-use crate::{commands, ui};
+use crate::job::{self, Jobs};
+use crate::ui::PromptEvent;
 
 #[derive(Debug)]
 pub(super) struct AutoReloadHandler {
@@ -61,13 +59,13 @@ impl helix_event::AsyncHook for AutoReloadHandler {
 
     fn finish_debounce(&mut self) {
         let reload_pending = self.reload_pending.clone();
-        job::dispatch_blocking(move |editor, compositor| {
+        job::dispatch_blocking(move |editor, _compositor| {
             if editor.mode() == Mode::Insert {
                 // Avoid reloading while in insert mode since this mixes up
                 // the modification indicator and prevents future saves.
                 reload_pending.store(true, atomic::Ordering::Relaxed);
             } else {
-                prompt_to_reload_if_needed(editor, compositor);
+                prompt_to_reload_if_needed(editor);
                 reload_pending.store(false, atomic::Ordering::Relaxed);
             }
         });
@@ -75,53 +73,32 @@ impl helix_event::AsyncHook for AutoReloadHandler {
 }
 
 /// Requests a reload if any documents have been modified externally.
-fn prompt_to_reload_if_needed(editor: &mut Editor, compositor: &mut Compositor) {
-    // If there are no externally modified documents, we can do nothing.
-    if count_externally_modified_documents(editor.documents()) == 0 {
-        // Reset the debounce timer to allow for the next check.
-        let config = editor.config.load();
-        if config.auto_reload.periodic.enable {
-            let interval = config.auto_reload.periodic.interval;
-            send_blocking(
-                &editor.handlers.auto_reload,
-                AutoReloadEvent::CheckForChanges { after: interval },
-            );
-        }
+fn prompt_to_reload_if_needed(editor: &mut Editor) {
+    // If there are externally modified documents, try to reload them
+    if count_externally_modified_documents(editor.documents()) > 0 {
+        let mut cx = crate::compositor::Context {
+            editor,
+            scroll: None,
+            jobs: &mut Jobs::new(),
+        };
 
-        return;
+        match commands::typed::reload_all(&mut cx, Args::default(), PromptEvent::Validate) {
+            Ok(_) => cx.editor.set_status("Reloaded modified documents"),
+            Err(err) => cx
+                .editor
+                .set_error(format!("Failed to reload document: {err}")),
+        }
     }
 
-    let prompt = Prompt::new(
-        Cow::Borrowed("Some files have been modified externally, press Enter to reload them."),
-        None,
-        ui::completers::none,
-        |cx, _, event| {
-            if event == PromptEvent::Update {
-                return;
-            }
-
-            if let Err(err) =
-                commands::typed::reload_all(cx, Args::default(), PromptEvent::Validate)
-            {
-                cx.editor
-                    .set_error(format!("Failed to reload document: {err}"));
-            } else {
-                cx.editor.set_status("Reloaded modified documents");
-            }
-
-            // Reset the debounce timer to allow for the next check.
-            let config = cx.editor.config.load();
-            if config.auto_reload.periodic.enable {
-                let interval = config.auto_reload.periodic.interval;
-                send_blocking(
-                    &cx.editor.handlers.auto_reload,
-                    AutoReloadEvent::CheckForChanges { after: interval },
-                );
-            }
-        },
-    );
-    // Show the prompt to the user.
-    compositor.push(Box::new(prompt));
+    // Reset the debounce timer to allow for the next check.
+    let config = editor.config.load();
+    if config.auto_reload.periodic.enable {
+        let interval = config.auto_reload.periodic.interval;
+        send_blocking(
+            &editor.handlers.auto_reload,
+            AutoReloadEvent::CheckForChanges { after: interval },
+        );
+    }
 }
 
 pub fn count_externally_modified_documents<'a>(docs: impl Iterator<Item = &'a Document>) -> usize {
