@@ -9,6 +9,7 @@ use crate::{
 use helix_core::snippets::{ActiveSnippet, RenderedSnippet, Snippet};
 use helix_core::{self as core, chars, fuzzy::MATCHER, Change, Transaction};
 use helix_lsp::{lsp, util, OffsetEncoding};
+use helix_view::editor::CompletionHighlightType;
 use helix_view::icons::ICONS;
 use helix_view::Theme;
 use helix_view::{
@@ -30,10 +31,16 @@ use tui::{
 
 use std::cmp::Reverse;
 
-impl menu::Item for CompletionItem {
-    type Data = Theme;
+#[derive(Clone, Debug)]
+pub struct FormatCompletionData {
+    theme: Theme,
+    completion_highlight_type: CompletionHighlightType,
+}
 
-    fn format(&self, theme: &Self::Data) -> menu::Row<'_> {
+impl menu::Item for CompletionItem {
+    type Data = FormatCompletionData;
+
+    fn format(&self, format_completion_data: &Self::Data) -> menu::Row<'_> {
         let deprecated = match self {
             CompletionItem::Lsp(LspCompletionItem { item, .. }) => {
                 item.deprecated.unwrap_or_default()
@@ -115,28 +122,73 @@ impl menu::Item for CompletionItem {
 
         let is_folder = kind.0[0].content == "folder";
 
-        let style = theme
-            .try_get(&format!("completion.{}", name))
-            .or_else(|| theme.try_get(&name))
-            .unwrap_or_else(|| theme.get("ui.text"));
+        let highlight_type = format_completion_data.completion_highlight_type;
+        let theme = format_completion_data.theme.clone();
 
-        let kind_color = style.fg.map(|color| derive_color(color, &name));
-
-        if let Some(icon) = icons.kind().get(name) {
-            kind.0[0].content = format!("{}  {name}", icon.glyph()).into();
-
-            if let Some(color) = kind_color {
-                kind.0[0].style = Style::default().fg(color);
-            } else if let Some(color) = icon.color() {
-                kind.0[0].style = Style::default().fg(color);
-            } else if is_folder {
-                kind.0[0].style = theme.get("ui.text.directory");
+        match highlight_type {
+            CompletionHighlightType::Default => {
+                if let Some(icon) = icons.kind().get(name) {
+                    kind.0[0].content = format!("{}  {name}", icon.glyph()).into();
+                    if let Some(color) = icon.color() {
+                        kind.0[0].style = Style::default().fg(color);
+                    } else if is_folder {
+                        kind.0[0].style = theme.get("ui.text.directory");
+                    }
+                } else {
+                    kind.0[0].content = format!("{name}").into();
+                }
             }
-        } else {
-            if let Some(color) = kind_color {
-                kind.0[0].style = Style::default().fg(color);
+            CompletionHighlightType::ThemeColors => {
+                let style = theme
+                    .try_get(&format!("completion.{}", name))
+                    .or_else(|| theme.try_get(&name))
+                    .unwrap_or_else(|| theme.get("ui.text"));
+
+                let kind_color = style.fg;
+
+                if let Some(icon) = icons.kind().get(name) {
+                    kind.0[0].content = format!("{}  {name}", icon.glyph()).into();
+
+                    if let Some(color) = kind_color {
+                        kind.0[0].style = Style::default().fg(color);
+                    } else if let Some(color) = icon.color() {
+                        kind.0[0].style = Style::default().fg(color);
+                    } else if is_folder {
+                        kind.0[0].style = theme.get("ui.text.directory");
+                    }
+                } else {
+                    if let Some(color) = kind_color {
+                        kind.0[0].style = Style::default().fg(color);
+                    }
+                    kind.0[0].content = format!("{name}").into();
+                }
             }
-            kind.0[0].content = format!("{name}").into();
+
+            CompletionHighlightType::Vibrant => {
+                let style = theme
+                    .try_get(&format!("completion.{}", name))
+                    .or_else(|| theme.try_get(&name))
+                    .unwrap_or_else(|| theme.get("ui.text"));
+
+                let kind_color = style.fg.map(|color| derive_color(color, &name));
+
+                if let Some(icon) = icons.kind().get(name) {
+                    kind.0[0].content = format!("{}  {name}", icon.glyph()).into();
+
+                    if let Some(color) = kind_color {
+                        kind.0[0].style = Style::default().fg(color);
+                    } else if let Some(color) = icon.color() {
+                        kind.0[0].style = Style::default().fg(color);
+                    } else if is_folder {
+                        kind.0[0].style = theme.get("ui.text.directory");
+                    }
+                } else {
+                    if let Some(color) = kind_color {
+                        kind.0[0].style = Style::default().fg(color);
+                    }
+                    kind.0[0].content = format!("{name}").into();
+                }
+            }
         }
 
         let label_style = if deprecated {
@@ -170,9 +222,13 @@ impl Completion {
         let replace_mode = editor.config().completion_replace;
 
         let theme = editor.theme.clone();
-
+        let completion_highlight_type = editor.config().completion_highlight.highlight_type;
+        let format_completion_data = FormatCompletionData {
+            theme,
+            completion_highlight_type,
+        };
         // Then create the menu
-        let menu = Menu::new(items, theme, move |editor: &mut Editor, item, event| {
+        let menu = Menu::new(items, format_completion_data, move |editor: &mut Editor, item, event| {
             let (view, doc) = current!(editor);
 
             macro_rules! language_server {
