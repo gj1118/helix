@@ -21,6 +21,7 @@
 - [`[editor.smart-tab]` Section](#editorsmart-tab-section)
 - [`[editor.inline-diagnostics]` Section](#editorinline-diagnostics-section)
 - [`[editor.word-completion]` Section](#editorword-completion-section)
+- [`[editor.completion-highlight]` Section](#editorcompletion-highlight-section)
 
 ### `[editor]` Section
 
@@ -518,4 +519,19 @@ Example:
 enable = true
 # Set the trigger length lower so that words are completed more often
 trigger-length = 4
+```
+
+### `[editor.completion-highlight]` Section
+
+Option for different coloring of completions
+
+| Key                  | Description                                                                              | Default  |
+| ---                  | ---                                                                                      | ---      |
+| `highlight-type`     | What kind completion highlighting we will display ("default", "theme-colors", "vibrant") | `default`|
+
+Example:
+
+```toml
+[editor.completion-highlight]
+highlight-type = "vibrant"
 ```

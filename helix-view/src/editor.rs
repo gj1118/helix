@@ -496,6 +496,9 @@ pub struct Config {
     /// Notification system configuration
     #[serde(default)]
     pub notifications: NotificationConfig,
+    /// Completion Highlight configuration
+    #[serde(default)]
+    pub completion_highlight: CompletionHighlight,
 }
 
 #[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, Clone, Copy)]
@@ -1538,6 +1541,29 @@ impl Default for WordCompletion {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CompletionHighlightType {
+    Default,
+    ThemeColors,
+    Vibrant,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
+pub struct CompletionHighlight {
+    /// What kind of highlight type: "default", "theme-colors", "vibrant"
+    pub highlight_type: CompletionHighlightType,
+}
+
+impl Default for CompletionHighlight {
+    fn default() -> Self {
+        Self {
+            highlight_type: CompletionHighlightType::Default,
+        }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -1616,6 +1642,7 @@ impl Default for Config {
             cmdline: CmdlineConfig::default(),
             gradient_borders: GradientBorderConfig::default(),
             notifications: NotificationConfig::default(),
+            completion_highlight: CompletionHighlight::default(),
         }
     }
 }
