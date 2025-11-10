@@ -7,6 +7,7 @@ use crate::{
     },
 };
 use helix_core::snippets::{ActiveSnippet, RenderedSnippet, Snippet};
+use helix_core::syntax::Highlight;
 use helix_core::{self as core, chars, fuzzy::MATCHER, Change, Transaction};
 use helix_lsp::{lsp, util, OffsetEncoding};
 use helix_view::editor::CompletionHighlightType;
@@ -124,71 +125,36 @@ impl menu::Item for CompletionItem {
 
         let highlight_type = format_completion_data.completion_highlight_type;
         let theme = format_completion_data.theme.clone();
+        let style = theme
+            .try_get(&format!("completion.{}", name))
+            .or_else(|| theme.try_get(&name))
+            .unwrap_or_else(|| theme.get("ui.text"));
+
+        let mut color: Option<Color> = None;
 
         match highlight_type {
             CompletionHighlightType::Default => {
                 if let Some(icon) = icons.kind().get(name) {
-                    kind.0[0].content = format!("{}  {name}", icon.glyph()).into();
-                    if let Some(color) = icon.color() {
-                        kind.0[0].style = Style::default().fg(color);
-                    } else if is_folder {
-                        kind.0[0].style = theme.get("ui.text.directory");
-                    }
-                } else {
-                    kind.0[0].content = format!("{name}").into();
+                    color = icon.color();
                 }
             }
-            CompletionHighlightType::ThemeColors => {
-                let style = theme
-                    .try_get(&format!("completion.{}", name))
-                    .or_else(|| theme.try_get(&name))
-                    .unwrap_or_else(|| theme.get("ui.text"));
-
-                let kind_color = style.fg;
-
-                if let Some(icon) = icons.kind().get(name) {
-                    kind.0[0].content = format!("{}  {name}", icon.glyph()).into();
-
-                    if let Some(color) = kind_color {
-                        kind.0[0].style = Style::default().fg(color);
-                    } else if let Some(color) = icon.color() {
-                        kind.0[0].style = Style::default().fg(color);
-                    } else if is_folder {
-                        kind.0[0].style = theme.get("ui.text.directory");
-                    }
-                } else {
-                    if let Some(color) = kind_color {
-                        kind.0[0].style = Style::default().fg(color);
-                    }
-                    kind.0[0].content = format!("{name}").into();
-                }
-            }
+            CompletionHighlightType::ThemeColors => color = style.fg,
 
             CompletionHighlightType::Vibrant => {
-                let style = theme
-                    .try_get(&format!("completion.{}", name))
-                    .or_else(|| theme.try_get(&name))
-                    .unwrap_or_else(|| theme.get("ui.text"));
-
-                let kind_color = style.fg.map(|color| derive_color(color, &name));
-
-                if let Some(icon) = icons.kind().get(name) {
-                    kind.0[0].content = format!("{}  {name}", icon.glyph()).into();
-
-                    if let Some(color) = kind_color {
-                        kind.0[0].style = Style::default().fg(color);
-                    } else if let Some(color) = icon.color() {
-                        kind.0[0].style = Style::default().fg(color);
-                    } else if is_folder {
-                        kind.0[0].style = theme.get("ui.text.directory");
-                    }
-                } else {
-                    if let Some(color) = kind_color {
-                        kind.0[0].style = Style::default().fg(color);
-                    }
-                    kind.0[0].content = format!("{name}").into();
-                }
+                color = style.fg.map(|color| derive_color(color, &name));
             }
+        }
+
+        if let Some(color) = color {
+            kind.0[0].style = Style::default().fg(color);
+        } else if is_folder {
+            kind.0[0].style = theme.get("ui.text.directory");
+        }
+
+        if let Some(icon) = icons.kind().get(name) {
+            kind.0[0].content = format!("{}  {name}", icon.glyph()).into();
+        } else {
+            kind.0[0].content = format!("{name}").into();
         }
 
         let label_style = if deprecated {
@@ -775,26 +741,23 @@ fn derive_color(base_color: Color, kind_name: &str) -> Color {
     if let Color::Rgb(r, g, b) = base_color {
         let (mut h, mut s, mut l) = rgb_to_hsl(r, g, b);
 
-        // 1. Generate a deterministic hash from the kind's name (e.g., "struct", "enum").
+        // NOTE(Rok Kos): Generate a deterministic hash from the kind's name (e.g., "struct", "enum").
         let hash = kind_name.as_bytes().iter().map(|&b| b as u32).sum::<u32>();
 
-        // 2. Use the hash to create a small, consistent hue shift.
-        // This gives us a range of small positive and negative shifts.
         let shift: f32 =
             ((hash % SHIFT_RANGE) as f32 - (SHIFT_RANGE / 2) as f32) * HUE_SHIFT_AMOUNT;
-        h = (h + shift).fract(); // .fract() handles wrapping around the color wheel (0.0 to 1.0)
+        h = (h + shift).fract();
         if h < 0.0 {
             h += 1.0;
         }
 
-        // 3. Boost saturation and lightness to make it pop in the UI.
+        // NOTE(Rok Kos): Boost saturation and lightness to make it pop in the UI.
         s = (s + SATURATION_BOOST).min(1.0);
         l = (l + LIGHTNESS_BOOST).min(1.0);
 
         let (new_r, new_g, new_b) = hsl_to_rgb(h, s, l);
         Color::Rgb(new_r, new_g, new_b)
     } else {
-        // Can't adjust non-RGB colors, so return them as is.
         base_color
     }
 }
@@ -863,14 +826,18 @@ fn hue_to_rgb(p: f32, q: f32, mut t: f32) -> f32 {
     if t > 1.0 {
         t -= 1.0;
     }
-    if t < 1.0 / 6.0 {
+
+    const ONE_SIXTH: f32 = 1.0 / 6.0;
+    if t < ONE_SIXTH {
         return p + (q - p) * 6.0 * t;
     }
-    if t < 1.0 / 2.0 {
+    const ONE_HALF: f32 = 1.0 / 2.0;
+    if t < ONE_HALF {
         return q;
     }
-    if t < 2.0 / 3.0 {
-        return p + (q - p) * (2.0 / 3.0 - t) * 6.0;
+    const TWO_THIRDS: f32 = 2.0 / 3.0;
+    if t < TWO_THIRDS {
+        return p + (q - p) * (TWO_THIRDS - t) * 6.0;
     }
     p
 }
