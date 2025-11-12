@@ -8,6 +8,7 @@
 | astro | ✓ |  |  |  |  | `astro-ls` |
 | awk | ✓ | ✓ |  |  |  | `awk-language-server` |
 | bash | ✓ | ✓ | ✓ | ✓ | ✓ | `bash-language-server` |
+| basic | ✓ | ✓ | ✓ | ✓ |  |  |
 | bass | ✓ |  |  |  |  | `bass` |
 | beancount | ✓ |  |  |  |  | `beancount-language-server` |
 | bibtex | ✓ |  |  |  |  | `texlab` |
@@ -25,7 +26,7 @@
 | cel | ✓ |  |  |  |  |  |
 | circom | ✓ |  |  |  |  | `circom-lsp` |
 | clarity | ✓ |  |  |  |  | `clarinet` |
-| clojure | ✓ |  |  |  | ✓ | `clojure-lsp` |
+| clojure | ✓ | ✓ | ✓ |  | ✓ | `clojure-lsp` |
 | cmake | ✓ | ✓ | ✓ |  |  | `neocmakelsp`, `cmake-language-server` |
 | codeql | ✓ | ✓ |  |  |  | `codeql` |
 | comment | ✓ |  |  |  |  |  |
@@ -75,6 +76,7 @@
 | flatbuffers | ✓ |  |  |  |  |  |
 | forth | ✓ |  |  |  |  | `forth-lsp` |
 | fortran | ✓ |  | ✓ |  |  | `fortls` |
+| freebasic | ✓ | ✓ | ✓ | ✓ |  |  |
 | fsharp | ✓ |  |  |  |  | `fsautocomplete` |
 | gas | ✓ | ✓ |  |  |  | `asm-lsp` |
 | gdscript | ✓ | ✓ | ✓ | ✓ |  |  |
@@ -107,7 +109,9 @@
 | gts | ✓ | ✓ | ✓ | ✓ |  | `typescript-language-server`, `vscode-eslint-language-server`, `ember-language-server` |
 | hare | ✓ |  |  |  |  |  |
 | haskell | ✓ | ✓ |  |  |  | `haskell-language-server-wrapper` |
+| haskell-literate | ✓ |  |  |  |  | `haskell-language-server-wrapper` |
 | haskell-persistent | ✓ |  |  |  |  |  |
+| haxe | ✓ |  |  | ✓ |  |  |
 | hcl | ✓ | ✓ | ✓ |  |  | `terraform-ls` |
 | hdl | ✓ |  |  |  |  | `hdls` |
 | heex | ✓ | ✓ |  |  |  | `elixir-ls`, `expert` |
@@ -224,7 +228,8 @@
 | rmarkdown | ✓ |  | ✓ |  |  | `R` |
 | robot | ✓ |  |  |  |  | `robotframework_ls` |
 | robots.txt | ✓ | ✓ |  | ✓ |  |  |
-| ron | ✓ |  | ✓ | ✓ | ✓ |  |
+| ron | ✓ |  | ✓ | ✓ | ✓ | `ron-lsp` |
+| rshtml | ✓ | ✓ |  |  |  | `rshtml-analyzer`, `vscode-html-language-server`, `superhtml` |
 | rst | ✓ |  |  |  |  |  |
 | ruby | ✓ | ✓ | ✓ | ✓ | ✓ | `ruby-lsp`, `solargraph` |
 | rust | ✓ | ✓ | ✓ | ✓ | ✓ | `rust-analyzer` |
