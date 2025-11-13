@@ -1033,6 +1033,7 @@ impl Default for StatusLineConfig {
                 E::Spinner,
                 E::FileName,
                 E::ReadOnlyIndicator,
+                E::Zoom,
                 E::FileModificationIndicator,
             ],
             center: vec![],
@@ -1138,6 +1139,8 @@ pub enum StatusLineElement {
     /// Indicator for selected register
     Register,
 
+    /// Current zoom/zen state
+    Zoom,
     /// The base of current working directory
     CurrentWorkingDirectory,
 
