@@ -50,7 +50,7 @@ This fork of Helix implements the following pull requests. Future pull requests 
 24. https://github.com/helix-editor/helix/pull/13963 (auto reload buffers on focus / changes)
 
 26. https://github.com/helix-editor/helix/pull/983827 (Added zoom & max-width -> enabling zen mode see bellow for working config example)
-27. https://github.com/helix-editor/helix/issues/13187 (Keybinding for multiple commands with ":set" and ":toggle" does not work as expected)
+27. https://github.com/helix-editor/helix/pull/14629 (Fix for: Keybinding for multiple commands with ":set" and ":toggle" does not work as expected)
 
 ## Setup
 
