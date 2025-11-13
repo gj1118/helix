@@ -229,6 +229,7 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
                 "C-s" | "s" => hsplit_new,
                 "C-v" | "v" => vsplit_new,
             },
+            "z" => toggle_zoom,
         },
 
         // move under <space>c
@@ -296,6 +297,7 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
                     "C-s" | "s" => hsplit_new,
                     "C-v" | "v" => vsplit_new,
                 },
+                "z" => toggle_zoom,
             },
             "y" => yank_to_clipboard,
             "Y" => yank_main_selection_to_clipboard,

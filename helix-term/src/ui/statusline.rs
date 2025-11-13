@@ -160,6 +160,7 @@ where
         helix_view::editor::StatusLineElement::Register => render_register,
         helix_view::editor::StatusLineElement::CurrentWorkingDirectory => render_cwd,
         helix_view::editor::StatusLineElement::FunctionName => render_function_name,
+        helix_view::editor::StatusLineElement::Zoom => render_zoom,
     }
 }
 
@@ -790,5 +791,14 @@ fn get_current_function_name(context: &RenderContext) -> Option<String> {
         
         // Move to parent
         node = node.parent()?;
+    }
+}
+
+fn render_zoom<'a, F>(context: &mut RenderContext<'a>, write: F)
+where
+    F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
+{
+    if context.editor.tree.zoom {
+        write(context, "[zoom]".into())
     }
 }

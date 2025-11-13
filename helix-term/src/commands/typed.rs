@@ -2147,22 +2147,21 @@ fn set_option(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> a
     let key_error = || anyhow::anyhow!("Unknown key `{}`", key);
     let field_error = |_| anyhow::anyhow!("Could not parse field `{}`", arg);
 
-    let mut config = serde_json::json!(&cx.editor.config().deref());
+    let config = serde_json::json!(&cx.editor.config().deref());
     let pointer = format!("/{}", key.replace('.', "/"));
-    let value = config.pointer_mut(&pointer).ok_or_else(key_error)?;
+    let value = config.pointer(&pointer).ok_or_else(key_error)?;
 
-    *value = if value.is_string() {
+    let value = if value.is_string() {
         // JSON strings require quotes, so we can't .parse() directly
         Value::String(arg.to_string())
     } else {
         arg.parse().map_err(field_error)?
     };
-    let config = serde_json::from_value(config).map_err(field_error)?;
 
     cx.editor
         .config_events
         .0
-        .send(ConfigEvent::Update(config))?;
+        .send(ConfigEvent::Update(pointer, value))?;
     Ok(())
 }
 
@@ -2182,11 +2181,11 @@ fn toggle_option(
 
     let key_error = || anyhow::anyhow!("Unknown key `{}`", key);
 
-    let mut config = serde_json::json!(&cx.editor.config().deref());
+    let config = serde_json::json!(&cx.editor.config().deref());
     let pointer = format!("/{}", key.replace('.', "/"));
-    let value = config.pointer_mut(&pointer).ok_or_else(key_error)?;
+    let value = config.pointer(&pointer).ok_or_else(key_error)?;
 
-    *value = match value {
+    let value = match value {
         Value::Bool(ref value) => {
             ensure!(
                 args.len() == 1,
@@ -2236,7 +2235,7 @@ fn toggle_option(
 
             if let Some(wrongly_typed_value) = values
                 .iter()
-                .find(|v| std::mem::discriminant(*v) != std::mem::discriminant(&*value))
+                .find(|v| std::mem::discriminant(*v) != std::mem::discriminant(value))
             {
                 bail!("value '{wrongly_typed_value}' has a different type than '{value}'");
             }
@@ -2251,13 +2250,11 @@ fn toggle_option(
     };
 
     let status = format!("'{key}' is now set to {value}");
-    let config = serde_json::from_value(config)
-        .map_err(|err| anyhow::anyhow!("Failed to parse config: {err}"))?;
 
     cx.editor
         .config_events
         .0
-        .send(ConfigEvent::Update(config))?;
+        .send(ConfigEvent::Update(pointer, value))?;
     cx.editor.set_status(status);
     Ok(())
 }
@@ -2849,6 +2846,44 @@ fn read(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow:
     doc.apply(&transaction, view.id);
     doc.append_changes_to_history(view);
     view.ensure_cursor_in_view(doc, scrolloff);
+
+    Ok(())
+}
+
+fn set_max_width(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let mut args = args.iter();
+    let Some(width) = args.next() else {
+        bail!(":set-max-width takes 1 or 2 arguments")
+    };
+    let width: u16 = width.parse()?;
+    let alt_width: Option<u16> = args.next().map(|w| w.parse()).transpose()?;
+
+    let set_width = match alt_width {
+        Some(alt_width) if cx.editor.tree.max_width == width => {
+            cx.editor.tree.max_width = alt_width;
+            alt_width
+        }
+        _ => {
+            cx.editor.tree.max_width = width;
+            width
+        }
+    };
+    cx.editor.tree.recalculate();
+
+    if set_width == 0 {
+        cx.editor.set_status("Unset maximum width");
+    } else {
+        cx.editor
+            .set_status(format!("Set maximum width to {}", set_width));
+    }
 
     Ok(())
 }
@@ -4049,6 +4084,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "set-max-width",
+        aliases: &[],
+        doc: "Set the maximum width of the editor, or swap between 2 widths. If set to 0 it will take up the entire width.",
+        fun: set_max_width,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (1, Some(2)),
             ..Signature::DEFAULT
         },
     },
