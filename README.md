@@ -49,6 +49,9 @@ This fork of Helix implements the following pull requests. Future pull requests 
 23. https://github.com/helix-editor/helix/pull/12902 (File Explorer: create/delete/copy/move/rename)
 24. https://github.com/helix-editor/helix/pull/13963 (auto reload buffers on focus / changes)
 
+26. https://github.com/helix-editor/helix/pull/983827 (Added zoom & max-width -> enabling zen mode see bellow for working config example)
+27. https://github.com/helix-editor/helix/issues/13187 (Keybinding for multiple commands with ":set" and ":toggle" does not work as expected)
+
 ## Setup
 
 [Docs](https://docs.helix-editor.com/building-from-source.html) on build it from source.
@@ -508,3 +511,16 @@ periodic.interval = 5000
 focus-gained = true
 periodic.enable = true
 periodic.interval = 5000
+```
+
+## Zen Mode config
+
+By adding this two commands to you config you can enable and disable Zen mode with
+<space>-z and <space>-Z respectivly
+
+```toml
+[keys.normal."space"]
+# Set max width based on your terminal
+z = ["toggle_zoom", ":set-max-width 80", ":set soft-wrap.enable true", ":set gutters.layout []"]
+Z = ["toggle_zoom", ":set-max-width 0", ":set soft-wrap.enable false", ':set gutters.layout ["diagnostics","spacer","line-numbers","spacer","diff"]']
+```
