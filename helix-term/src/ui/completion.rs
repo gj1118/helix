@@ -7,7 +7,6 @@ use crate::{
     },
 };
 use helix_core::snippets::{ActiveSnippet, RenderedSnippet, Snippet};
-use helix_core::syntax::Highlight;
 use helix_core::{self as core, chars, fuzzy::MATCHER, Change, Transaction};
 use helix_lsp::{lsp, util, OffsetEncoding};
 use helix_view::editor::CompletionHighlightType;

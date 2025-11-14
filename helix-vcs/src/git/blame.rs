@@ -92,7 +92,7 @@ impl FileBlame {
         let thread_safe_repo =
             open_repo(get_repo_dir(&file)?).context("Failed to open git repo")?;
         let repo = thread_safe_repo.to_thread_local();
-        let head = repo.head()?.peel_to_commit_in_place()?.id;
+        let head = repo.head()?.peel_to_commit()?.id;
 
         let mut resource_cache = repo.diff_resource_cache_for_tree_diff()?;
         let file_blame = gix::blame::file(
