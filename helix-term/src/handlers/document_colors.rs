@@ -5,11 +5,10 @@ use helix_core::{syntax::config::LanguageServerFeature, text_annotations::Inline
 use helix_event::{cancelable_future, register_hook};
 use helix_lsp::lsp;
 use helix_view::{
-    DocumentId, Editor, Theme,
     document::DocumentColorSwatches,
     events::{DocumentDidChange, DocumentDidOpen, LanguageServerExited, LanguageServerInitialized},
     handlers::{lsp::DocumentColorsEvent, Handlers},
-    icons::ICONS,
+    DocumentId, Editor, Theme,
 };
 use tokio::time::Instant;
 
@@ -128,8 +127,6 @@ fn attach_document_colors(
     let mut color_swatches = Vec::with_capacity(doc_colors.len());
     let mut color_swatches_padding = Vec::with_capacity(doc_colors.len());
     let mut colors = Vec::with_capacity(doc_colors.len());
-
-    let icons = ICONS.load();
 
     for (pos, color) in doc_colors {
         color_swatches_padding.push(InlineAnnotation::new(pos, " "));

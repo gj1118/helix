@@ -169,7 +169,7 @@ impl GradientBorder {
     }
 
     /// Render the gradient border around the given area
-    pub fn render(&mut self, area: Rect, surface: &mut Surface, theme: &Theme, rounded: bool) {
+    pub fn render(&mut self, area: Rect, surface: &mut Surface, _theme: &Theme, rounded: bool) {
         if !self.config.enable || area.width < 2 || area.height < 2 {
             return;
         }
@@ -261,7 +261,7 @@ impl GradientBorder {
     }
 
     /// Create a gradient border with default theme-based colors
-    pub fn from_theme(theme: &Theme, config: &GradientBorderConfig) -> Self {
+    pub fn from_theme(_theme: &Theme, config: &GradientBorderConfig) -> Self {
         let mut border_config = config.clone();
 
         // Use theme colors as fallbacks if hex colors are invalid

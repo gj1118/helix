@@ -2,23 +2,19 @@ use crate::compositor::{Component, Context, Event, EventResult};
 use crate::ui::gradient_border::GradientBorder;
 use helix_core::unicode::width::UnicodeWidthStr;
 use helix_event::request_redraw;
+use helix_view::theme::Modifier;
 use helix_view::{
+    editor::{CmdlineStyle, Notification, NotificationPosition, NotificationStyle, Severity},
     graphics::{Color, Rect, Style},
     Editor,
-    editor::{Notification, NotificationPosition, NotificationStyle, NotificationBorderStyle, Severity, CmdlineStyle},
 };
-use helix_view::theme::Modifier;
 use std::time::Instant;
-use tokio::time::{sleep as tokio_sleep, Instant as TokioInstant};
-use tui::{
-    buffer::Buffer as Surface,
-    widgets::{Block, BorderType, Borders, Widget},
-};
+use tokio::time::sleep as tokio_sleep;
+use tui::buffer::Buffer as Surface;
 
 pub struct NotificationPopup {
     notifications: Vec<NotificationItem>,
     gradient_border: Option<GradientBorder>,
-    last_update: Instant,
     // Cached layout params computed per render from editor config
     layout_thickness: u16,
     layout_rounded: bool,
@@ -30,8 +26,6 @@ struct NotificationItem {
     notification: Notification,
     area: Rect,
     fade_start: Option<Instant>,
-    // When we've scheduled a wake-up for this item
-    wake_until: Option<TokioInstant>,
 }
 
 impl NotificationItem {
@@ -40,18 +34,7 @@ impl NotificationItem {
             notification,
             area: Rect::default(),
             fade_start: None,
-            wake_until: None,
         }
-    }
-
-    fn start_fade(&mut self) {
-        if self.fade_start.is_none() {
-            self.fade_start = Some(Instant::now());
-        }
-    }
-
-    fn is_fading(&self) -> bool {
-        self.fade_start.is_some()
     }
 
     fn fade_progress(&self) -> f32 {
@@ -63,10 +46,6 @@ impl NotificationItem {
             0.0
         }
     }
-
-    fn should_remove(&self) -> bool {
-        self.fade_progress() >= 1.0
-    }
 }
 
 impl NotificationPopup {
@@ -74,7 +53,6 @@ impl NotificationPopup {
         Self {
             notifications: Vec::new(),
             gradient_border: None,
-            last_update: Instant::now(),
             layout_thickness: 1,
             layout_rounded: false,
             layout_padding: 1,
@@ -183,7 +161,7 @@ impl NotificationPopup {
             }
 
             // Outer size from content + padding + border thickness (no extra rounded margin)
-            let mut width = content_max_w
+            let width = content_max_w
                 .saturating_add(self.layout_padding * 2)
                 .saturating_add(self.layout_thickness * 2)
                 .clamp(3, max_width);
@@ -357,20 +335,6 @@ impl NotificationPopup {
             }
         } else {
             base_style
-        }
-    }
-
-    fn get_border_type(&self, border_config: &helix_view::editor::NotificationBorderConfig, rounded: bool) -> BorderType {
-        match border_config.style {
-            NotificationBorderStyle::Solid => {
-                if rounded || border_config.radius > 0 {
-                    BorderType::Rounded
-                } else {
-                    BorderType::Plain
-                }
-            },
-            NotificationBorderStyle::Dashed => BorderType::Double, // Approximate dashed with double
-            NotificationBorderStyle::Dotted => BorderType::Thick,  // Approximate dotted with thick
         }
     }
 

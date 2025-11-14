@@ -1,11 +1,11 @@
 use crate::compositor::{Component, Context, Event, EventResult};
+use crate::ui::gradient_border::GradientBorder;
 use crate::ui::prompt::{Completion, Prompt, PromptEvent};
-use crate::ui::{self, gradient_border::GradientBorder};
-use helix_core::{Position, unicode::width::UnicodeWidthStr};
+use helix_core::{unicode::width::UnicodeWidthStr, Position};
 use helix_view::{
+    editor::CmdlineStyle,
     graphics::{CursorKind, Rect},
     Editor,
-    editor::CmdlineStyle,
 };
 use std::borrow::Cow;
 use tui::{
