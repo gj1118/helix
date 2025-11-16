@@ -73,9 +73,11 @@ pub fn test_notifications(cx: &mut Context) {
     log::warn!("DEBUG: Creating notification with timeout: {:?} ({}ms)", config.default_timeout, timeout_ms);
     
     // Create a simple test notification
-    let id = cx.editor.notify_info(format!("Test notification (timeout: {}ms) - should disappear in {}s", 
-                                          timeout_ms, timeout_ms as f64 / 1000.0));
-    
+    let _id = cx.editor.notify_info(format!(
+        "Test notification (timeout: {}ms) - should disappear in {}s",
+        timeout_ms,
+        timeout_ms as f64 / 1000.0
+    ));
     // Check if the notification was created with timeout
     let all_notifications = cx.editor.get_notification_history();
     if let Some(notification) = all_notifications.last() {

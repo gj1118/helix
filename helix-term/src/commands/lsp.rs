@@ -956,7 +956,7 @@ impl Display for ApplyEditErrorKind {
 
 /// Precondition: `locations` should be non-empty.
 fn goto_impl(
-    title: &'static str,
+    _title: &'static str,
     editor: &mut Editor,
     compositor: &mut Compositor,
     locations: Vec<Location>,
