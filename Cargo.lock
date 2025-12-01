@@ -601,9 +601,9 @@ dependencies = [
 
 [[package]]
 name = "gix-blame"
-version = "0.4.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "260df64cea7bf3ab6db00e8f8cd8f1f85513d69c19fadd714422a39b8e8a8617"
+checksum = "5d7c62ee6ebdfe8a21d23609d7e73e45f13a0ec9308aec7d7303640d7bf80fbc"
 dependencies = [
  "gix-commitgraph",
  "gix-date",
