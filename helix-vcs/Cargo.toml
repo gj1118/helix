@@ -16,7 +16,7 @@ helix-stdx = { path = "../helix-stdx" }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "time", "sync", "parking_lot", "macros"] }
 parking_lot.workspace = true
 arc-swap = { version = "1.7.1" }
-gix = { version = "0.74.1", features = ["attributes", "status", "blame"], default-features = false, optional = true }
+gix = { version = "0.75.0", features = ["attributes", "status", "blame"], default-features = false, optional = true }
 imara-diff =  "0.2.0"
 anyhow = "1"
 
