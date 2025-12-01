@@ -48,6 +48,7 @@ This fork of Helix implements the following pull requests. Future pull requests 
 22. https://github.com/helix-editor/helix/pull/14453 (ruler chars)
 23. https://github.com/helix-editor/helix/pull/12902 (File Explorer: create/delete/copy/move/rename)
 24. https://github.com/helix-editor/helix/pull/13963 (auto reload buffers on focus / changes)
+25. https://github.com/helix-editor/helix/pull/14825 (soft-wrap indicators in gutter)
 
 ## Setup
 
