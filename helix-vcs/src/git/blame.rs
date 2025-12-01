@@ -70,7 +70,7 @@ impl FileBlame {
                 .and_then(|c| c.short_id().map(|id| id.to_string()).ok()),
             author_name: author.map(|a| a.name.to_string()),
             author_email: author.map(|a| a.email.to_string()),
-            commit_date: time.map(|time| time.format(gix::date::time::format::SHORT)),
+            commit_date: time.and_then(|time| time.format(gix::date::time::format::SHORT).ok()),
             commit_title: message.as_ref().map(|msg| msg.title.to_string()),
             commit_body: message
                 .as_ref()
