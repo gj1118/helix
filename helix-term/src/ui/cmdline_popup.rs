@@ -183,12 +183,29 @@ impl CmdlinePopup {
         }
     }
 
-    /// Render the input text (popup: render plain to avoid padding/offsets)
-    fn render_input_text(&self, area: Rect, surface: &mut Surface, cx: &mut Context) {
+    /// Render the input text with horizontal scrolling support
+    fn render_input_text(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
         let theme = &cx.editor.theme;
         let text_style = theme.get("ui.text");
-        // Always render plain text for exact alignment with cursor positioning.
-        surface.set_string(area.x, area.y, self.prompt.line(), text_style);
+        let line_width = area.width as usize;
+
+        // Update scroll anchor based on cursor position and available width
+        self.prompt.update_scroll_anchor(line_width);
+
+        let anchor = self.prompt.anchor();
+        let line = self.prompt.line();
+        let visible_text = &line[anchor..];
+
+        // Use set_string_anchored to handle truncation indicators
+        surface.set_string_anchored(
+            area.x,
+            area.y,
+            self.prompt.truncate_start(),
+            self.prompt.truncate_end(),
+            visible_text,
+            line_width,
+            |_| text_style,
+        );
     }
 
     /// Render completion popup
@@ -381,12 +398,25 @@ impl Component for CmdlinePopup {
                     1,
                 );
 
-                // Compute cursor directly to avoid relying on bottom-mode internals
+                // Compute cursor position accounting for horizontal scroll anchor
                 let byte_pos = self.prompt.position();
+                let anchor = self.prompt.anchor();
                 let line = self.prompt.line();
-                let grapheme_w = line[..byte_pos].width() as u16;
-                let clamped_w = grapheme_w.min(input_area.width.saturating_sub(1));
-                let cursor_x = input_area.x as usize + clamped_w as usize;
+                
+                // Calculate cursor position relative to the visible portion (after anchor)
+                // Also account for truncation indicator if text is scrolled
+                let truncate_start = self.prompt.truncate_start();
+                let visible_cursor_offset = if byte_pos >= anchor {
+                    line[anchor..byte_pos].width()
+                } else {
+                    0
+                };
+                
+                // Add 1 for the truncation indicator "…" if we're scrolled
+                let indicator_offset = if truncate_start { 1 } else { 0 };
+                let cursor_offset = (visible_cursor_offset + indicator_offset) as u16;
+                let clamped_offset = cursor_offset.min(input_area.width.saturating_sub(1));
+                let cursor_x = input_area.x as usize + clamped_offset as usize;
                 let cursor_y = input_area.y as usize;
 
                 (

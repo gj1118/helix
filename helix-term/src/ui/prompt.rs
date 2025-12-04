@@ -417,6 +417,70 @@ impl Prompt {
     pub fn prompt(&self) -> &str {
         &self.prompt
     }
+
+    /// Get the current anchor position for horizontal scrolling
+    pub fn anchor(&self) -> usize {
+        self.anchor
+    }
+
+    /// Check if text is truncated at the start
+    pub fn truncate_start(&self) -> bool {
+        self.truncate_start
+    }
+
+    /// Check if text is truncated at the end
+    pub fn truncate_end(&self) -> bool {
+        self.truncate_end
+    }
+
+    /// Update the anchor position for horizontal scrolling based on cursor and available width.
+    /// This should be called before rendering when the popup needs to handle its own scrolling.
+    pub fn update_scroll_anchor(&mut self, line_width: usize) {
+        if self.line.width() < line_width {
+            self.anchor = 0;
+        } else if self.cursor <= self.anchor {
+            // Ensure the grapheme under the cursor is in view.
+            self.anchor = self.line[..self.cursor]
+                .grapheme_indices(true)
+                .next_back()
+                .map(|(i, _)| i)
+                .unwrap_or_default();
+        } else if self.line[self.anchor..self.cursor].width() > line_width {
+            // Set the anchor to the last grapheme cluster before the width is exceeded.
+            let mut width = 0;
+            self.anchor = self.line[..self.cursor]
+                .grapheme_indices(true)
+                .rev()
+                .find_map(|(idx, g)| {
+                    width += g.width();
+                    if width > line_width {
+                        Some(idx + g.len())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(0);
+        }
+
+        self.truncate_start = self.anchor > 0;
+        self.truncate_end = self.line[self.anchor..].width() > line_width;
+
+        // If we keep inserting characters just before the end ellipsis, move the anchor
+        // so that those new characters are displayed.
+        if self.truncate_end && self.line[self.anchor..self.cursor].width() >= line_width {
+            // Move the anchor forward by one non-zero-width grapheme.
+            self.anchor += self.line[self.anchor..]
+                .grapheme_indices(true)
+                .find_map(|(idx, g)| {
+                    if g.width() > 0 {
+                        Some(idx + g.len())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(0);
+        }
+    }
 }
 
 const BASE_WIDTH: u16 = 30;
