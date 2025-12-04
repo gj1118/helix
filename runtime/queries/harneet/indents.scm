@@ -1,41 +1,28 @@
-;; Harneet Programming Language - Indentation Rules for Helix Editor
-;; Tree-sitter indentation queries
+;; Harneet Programming Language - Indentation Rules
 
-;; Increase indentation for block-like constructs
+;; Indent triggers
 [
   (block)
+  (function_declaration)
+  (anonymous_function)
   (if_statement)
-  (for_statement) 
+  (for_statement)
+  (for_in_statement)
   (switch_statement)
   (case_clause)
-  (function_declaration)
+  (default_clause)
+  (match_expression)
+  (match_arm)
+  (struct_type)
+  (interface_type)
+  (enum_declaration)
+  (array_literal)
+  (map_literal)
+  (struct_literal)
 ] @indent
 
-;; Decrease indentation for closing braces
-[
-  "}"
-] @outdent
+;; Outdent triggers
+["}" "]" ")"] @outdent
 
-;; Special handling for switch cases
-(case_clause) @indent
-(case_clause "case") @outdent
-
-;; Function parameters with multiple lines
-(parameter_list
-  "(" @indent
-  ")" @outdent)
-
-;; Function calls with multiple arguments
-(argument_list
-  "(" @indent  
-  ")" @outdent)
-
-;; Composite literals and array/slice literals
-(composite_literal
-  "{" @indent
-  "}" @outdent)
-
-;; Import declarations with multiple imports
-(import_spec_list
-  "(" @indent
-  ")" @outdent)
+;; Extend
+"else" @extend

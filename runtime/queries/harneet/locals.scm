@@ -1,28 +1,31 @@
-;; Harneet Programming Language - Local Scope Queries for Helix Editor
-;; Tree-sitter locals queries for semantic highlighting and navigation
+;; Harneet Programming Language - Local Scope Queries
 
 ;; Scopes
 (block) @local.scope
 (function_declaration) @local.scope
+(anonymous_function) @local.scope
+(arrow_function) @local.scope
 (for_statement) @local.scope
+(for_in_statement) @local.scope
 (if_statement) @local.scope
+(switch_statement) @local.scope
+(match_expression) @local.scope
 
 ;; Definitions
-(var_declaration name: (identifier) @local.definition.var)
-(short_var_declaration left: (identifier) @local.definition.var)
+(variable_declaration name: (identifier) @local.definition.var)
+(const_declaration name: (identifier) @local.definition.constant)
 (function_declaration name: (identifier) @local.definition.function)
 (parameter name: (identifier) @local.definition.parameter)
+(for_in_statement left: (identifier) @local.definition.var)
 
-;; References  
-(identifier) @local.reference
+;; Type Definitions
+(type_declaration name: (identifier) @local.definition.type)
+(enum_declaration name: (identifier) @local.definition.type)
+(enum_variant name: (identifier) @local.definition.constant)
 
-;; Import definitions
-(import_spec name: (identifier) @local.definition.import)
+;; Import Definitions
+(import_spec path: (identifier) @local.definition.import)
 (import_spec alias: (identifier) @local.definition.import)
 
-;; Method definitions (for future struct support)
-(method_declaration name: (identifier) @local.definition.method)
-(method_declaration receiver: (parameter name: (identifier) @local.definition.parameter))
-
-;; Type definitions (for future type system)
-(type_declaration name: (identifier) @local.definition.type)
+;; References
+(identifier) @local.reference

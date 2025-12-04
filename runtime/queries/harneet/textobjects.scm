@@ -1,46 +1,35 @@
-;; Harneet Programming Language - Text Objects for Helix Editor
-;; Tree-sitter text object queries for better navigation
+;; Harneet Programming Language - Text Objects
 
-;; Function definitions
+;; Functions
 (function_declaration) @function.around
 (function_declaration body: (block) @function.inside)
+(anonymous_function) @function.around
+(anonymous_function body: (block) @function.inside)
+(arrow_function) @function.around
 
-;; Function calls
-(call_expression) @function.around
-
-;; Classes/Types (if Harneet adds struct support in future)
+;; Types/Classes
 (type_declaration) @class.around
-(type_declaration body: (struct_type) @class.inside)
+(enum_declaration) @class.around
 
 ;; Comments
-(line_comment) @comment.around
-(block_comment) @comment.around
-(block_comment) @comment.inside
+(comment) @comment.around
 
 ;; Parameters
 (parameter_list) @parameter.around
-(parameter_list "," @parameter.inside)
+(parameter) @parameter.inside
+(argument_list) @parameter.around
 
-;; Arguments
-(argument_list) @parameter.around 
-(argument_list "," @parameter.inside)
+;; Control Flow
+(if_statement) @conditional.around
+(if_statement consequence: (block) @conditional.inside)
+(switch_statement) @conditional.around
+(match_expression) @conditional.around
+
+;; Loops
+(for_statement) @loop.around
+(for_statement body: (block) @loop.inside)
+(for_in_statement) @loop.around
+(for_in_statement body: (block) @loop.inside)
 
 ;; Blocks
 (block) @block.around
-(block "{" "}" @block.inside)
-
-;; If statements
-(if_statement) @conditional.around
-(if_statement condition: (_) @conditional.inside)
-
-;; For loops
-(for_statement) @loop.around
-(for_statement body: (block) @loop.inside)
-
-;; Switch statements
-(switch_statement) @conditional.around
-(switch_statement body: (block) @conditional.inside)
-
-;; Case clauses
-(case_clause) @conditional.around
-(case_clause body: (_) @conditional.inside)

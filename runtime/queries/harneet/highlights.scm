@@ -1,171 +1,194 @@
-;; Harneet Programming Language - Syntax Highlighting for Helix Editor
-;; Tree-sitter highlighting queries
+; Harneet Programming Language - Syntax Highlighting
+; Based on Go's highlighting style
 
-;; Keywords
-[
-  "var"
-  "function" 
-  "return"
-  "defer"
-  "if"
-  "else"
-  "for"
-  "switch"
-  "case"
-  "default"
-  "import"
-  "as"
-] @keyword
+; Identifiers
 
-;; Control flow keywords
-[
-  "if"
-  "else" 
-  "for"
-  "switch"
-  "case"
-  "default"
-] @keyword.control
+(identifier) @variable
 
-;; Function keywords
-[
-  "function"
-  "return"
-  "defer"
-] @keyword.function
+(package_declaration name: (identifier) @namespace)
 
-;; Import keywords
-[
-  "import"
-  "as"
-] @keyword.import
+(const_declaration
+  name: (identifier) @constant)
 
-;; Storage keywords
-[
-  "var"
-] @keyword.storage
+(struct_field
+  name: (identifier) @variable.other.member)
 
-;; Types
-[
-  "int"
-  "int8"
-  "int16" 
-  "int32"
-  "int64"
-  "uint"
-  "uint8"
-  "uint16"
-  "uint32" 
-  "uint64"
-  "uintptr"
-  "float32"
-  "float64"
-  "string"
-  "bool"
-  "error"
-] @type.builtin
+(struct_field_value
+  name: (identifier) @variable.other.member)
 
-;; Boolean literals
-[
-  "true"
-  "false"
-] @constant.builtin.boolean
+(parameter name: (identifier) @variable.parameter)
 
-;; Null/None
-[
-  "None"
-] @constant.builtin
+(enum_variant name: (identifier) @constant)
 
-;; Operators
+; Function calls
+
+(call_expression
+  function: (expression (identifier) @function))
+
+(call_expression
+  function: (expression
+    (member_expression
+      property: (identifier) @function.method)))
+
+; Types
+
+(simple_type) @type.builtin
+
+(type_declaration name: (identifier) @type)
+(enum_declaration name: (identifier) @type)
+(struct_literal type: (identifier) @type)
+
+; Function definitions
+
+(function_declaration
+  name: (identifier) @function)
+
+; Arrow function variable assignments (var double = x => ...)
+(variable_declaration
+  name: (identifier) @function
+  value: (expression (arrow_function)))
+
+(variable_declaration
+  name: (identifier) @function
+  value: (expression (anonymous_function)))
+
+; Operators
+
 [
-  "="
-  ":="
-  "+"
   "-"
-  "*"
-  "/"
-  "%"
-  "=="
+  "-="
+  ":="
+  "!"
   "!="
+  "*"
+  "*="
+  "/"
+  "/="
+  "&"
+  "%"
+  "%="
+  "^"
+  "+"
+  "+="
   "<"
-  ">"
+  "<<"
   "<="
+  "="
+  "=="
+  ">"
   ">="
+  ">>"
+  "|"
+  "**"
+  "=>"
   "and"
   "or"
   "not"
 ] @operator
 
-;; Assignment operators
-[
-  "="
-  ":="
-] @operator.assignment
+; Keywords
 
-;; Logical operators
 [
-  "and"
-  "or" 
-  "not"
-] @operator.logical
+  "type"
+] @keyword
 
-;; Punctuation
 [
-  ";"
+  "defer"
+  "go"
+] @keyword.control
+
+[
+  "if"
+  "else"
+  "switch"
+  "case"
+  "default"
+  "match"
+] @keyword.control.conditional
+
+[
+  "for"
+  "in"
+] @keyword.control.repeat
+
+[
+  "import"
+  "package"
+  "as"
+] @keyword.control.import
+
+[
+  "return"
+] @keyword.control.return
+
+; Break and continue are statement nodes
+(break_statement) @keyword.control.return
+(continue_statement) @keyword.control.return
+
+[
+  "function"
+] @keyword.function
+
+[
+  "var"
+  "interface"
+  "map"
+  "struct"
+  "enum"
+] @keyword.storage.type
+
+[
+  "const"
+] @keyword.storage.modifier
+
+; Delimiters
+
+[
   ":"
-  ","
   "."
+  ","
+  ";"
 ] @punctuation.delimiter
 
-;; Brackets
 [
   "("
   ")"
-  "{"
-  "}"
   "["
   "]"
+  "{"
+  "}"
 ] @punctuation.bracket
 
-;; String literals
-(string_literal) @string
+; Literals
 
-;; Character literals  
-(char_literal) @character
+(string) @string
 
-;; Number literals
-(number_literal) @number
-(float_literal) @number.float
+(rune) @constant.character
 
-;; Comments
-(line_comment) @comment.line
-(block_comment) @comment.block
+(number) @constant.numeric.integer
 
-;; Identifiers
-(identifier) @variable
+(float) @constant.numeric.float
 
-;; Function names
-(function_declaration name: (identifier) @function)
-(function_call function: (identifier) @function)
+(boolean) @constant.builtin.boolean
 
-;; Module/package names
-(module_identifier) @namespace
+(none) @constant.builtin
 
-;; Constants (ALL_CAPS identifiers)
-((identifier) @constant
- (#match? @constant "^[A-Z][A-Z_0-9]*$"))
+(blank_identifier) @variable.builtin
 
-;; Built-in functions and modules
-((identifier) @function.builtin
- (#match? @function.builtin "^(fmt|math|strings|datetime|os|path|file|log|errors|json)$"))
+; Comments
 
-;; Method calls
-(method_call
-  object: (identifier) @variable
-  method: (identifier) @function.method)
+(comment) @comment
 
-;; Parameters
-(parameter name: (identifier) @variable.parameter)
+; Imports
 
-;; Error highlighting
+(import_spec path: (identifier) @namespace)
+(import_spec path: (string) @string)
+(import_spec alias: (identifier) @namespace)
+
+; Member access
+
+(member_expression property: (identifier) @variable.other.member)
+
+; Error
+
 (ERROR) @error

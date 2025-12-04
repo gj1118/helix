@@ -1,5 +1,5 @@
 build:
-    cargo build
+    cargo build --release
 
 install:
     cargo install --path helix-term --locked
