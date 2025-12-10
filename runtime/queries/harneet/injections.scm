@@ -1,5 +1,5 @@
 ;; Harneet Programming Language - Language Injection Rules for Helix Editor
-;; Minimal injections to avoid errors
+;; Tree-sitter injection queries for embedded languages
 
 ;; Comments
 (comment) @injection.content
