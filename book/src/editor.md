@@ -67,6 +67,7 @@
 | `editor-config` | Whether to read settings from [EditorConfig](https://editorconfig.org) files | `true` |
 | `rainbow-brackets` | Whether to render rainbow colors for matching brackets. Requires tree-sitter `rainbows.scm` queries for the language. | `false` |
 | `kitty-keyboard-protocol` | Whether to enable Kitty Keyboard Protocol. Can be `enabled`, `disabled` or `auto` | `"auto"` |
+| `pickers-full-screen` | if pickers should be full screen. | `false` |
 
 [^3]: In most cases, you also need to enable the `auto-format` setting under `languages.toml`. You can find the reasoning [here](https://github.com/helix-editor/helix/discussions/9043#discussioncomment-7811497).
 
@@ -293,9 +294,9 @@ name = "rust"
 
 ### `[editor.auto-reload]` Section
 
-Controls auto reloading of externally modified files.
 
 | Key | Description | Default |
+|--|--|---------|
 |--|--|---------|
 | `focus-gained` | Enable automatic reloading of externally modified files when Helix is focused. Requires [focus event support](https://github.com/helix-editor/helix/wiki/Terminal-Support) from your terminal | `false` |
 | `periodic.enable` | Enable periodic auto reloading of externally modified files | `false` |

@@ -18,15 +18,13 @@ pub struct Overlay<T> {
 }
 
 /// Surrounds the component with a margin of 5% on each side, and an additional 2 rows at the bottom
-pub fn overlaid<T>(content: T) -> Overlay<T> {
+pub fn overlaid<T>(content: T, ctx: &Context) -> Overlay<T> {
     Overlay {
         content,
         calc_child_size: Box::new(|rect: Rect| {
-            let percentage = if rect.width < FULL_OVERLAID_MAX_WIDTH {
-                100
-            } else {
-                90
-            };
+            let overlay_full_screen =
+                ctx.editor.config().pickers_full_screen && rect.width < FULL_OVERLAID_MAX_WIDTH;
+            let percentage = if overlay_full_screen { 100 } else { 90 };
             clip_rect_relative(rect.clip_bottom(2), percentage, percentage)
         }),
     }

@@ -499,6 +499,8 @@ pub struct Config {
     /// Completion Highlight configuration
     #[serde(default)]
     pub completion_highlight: CompletionHighlight,
+    /// If pickers should be full screen
+    pub pickers_full_screen: bool,
 }
 
 #[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, Clone, Copy)]
@@ -1643,6 +1645,7 @@ impl Default for Config {
             gradient_borders: GradientBorderConfig::default(),
             notifications: NotificationConfig::default(),
             completion_highlight: CompletionHighlight::default(),
+            pickers_full_screen: false,
         }
     }
 }

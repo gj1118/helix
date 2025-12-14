@@ -509,3 +509,13 @@ periodic.interval = 5000
 focus-gained = true
 periodic.enable = true
 periodic.interval = 5000
+```
+
+### Picker Full Screen
+
+Enables that pickers cover full screen instead of only 90%
+
+```toml
+[editor]
+pickers-full-screen = true
+```
