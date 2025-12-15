@@ -2521,25 +2521,6 @@ indent = { tab-width = 8, unit = "\t" }
 name = "hare"
 source = { git = "https://git.sr.ht/~ecs/tree-sitter-hare", rev = "07035a248943575444aa0b893ffe306e1444c0ab" }
 
-[[language]]
-name = "harneet"
-scope = "source.harneet"
-injection-regex = "harneet"
-file-types = ["ha"]
-roots = ["go.mod"]
-comment-token = "//"
-block-comment-tokens = { start = "/*", end = "*/" }
-indent = { tab-width = 4, unit = "    " }
-
-[language.auto-pairs]
-'(' = ')'
-'{' = '}'
-'[' = ']'
-'"' = '"'
-
-[[grammar]]
-name = "harneet"
-source = { path = "/Users/gjanjua/sandbox/personal/harneet_org/tree-sitter-harneet" }
 
 [[language]]
 name = "devicetree"
