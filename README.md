@@ -49,6 +49,7 @@ This fork of Helix implements the following pull requests. Future pull requests 
 23. https://github.com/helix-editor/helix/pull/12902 (File Explorer: create/delete/copy/move/rename)
 24. https://github.com/helix-editor/helix/pull/13963 (auto reload buffers on focus / changes)
 25. https://github.com/helix-editor/helix/pull/14825 (soft-wrap indicators in gutter)
+26. https://github.com/helix-editor/helix/pull/11695 (Add ability to match in next and previous char pairs)
 
 ## Setup
 
