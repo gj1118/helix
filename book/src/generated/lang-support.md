@@ -18,7 +18,7 @@
 | blueprint | ✓ |  |  |  |  | `blueprint-compiler` |
 | bovex | ✓ |  |  |  | ✓ |  |
 | c | ✓ | ✓ | ✓ | ✓ | ✓ | `clangd` |
-| c-sharp | ✓ | ✓ |  | ✓ |  | `OmniSharp` |
+| c-sharp | ✓ | ✓ |  | ✓ |  | `OmniSharp`, `csharp-ls` |
 | cabal |  |  |  |  |  | `haskell-language-server-wrapper` |
 | caddyfile | ✓ | ✓ | ✓ |  |  |  |
 | cairo | ✓ | ✓ | ✓ |  |  | `cairo-language-server` |
@@ -108,7 +108,7 @@
 | gren | ✓ | ✓ |  |  |  |  |
 | groovy | ✓ |  |  |  |  |  |
 | gts | ✓ | ✓ | ✓ | ✓ |  | `typescript-language-server`, `vscode-eslint-language-server`, `ember-language-server` |
-| hare | ✓ |  |  |  |  |  |
+| hare | ✓ |  |  |  |  | `hare-lsp` |
 | haskell | ✓ | ✓ |  |  |  | `haskell-language-server-wrapper` |
 | haskell-literate | ✓ |  |  |  |  | `haskell-language-server-wrapper` |
 | haskell-persistent | ✓ |  |  |  |  |  |
