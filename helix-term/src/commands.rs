@@ -3569,7 +3569,7 @@ fn file_picker(cx: &mut Context) {
         let overlay = ui::overlay::Overlay {
             content: picker,
             calc_child_size: Box::new(|rect| {
-                ui::overlay::clip_rect_relative(rect.clip_bottom(2), 50, 90)
+                ui::overlay::clip_rect_relative(rect.clip_bottom(2), 75, 90)
             }),
         };
         cx.push_layer(Box::new(overlay));
