@@ -3565,7 +3565,17 @@ fn file_picker(cx: &mut Context) {
         return;
     }
     let picker = ui::file_picker(cx.editor, root);
-    cx.push_layer(Box::new(overlaid(picker)));
+    if cx.editor.config().file_picker.hide_preview {
+        let overlay = ui::overlay::Overlay {
+            content: picker,
+            calc_child_size: Box::new(|rect| {
+                ui::overlay::clip_rect_relative(rect.clip_bottom(2), 50, 90)
+            }),
+        };
+        cx.push_layer(Box::new(overlay));
+    } else {
+        cx.push_layer(Box::new(overlaid(picker)));
+    }
 }
 
 fn file_picker_in_current_buffer_directory(cx: &mut Context) {
