@@ -437,6 +437,11 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         self
     }
 
+    pub fn show_preview(mut self, show_preview: bool) -> Self {
+        self.show_preview = show_preview;
+        self
+    }
+
     pub fn with_dynamic_query(
         mut self,
         callback: DynQueryCallback<T, D>,

@@ -9,8 +9,9 @@
 [
   (block)
   (function_declaration)
-  (method_declaration)
   (anonymous_function)
+  (arrow_function)
+  (do_expression)
   (if_statement)
   (for_statement)
   (for_in_statement)
@@ -25,7 +26,6 @@
   (array_literal)
   (map_literal)
   (struct_literal)
-  (typed_array_literal)
 ] @indent
 
 ;; ----------------------

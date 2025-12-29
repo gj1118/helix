@@ -510,3 +510,14 @@ periodic.interval = 5000
 focus-gained = true
 periodic.enable = true
 periodic.interval = 5000
+
+## File Picker Configuration
+
+**Hide Preview:**
+
+You can choose to hide the file preview in the file picker to save screen space or improve performance.
+
+```toml
+[editor.file-picker]
+hide-preview = true
+```

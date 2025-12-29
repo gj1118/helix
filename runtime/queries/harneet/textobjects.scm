@@ -9,10 +9,6 @@
 (function_declaration) @function.around
 (function_declaration body: (block) @function.inside)
 
-;; Method declarations
-(method_declaration) @function.around
-(method_declaration body: (block) @function.inside)
-
 ;; Anonymous functions
 (anonymous_function) @function.around
 (anonymous_function body: (block) @function.inside)
