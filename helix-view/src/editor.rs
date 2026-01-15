@@ -2184,14 +2184,11 @@ impl Editor {
         if config.notifications.default_timeout > Duration::ZERO {
             let timeout = config.notifications.default_timeout;
             notification = notification.with_timeout(timeout);
-            log::warn!("Notification created with timeout: {:?}", timeout);
             // Schedule a redraw at the timeout moment so the UI can expire/fade it immediately
             tokio::spawn(async move {
                 tokio::time::sleep(timeout).await;
                 helix_event::request_redraw();
             });
-        } else {
-            log::warn!("Notification created with no timeout");
         }
 
         let id = self.notifications.add(notification);
