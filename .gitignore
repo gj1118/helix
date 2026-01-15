@@ -4,3 +4,6 @@ helix-term/rustfmt.toml
 result
 runtime/grammars
 .DS_Store
+
+runtime/queries/harneet/highlights.scm
+runtime/queries/harneet/indents.scm
