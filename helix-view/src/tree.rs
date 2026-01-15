@@ -1136,9 +1136,9 @@ mod test {
         assert_eq!(3, tree.views().count());
         assert_eq!(
             vec![
+                tree_area_width / 3,
                 tree_area_width / 3 - 1, // gap here
                 tree_area_width / 3 - 1, // gap here
-                tree_area_width / 3
             ],
             tree.views()
                 .map(|(view, _)| view.area.width)
@@ -1166,9 +1166,8 @@ mod test {
 
         assert_eq!(10, tree.views().count());
         assert_eq!(
-            std::iter::repeat(7)
-                .take(9)
-                .chain(Some(8)) // Rounding in `recalculate`.
+            std::iter::once(8) // Rounding in `recalculate`.
+                .chain(std::iter::repeat(7).take(9))
                 .collect::<Vec<_>>(),
             tree.views()
                 .map(|(view, _)| view.area.width)
