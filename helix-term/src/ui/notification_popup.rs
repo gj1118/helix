@@ -61,7 +61,7 @@ impl NotificationPopup {
 
     pub fn update(&mut self, editor: &Editor) {
         let config = &editor.config().notifications;
-        
+
         // Only show popup notifications when cmdline style is Popup as requested
         if !config.enable
             || config.style != NotificationStyle::Popup
@@ -73,26 +73,33 @@ impl NotificationPopup {
 
         // Get active notifications (this will filter out expired ones automatically)
         let active_notifications = editor.get_active_notifications();
-        
+
         // Force cleanup of expired notifications on every render
         // Note: We can't call cleanup_expired here because editor is immutable,
         // but get_active_notifications already filters out expired ones
-        
+
         // Remove expired checks/logs: get_active_notifications already filters them
-        
+
         // Immediately drop notifications that are inactive or expired (no fading)
         self.notifications.retain_mut(|item| {
-            let still_active = active_notifications.iter().any(|n| n.id == item.notification.id);
+            let still_active = active_notifications
+                .iter()
+                .any(|n| n.id == item.notification.id);
             let is_expired = item.notification.is_expired();
             still_active && !is_expired
         });
 
         // Add new notifications
         for notification in active_notifications {
-            if !self.notifications.iter().any(|item| item.notification.id == notification.id) {
+            if !self
+                .notifications
+                .iter()
+                .any(|item| item.notification.id == notification.id)
+            {
                 let id = notification.id;
                 let timeout_opt = notification.timeout;
-                self.notifications.push(NotificationItem::new(notification.clone()));
+                self.notifications
+                    .push(NotificationItem::new(notification.clone()));
                 // New notification: ensure a redraw follows immediately
                 request_redraw();
 
@@ -101,15 +108,21 @@ impl NotificationPopup {
                     // Compute remaining time from the timestamp embedded in the cloned notification
                     let started = notification.timestamp; // tokio::time::Instant
                     let elapsed = started.elapsed();
-                    let remaining = if timeout > elapsed { timeout - elapsed } else { std::time::Duration::from_millis(0) };
+                    let remaining = if timeout > elapsed {
+                        timeout - elapsed
+                    } else {
+                        std::time::Duration::from_millis(0)
+                    };
 
                     tokio::spawn(async move {
                         tokio_sleep(remaining).await;
                         // Post back to the UI thread to mutate Editor safely
-                        crate::job::dispatch(move |editor: &mut helix_view::Editor, _compositor| {
-                            editor.dismiss_notification(id);
-                            helix_event::request_redraw();
-                        })
+                        crate::job::dispatch(
+                            move |editor: &mut helix_view::Editor, _compositor| {
+                                editor.dismiss_notification(id);
+                                helix_event::request_redraw();
+                            },
+                        )
                         .await;
                     });
                 }
@@ -119,7 +132,11 @@ impl NotificationPopup {
         // Avoid continuous redraws here to minimize refreshes.
     }
 
-    fn calculate_notification_areas(&mut self, viewport: Rect, config: &helix_view::editor::NotificationConfig) {
+    fn calculate_notification_areas(
+        &mut self,
+        viewport: Rect,
+        config: &helix_view::editor::NotificationConfig,
+    ) {
         let max_width = config.max_width.min(viewport.width.saturating_sub(4));
         let spacing = 1u16;
         let mut y_offset = 0u16;
@@ -138,7 +155,8 @@ impl NotificationPopup {
             // Build prefix for first line width calculation
             let mut prefix = String::new();
             if config.show_emojis {
-                let emoji = self.get_notification_emoji(&item.notification.severity, &config.emojis);
+                let emoji =
+                    self.get_notification_emoji(&item.notification.severity, &config.emojis);
                 prefix.push_str(emoji);
                 prefix.push(' ');
             } else if config.show_icons {
@@ -156,8 +174,12 @@ impl NotificationPopup {
             let mut content_max_w: u16 = 1;
             for (i, ln) in content_lines.iter().enumerate() {
                 let mut w = ln.width() as u16;
-                if i == 0 { w = w.saturating_add(prefix_width); }
-                if w > content_max_w { content_max_w = w; }
+                if i == 0 {
+                    w = w.saturating_add(prefix_width);
+                }
+                if w > content_max_w {
+                    content_max_w = w;
+                }
             }
 
             // Outer size from content + padding + border thickness (no extra rounded margin)
@@ -165,7 +187,6 @@ impl NotificationPopup {
                 .saturating_add(self.layout_padding * 2)
                 .saturating_add(self.layout_thickness * 2)
                 .clamp(3, max_width);
-
 
             let mut height = content_height
                 .saturating_add(self.layout_padding * 2)
@@ -187,10 +208,7 @@ impl NotificationPopup {
             }
 
             let (x, y) = match config.position {
-                NotificationPosition::TopLeft => (
-                    viewport.x + 2,
-                    viewport.y + y_offset + 1,
-                ),
+                NotificationPosition::TopLeft => (viewport.x + 2, viewport.y + y_offset + 1),
                 NotificationPosition::TopCenter => (
                     viewport.x + (viewport.width.saturating_sub(width)) / 2,
                     viewport.y + y_offset + 1,
@@ -217,24 +235,28 @@ impl NotificationPopup {
             if log::log_enabled!(log::Level::Debug) {
                 log::debug!(
                     "assign area id={} -> x={} y={} w={} h={}",
-                    item.notification.id, rect.x, rect.y, rect.width, rect.height
+                    item.notification.id,
+                    rect.x,
+                    rect.y,
+                    rect.width,
+                    rect.height
                 );
             }
             areas.push(rect);
-            
+
             // For bottom positions, we need to stack upwards
             match config.position {
-                NotificationPosition::BottomLeft | 
-                NotificationPosition::BottomCenter | 
-                NotificationPosition::BottomRight => {
+                NotificationPosition::BottomLeft
+                | NotificationPosition::BottomCenter
+                | NotificationPosition::BottomRight => {
                     y_offset += height + spacing;
-                },
+                }
                 _ => {
                     y_offset += height + spacing;
                 }
             }
         }
-        
+
         // Now assign the areas to the notifications
         for (item, area) in self.notifications.iter_mut().zip(areas.iter()) {
             item.area = *area;
@@ -256,8 +278,8 @@ impl NotificationPopup {
 
                 for word in line.split_whitespace() {
                     let word_width = word.width();
-                    
-                    if current_width + word_width + 1 <= max_width {
+
+                    if current_width + word_width < max_width {
                         if !current_line.is_empty() {
                             current_line.push(' ');
                             current_width += 1;
@@ -270,18 +292,22 @@ impl NotificationPopup {
                             current_line = String::new();
                             current_width = 0;
                         }
-                        
+
                         if word_width <= max_width {
                             current_line = word.to_string();
                             current_width = word_width;
                         } else {
                             // Word is too long, truncate it
-                            let truncated = word.chars().take(max_width.saturating_sub(3)).collect::<String>() + "...";
+                            let truncated = word
+                                .chars()
+                                .take(max_width.saturating_sub(3))
+                                .collect::<String>()
+                                + "...";
                             lines.push(truncated);
                         }
                     }
                 }
-                
+
                 if !current_line.is_empty() {
                     lines.push(current_line);
                 }
@@ -299,7 +325,11 @@ impl NotificationPopup {
         Self::wrap_text_static(text, max_width)
     }
 
-    fn get_notification_icon<'a>(&self, severity: &Severity, config: &'a helix_view::editor::NotificationIcons) -> &'a str {
+    fn get_notification_icon<'a>(
+        &self,
+        severity: &Severity,
+        config: &'a helix_view::editor::NotificationIcons,
+    ) -> &'a str {
         match severity {
             Severity::Error => &config.error,
             Severity::Warning => &config.warning,
@@ -308,7 +338,11 @@ impl NotificationPopup {
         }
     }
 
-    fn get_notification_emoji<'a>(&self, severity: &Severity, config: &'a helix_view::editor::NotificationEmojis) -> &'a str {
+    fn get_notification_emoji<'a>(
+        &self,
+        severity: &Severity,
+        config: &'a helix_view::editor::NotificationEmojis,
+    ) -> &'a str {
         match severity {
             Severity::Error => &config.error,
             Severity::Warning => &config.warning,
@@ -317,7 +351,12 @@ impl NotificationPopup {
         }
     }
 
-    fn get_notification_style(&self, severity: &Severity, theme: &helix_view::Theme, fade_progress: f32) -> Style {
+    fn get_notification_style(
+        &self,
+        severity: &Severity,
+        theme: &helix_view::Theme,
+        fade_progress: f32,
+    ) -> Style {
         let base_style = match severity {
             Severity::Error => theme.get("error"),
             Severity::Warning => theme.get("warning"),
@@ -361,24 +400,51 @@ impl NotificationPopup {
             let y0 = area.y.saturating_add(s);
             let y1 = area.bottom().saturating_sub(1 + s);
 
-            if x0 >= x1 || y0 >= y1 { break; }
+            if x0 >= x1 || y0 >= y1 {
+                break;
+            }
 
             // Top and bottom lines
             for x in x0..=x1 {
-                let ch_top = if x == x0 { tl } else if x == x1 { tr } else { h };
-                let ch_bot = if x == x0 { bl } else if x == x1 { br } else { h };
-                if let Some(cell) = surface.get_mut(x, y0) { cell.set_symbol(ch_top).set_style(style); }
-                if let Some(cell) = surface.get_mut(x, y1) { cell.set_symbol(ch_bot).set_style(style); }
+                let ch_top = if x == x0 {
+                    tl
+                } else if x == x1 {
+                    tr
+                } else {
+                    h
+                };
+                let ch_bot = if x == x0 {
+                    bl
+                } else if x == x1 {
+                    br
+                } else {
+                    h
+                };
+                if let Some(cell) = surface.get_mut(x, y0) {
+                    cell.set_symbol(ch_top).set_style(style);
+                }
+                if let Some(cell) = surface.get_mut(x, y1) {
+                    cell.set_symbol(ch_bot).set_style(style);
+                }
             }
             // Left and right lines
-            for y in (y0+1)..y1 {
-                if let Some(cell) = surface.get_mut(x0, y) { cell.set_symbol(v).set_style(style); }
-                if let Some(cell) = surface.get_mut(x1, y) { cell.set_symbol(v).set_style(style); }
+            for y in (y0 + 1)..y1 {
+                if let Some(cell) = surface.get_mut(x0, y) {
+                    cell.set_symbol(v).set_style(style);
+                }
+                if let Some(cell) = surface.get_mut(x1, y) {
+                    cell.set_symbol(v).set_style(style);
+                }
             }
         }
     }
 
-    fn render_notification(&mut self, item: &NotificationItem, surface: &mut Surface, cx: &Context) {
+    fn render_notification(
+        &mut self,
+        item: &NotificationItem,
+        surface: &mut Surface,
+        cx: &Context,
+    ) {
         let config = &cx.editor.config().notifications;
         let theme = &cx.editor.theme;
         let fade_progress = item.fade_progress();
@@ -404,7 +470,8 @@ impl NotificationPopup {
         }
 
         // Get notification style
-        let notification_style = self.get_notification_style(&item.notification.severity, theme, fade_progress);
+        let notification_style =
+            self.get_notification_style(&item.notification.severity, theme, fade_progress);
         let border_style = theme.get("ui.popup.border");
         let background_style = theme.get("ui.popup");
 
@@ -419,7 +486,10 @@ impl NotificationPopup {
             if cx.editor.config().gradient_borders.enable {
                 // Use gradient border
                 if self.gradient_border.is_none() {
-                    self.gradient_border = Some(GradientBorder::from_theme(theme, &cx.editor.config().gradient_borders));
+                    self.gradient_border = Some(GradientBorder::from_theme(
+                        theme,
+                        &cx.editor.config().gradient_borders,
+                    ));
                 }
 
                 if let Some(ref mut gradient_border) = self.gradient_border {
@@ -453,8 +523,14 @@ impl NotificationPopup {
                 Rect {
                     x: item.area.x + config.border.width as u16,
                     y: item.area.y + config.border.width as u16,
-                    width: item.area.width.saturating_sub(config.border.width as u16 * 2),
-                    height: item.area.height.saturating_sub(config.border.width as u16 * 2),
+                    width: item
+                        .area
+                        .width
+                        .saturating_sub(config.border.width as u16 * 2),
+                    height: item
+                        .area
+                        .height
+                        .saturating_sub(config.border.width as u16 * 2),
                 }
             }
         } else {
@@ -477,8 +553,12 @@ impl NotificationPopup {
         }
 
         // Final safety clamps to ensure we have drawable area
-        if content_area.width == 0 { content_area.width = 1; }
-        if content_area.height == 0 { content_area.height = 1; }
+        if content_area.width == 0 {
+            content_area.width = 1;
+        }
+        if content_area.height == 0 {
+            content_area.height = 1;
+        }
 
         // Fill the entire inner area (card background). Overlay outside remains transparent.
         if inner_area.width > 0 && inner_area.height > 0 {
@@ -522,16 +602,15 @@ impl NotificationPopup {
 
             // Render prefix only on first line
             if i == 0 && show_prefix {
-                surface.set_string(
-                    content_area.x,
-                    y_pos,
-                    &prefix,
-                    notification_style,
-                );
+                surface.set_string(content_area.x, y_pos, &prefix, notification_style);
             }
 
             // Render content
-            let x_offset = if i == 0 && show_prefix { prefix_width } else { 0 };
+            let x_offset = if i == 0 && show_prefix {
+                prefix_width
+            } else {
+                0
+            };
             let available = content_area.width.saturating_sub(x_offset).max(1) as usize;
             surface.set_stringn(
                 content_area.x + x_offset,
@@ -578,7 +657,7 @@ impl Component for NotificationPopup {
 
         // Render notifications in reverse order so newer ones appear on top
         // Clone the notifications to avoid borrowing issues
-        let notifications_to_render: Vec<_> = self.notifications.iter().cloned().collect();
+        let notifications_to_render = self.notifications.to_vec();
         for item in notifications_to_render.iter().rev() {
             self.render_notification(item, surface, cx);
         }

@@ -1,13 +1,14 @@
+mod cmdline_popup;
 mod completion;
 mod document;
 pub(crate) mod editor;
 mod file_explorer;
+pub mod gradient_border;
 mod info;
 pub mod lsp;
 mod markdown;
-mod cmdline_popup;
-mod notification_popup;
 pub mod menu;
+mod notification_popup;
 pub mod overlay;
 pub mod picker;
 pub mod popup;
@@ -16,11 +17,11 @@ mod spinner;
 mod statusline;
 mod text;
 mod text_decorations;
-pub mod gradient_border;
 
 use crate::compositor::Compositor;
 use crate::filter_picker_entry;
 use crate::job::{self, Callback};
+pub use cmdline_popup::CmdlinePopup;
 pub use completion::Completion;
 pub use editor::EditorView;
 pub use file_explorer::file_explorer;
@@ -28,16 +29,15 @@ use helix_stdx::rope;
 use helix_view::theme::Style;
 pub use markdown::Markdown;
 pub use menu::Menu;
+pub use notification_popup::NotificationPopup;
 pub use picker::{Column as PickerColumn, FileLocation, Picker};
 pub use popup::Popup;
 pub use prompt::{Prompt, PromptEvent};
-pub use cmdline_popup::CmdlinePopup;
-pub use notification_popup::NotificationPopup;
 pub use spinner::{ProgressSpinners, Spinner};
 pub use text::Text;
 
-use helix_view::Editor;
 use helix_view::editor::CmdlineStyle;
+use helix_view::Editor;
 use tui::text::{Span, Spans};
 
 use std::path::Path;
@@ -364,7 +364,6 @@ pub fn file_picker(editor: &Editor, root: PathBuf) -> FilePicker {
             };
             cx.editor.set_error(err);
         }
-
     })
     .with_preview(|_editor, path| Some((path.as_path().into(), None)))
     .show_preview(!config.file_picker.hide_preview);

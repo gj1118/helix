@@ -524,9 +524,7 @@ impl EditorView {
 
         // Statusline on the last row of the view area.
         // The cmdline space reservation is handled at the top level in EditorView::render.
-        let statusline_area = view
-            .area
-            .clip_top(view.area.height.saturating_sub(1));
+        let statusline_area = view.area.clip_top(view.area.height.saturating_sub(1));
 
         let mut context =
             statusline::RenderContext::new(editor, doc, view, is_focused, &self.spinners);
@@ -600,9 +598,7 @@ impl EditorView {
         let editor_rulers = &editor.config().rulers;
         let ruler_char = &editor.config().ruler_char;
         // Base style from theme for rulers
-        let base_style = theme
-            .try_get("ui.virtual.ruler")
-            .unwrap_or_else(|| Style::default());
+        let base_style = theme.try_get("ui.virtual.ruler").unwrap_or_default();
         // Background style is used only for background-style rulers. If theme lacks a bg, reuse fg.
         let bg_style = if base_style.bg.is_none() {
             if let Some(fg) = base_style.fg {
@@ -1033,21 +1029,22 @@ impl EditorView {
         }
 
         // Determine scroll offset
-        let scroll_offset = if let Some(current_idx) = editor.documents().position(|d| d.id() == current_doc) {
-            if let Some(&target_x) = self.bufferline_positions.get(current_idx) {
-                if target_x >= viewport.width / 2 {
-                    target_x
-                        .saturating_sub(viewport.width / 2)
-                        .min(total_width.saturating_sub(viewport.width))
+        let scroll_offset =
+            if let Some(current_idx) = editor.documents().position(|d| d.id() == current_doc) {
+                if let Some(&target_x) = self.bufferline_positions.get(current_idx) {
+                    if target_x >= viewport.width / 2 {
+                        target_x
+                            .saturating_sub(viewport.width / 2)
+                            .min(total_width.saturating_sub(viewport.width))
+                    } else {
+                        0
+                    }
                 } else {
                     0
                 }
             } else {
                 0
-            }
-        } else {
-            0
-        };
+            };
 
         // Second pass: render with the calculated offset
         for (idx, doc) in editor.documents().enumerate() {
@@ -1057,10 +1054,18 @@ impl EditorView {
             // Render separator if not first document
             if idx > 0 {
                 let sep = &editor.config().bufferline.separator;
-                let sep_x = buffer_x.saturating_sub(sep.len() as u16).saturating_sub(scroll_offset);
+                let sep_x = buffer_x
+                    .saturating_sub(sep.len() as u16)
+                    .saturating_sub(scroll_offset);
                 if sep_x < viewport.width {
                     let render_x = viewport.x + sep_x;
-                    surface.set_stringn(render_x, viewport.y, sep, (viewport.width - sep_x) as usize, bufferline_inactive);
+                    surface.set_stringn(
+                        render_x,
+                        viewport.y,
+                        sep,
+                        (viewport.width - sep_x) as usize,
+                        bufferline_inactive,
+                    );
                 }
             }
 
@@ -1104,8 +1109,10 @@ impl EditorView {
 
             // Track buffer info for mouse clicks (adjust for scroll offset)
             let start_x = actual_render_x;
-            let end_x = (actual_render_x + visible_text.len() as u16).min(viewport.x + viewport.width);
-            self.bufferline_info.add_buffer_info(doc.id(), start_x..end_x);
+            let end_x =
+                (actual_render_x + visible_text.len() as u16).min(viewport.x + viewport.width);
+            self.bufferline_info
+                .add_buffer_info(doc.id(), start_x..end_x);
         }
     }
 
@@ -1686,7 +1693,9 @@ impl EditorView {
                 let config = editor.config();
                 let bufferline_visible = match config.bufferline.render_mode {
                     helix_view::editor::BufferLineRenderMode::Always => true,
-                    helix_view::editor::BufferLineRenderMode::Multiple => editor.documents.len() > 1,
+                    helix_view::editor::BufferLineRenderMode::Multiple => {
+                        editor.documents.len() > 1
+                    }
                     _ => false,
                 };
                 if bufferline_visible && row == 0 {
@@ -2041,22 +2050,21 @@ impl Component for EditorView {
             Event::Mouse(event) => self.handle_mouse_event(event, &mut cx),
             Event::IdleTimeout => self.handle_idle_timeout(&mut cx),
             Event::FocusGained => {
-                if context.editor.config().auto_reload.focus_gained {
-                    if crate::handlers::auto_reload::count_externally_modified_documents(
+                if context.editor.config().auto_reload.focus_gained
+                    && crate::handlers::auto_reload::count_externally_modified_documents(
                         context.editor.documents(),
                     ) > 0
-                    {
-                        if let Err(e) = commands::typed::reload_all(
-                            context,
-                            helix_core::command_line::Args::default(),
-                            super::PromptEvent::Validate,
-                        ) {
-                            context.editor.set_error(format!("{}", e));
-                        } else {
-                            context
-                                .editor
-                                .set_status("Reloaded files due to external changes");
-                        }
+                {
+                    if let Err(e) = commands::typed::reload_all(
+                        context,
+                        helix_core::command_line::Args::default(),
+                        super::PromptEvent::Validate,
+                    ) {
+                        context.editor.set_error(format!("{}", e));
+                    } else {
+                        context
+                            .editor
+                            .set_status("Reloaded files due to external changes");
                     }
                 }
                 self.terminal_focused = true;
@@ -2100,7 +2108,7 @@ impl Component for EditorView {
         } else {
             area.clip_bottom(1) // Reserve for commandline
         };
-        
+
         if use_bufferline {
             editor_area = editor_area.clip_top(1);
         }
@@ -2189,21 +2197,18 @@ impl Component for EditorView {
 
         // Cleanup expired notifications before rendering
         cx.editor.cleanup_notifications();
-        
+
         // Render notification popup
         self.notification_popup.render(area, surface, cx);
     }
 
     fn cursor(&self, _area: Rect, editor: &Editor) -> (Option<Position>, CursorKind) {
-        match editor.cursor() {
-            (pos, kind) => {
-                if self.terminal_focused {
-                    (pos, kind)
-                } else {
-                    // use underline cursor when terminal loses focus for visibility
-                    (pos, CursorKind::Underline)
-                }
-            }
+        let (pos, kind) = editor.cursor();
+        if self.terminal_focused {
+            (pos, kind)
+        } else {
+            // use underline cursor when terminal loses focus for visibility
+            (pos, CursorKind::Underline)
         }
     }
 }
@@ -2238,7 +2243,6 @@ struct BufferInfo {
     // The bufferline column span used to show the document name
     columns: std::ops::Range<u16>,
 }
-
 
 fn canonicalize_key(key: &mut KeyEvent) {
     if let KeyEvent {

@@ -1,7 +1,11 @@
 use crate::keymap;
 use crate::keymap::{merge_keys, KeyTrie};
 use helix_loader::merge_toml_values;
-use helix_view::{document::Mode, theme, icons::{Icons, ICONS}};
+use helix_view::{
+    document::Mode,
+    icons::{Icons, ICONS},
+    theme,
+};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fmt::Display;

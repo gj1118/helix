@@ -290,7 +290,7 @@ pub fn test_config() -> Config {
 }
 
 pub fn test_editor_config() -> helix_view::editor::Config {
-    use helix_view::editor::{LspConfig, NotificationStyle};
+    use helix_view::editor::LspConfig;
     helix_view::editor::Config {
         lsp: LspConfig {
             enable: false,

@@ -7,15 +7,15 @@ use helix_view::{
     document::{Mode, SCRATCH_BUFFER_NAME},
     graphics::Rect,
     theme::Style,
-    Document, Editor, View, DocumentId, ViewId,
+    Document, DocumentId, Editor, View, ViewId,
 };
 
 use crate::ui::ProgressSpinners;
 
 use helix_view::editor::StatusLineElement as StatusLineElementID;
+use std::sync::{LazyLock, Mutex};
 use tui::buffer::Buffer as Surface;
 use tui::text::{Span, Spans};
-use std::sync::{LazyLock, Mutex};
 
 pub struct RenderContext<'a> {
     pub editor: &'a Editor,
@@ -676,7 +676,8 @@ struct FuncNameCacheEntry {
     name: Option<String>,
 }
 
-static FUNC_NAME_CACHE: LazyLock<Mutex<Option<FuncNameCacheEntry>>> = LazyLock::new(|| Mutex::new(None));
+static FUNC_NAME_CACHE: LazyLock<Mutex<Option<FuncNameCacheEntry>>> =
+    LazyLock::new(|| Mutex::new(None));
 
 fn get_current_function_name_cached(context: &RenderContext) -> Option<String> {
     let text = context.doc.text().slice(..);
@@ -715,7 +716,7 @@ fn get_current_function_name_cached(context: &RenderContext) -> Option<String> {
 fn get_current_function_name(context: &RenderContext) -> Option<String> {
     let syntax = context.doc.syntax()?;
     let text = context.doc.text().slice(..);
-    
+
     let root = syntax.tree().root_node();
     let cursor_char = context
         .doc
@@ -723,14 +724,14 @@ fn get_current_function_name(context: &RenderContext) -> Option<String> {
         .primary()
         .cursor(text);
     let byte_pos = text.char_to_byte(cursor_char) as u32;
-    
+
     // Start from the deepest node at cursor position and walk up
     let mut node = root.descendant_for_byte_range(byte_pos, byte_pos)?;
-    
+
     // Walk up the tree to find a function-like node
     loop {
         let kind = node.kind();
-        
+
         // Check if this is a function-like node
         if kind.contains("function") || kind.contains("method") || kind.contains("closure") {
             // First, try to find a child node that has the name (for traditional function declarations)
@@ -747,17 +748,19 @@ fn get_current_function_name(context: &RenderContext) -> Option<String> {
                     }
                 }
             }
-            
+
             // For arrow functions or anonymous functions assigned to variables,
             // check the parent for a variable_declarator, assignment_expression, or pair
             if let Some(parent) = node.parent() {
                 let parent_kind = parent.kind();
-                
+
                 // Handle: const name = () => {} or let name = function() {}
                 if parent_kind == "variable_declarator" || parent_kind == "assignment_expression" {
                     for i in 0..parent.child_count() {
                         if let Some(child) = parent.child(i) {
-                            if child.kind() == "identifier" && child.byte_range().end <= node.byte_range().start {
+                            if child.kind() == "identifier"
+                                && child.byte_range().end <= node.byte_range().start
+                            {
                                 let start_byte = child.start_byte() as usize;
                                 let end_byte = child.end_byte() as usize;
                                 let start_char = text.byte_to_char(start_byte);
@@ -768,13 +771,15 @@ fn get_current_function_name(context: &RenderContext) -> Option<String> {
                         }
                     }
                 }
-                
+
                 // Handle: { name: () => {} } or { name() {} }
                 if parent_kind == "pair" || parent_kind == "method_definition" {
                     for i in 0..parent.child_count() {
                         if let Some(child) = parent.child(i) {
-                            if child.kind() == "property_identifier" || 
-                               (child.kind() == "identifier" && child.byte_range().end <= node.byte_range().start) {
+                            if child.kind() == "property_identifier"
+                                || (child.kind() == "identifier"
+                                    && child.byte_range().end <= node.byte_range().start)
+                            {
                                 let start_byte = child.start_byte() as usize;
                                 let end_byte = child.end_byte() as usize;
                                 let start_char = text.byte_to_char(start_byte);
@@ -787,7 +792,7 @@ fn get_current_function_name(context: &RenderContext) -> Option<String> {
                 }
             }
         }
-        
+
         // Move to parent
         node = node.parent()?;
     }

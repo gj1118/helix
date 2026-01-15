@@ -17,9 +17,9 @@ use helix_core::{
     Position,
 };
 use helix_view::{
+    editor::CmdlineStyle,
     graphics::{CursorKind, Margin, Rect},
     Editor,
-    editor::CmdlineStyle,
 };
 
 type PromptCharHandler = Box<dyn Fn(&mut Prompt, char, &Context)>;
@@ -409,7 +409,12 @@ impl Prompt {
     }
 
     /// Get the language configuration
-    pub fn language(&self) -> &Option<(&'static str, std::sync::Arc<arc_swap::ArcSwap<helix_core::syntax::Loader>>)> {
+    pub fn language(
+        &self,
+    ) -> &Option<(
+        &'static str,
+        std::sync::Arc<arc_swap::ArcSwap<helix_core::syntax::Loader>>,
+    )> {
         &self.language
     }
 
@@ -598,17 +603,20 @@ impl Prompt {
         // render buffer text
         // Map generic labels to traditional bottom-style symbols
         let label = if cx.editor.config().cmdline.style == CmdlineStyle::Bottom {
-            if self.prompt == "Cmdline" { ":" } else if self.prompt == "Search" { "/" } else { &self.prompt }
+            if self.prompt == "Cmdline" {
+                ":"
+            } else if self.prompt == "Search" {
+                "/"
+            } else {
+                &self.prompt
+            }
         } else {
             &self.prompt
         };
         surface.set_string(area.x, area.y + line, label, prompt_color);
 
         let label_len = label.len() as u16;
-        self.line_area = area
-            .clip_left(label_len)
-            .clip_top(line)
-            .clip_right(2);
+        self.line_area = area.clip_left(label_len).clip_top(line).clip_right(2);
 
         if self.line.is_empty() {
             // Show the most recently entered value as a suggestion.

@@ -1648,7 +1648,7 @@ impl Document {
     }
 
     /// Get the line blame for this view
-    pub fn line_blame(&self, cursor_line: u32, format: &str) -> Result<String, LineBlameError> {
+    pub fn line_blame(&self, cursor_line: u32, format: &str) -> Result<String, LineBlameError<'_>> {
         // how many lines were inserted and deleted before the cursor line
         let (inserted_lines, deleted_lines) = self
             .diff_handle()

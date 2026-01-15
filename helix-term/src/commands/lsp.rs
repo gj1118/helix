@@ -29,7 +29,7 @@ use helix_view::{
 };
 
 use crate::{
-    compositor::{self, Compositor, Component},
+    compositor::{self, Component, Compositor},
     job::Callback,
     ui::{self, overlay::overlaid, FileLocation, Picker, Popup, PromptEvent},
 };
@@ -859,12 +859,13 @@ fn code_action_inner_picker(
             editor.set_error("No code actions available");
             return;
         }
-        let columns = [ui::PickerColumn::new("action", |item: &CodeActionOrCommandItem, _| {
-            match &item.lsp_item {
+        let columns = [ui::PickerColumn::new(
+            "action",
+            |item: &CodeActionOrCommandItem, _| match &item.lsp_item {
                 lsp::CodeActionOrCommand::CodeAction(action) => action.title.as_str().into(),
                 lsp::CodeActionOrCommand::Command(command) => command.title.as_str().into(),
-            }
-        })];
+            },
+        )];
 
         let picker = ui::Picker::new(
             columns,
@@ -889,8 +890,7 @@ fn code_action_handle_lsp_item(
     lsp_item: &CodeActionOrCommand,
     language_server_id: LanguageServerId,
 ) {
-    let Some(language_server) = editor.language_server_by_id(language_server_id)
-    else {
+    let Some(language_server) = editor.language_server_by_id(language_server_id) else {
         editor.set_error("Language Server disappeared");
         return;
     };
@@ -1289,8 +1289,9 @@ pub fn rename_symbol(cx: &mut Context) {
                             .language_servers_with_feature(LanguageServerFeature::RenameSymbol)
                             .find(|ls| language_server_id.is_none_or(|id| id == ls.id()))
                         else {
-                            cx.editor
-                                .set_error("No configured language server supports symbol renaming");
+                            cx.editor.set_error(
+                                "No configured language server supports symbol renaming",
+                            );
                             return;
                         };
 
@@ -1302,9 +1303,10 @@ pub fn rename_symbol(cx: &mut Context) {
 
                         match block_on(future) {
                             Ok(edits) => {
-                                let _ = cx
-                                    .editor
-                                    .apply_workspace_edit(offset_encoding, &edits.unwrap_or_default());
+                                let _ = cx.editor.apply_workspace_edit(
+                                    offset_encoding,
+                                    &edits.unwrap_or_default(),
+                                );
                             }
                             Err(err) => cx.editor.set_error(err.to_string()),
                         }
@@ -1330,8 +1332,9 @@ pub fn rename_symbol(cx: &mut Context) {
                             .language_servers_with_feature(LanguageServerFeature::RenameSymbol)
                             .find(|ls| language_server_id.is_none_or(|id| id == ls.id()))
                         else {
-                            cx.editor
-                                .set_error("No configured language server supports symbol renaming");
+                            cx.editor.set_error(
+                                "No configured language server supports symbol renaming",
+                            );
                             return;
                         };
 
@@ -1343,9 +1346,10 @@ pub fn rename_symbol(cx: &mut Context) {
 
                         match block_on(future) {
                             Ok(edits) => {
-                                let _ = cx
-                                    .editor
-                                    .apply_workspace_edit(offset_encoding, &edits.unwrap_or_default());
+                                let _ = cx.editor.apply_workspace_edit(
+                                    offset_encoding,
+                                    &edits.unwrap_or_default(),
+                                );
                             }
                             Err(err) => cx.editor.set_error(err.to_string()),
                         }

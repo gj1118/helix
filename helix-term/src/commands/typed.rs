@@ -1318,8 +1318,6 @@ fn get_character_info(
     let grapheme_start = doc.selection(view.id).primary().cursor(text);
     let grapheme_end = graphemes::next_grapheme_boundary(text, grapheme_start);
 
-
-
     if grapheme_start == grapheme_end {
         return Ok(());
     }
@@ -2334,7 +2332,8 @@ fn index(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow
     };
 
     let start = if let Some(arg) = args.get_flag("start") {
-        arg.parse().context("Argument to --start must be an integer")?
+        arg.parse()
+            .context("Argument to --start must be an integer")?
     } else {
         1
     };
@@ -2890,38 +2889,54 @@ const WRITE_NO_FORMAT_FLAG: Flag = Flag {
     ..Flag::DEFAULT
 };
 
-fn notifications_history(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
+fn notifications_history(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
     }
-    
+
     crate::commands::notification::show_notification_history(cx);
     Ok(())
 }
 
-fn notifications_clear(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
+fn notifications_clear(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
     }
-    
+
     crate::commands::notification::clear_notification_history(cx);
     Ok(())
 }
 
-fn notifications_dismiss(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
+fn notifications_dismiss(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
     }
-    
+
     crate::commands::notification::dismiss_all_notifications(cx);
     Ok(())
 }
 
-fn notifications_test(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
+fn notifications_test(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
     }
-    
+
     crate::commands::notification::test_notifications(cx);
     Ok(())
 }
@@ -4091,6 +4106,9 @@ pub(super) fn execute_command(
 #[allow(clippy::unnecessary_unwrap)]
 pub(super) fn command_mode(cx: &mut Context) {
     use helix_view::editor::CmdlineStyle;
+
+    // Clear any previous error status when entering command mode
+    cx.editor.clear_status();
 
     let cmdline_style = cx.editor.config().cmdline.style;
 

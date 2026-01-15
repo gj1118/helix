@@ -5,7 +5,7 @@ use helix_view::editor::Severity;
 /// Show notification history
 pub fn show_notification_history(cx: &mut Context) {
     let history = cx.editor.get_notification_history();
-    
+
     if history.is_empty() {
         cx.editor.set_status("No notifications in history");
         return;
@@ -13,7 +13,7 @@ pub fn show_notification_history(cx: &mut Context) {
 
     let mut content = String::new();
     content.push_str("Notification History:\n\n");
-    
+
     for (i, notification) in history.iter().enumerate().rev().take(50) {
         let severity_icon = match notification.severity {
             Severity::Error => "❌",
@@ -21,7 +21,7 @@ pub fn show_notification_history(cx: &mut Context) {
             Severity::Info => "ℹ️",
             Severity::Hint => "💡",
         };
-        
+
         let timestamp = notification.timestamp.elapsed().as_secs();
         let time_str = if timestamp < 60 {
             format!("{}s ago", timestamp)
@@ -30,24 +30,29 @@ pub fn show_notification_history(cx: &mut Context) {
         } else {
             format!("{}h ago", timestamp / 3600)
         };
-        
+
         content.push_str(&format!(
             "{:2}. {} {} ({})\n    {}\n\n",
             history.len() - i,
             severity_icon,
             time_str,
-            if notification.dismissed { "dismissed" } else { "active" },
+            if notification.dismissed {
+                "dismissed"
+            } else {
+                "active"
+            },
             notification.message
         ));
     }
 
     let popup = crate::ui::Popup::new("notification-history", crate::ui::Text::new(content))
         .auto_close(true);
-    
+
     cx.jobs.callback(async move {
-        let call: job::Callback = Callback::EditorCompositor(Box::new(move |_editor, compositor| {
-            compositor.push(Box::new(popup));
-        }));
+        let call: job::Callback =
+            Callback::EditorCompositor(Box::new(move |_editor, compositor| {
+                compositor.push(Box::new(popup));
+            }));
         Ok(call)
     });
 }
@@ -68,10 +73,14 @@ pub fn dismiss_all_notifications(cx: &mut Context) {
 pub fn test_notifications(cx: &mut Context) {
     let config = &cx.editor.config().notifications;
     let timeout_ms = config.default_timeout.as_millis();
-    
+
     // Debug output to log
-    log::warn!("DEBUG: Creating notification with timeout: {:?} ({}ms)", config.default_timeout, timeout_ms);
-    
+    log::warn!(
+        "DEBUG: Creating notification with timeout: {:?} ({}ms)",
+        config.default_timeout,
+        timeout_ms
+    );
+
     // Create a simple test notification
     let _id = cx.editor.notify_info(format!(
         "Test notification (timeout: {}ms) - should disappear in {}s",
@@ -81,8 +90,15 @@ pub fn test_notifications(cx: &mut Context) {
     // Check if the notification was created with timeout
     let all_notifications = cx.editor.get_notification_history();
     if let Some(notification) = all_notifications.last() {
-        log::warn!("DEBUG: Notification {} created with timeout: {:?}", notification.id, notification.timeout);
+        log::warn!(
+            "DEBUG: Notification {} created with timeout: {:?}",
+            notification.id,
+            notification.timeout
+        );
     }
-    
-    cx.editor.set_status(format!("Test notification sent with {}ms timeout - check terminal for debug", timeout_ms));
+
+    cx.editor.set_status(format!(
+        "Test notification sent with {}ms timeout - check terminal for debug",
+        timeout_ms
+    ));
 }

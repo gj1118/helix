@@ -8,10 +8,10 @@ use crate::{
     ui::{
         self,
         document::{render_document, LinePos, TextRenderer},
+        gradient_border::GradientBorder,
         picker::query::PickerQuery,
         text_decorations::DecorationManager,
         EditorView,
-        gradient_border::GradientBorder,
     },
 };
 use futures_util::future::BoxFuture;
@@ -268,10 +268,10 @@ pub struct Picker<T: 'static + Send + Sync, D: 'static> {
     preview_cache: HashMap<Arc<Path>, CachedPreview>,
     read_buffer: Vec<u8>,
     /// Given an item in the picker, return the file path and line number to display.
-    file_fn: Option<FileCallback<T>>, 
+    file_fn: Option<FileCallback<T>>,
     /// An event handler for syntax highlighting the currently previewed file.
-    preview_highlight_handler: Sender<Arc<Path>>, 
-    dynamic_query_handler: Option<Sender<DynamicQueryChange>>, 
+    preview_highlight_handler: Sender<Arc<Path>>,
+    dynamic_query_handler: Option<Sender<DynamicQueryChange>>,
     /// Cached gradient border for rendering when enabled in config
     gradient_border: Option<GradientBorder>,
 }
@@ -966,7 +966,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         if let Some((preview, range)) = self.get_preview(cx.editor) {
             let doc = match preview.document() {
                 Some(doc)
-                    if range.map_or(true, |(start, end)| {
+                    if range.is_none_or(|(start, end)| {
                         start <= end && end <= doc.text().len_lines()
                     }) =>
                 {

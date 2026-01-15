@@ -79,7 +79,7 @@ impl DiffHandle {
         }
     }
 
-    pub fn try_load(&self) -> Option<Diff> {
+    pub fn try_load(&self) -> Option<Diff<'_>> {
         Some(Diff {
             diff: self.diff.try_read()?,
             inverted: self.inverted,

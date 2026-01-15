@@ -86,8 +86,8 @@ impl CmdlinePopup {
             // Check if this is a regex prompt by looking at the prompt text
             match self.prompt.prompt() {
                 s if s.starts_with("search:") || s == "Search" => &config.search,
-                s if s == "Cmdline" => &config.command,
-                _ => &config.general
+                "Cmdline" => &config.command,
+                _ => &config.general,
             }
         }
     }
@@ -113,7 +113,13 @@ impl CmdlinePopup {
             // Render gradient border with title
             if let Some(ref mut gradient_border) = self.gradient_border {
                 let rounded = cx.editor.config().rounded_corners;
-                gradient_border.render_with_title(popup_area, surface, theme, Some(self.prompt.prompt()), rounded);
+                gradient_border.render_with_title(
+                    popup_area,
+                    surface,
+                    theme,
+                    Some(self.prompt.prompt()),
+                    rounded,
+                );
             }
 
             // Calculate inner area manually using configured gradient thickness
@@ -152,18 +158,17 @@ impl CmdlinePopup {
             ""
         };
         // Render icon without trailing space to avoid extra padding before input
-        let prefix_text = if icon.is_empty() { "".to_string() } else { icon.to_string() };
+        let prefix_text = if icon.is_empty() {
+            "".to_string()
+        } else {
+            icon.to_string()
+        };
 
         if !prefix_text.is_empty() {
             let prompt_color = theme.get("ui.text.focus");
             // Make the icon more prominent with bold styling
             let icon_style = prompt_color.add_modifier(helix_view::theme::Modifier::BOLD);
-            surface.set_string(
-                inner_area.x,
-                inner_area.y,
-                &prefix_text,
-                icon_style,
-            );
+            surface.set_string(inner_area.x, inner_area.y, &prefix_text, icon_style);
         }
 
         // Calculate input area
@@ -269,17 +274,17 @@ impl CmdlinePopup {
         let config = cx.editor.config();
         let picker_symbol = config.picker_symbol.as_str();
         let symbol_width = picker_symbol.width();
-        
+
         let completions = self.prompt.completions();
         let selected_index = self.prompt.selection().unwrap_or(0);
-        
+
         // Calculate scroll offset to keep selected item visible within the fixed window
         let scroll_offset = if selected_index >= max_display_items {
             selected_index.saturating_sub(max_display_items - 1)
         } else {
             0
         };
-        
+
         // Render visible completion items
         for (display_idx, (completion_idx, (_range, completion))) in completions
             .iter()
@@ -306,7 +311,11 @@ impl CmdlinePopup {
                 completion_bg.patch(completion.style)
             };
 
-            let prefix = if is_selected { picker_symbol.to_string() } else { " ".repeat(symbol_width) };
+            let prefix = if is_selected {
+                picker_symbol.to_string()
+            } else {
+                " ".repeat(symbol_width)
+            };
             let text = format!("{}{}", prefix, completion.content);
             surface.set_stringn(
                 inner_area.x,
@@ -316,11 +325,11 @@ impl CmdlinePopup {
                 item_style,
             );
         }
-        
+
         // Add scroll indicators if there are more items
         if total_items > max_display_items {
             let scroll_indicator_style = theme.get("ui.text.inactive");
-            
+
             // Show up arrow if we can scroll up
             if scroll_offset > 0 {
                 surface.set_string(
@@ -330,7 +339,7 @@ impl CmdlinePopup {
                     scroll_indicator_style,
                 );
             }
-            
+
             // Show down arrow if we can scroll down
             if scroll_offset + max_display_items < total_items {
                 surface.set_string(
@@ -402,7 +411,7 @@ impl Component for CmdlinePopup {
                 let byte_pos = self.prompt.position();
                 let anchor = self.prompt.anchor();
                 let line = self.prompt.line();
-                
+
                 // Calculate cursor position relative to the visible portion (after anchor)
                 // Also account for truncation indicator if text is scrolled
                 let truncate_start = self.prompt.truncate_start();
@@ -411,7 +420,7 @@ impl Component for CmdlinePopup {
                 } else {
                     0
                 };
-                
+
                 // Add 1 for the truncation indicator "…" if we're scrolled
                 let indicator_offset = if truncate_start { 1 } else { 0 };
                 let cursor_offset = (visible_cursor_offset + indicator_offset) as u16;

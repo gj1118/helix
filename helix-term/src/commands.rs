@@ -2784,8 +2784,7 @@ fn global_search(cx: &mut Context) {
         Some((path.as_path().into(), Some((*line_num, *line_num))))
     })
     .with_history_register(Some(reg))
-    .with_dynamic_query(get_files, Some(275))
-    ;
+    .with_dynamic_query(get_files, Some(275));
 
     cx.push_layer(Box::new(overlaid(picker)));
 }
@@ -3026,8 +3025,7 @@ fn local_search_grep(cx: &mut Context) {
         Some((path.as_path().into(), Some((*line_num, *line_num))))
     })
     .with_history_register(Some(reg))
-    .with_dynamic_query(get_files, Some(275))
-    ;
+    .with_dynamic_query(get_files, Some(275));
     cx.push_layer(Box::new(overlaid(picker)));
 }
 
@@ -3163,7 +3161,6 @@ fn local_search_fuzzy(cx: &mut Context) {
     .with_preview(|_editor, FileResult { path, line_num, .. }| {
         Some((path.as_path().into(), Some((*line_num, *line_num))))
     })
-    
     .with_history_register(Some(reg));
 
     let injector = picker.injector();
@@ -3766,8 +3763,7 @@ fn buffer_picker(cx: &mut Context) {
             (cursor_line, cursor_line)
         });
         Some((meta.id.into(), lines))
-    })
-    ;
+    });
     cx.push_layer(Box::new(overlaid(picker)));
 }
 
@@ -3879,8 +3875,7 @@ fn jumplist_picker(cx: &mut Context) {
         let doc = &editor.documents.get(&meta.id)?;
         let line = meta.selection.primary().cursor_line(doc.text().slice(..));
         Some((meta.id.into(), Some((line, line))))
-    })
-    ;
+    });
     cx.push_layer(Box::new(overlaid(picker)));
 }
 
@@ -3978,8 +3973,7 @@ fn changed_file_picker(cx: &mut Context) {
             }
         },
     )
-    .with_preview(|_editor, meta| Some((meta.path().into(), None)))
-    ;
+    .with_preview(|_editor, meta| Some((meta.path().into(), None)));
     let injector = picker.injector();
 
     cx.editor
@@ -4071,8 +4065,7 @@ pub fn command_palette(cx: &mut Context) {
                         doc.append_changes_to_history(view);
                     }
                 }
-            })
-            ;
+            });
             compositor.push(Box::new(overlaid(picker)));
         },
     ));
@@ -7843,9 +7836,9 @@ fn jump_to_label(cx: &mut Context, labels: Vec<Range>, behaviour: Movement) {
             // 2. We are in the new row (including corner)
             //    => size of extended inner square + pos in row.
             let index = if outer > inner {
-                outer*outer + inner
+                outer * outer + inner
             } else {
-                inner*(inner+1) + outer
+                inner * (inner + 1) + outer
             };
             if let Some(mut range) = labels.get(index).copied() {
                 range = if behaviour == Movement::Extend {

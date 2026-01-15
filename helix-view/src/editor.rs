@@ -1,5 +1,4 @@
 use crate::{
-    Document, DocumentId, View, ViewId,
     annotations::diagnostics::{DiagnosticFilter, InlineDiagnosticsConfig},
     clipboard::ClipboardProvider,
     document::{
@@ -13,12 +12,13 @@ use crate::{
     register::Registers,
     theme::{self, Theme},
     tree::{self, Dimension, Resize, Tree},
+    Document, DocumentId, View, ViewId,
 };
 use helix_event::dispatch;
 use helix_vcs::DiffProviderRegistry;
 
 use futures_util::stream::select_all::SelectAll;
-use futures_util::{StreamExt, future};
+use futures_util::{future, StreamExt};
 use helix_lsp::{Call, LanguageServerId};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
@@ -35,31 +35,31 @@ use std::{
 };
 
 use tokio::{
-    sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
-    time::{Duration, Instant, Sleep, sleep},
+    sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
+    time::{sleep, Duration, Instant, Sleep},
 };
 
-use anyhow::{Error, anyhow, bail};
+use anyhow::{anyhow, bail, Error};
 
 pub use helix_core::diagnostic::Severity;
 use helix_core::{
-    Change, LineEnding, NATIVE_LINE_ENDING, Position, Range, Selection, Uri,
     auto_pairs::AutoPairs,
     diagnostic::DiagnosticProvider,
     syntax::{
         self,
         config::{AutoPairConfig, IndentationHeuristic, LanguageServerFeature, SoftWrap},
     },
+    Change, LineEnding, Position, Range, Selection, Uri, NATIVE_LINE_ENDING,
 };
 use helix_dap::{self as dap, registry::DebugAdapterId};
 use helix_lsp::lsp;
 use helix_stdx::path::canonicalize;
 
-use serde::{Deserialize, Deserializer, Serialize, Serializer, ser::SerializeMap};
+use serde::{ser::SerializeMap, Deserialize, Deserializer, Serialize, Serializer};
 
 use arc_swap::{
-    ArcSwap,
     access::{DynAccess, DynGuard},
+    ArcSwap,
 };
 
 pub const DEFAULT_AUTO_SAVE_DELAY: u64 = 3000;
@@ -594,19 +594,14 @@ impl Default for CmdlineIcons {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum CmdlineStyle {
     /// Traditional bottom command line
+    #[default]
     Bottom,
     /// Centered popup window (noice.nvim style)
     Popup,
-}
-
-impl Default for CmdlineStyle {
-    fn default() -> Self {
-        Self::Bottom
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -642,10 +637,11 @@ impl Default for GradientBorderConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum GradientDirection {
     /// Left to right gradient
+    #[default]
     Horizontal,
     /// Top to bottom gradient
     Vertical,
@@ -653,12 +649,6 @@ pub enum GradientDirection {
     Diagonal,
     /// Radial gradient from center
     Radial,
-}
-
-impl Default for GradientDirection {
-    fn default() -> Self {
-        Self::Horizontal
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -722,22 +712,17 @@ impl Default for NotificationConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum NotificationStyle {
     /// Show notifications as popup windows (noice.nvim style)
+    #[default]
     Popup,
     /// Show notifications in statusline (traditional style)
     Statusline,
 }
 
-impl Default for NotificationStyle {
-    fn default() -> Self {
-        Self::Popup
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum NotificationPosition {
     /// Top-left corner
@@ -745,6 +730,7 @@ pub enum NotificationPosition {
     /// Top-center
     TopCenter,
     /// Top-right corner
+    #[default]
     TopRight,
     /// Bottom-left corner
     BottomLeft,
@@ -752,12 +738,6 @@ pub enum NotificationPosition {
     BottomCenter,
     /// Bottom-right corner
     BottomRight,
-}
-
-impl Default for NotificationPosition {
-    fn default() -> Self {
-        Self::TopRight
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -841,21 +821,16 @@ impl Default for NotificationBorderConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum NotificationBorderStyle {
     /// Solid border
+    #[default]
     Solid,
     /// Dashed border
     Dashed,
     /// Dotted border
     Dotted,
-}
-
-impl Default for NotificationBorderStyle {
-    fn default() -> Self {
-        Self::Solid
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1739,7 +1714,12 @@ impl Notification {
             let elapsed = self.timestamp.elapsed();
             let expired = elapsed >= timeout;
             if expired {
-                log::warn!("Notification {} expired: elapsed={:?}, timeout={:?}", self.id, elapsed, timeout);
+                log::warn!(
+                    "Notification {} expired: elapsed={:?}, timeout={:?}",
+                    self.id,
+                    elapsed,
+                    timeout
+                );
             }
             expired
         } else {
@@ -1771,7 +1751,7 @@ impl NotificationManager {
     pub fn add(&mut self, mut notification: Notification) -> usize {
         notification.id = self.next_id;
         self.next_id += 1;
-        
+
         let id = notification.id; // Store the ID before moving
         self.notifications.push(notification);
 
@@ -1808,25 +1788,8 @@ impl NotificationManager {
     }
 
     pub fn cleanup_expired(&mut self) {
-        let before_count = self.notifications.len();
-        
-        // Debug: Check each notification before cleanup
-        for notification in &self.notifications {
-            if let Some(timeout) = notification.timeout {
-                let elapsed = notification.timestamp.elapsed();
-                if elapsed >= timeout {
-                    log::warn!("DEBUG: About to clean up expired notification {} (elapsed: {:?}, timeout: {:?})", 
-                              notification.id, elapsed, timeout);
-                }
-            }
-        }
-        
-        self.notifications.retain(|n| !n.is_expired() && !n.dismissed);
-        let after_count = self.notifications.len();
-        if before_count != after_count {
-            log::warn!("DEBUG: Cleaned up {} expired/dismissed notifications ({} -> {})", 
-                      before_count - after_count, before_count, after_count);
-        }
+        self.notifications
+            .retain(|n| !n.is_expired() && !n.dismissed);
     }
 
     pub fn clear_history(&mut self) {
@@ -2089,20 +2052,21 @@ impl Editor {
         self.idle_timer
             .as_mut()
             .reset(Instant::now() + config.idle_timeout);
-        
+
         // Cleanup expired notifications periodically
         self.cleanup_notifications();
     }
 
     pub fn clear_status(&mut self) {
         self.status_msg = None;
+        self.notifications.dismiss_all();
     }
 
     #[inline]
     pub fn set_status<T: Into<Cow<'static, str>>>(&mut self, status: T) {
         let status = status.into();
         log::debug!("editor status: {}", status);
-        
+
         let config = self.config();
         if config.notifications.enable && config.notifications.style == NotificationStyle::Popup {
             // Only create notification, don't set status_msg for popup style
@@ -2120,7 +2084,7 @@ impl Editor {
     pub fn set_error<T: Into<Cow<'static, str>>>(&mut self, error: T) {
         let error = error.into();
         log::debug!("editor error: {}", error);
-        
+
         let config = self.config();
         if config.notifications.enable && config.notifications.style == NotificationStyle::Popup {
             // Only create notification, don't set status_msg for popup style
@@ -2146,7 +2110,7 @@ impl Editor {
     pub fn set_warning<T: Into<Cow<'static, str>>>(&mut self, warning: T) {
         let warning = warning.into();
         log::warn!("editor warning: {}", warning);
-        
+
         let config = self.config();
         if config.notifications.enable && config.notifications.style == NotificationStyle::Popup {
             // Only create notification, don't set status_msg for popup style
@@ -2198,7 +2162,11 @@ impl Editor {
         self.notify_with_severity(message, Severity::Error)
     }
 
-    pub fn notify_with_severity<T: Into<Cow<'static, str>>>(&mut self, message: T, severity: Severity) -> usize {
+    pub fn notify_with_severity<T: Into<Cow<'static, str>>>(
+        &mut self,
+        message: T,
+        severity: Severity,
+    ) -> usize {
         let config = self.config();
         if !config.notifications.enable {
             // Fall back to traditional status messages if notifications are disabled
@@ -2211,7 +2179,7 @@ impl Editor {
         }
 
         let mut notification = Notification::new(message, severity);
-        
+
         // Set default timeout if configured
         if config.notifications.default_timeout > Duration::ZERO {
             let timeout = config.notifications.default_timeout;
@@ -2227,22 +2195,40 @@ impl Editor {
         }
 
         let id = self.notifications.add(notification);
-        
+
         // Also set status message for compatibility if using statusline style
         if config.notifications.style == NotificationStyle::Statusline {
             match severity {
                 Severity::Error => {
-                    let msg = self.notifications.notifications.last().unwrap().message.clone();
+                    let msg = self
+                        .notifications
+                        .notifications
+                        .last()
+                        .unwrap()
+                        .message
+                        .clone();
                     self.status_msg = Some((msg, Severity::Error));
-                },
+                }
                 Severity::Warning => {
-                    let msg = self.notifications.notifications.last().unwrap().message.clone();
+                    let msg = self
+                        .notifications
+                        .notifications
+                        .last()
+                        .unwrap()
+                        .message
+                        .clone();
                     self.status_msg = Some((msg, Severity::Warning));
-                },
+                }
                 _ => {
-                    let msg = self.notifications.notifications.last().unwrap().message.clone();
+                    let msg = self
+                        .notifications
+                        .notifications
+                        .last()
+                        .unwrap()
+                        .message
+                        .clone();
                     self.status_msg = Some((msg, Severity::Info));
-                },
+                }
             }
         }
 
@@ -2934,7 +2920,8 @@ impl Editor {
     }
 
     pub fn resize_buffer(&mut self, resize_type: Resize, dimension: Dimension) {
-        self.tree.resize_buffer(resize_type, dimension, &self.config());
+        self.tree
+            .resize_buffer(resize_type, dimension, &self.config());
     }
 
     pub fn toggle_focus_window(&mut self) {
@@ -3218,11 +3205,8 @@ fn try_restore_indent(doc: &mut Document, view: &mut View) {
     };
 
     fn inserted_a_new_blank_line(changes: &[Operation], pos: usize, line_end_pos: usize) -> bool {
-        if let [
-            Operation::Retain(move_pos),
-            Operation::Insert(ref inserted_str),
-            Operation::Retain(_),
-        ] = changes
+        if let [Operation::Retain(move_pos), Operation::Insert(ref inserted_str), Operation::Retain(_)] =
+            changes
         {
             let mut graphemes = inserted_str.graphemes(true);
             move_pos + inserted_str.len() == pos

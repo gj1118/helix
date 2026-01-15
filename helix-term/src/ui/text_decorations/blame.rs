@@ -68,9 +68,8 @@ impl Decoration for InlineBlame {
         let start_drawing_at = (end_of_line - renderer.offset.col as u16) + 6;
         let start_drawing_at_virtual = end_of_line + 6;
 
-        let amount_of_characters_drawn = renderer
-            .column_in_bounds(start_drawing_at_virtual as usize, 1)
-            .then(|| {
+        let amount_of_characters_drawn =
+            if renderer.column_in_bounds(start_drawing_at_virtual as usize, 1) {
                 // the column where we stop drawing the blame
                 let stopped_drawing_at = renderer
                     .set_string_truncated(
@@ -87,8 +86,9 @@ impl Decoration for InlineBlame {
                 let line_length = end_of_line - renderer.offset.col as u16;
 
                 stopped_drawing_at - line_length
-            })
-            .unwrap_or(0);
+            } else {
+                0
+            };
 
         Position::new(0, amount_of_characters_drawn as usize)
     }

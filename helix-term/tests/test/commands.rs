@@ -497,7 +497,9 @@ async fn test_insert_with_indent() -> anyhow::Result<()> {
     test((
         INPUT,
         ":lang rust<ret>I",
-        String::from("#[f|]#n foo() {\n    if let Some(_) = None {\n\n    }\n\n}\n\nfn bar() {\n\n}\n"),
+        String::from(
+            "#[f|]#n foo() {\n    if let Some(_) = None {\n\n    }\n\n}\n\nfn bar() {\n\n}\n",
+        ),
     ))
     .await?;
 
@@ -505,7 +507,9 @@ async fn test_insert_with_indent() -> anyhow::Result<()> {
     test((
         INPUT,
         ":lang rust<ret>A",
-        String::from("fn foo() {#[\n|]#    if let Some(_) = None {\n\n    }\n\n}\n\nfn bar() {\n\n}\n"),
+        String::from(
+            "fn foo() {#[\n|]#    if let Some(_) = None {\n\n    }\n\n}\n\nfn bar() {\n\n}\n",
+        ),
     ))
     .await?;
 
