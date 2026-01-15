@@ -85,6 +85,11 @@ pub fn dispatch(e: impl Event) {
     registry::with(|registry| registry.dispatch(e));
 }
 
+#[cfg(feature = "integration_test")]
+pub fn reset() {
+    registry::with_mut(|registry| registry.clear_handlers());
+}
+
 /// Macro to declare events
 ///
 /// # Examples

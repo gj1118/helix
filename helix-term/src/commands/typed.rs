@@ -1318,6 +1318,8 @@ fn get_character_info(
     let grapheme_start = doc.selection(view.id).primary().cursor(text);
     let grapheme_end = graphemes::next_grapheme_boundary(text, grapheme_start);
 
+
+
     if grapheme_start == grapheme_end {
         return Ok(());
     }
@@ -1348,28 +1350,7 @@ fn get_character_info(
 
             unicode.push_str("U+");
 
-            let codepoint: u32 = if char.is_ascii() {
-                char.into()
-            } else {
-                // Not ascii means it will be multi-byte, so strip out the extra
-                // bits that encode the length & mark continuation bytes
-
-                let s = String::from(char);
-                let bytes = s.as_bytes();
-
-                // First byte starts with 2-4 ones then a zero, so strip those off
-                let first = bytes[0];
-                let codepoint = first & (0xFF >> (first.leading_ones() + 1));
-                let mut codepoint = u32::from(codepoint);
-
-                // Following bytes start with 10
-                for byte in bytes.iter().skip(1) {
-                    codepoint <<= 6;
-                    codepoint += u32::from(*byte) & 0x3F;
-                }
-
-                codepoint
-            };
+            let codepoint: u32 = char.into();
 
             write!(unicode, "{codepoint:0>4x}").unwrap();
         }

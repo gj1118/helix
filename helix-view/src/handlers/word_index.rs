@@ -85,8 +85,12 @@ impl AsyncHook for Hook {
                 if let Some(pending_change) = self.changes.get_mut(&doc) {
                     // If there is already a change waiting for this document, merge the two
                     // changes together by composing the changesets and saving the new `text`.
-                    pending_change.changes =
-                        mem::take(&mut pending_change.changes).compose(change.changes);
+                    let pending = mem::take(&mut pending_change.changes);
+                    pending_change.changes = if pending.len_after() == change.changes.len() {
+                        pending.compose(change.changes)
+                    } else {
+                        change.changes
+                    };
                     pending_change.text = change.text;
                     Some(Instant::now() + DEBOUNCE)
                 } else if !is_changeset_significant(&change.changes) {

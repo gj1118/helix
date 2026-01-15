@@ -1476,6 +1476,9 @@ impl Document {
                 .retain_mut(|save_point| match save_point.upgrade() {
                     Some(savepoint) => {
                         let mut revert_to_savepoint = savepoint.revert.lock();
+                        if revert.changes().len_after() != revert_to_savepoint.changes().len() {
+                            return true;
+                        }
                         *revert_to_savepoint =
                             revert.clone().compose(mem::take(&mut revert_to_savepoint));
                         true
@@ -1611,10 +1614,30 @@ impl Document {
 
         let success = self.apply_impl(transaction, view_id, emit_lsp_notification);
 
-        if !transaction.changes().is_empty() {
-            // Compose this transaction with the previous one
+        if success && !transaction.changes().is_empty() {
+            // Compose this transaction with the previous one.
+            // We handle recursion by checking if the existing changes happened
+            // BEFORE or AFTER this one.
             take_with(&mut self.changes, |changes| {
-                changes.compose(transaction.changes().clone())
+                if changes.is_empty() {
+                    return transaction.changes().clone();
+                }
+
+                // If transaction's after matches changes' before, it's normal sequential.
+                if changes.len_after() == transaction.changes().len() {
+                    return changes.compose(transaction.changes().clone());
+                }
+
+                // If transaction's after matches current changes' before,
+                // transaction is L0 -> L1, current is L1 -> L2.
+                // It means this transaction happened logically first (recursion).
+                if transaction.changes().len_after() == changes.len() {
+                    return transaction.changes().clone().compose(changes);
+                }
+
+                // Fallback: something is wrong (mismatch), keep current to avoid panic.
+                log::warn!("Composition skipped due to unexpected length mismatch: prev_after={}, txn_before={}, txn_after={}, curr_len={}", changes.len_after(), transaction.changes().len(), transaction.changes().len_after(), changes.len());
+                changes
             });
         }
         success

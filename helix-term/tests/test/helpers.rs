@@ -8,7 +8,7 @@ use std::{
 use anyhow::bail;
 use helix_core::{diagnostic::Severity, test, Selection, Transaction};
 use helix_term::{application::Application, args::Args, config::Config, keymap::merge_keys};
-use helix_view::{current_ref, doc, editor::LspConfig, input::parse_macro, Editor};
+use helix_view::{current_ref, doc, input::parse_macro, Editor};
 use tempfile::NamedTempFile;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
@@ -290,6 +290,7 @@ pub fn test_config() -> Config {
 }
 
 pub fn test_editor_config() -> helix_view::editor::Config {
+    use helix_view::editor::{LspConfig, NotificationStyle};
     helix_view::editor::Config {
         lsp: LspConfig {
             enable: false,

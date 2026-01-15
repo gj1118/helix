@@ -37,7 +37,7 @@
 (continue_statement) @keyword
 
 ;; Types
-(simple_type) @type
+(simple_type) @type.builtin
 
 ;; Literals
 (boolean) @constant.builtin

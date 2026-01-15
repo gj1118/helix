@@ -2162,14 +2162,21 @@ impl Editor {
 
     #[inline]
     pub fn get_status(&self) -> Option<(&Cow<'static, str>, &Severity)> {
-        self.status_msg.as_ref().map(|(status, sev)| (status, sev))
+        self.status_msg
+            .as_ref()
+            .map(|(status, sev)| (status, sev))
+            .or_else(|| {
+                self.notifications
+                    .get_active()
+                    .last()
+                    .map(|n| (&n.message, &n.severity))
+            })
     }
 
     /// Returns true if the current status is an error
     #[inline]
     pub fn is_err(&self) -> bool {
-        self.status_msg
-            .as_ref()
+        self.get_status()
             .map(|(_, sev)| *sev == Severity::Error)
             .unwrap_or(false)
     }

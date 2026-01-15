@@ -99,6 +99,13 @@ impl Registry {
             }
         }
     }
+
+    #[cfg(feature = "integration_test")]
+    pub fn clear_handlers(&mut self) {
+        for handlers in self.handlers.values_mut() {
+            handlers.clear();
+        }
+    }
 }
 
 runtime_local! {

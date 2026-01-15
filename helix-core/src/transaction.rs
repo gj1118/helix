@@ -98,6 +98,14 @@ impl ChangeSet {
 
     // TODO: from iter
 
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn len_after(&self) -> usize {
+        self.len_after
+    }
+
     #[doc(hidden)] // used by lsp to convert to LSP changes
     pub fn changes(&self) -> &[Operation] {
         &self.changes

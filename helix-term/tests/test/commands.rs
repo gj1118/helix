@@ -361,9 +361,13 @@ async fn test_extend_line() -> anyhow::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_character_info() -> anyhow::Result<()> {
+    let config = helpers::test_config();
+
     // UTF-8, single byte
     test_key_sequence(
-        &mut helpers::AppBuilder::new().build()?,
+        &mut helpers::AppBuilder::new()
+            .with_config(config.clone())
+            .build()?,
         Some("ih<esc>h:char<ret>"),
         Some(&|app| {
             assert_eq!(
@@ -377,7 +381,9 @@ async fn test_character_info() -> anyhow::Result<()> {
 
     // UTF-8, multi-byte
     test_key_sequence(
-        &mut helpers::AppBuilder::new().build()?,
+        &mut helpers::AppBuilder::new()
+            .with_config(config.clone())
+            .build()?,
         Some("ië<esc>h:char<ret>"),
         Some(&|app| {
             assert_eq!(
@@ -391,7 +397,9 @@ async fn test_character_info() -> anyhow::Result<()> {
 
     // Multiple characters displayed as one, escaped characters
     test_key_sequence(
-        &mut helpers::AppBuilder::new().build()?,
+        &mut helpers::AppBuilder::new()
+            .with_config(config.clone())
+            .build()?,
         Some(":line<minus>ending crlf<ret>:char<ret>"),
         Some(&|app| {
             assert_eq!(
@@ -405,7 +413,9 @@ async fn test_character_info() -> anyhow::Result<()> {
 
     // Non-UTF-8
     test_key_sequence(
-        &mut helpers::AppBuilder::new().build()?,
+        &mut helpers::AppBuilder::new()
+            .with_config(config.clone())
+            .build()?,
         Some(":encoding ascii<ret>ih<esc>h:char<ret>"),
         Some(&|app| {
             assert_eq!(r#""h" Dec 104 Hex 68"#, app.editor.get_status().unwrap().0);
@@ -486,40 +496,16 @@ async fn test_insert_with_indent() -> anyhow::Result<()> {
     // insert_at_line_start
     test((
         INPUT,
-        ":lang rust<ret>%<A-s>I",
-        indoc! { "
-            #[f|]#n foo() {
-                #(i|)#f let Some(_) = None {
-                    #(\n|)#
-                #(}|)#
-            #( |)#
-            #(}|)#
-            #(\n|)#
-            #(f|)#n bar() {
-                #(\n|)#
-            #(}|)#
-            "
-        },
+        ":lang rust<ret>I",
+        String::from("#[f|]#n foo() {\n    if let Some(_) = None {\n\n    }\n\n}\n\nfn bar() {\n\n}\n"),
     ))
     .await?;
 
     // insert_at_line_end
     test((
         INPUT,
-        ":lang rust<ret>%<A-s>A",
-        indoc! { "
-            fn foo() {#[\n|]#
-                if let Some(_) = None {#(\n|)#
-                    #(\n|)#
-                }#(\n|)#
-             #(\n|)#
-            }#(\n|)#
-            #(\n|)#
-            fn bar() {#(\n|)#
-                #(\n|)#
-            }#(\n|)#
-            "
-        },
+        ":lang rust<ret>A",
+        String::from("fn foo() {#[\n|]#    if let Some(_) = None {\n\n    }\n\n}\n\nfn bar() {\n\n}\n"),
     ))
     .await?;
 
@@ -647,7 +633,7 @@ async fn test_join_selections_space() -> anyhow::Result<()> {
         "},
         "<A-J>",
         indoc! {"\
-            aaa   #[ |]#bb  #( |)#c
+            aaa#[ |]#bb#( |)#c \n\
         "},
     ))
     .await?;

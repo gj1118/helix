@@ -27,6 +27,11 @@ mod signature_help;
 mod snippet;
 
 pub fn setup(config: Arc<ArcSwap<Config>>) -> Handlers {
+    #[cfg(feature = "integration")]
+    {
+        helix_event::reset();
+    }
+
     events::register();
 
     let event_tx = completion::CompletionHandler::new(config).spawn();
@@ -61,5 +66,6 @@ pub fn setup(config: Arc<ArcSwap<Config>>) -> Handlers {
     document_colors::register_hooks(&handlers);
     prompt::register_hooks(&handlers);
     blame::register_hooks(&handlers);
+
     handlers
 }
