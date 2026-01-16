@@ -532,6 +532,7 @@ impl PickerStartPosition {
     pub fn is_current(self) -> bool {
         matches!(self, Self::Current)
     }
+}
 
 #[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, Clone, Copy)]
 #[serde(rename_all = "kebab-case")]
