@@ -10,7 +10,9 @@ use super::{EndFoldPoint, Fold, FoldContainer, StartFoldPoint};
 
 pub(crate) static TEXT_SAMPLE: LazyLock<RopeSlice> = LazyLock::new(|| {
     const PATH: &str = "src/text_folding/test_utils/text-sample.txt";
-    RopeSlice::from(fs::read_to_string(PATH).unwrap().leak() as &str)
+    let s = fs::read_to_string(PATH).unwrap();
+    let s = s.replace("\r\n", "\n");
+    RopeSlice::from(s.leak() as &str)
 });
 
 // INFO: to update the text set the envaroment variable HELIX_UPDATE_FOLDED_SIMPLE_TEXT
@@ -46,7 +48,11 @@ pub(crate) static FOLDED_TEXT_SAMPLE: LazyLock<RopeSlice> = LazyLock::new(|| {
 
     match std::env::var(VAR) {
         Ok(_) => fs::write(PATH, &folded_text).unwrap(),
-        Err(_) => assert_eq!(folded_text, fs::read_to_string(PATH).unwrap()),
+        Err(_) => {
+            let expected = fs::read_to_string(PATH).unwrap();
+            let expected = expected.replace("\r\n", "\n");
+            assert_eq!(folded_text, expected)
+        }
     }
 
     RopeSlice::from(folded_text.leak() as &str)

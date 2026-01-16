@@ -89,8 +89,9 @@ async fn fold_rust_code() -> anyhow::Result<()> {
                         .unwrap();
                 }
                 Err(_) => {
-                    let expected =
-                        Rope::from_reader(File::open(FOLDED_RUST_CODE).unwrap()).unwrap();
+                    let expected = std::fs::read_to_string(FOLDED_RUST_CODE).unwrap();
+                    let expected = expected.replace("\r\n", "\n");
+                    let expected = Rope::from(expected);
                     assert_eq!(folded_rust_code, expected);
                 }
             }
@@ -123,8 +124,9 @@ async fn fold_python_code() -> anyhow::Result<()> {
                         .unwrap();
                 }
                 Err(_) => {
-                    let expected =
-                        Rope::from_reader(File::open(FOLDED_PYTHON_CODE).unwrap()).unwrap();
+                    let expected = std::fs::read_to_string(FOLDED_PYTHON_CODE).unwrap();
+                    let expected = expected.replace("\r\n", "\n");
+                    let expected = Rope::from(expected);
                     assert_eq!(folded_python_code, expected);
                 }
             }
