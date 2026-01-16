@@ -7,5 +7,10 @@ install:
 build_and_install: build install
     echo "Build and install complete!"
 
-test:
-    cargo test
+test: unit-test integration-test
+
+unit-test:
+    cargo test --workspace --lib
+
+integration-test:
+    cargo test --workspace --tests
