@@ -339,3 +339,5 @@
 | `blame_line` | Show blame for the current line | normal: `` <space>B ``, select: `` <space>B `` |
 | `rotate_selections_first` | Make the first selection your primary one |  |
 | `rotate_selections_last` | Make the last selection your primary one |  |
+| `fold` | Fold text objects | normal: `` Zf ``, `` zf ``, select: `` Zf ``, `` zf `` |
+| `unfold` | Unfold text objects | normal: `` ZF ``, `` zF ``, select: `` ZF ``, `` zF `` |

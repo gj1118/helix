@@ -503,6 +503,9 @@ pub struct Config {
     #[serde(default)]
     pub completion_highlight: CompletionHighlight,
     pub buffer_picker: BufferPickerConfig,
+    /// Defines which text objects will be folded when a document is opened.
+    #[serde(default)]
+    pub fold_textobjects: Vec<String>,
 }
 
 #[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, Clone, Copy)]
@@ -529,7 +532,6 @@ impl PickerStartPosition {
     pub fn is_current(self) -> bool {
         matches!(self, Self::Current)
     }
-}
 
 #[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, Clone, Copy)]
 #[serde(rename_all = "kebab-case")]
@@ -1649,6 +1651,7 @@ impl Default for Config {
             notifications: NotificationConfig::default(),
             completion_highlight: CompletionHighlight::default(),
             buffer_picker: BufferPickerConfig::default(),
+            fold_textobjects: Vec::new(),
         }
     }
 }

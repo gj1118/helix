@@ -356,13 +356,23 @@ pub fn file_picker(editor: &Editor, root: PathBuf) -> FilePicker {
         },
     )];
     let picker = Picker::new(columns, 0, [], data, move |cx, path: &PathBuf, action| {
-        if let Err(e) = cx.editor.open(path, action) {
-            let err = if let Some(err) = e.source() {
-                format!("{}", err)
-            } else {
-                format!("unable to open \"{}\"", path.display())
-            };
-            cx.editor.set_error(err);
+        let path = helix_stdx::path::canonicalize(path);
+        let old_id = cx.editor.document_id_by_path(&path);
+
+        match cx.editor.open(&path, action) {
+            Ok(doc_id) => {
+                if old_id.map_or(true, |id| id != doc_id) {
+                    default_folding(cx.editor);
+                }
+            }
+            Err(e) => {
+                let err = if let Some(err) = e.source() {
+                    format!("{}", err)
+                } else {
+                    format!("unable to open \"{}\"", path.display())
+                };
+                cx.editor.set_error(err);
+            }
         }
     })
     .with_preview(|_editor, path| Some((path.as_path().into(), None)))
@@ -392,24 +402,92 @@ pub fn file_picker(editor: &Editor, root: PathBuf) -> FilePicker {
     picker
 }
 
-fn directory_content(path: &Path) -> Result<Vec<(PathBuf, bool)>, std::io::Error> {
-    let mut content: Vec<_> = std::fs::read_dir(path)?
-        .flatten()
-        .map(|entry| {
-            (
-                entry.path(),
-                entry.file_type().is_ok_and(|file_type| file_type.is_dir()),
-            )
+fn get_excluded_types() -> ignore::types::Types {
+    use ignore::types::TypesBuilder;
+    let mut type_builder = TypesBuilder::new();
+    type_builder
+        .add(
+            "compressed",
+            "*.{zip,gz,bz2,zst,lzo,sz,tgz,tbz2,lz,lz4,lzma,lzo,z,Z,xz,7z,rar,cab}",
+        )
+        .expect("Invalid type definition");
+    type_builder.negate("all");
+    type_builder.build().expect("failed to build excluded_types")
+}
+
+pub fn directory_content(root: &Path, editor: &Editor) -> Result<Vec<(PathBuf, bool)>, std::io::Error> {
+    use ignore::WalkBuilder;
+
+    let config = editor.config();
+
+    let mut walk_builder = WalkBuilder::new(root);
+
+    let mut content: Vec<(PathBuf, bool)> = walk_builder
+        .hidden(config.file_explorer.hidden)
+        .parents(config.file_explorer.parents)
+        .ignore(config.file_explorer.ignore)
+        .follow_links(config.file_explorer.follow_symlinks)
+        .git_ignore(config.file_explorer.git_ignore)
+        .git_global(config.file_explorer.git_global)
+        .git_exclude(config.file_explorer.git_exclude)
+        .max_depth(Some(1))
+        .add_custom_ignore_filename(helix_loader::config_dir().join("ignore"))
+        .add_custom_ignore_filename(".helix/ignore")
+        .types(get_excluded_types())
+        .build()
+        .filter_map(|entry| {
+            entry
+                .map(|entry| {
+                    let is_dir = entry
+                        .file_type()
+                        .is_some_and(|file_type| file_type.is_dir());
+                    let mut path = entry.path().to_path_buf();
+                    if is_dir && path != root && config.file_explorer.flatten_dirs {
+                        while let Some(single_child_directory) = get_child_if_single_dir(&path) {
+                            path = single_child_directory;
+                        }
+                    }
+                    (path, is_dir)
+                })
+                .ok()
+                .filter(|entry| entry.0 != root)
         })
         .collect();
 
     content.sort_by(|(path1, is_dir1), (path2, is_dir2)| (!is_dir1, path1).cmp(&(!is_dir2, path2)));
-    if path.parent().is_some() {
-        content.insert(0, (path.join(".."), true));
+    if root.parent().is_some() {
+        content.insert(0, (root.join(".."), true));
     }
     Ok(content)
 }
 
+fn get_child_if_single_dir(path: &Path) -> Option<PathBuf> {
+    let mut entries = path.read_dir().ok()?;
+    let entry = entries.next()?.ok()?;
+    if entries.next().is_none() && entry.file_type().is_ok_and(|file_type| file_type.is_dir()) {
+        Some(entry.path())
+    } else {
+        None
+    }
+}
+
+pub fn default_folding(editor: &mut Editor) {
+    use crate::commands::typed::{fold_textobjects, FOLD_SIGNATURE};
+    use helix_core::command_line::Args;
+
+    let textobjects = editor.config.load().fold_textobjects.join(" ");
+    if textobjects.is_empty() {
+        return;
+    }
+
+    let loader = editor.syn_loader.load();
+
+    let str = format!("--document {textobjects}");
+    let args = Args::parse(&str, FOLD_SIGNATURE, true, |token| Ok(token.content)).unwrap();
+
+    let (view, doc) = current!(editor);
+    _ = fold_textobjects(doc, view, &loader, args);
+}
 pub mod completers {
     use super::Utf8PathBuf;
     use crate::ui::prompt::Completion;
@@ -779,5 +857,13 @@ pub mod completers {
         }
 
         completions
+    }
+
+    pub fn foldable_textobjects(_editor: &Editor, input: &str) -> Vec<Completion> {
+        let textobjects = ["class", "function", "comment"];
+        fuzzy_match(input, textobjects.iter(), false)
+            .into_iter()
+            .map(|(name, _)| ((0..), (*name).into()))
+            .collect()
     }
 }

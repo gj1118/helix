@@ -142,7 +142,7 @@ pub fn file_explorer(
     editor: &Editor,
 ) -> Result<FileExplorer, std::io::Error> {
     let directory_style = editor.theme.get("ui.text.directory");
-    let directory_content = directory_content(&root)?;
+    let directory_content = directory_content(&root, editor)?;
 
     let yank_path: KeyHandler = Box::new(|cx, (path, _), _, _| {
         let register = cx
