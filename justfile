@@ -12,5 +12,5 @@ test: unit-test integration-test
 unit-test:
     cargo test --workspace --lib
 
-integration-test:
+integration-test: 
     cargo test --workspace --tests
