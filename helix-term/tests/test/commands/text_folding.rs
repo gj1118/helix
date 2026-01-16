@@ -29,7 +29,7 @@ fn fold_text(app: &Application) -> Rope {
     let mut folded_text = String::new();
     for g in formatter {
         match g.raw {
-            Grapheme::Newline => write!(folded_text, "\n").unwrap(),
+            Grapheme::Newline => writeln!(folded_text).unwrap(),
             other => write!(folded_text, "{other}").unwrap(),
         }
     }

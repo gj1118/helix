@@ -31,12 +31,12 @@ pub(crate) static FOLDED_TEXT_SAMPLE: LazyLock<RopeSlice> = LazyLock::new(|| {
     annotations.add_folds(container);
 
     let formatter =
-        DocumentFormatter::new_at_prev_checkpoint(*TEXT_SAMPLE, text_format, &annotations, 0);
+        DocumentFormatter::new_at_prev_checkpoint(*TEXT_SAMPLE, text_format, annotations, 0);
 
     let mut folded_text = String::new();
     for g in formatter {
         match g.raw {
-            Grapheme::Newline => write!(folded_text, "\n").unwrap(),
+            Grapheme::Newline => writeln!(folded_text).unwrap(),
             Grapheme::Tab { width: _ } => write!(folded_text, "\t").unwrap(),
             Grapheme::Other { g } => write!(folded_text, "{g}").unwrap(),
         }

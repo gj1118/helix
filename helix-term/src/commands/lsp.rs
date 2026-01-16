@@ -16,7 +16,8 @@ use super::{align_view, push_jump, Align, Context, Editor};
 
 use helix_core::{
     diagnostic::DiagnosticProvider, syntax::config::LanguageServerFeature,
-    text_annotations::InlineAnnotation, text_folding::ropex::RopeSliceFoldExt, Rope, Selection, Uri,
+    text_annotations::InlineAnnotation, text_folding::ropex::RopeSliceFoldExt, Rope, Selection,
+    Uri,
 };
 use helix_stdx::path;
 use helix_view::{

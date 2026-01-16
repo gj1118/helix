@@ -27,11 +27,11 @@ fn fold_container_from() {
     let container = FoldContainer::from(*TEXT_SAMPLE, points.clone());
 
     let partial_eq = |sfp1: &StartFoldPoint, sfp2: &StartFoldPoint| -> bool {
-        &sfp1.object == &sfp2.object && sfp1.header == sfp2.header && sfp1.target == sfp2.target
+        sfp1.object == sfp2.object && sfp1.header == sfp2.header && sfp1.target == sfp2.target
     };
     assert!(container.start_points.iter().enumerate().all(|(i, sfp)| {
         let (expected, _) = &points[i];
-        if partial_eq(&sfp, expected) {
+        if partial_eq(sfp, expected) {
             return true;
         }
         eprintln!(
@@ -46,7 +46,7 @@ fn fold_container_from() {
         |efp1: &EndFoldPoint, efp2: &EndFoldPoint| -> bool { efp1.target == efp2.target };
     assert!(container.end_points.iter().enumerate().all(|(i, efp)| {
         let (_, expected) = &points[efp.link];
-        if partial_eq(&efp, expected) {
+        if partial_eq(efp, expected) {
             return true;
         }
         eprintln!(
@@ -177,7 +177,7 @@ fn fold_container_throw_range_out_of_folds() {
     for (case_idx, ((from, to), expected)) in cases.into_iter().enumerate() {
         let range = Range::new(
             TEXT_SAMPLE.line_to_char(from),
-            line_end_char_index(&*TEXT_SAMPLE, to),
+            line_end_char_index(&TEXT_SAMPLE, to),
         );
 
         let result = container.throw_range_out_of_folds(*TEXT_SAMPLE, range);

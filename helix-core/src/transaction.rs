@@ -767,7 +767,7 @@ where
     }
 
     fn items_is_exhausted(&mut self) -> bool {
-        self.next_item().map_or(true, |item| {
+        self.next_item().is_none_or(|item| {
             self.retain_item(item);
             false
         })

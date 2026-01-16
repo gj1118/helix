@@ -3,15 +3,15 @@
 //! A fold consists of the following components:
 //!
 //! 1. **`Object`** - a type of fold, which indicates how a user has folded the text.
-//!     For example, the object is **Selection** when a user has folded arbitrarily selected text.
-//!     And the object is **TextObject** when a user has folded a text object, such as a function, class, and so on.
+//!    For example, the object is **Selection** when a user has folded arbitrarily selected text.
+//!    And the object is **TextObject** when a user has folded a text object, such as a function, class, and so on.
 //!
 //! 2. **`Header`** - a fragment that describes what is folded.
-//!     For example, the header of a folded function is its signature.
-//!     Additionally, headers are used to unfold text.
+//!    For example, the header of a folded function is its signature.
+//!    Additionally, headers are used to unfold text.
 //!
 //! 3. **`Target`** - a fragment that defines the block that will be folded.
-//!     For example, for a function, the target is a span of the **function.inside** capture.
+//!    For example, for a function, the target is a span of the **function.inside** capture.
 //!
 //! 4. **`Block`** - a folded (non-visible) text. It is a range of lines.
 //!
@@ -537,10 +537,7 @@ impl FoldContainer {
 
         let mut fold = self.end_points.get(end_idx)?.fold(self);
         while !get_range(fold).contains(&idx) {
-            fold = match fold.super_fold(self) {
-                Some(fold) => fold,
-                None => return None,
-            }
+            fold = fold.super_fold(self)?
         }
 
         Some(fold)
@@ -821,7 +818,11 @@ impl<'a> FoldAnnotations<'a> {
     }
 
     /// Returns the previous fold if `idx` is equal to `get_idx(fold)`.
-    pub fn consume_prev(&self, idx: usize, mut get_idx: impl FnMut(Fold) -> usize) -> Option<Fold<'_>> {
+    pub fn consume_prev(
+        &self,
+        idx: usize,
+        mut get_idx: impl FnMut(Fold) -> usize,
+    ) -> Option<Fold<'_>> {
         let container = self.container()?;
         let current_index: usize = (self.current_index.get() - 1).try_into().ok()?;
         let fold = container

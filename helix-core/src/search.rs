@@ -70,7 +70,7 @@ pub fn find_nth_prev(
         }
     }
 
-    (n == 0).then(|| nth_prev_grapheme_boundary(text, pos, count) )
+    (n == 0).then(|| nth_prev_grapheme_boundary(text, pos, count))
 }
 
 pub fn find_folded_nth_next(

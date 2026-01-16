@@ -158,7 +158,7 @@ impl FoldContainer {
             std::iter::from_fn(move || match (start_points.peek(), end_points.peek()) {
                 (None, None) => None,
 
-                (Some(sfp), efp) if efp.map_or(true, |efp| sfp.header < efp.target) => {
+                (Some(sfp), efp) if efp.is_none_or(|efp| sfp.header < efp.target) => {
                     start_points.next().map(|sfp| {
                         once(Header.update(&mut sfp.header))
                             .chain(Some(StartTarget.update(&mut sfp.target)))

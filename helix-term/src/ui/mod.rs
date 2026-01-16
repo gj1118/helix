@@ -361,7 +361,7 @@ pub fn file_picker(editor: &Editor, root: PathBuf) -> FilePicker {
 
         match cx.editor.open(&path, action) {
             Ok(doc_id) => {
-                if old_id.map_or(true, |id| id != doc_id) {
+                if old_id != Some(doc_id) {
                     default_folding(cx.editor);
                 }
             }
@@ -412,10 +412,15 @@ fn get_excluded_types() -> ignore::types::Types {
         )
         .expect("Invalid type definition");
     type_builder.negate("all");
-    type_builder.build().expect("failed to build excluded_types")
+    type_builder
+        .build()
+        .expect("failed to build excluded_types")
 }
 
-pub fn directory_content(root: &Path, editor: &Editor) -> Result<Vec<(PathBuf, bool)>, std::io::Error> {
+pub fn directory_content(
+    root: &Path,
+    editor: &Editor,
+) -> Result<Vec<(PathBuf, bool)>, std::io::Error> {
     use ignore::WalkBuilder;
 
     let config = editor.config();
