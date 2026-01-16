@@ -2445,9 +2445,7 @@ impl Document {
 
     /// `None` when container is empty.
     pub fn fold_container(&self, view_id: ViewId) -> Option<&FoldContainer> {
-        self.fold_container
-            .get(&view_id)
-            .filter(|container| !container.is_empty())
+        self.fold_container.get(&view_id)
     }
 
     fn add_folds_impl(

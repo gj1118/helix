@@ -5,8 +5,8 @@ use std::time::Duration;
 use parking_lot::Mutex;
 
 use crate::{dispatch, events, register_dynamic_hook, register_event, register_hook};
-#[test]
-fn smoke_test() {
+#[tokio::test]
+async fn smoke_test() {
     events! {
         Event1 { content: String }
         Event2 { content: usize }
@@ -29,7 +29,7 @@ fn smoke_test() {
     });
 
     // triggers events
-    let thread = std::thread::spawn(|| {
+    let handle = tokio::spawn(async move {
         for i in 0..1000 {
             dispatch(Event2 { content: i });
         }
@@ -45,7 +45,7 @@ fn smoke_test() {
     dispatch(Event1 {
         content: "hello world".to_owned(),
     });
-    thread.join().unwrap();
+    handle.await.unwrap();
 
     // check output
     assert_eq!(&**res1.lock(), "foobarhello world");
@@ -55,9 +55,9 @@ fn smoke_test() {
     );
 }
 
-#[test]
+#[tokio::test]
 #[allow(dead_code)]
-fn dynamic() {
+async fn dynamic() {
     events! {
         Event3 {}
         Event4 { count: usize }

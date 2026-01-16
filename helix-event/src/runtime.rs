@@ -42,7 +42,7 @@ macro_rules! runtime_local {
 #[cfg(feature = "integration_test")]
 pub struct RuntimeLocal<T: 'static> {
     data: parking_lot::RwLock<
-        hashbrown::HashMap<tokio::runtime::Id, &'static T, foldhash::fast::FixedState>,
+        hashbrown::HashMap<Option<tokio::runtime::Id>, &'static T, foldhash::fast::FixedState>,
     >,
     init: fn() -> T,
 }
@@ -65,7 +65,7 @@ impl<T> RuntimeLocal<T> {
 impl<T> Deref for RuntimeLocal<T> {
     type Target = T;
     fn deref(&self) -> &T {
-        let id = tokio::runtime::Handle::current().id();
+        let id = tokio::runtime::Handle::try_current().ok().map(|h| h.id());
         let guard = self.data.read();
         match guard.get(&id) {
             Some(res) => res,

@@ -1,4 +1,4 @@
-build:
+build: fmt lint test
     cargo build --release
 
 install:
@@ -13,7 +13,7 @@ unit-test:
     cargo test --workspace --lib
 
 integration-test:
-    cargo test --workspace --tests
+    cargo test --workspace --tests --features integration
 
 lint:
     cargo clippy --workspace --all-targets --all-features -- -D warnings
