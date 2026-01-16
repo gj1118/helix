@@ -6,3 +6,6 @@ install:
 
 build_and_install: build install
     echo "Build and install complete!"
+
+test:
+    cargo test

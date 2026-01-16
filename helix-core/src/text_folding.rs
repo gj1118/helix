@@ -144,7 +144,7 @@ pub struct StartFoldPoint {
 
 impl StartFoldPoint {
     /// Returns the fold.
-    pub fn fold<'a>(&'a self, container: &'a FoldContainer) -> Fold {
+    pub fn fold<'a>(&'a self, container: &'a FoldContainer) -> Fold<'a> {
         Fold::new(self, &container.end_points[self.link])
     }
 
@@ -206,7 +206,7 @@ pub struct EndFoldPoint {
 
 impl EndFoldPoint {
     /// Returns the fold.
-    pub fn fold<'a>(&'a self, container: &'a FoldContainer) -> Fold {
+    pub fn fold<'a>(&'a self, container: &'a FoldContainer) -> Fold<'a> {
         Fold::new(&container.start_points[self.link], self)
     }
 
@@ -493,7 +493,7 @@ impl FoldContainer {
         object: &FoldObject,
         range: &ops::RangeInclusive<usize>,
         mut get_range: impl FnMut(Fold) -> ops::RangeInclusive<usize>,
-    ) -> Option<Fold> {
+    ) -> Option<Fold<'_>> {
         self.start_points
             .binary_search_by(|sfp| {
                 let fold_range = get_range(sfp.fold(self));
@@ -529,7 +529,7 @@ impl FoldContainer {
         &self,
         idx: usize,
         mut get_range: impl FnMut(Fold) -> ops::RangeInclusive<usize>,
-    ) -> Option<Fold> {
+    ) -> Option<Fold<'_>> {
         let end_idx = self.end_points.partition_point(|efp| {
             let range = get_range(efp.fold(self));
             *range.end() < idx
@@ -550,7 +550,7 @@ impl FoldContainer {
         &self,
         idx: usize,
         get_range: impl FnMut(Fold) -> ops::RangeInclusive<usize>,
-    ) -> Option<Fold> {
+    ) -> Option<Fold<'_>> {
         self.fold_containing(idx, get_range)
             .map(|fold| fold.superest_fold(self).unwrap_or(fold))
     }
@@ -821,7 +821,7 @@ impl<'a> FoldAnnotations<'a> {
     }
 
     /// Returns the previous fold if `idx` is equal to `get_idx(fold)`.
-    pub fn consume_prev(&self, idx: usize, mut get_idx: impl FnMut(Fold) -> usize) -> Option<Fold> {
+    pub fn consume_prev(&self, idx: usize, mut get_idx: impl FnMut(Fold) -> usize) -> Option<Fold<'_>> {
         let container = self.container()?;
         let current_index: usize = (self.current_index.get() - 1).try_into().ok()?;
         let fold = container
@@ -855,7 +855,7 @@ impl<'a> FoldAnnotations<'a> {
         &self,
         idx: usize,
         get_range: impl FnMut(Fold) -> ops::RangeInclusive<usize>,
-    ) -> Option<Fold> {
+    ) -> Option<Fold<'_>> {
         self.container()
             .and_then(|container| container.superest_fold_containing(idx, get_range))
     }
