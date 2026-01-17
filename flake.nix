@@ -81,8 +81,17 @@
       pkgsFor;
 
     overlays = {
-      helix = final: prev: {
-        helix = final.callPackage ./default.nix {inherit gitRev;};
+      helix = final: prev: let
+        msrvToolchain = final.pkgsBuildHost.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+        msrvPlatform = final.makeRustPlatform {
+          cargo = msrvToolchain;
+          rustc = msrvToolchain;
+        };
+      in {
+        helix = final.callPackage ./default.nix {
+          inherit gitRev;
+          rustPlatform = msrvPlatform;
+        };
       };
 
       default = self.overlays.helix;
