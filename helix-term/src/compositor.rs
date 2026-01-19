@@ -19,12 +19,15 @@ use crate::job::Jobs;
 use crate::ui::picker;
 use helix_view::Editor;
 
+use helix_plugin::PluginManager;
+
 pub use helix_view::input::Event;
 
 pub struct Context<'a> {
     pub editor: &'a mut Editor,
     pub scroll: Option<usize>,
     pub jobs: &'a mut Jobs,
+    pub plugin_manager: Option<std::sync::Arc<PluginManager>>,
 }
 
 impl Context<'_> {

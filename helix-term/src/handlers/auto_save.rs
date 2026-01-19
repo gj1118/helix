@@ -83,8 +83,9 @@ impl helix_event::AsyncHook for AutoSaveHandler {
 fn request_auto_save(editor: &mut Editor) {
     let context = &mut compositor::Context {
         editor,
-        scroll: Some(0),
+        scroll: None,
         jobs: &mut Jobs::new(),
+        plugin_manager: None,
     };
 
     let options = commands::WriteAllOptions {

@@ -12,12 +12,14 @@ use helix_core::indent::MAX_INDENT;
 use helix_core::syntax::Loader;
 use helix_core::text_folding;
 use helix_core::{line_ending, SmartString};
+use helix_plugin::PluginManager;
 use helix_stdx::path::home_dir;
 use helix_view::document::{read_to_string, DEFAULT_LANGUAGE_NAME};
 use helix_view::editor::{CloseError, ConfigEvent};
 use helix_view::expansion;
 use helix_view::handlers::BlameEvent;
 use serde_json::Value;
+use std::sync::Arc;
 use ui::completers::{self, Completer};
 
 #[derive(Clone)]
@@ -4622,10 +4624,25 @@ fn execute_command_line(
         return execute_command(cx, cmd, command, event);
     }
 
-    match typed::TYPABLE_COMMAND_MAP.get(command) {
+    match TYPABLE_COMMAND_MAP.get(command) {
         Some(cmd) => execute_command(cx, cmd, rest, event),
-        None if event == PromptEvent::Validate => Err(anyhow!("no such command: '{command}'")),
-        None => Ok(()),
+        None => {
+            if event == PromptEvent::Validate {
+                if let Some(pm) = &cx.plugin_manager {
+                    let args: Vec<String> =
+                        rest.split_whitespace().map(|s| s.to_string()).collect();
+                    if let Err(e) = pm.execute_command(cx.editor, command, args) {
+                        Err(anyhow!("{}", e))
+                    } else {
+                        Ok(())
+                    }
+                } else {
+                    Err(anyhow!("no such command: '{command}'"))
+                }
+            } else {
+                Ok(())
+            }
+        }
     }
 }
 
@@ -4659,10 +4676,14 @@ pub(super) fn command_mode(cx: &mut Context) {
 
     match cmdline_style {
         CmdlineStyle::Popup => {
+            let plugin_manager = cx.plugin_manager.clone();
+            let completer = move |editor: &Editor, input: &str| {
+                complete_command_line(editor, input, plugin_manager.clone())
+            };
             let mut cmdline = ui::CmdlinePopup::new(
                 "Cmdline".into(),
                 Some(':'),
-                complete_command_line,
+                completer,
                 move |cx: &mut compositor::Context, input: &str, event: PromptEvent| {
                     if let Err(err) = execute_command_line(cx, input, event) {
                         cx.editor.set_error(err.to_string());
@@ -4677,11 +4698,16 @@ pub(super) fn command_mode(cx: &mut Context) {
             cx.push_layer(Box::new(cmdline));
         }
         CmdlineStyle::Bottom => {
+            let plugin_manager = cx.plugin_manager.clone();
+            let completer = move |editor: &Editor, input: &str| {
+                complete_command_line(editor, input, plugin_manager.clone())
+            };
+
             // Use traditional prompt
             let mut prompt = Prompt::new(
                 "Cmdline".into(),
                 Some(':'),
-                complete_command_line,
+                completer,
                 move |cx: &mut compositor::Context, input: &str, event: PromptEvent| {
                     if let Err(err) = execute_command_line(cx, input, event) {
                         cx.editor.set_error(err.to_string());
@@ -4769,18 +4795,32 @@ fn command_line_doc(input: &str) -> Option<Cow<'_, str>> {
     Some(Cow::Owned(doc))
 }
 
-fn complete_command_line(editor: &Editor, input: &str) -> Vec<ui::prompt::Completion> {
+fn complete_command_line(
+    editor: &Editor,
+    input: &str,
+    plugin_manager: Option<Arc<PluginManager>>,
+) -> Vec<ui::prompt::Completion> {
     let (command, rest, complete_command) = command_line::split(input);
 
     if complete_command {
-        fuzzy_match(
+        let mut completions: Vec<_> = fuzzy_match(
             input,
             TYPABLE_COMMAND_LIST.iter().map(|command| command.name),
             false,
         )
         .into_iter()
         .map(|(name, _)| (0.., name.into()))
-        .collect()
+        .collect();
+
+        if let Some(pm) = plugin_manager {
+            let commands = pm.get_commands();
+            let plugin_completions =
+                fuzzy_match(input, commands.iter().map(|c| c.name.as_str()), false)
+                    .into_iter()
+                    .map(|(name, _)| (0.., name.to_string().into()));
+            completions.extend(plugin_completions);
+        }
+        completions
     } else {
         TYPABLE_COMMAND_MAP
             .get(command)

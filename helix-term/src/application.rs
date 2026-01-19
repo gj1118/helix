@@ -24,6 +24,7 @@ use crate::{
     args::Args,
     compositor::{Compositor, Event},
     config::Config,
+    events::OnModeSwitch,
     handlers,
     job::Jobs,
     keymap::Keymaps,
@@ -36,6 +37,15 @@ use std::{
     path::Path,
     sync::Arc,
 };
+
+use helix_event::register_hook;
+use helix_plugin::{EventData, EventType, PluginConfig, PluginEvent, PluginManager};
+use helix_view::events::DocumentDidOpen;
+use std::sync::Mutex;
+
+helix_event::runtime_local! {
+    static PENDING_PLUGIN_EVENTS: Mutex<Vec<PluginEvent>> = Mutex::new(Vec::new());
+}
 
 #[cfg_attr(windows, allow(unused_imports))]
 use anyhow::{Context, Error};
@@ -78,6 +88,8 @@ pub struct Application {
     signals: Signals,
     jobs: Jobs,
     lsp_progress: LspProgressMap,
+    plugin_manager: Arc<PluginManager>,
+    ui_receiver: tokio::sync::mpsc::UnboundedReceiver<crate::plugin_registry::UiRequest>,
 
     theme_mode: Option<theme::Mode>,
 }
@@ -260,6 +272,76 @@ impl Application {
         ])
         .context("build signal handler")?;
 
+        let mut plugin_manager =
+            PluginManager::new(PluginConfig::default()).expect("Failed to create plugin manager");
+
+        let (ui_handler, ui_receiver) = crate::plugin_registry::get_ui_handler();
+
+        // Register registries
+        {
+            let engine_arc = plugin_manager.engine();
+            let mut engine = engine_arc.write();
+            engine.set_builtin_command_registry(crate::plugin_registry::get_registry());
+            engine.set_ui_handler(ui_handler);
+        }
+
+        if plugin_manager.is_enabled() {
+            if let Err(e) = plugin_manager.initialize(&mut editor) {
+                log::error!("Failed to initialize plugin manager: {}", e);
+            } else {
+                log::info!("Plugin system initialized");
+            }
+        }
+        let plugin_manager = Arc::new(plugin_manager);
+
+        register_hook!(move |event: &mut DocumentDidOpen<'_>| {
+            if let Ok(mut events) = PENDING_PLUGIN_EVENTS.lock() {
+                events.push(PluginEvent {
+                    event_type: EventType::OnBufferOpen,
+                    data: EventData::Buffer {
+                        document_id: event.doc,
+                        path: Some(event.path.clone()),
+                    },
+                });
+            }
+            helix_event::request_redraw();
+            Ok(())
+        });
+
+        register_hook!(move |event: &mut OnModeSwitch<'_, '_>| {
+            let old_mode = format!("{:?}", event.old_mode);
+            let new_mode = format!("{:?}", event.new_mode);
+            if let Ok(mut events) = PENDING_PLUGIN_EVENTS.lock() {
+                events.push(PluginEvent {
+                    event_type: EventType::OnModeChange,
+                    data: EventData::ModeChange { old_mode, new_mode },
+                });
+            }
+            helix_event::request_redraw();
+            Ok(())
+        });
+
+        // Fire OnBufferOpen for already opened documents
+        let docs: Vec<_> = editor
+            .documents()
+            .filter_map(|doc| doc.path().map(|p| (doc.id(), p.to_path_buf())))
+            .collect();
+
+        for (doc_id, path) in docs {
+            if let Err(e) = plugin_manager.fire_event(
+                &mut editor,
+                PluginEvent {
+                    event_type: EventType::OnBufferOpen,
+                    data: EventData::Buffer {
+                        document_id: doc_id,
+                        path: Some(path),
+                    },
+                },
+            ) {
+                log::error!("Failed to fire plugin event for startup doc: {}", e);
+            }
+        }
+
         let app = Self {
             compositor,
             terminal,
@@ -268,13 +350,33 @@ impl Application {
             signals,
             jobs,
             lsp_progress: LspProgressMap::new(),
+            plugin_manager,
+            ui_receiver,
             theme_mode,
         };
 
         Ok(app)
     }
 
+    fn handle_plugin_events(&mut self) {
+        let events = {
+            let mut lock = match PENDING_PLUGIN_EVENTS.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            std::mem::take(&mut *lock)
+        };
+
+        for event in events {
+            if let Err(e) = self.plugin_manager.fire_event(&mut self.editor, event) {
+                log::error!("Failed to fire plugin event: {}", e);
+            }
+        }
+    }
+
     async fn render(&mut self) {
+        self.handle_plugin_events();
+
         if self.compositor.full_redraw {
             self.terminal.clear().expect("Cannot clear the terminal");
             self.compositor.full_redraw = false;
@@ -284,6 +386,7 @@ impl Application {
             editor: &mut self.editor,
             jobs: &mut self.jobs,
             scroll: None,
+            plugin_manager: Some(self.plugin_manager.clone()),
         };
 
         helix_event::start_frame();
@@ -359,6 +462,10 @@ impl Application {
                 }
                 Some(callback) = self.jobs.wait_futures.next() => {
                     self.jobs.handle_callback(&mut self.editor, &mut self.compositor, callback);
+                    self.render().await;
+                }
+                Some(request) = self.ui_receiver.recv() => {
+                    self.handle_ui_request(request).await;
                     self.render().await;
                 }
                 event = self.editor.wait_event() => {
@@ -577,6 +684,7 @@ impl Application {
             editor: &mut self.editor,
             jobs: &mut self.jobs,
             scroll: None,
+            plugin_manager: Some(self.plugin_manager.clone()),
         };
         let should_render = self.compositor.handle_event(&Event::IdleTimeout, &mut cx);
         if should_render || self.editor.needs_redraw {
@@ -650,6 +758,110 @@ impl Application {
             "'{}' written, {lines}L {size}",
             get_relative_path(&doc_save_event.path).to_string_lossy(),
         ));
+
+        // Fire OnBufferPostSave event
+        if let Err(e) = self.plugin_manager.fire_event(
+            &mut self.editor,
+            PluginEvent {
+                event_type: EventType::OnBufferPostSave,
+                data: EventData::Buffer {
+                    document_id: doc_save_event.doc_id,
+                    path: Some(doc_save_event.path.clone()),
+                },
+            },
+        ) {
+            log::error!("Failed to fire plugin event: {}", e);
+        }
+    }
+
+    async fn handle_ui_request(&mut self, request: crate::plugin_registry::UiRequest) {
+        use crate::plugin_registry::UiRequest;
+        match request {
+            UiRequest::Prompt {
+                message,
+                default,
+                plugin_name,
+                callback_id,
+            } => {
+                let plugin_manager = self.plugin_manager.clone();
+                let prompt = crate::ui::Prompt::new(
+                    message.into(),
+                    None,
+                    |_editor, _input| Vec::new(),
+                    move |cx, input, event| {
+                        if event == crate::ui::PromptEvent::Validate {
+                            let _ = plugin_manager.handle_ui_callback(
+                                cx.editor,
+                                plugin_name.clone(),
+                                callback_id,
+                                serde_json::Value::String(input.to_string()),
+                            );
+                        } else if event == crate::ui::PromptEvent::Abort {
+                            // Optionally handle abort
+                        }
+                    },
+                );
+                let prompt = if let Some(default) = default {
+                    prompt.with_line(default, &self.editor)
+                } else {
+                    prompt
+                };
+                self.compositor.push(Box::new(prompt));
+            }
+            UiRequest::Confirm {
+                message,
+                plugin_name,
+                callback_id,
+            } => {
+                let plugin_manager = self.plugin_manager.clone();
+                let prompt = crate::ui::Prompt::new(
+                    format!("{} (y/n) ", message).into(),
+                    None,
+                    |_editor, _input| Vec::new(),
+                    move |cx, input, event| {
+                        if event == crate::ui::PromptEvent::Validate {
+                            let confirmed =
+                                input.to_lowercase() == "y" || input.to_lowercase() == "yes";
+                            let _ = plugin_manager.handle_ui_callback(
+                                cx.editor,
+                                plugin_name.clone(),
+                                callback_id,
+                                serde_json::Value::Bool(confirmed),
+                            );
+                        } else if event == crate::ui::PromptEvent::Abort {
+                            let _ = plugin_manager.handle_ui_callback(
+                                cx.editor,
+                                plugin_name.clone(),
+                                callback_id,
+                                serde_json::Value::Bool(false),
+                            );
+                        }
+                    },
+                );
+                self.compositor.push(Box::new(prompt));
+            }
+            UiRequest::Picker {
+                items,
+                prompt: _prompt,
+                plugin_name,
+                callback_id,
+            } => {
+                let plugin_manager = self.plugin_manager.clone();
+                let columns = [ui::PickerColumn::new("item", |item: &String, _data| {
+                    item.as_str().into()
+                })];
+                let picker =
+                    crate::ui::Picker::new(columns, 0, items, (), move |cx, item, _action| {
+                        let _ = plugin_manager.handle_ui_callback(
+                            cx.editor,
+                            plugin_name.clone(),
+                            callback_id,
+                            serde_json::Value::String(item.clone()),
+                        );
+                    });
+                self.compositor.push(Box::new(overlaid(picker)));
+            }
+        }
     }
 
     #[inline(always)]
@@ -701,6 +913,7 @@ impl Application {
             editor: &mut self.editor,
             jobs: &mut self.jobs,
             scroll: None,
+            plugin_manager: Some(self.plugin_manager.clone()),
         };
         // Handle key events
         let should_redraw = match event.unwrap() {
@@ -714,8 +927,19 @@ impl Application {
 
                 self.compositor.resize(area);
 
-                self.compositor
-                    .handle_event(&Event::Resize(cols, rows), &mut cx)
+                let res = self
+                    .compositor
+                    .handle_event(&Event::Resize(cols, rows), &mut cx);
+                self.plugin_manager
+                    .fire_event(
+                        &mut self.editor,
+                        PluginEvent {
+                            event_type: EventType::OnViewChange,
+                            data: EventData::None,
+                        },
+                    )
+                    .ok();
+                res
             }
             #[cfg(not(windows))]
             // Ignore keyboard release events.
@@ -743,8 +967,19 @@ impl Application {
 
                 self.compositor.resize(area);
 
-                self.compositor
-                    .handle_event(&Event::Resize(width, height), &mut cx)
+                let res = self
+                    .compositor
+                    .handle_event(&Event::Resize(width, height), &mut cx);
+                self.plugin_manager
+                    .fire_event(
+                        &mut self.editor,
+                        PluginEvent {
+                            event_type: EventType::OnViewChange,
+                            data: EventData::None,
+                        },
+                    )
+                    .ok();
+                res
             }
             #[cfg(windows)]
             // Ignore keyboard release events.
