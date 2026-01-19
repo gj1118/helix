@@ -154,6 +154,7 @@ impl LuaEngine {
         api::register_ui_api(&self.lua, &helix)?;
         api::register_window_api(&self.lua, &helix)?;
         api::register_lsp_api(&self.lua, &helix)?;
+        api::register_log_api(&self.lua, &helix)?;
 
         // Register version info
         helix.set("version", env!("CARGO_PKG_VERSION"))?;

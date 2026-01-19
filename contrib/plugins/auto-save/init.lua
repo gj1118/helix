@@ -24,17 +24,17 @@ function M.setup(user_config)
         helix.on("buffer_post_save", M.on_buffer_save)
     end
 
-    print("[auto-save] Plugin loaded")
+    helix.log.warn("[auto-save] Plugin loaded")
 end
 
 -- Called when a buffer is opened
 function M.on_buffer_open(event)
-    print("[auto-save] Buffer opened")
+    helix.log.warn("[auto-save] Buffer opened")
 end
 
 -- Called after a buffer is saved
 function M.on_buffer_save(event)
-    print("[auto-save] Buffer saved successfully")
+    helix.log.warn("[auto-save] Buffer saved successfully")
 end
 
 -- Initialize the plugin

@@ -289,7 +289,8 @@ impl Application {
             if let Err(e) = plugin_manager.initialize(&mut editor) {
                 log::error!("Failed to initialize plugin manager: {}", e);
             } else {
-                log::info!("Plugin system initialized");
+                log::warn!("Plugin system initialized");
+                editor.set_status("Plugin system initialized");
             }
         }
         let plugin_manager = Arc::new(plugin_manager);
