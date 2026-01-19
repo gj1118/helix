@@ -10,6 +10,7 @@ pub mod events;
 pub mod health;
 pub mod job;
 pub mod keymap;
+pub mod plugin_registry;
 pub mod ui;
 
 #[cfg(not(windows))]

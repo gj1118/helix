@@ -80,6 +80,7 @@ fn prompt_to_reload_if_needed(editor: &mut Editor) {
             editor,
             scroll: None,
             jobs: &mut Jobs::new(),
+            plugin_manager: None,
         };
 
         match commands::typed::reload_all(&mut cx, Args::default(), PromptEvent::Validate) {

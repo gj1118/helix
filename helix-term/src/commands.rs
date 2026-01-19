@@ -102,6 +102,8 @@ use grep_regex::RegexMatcherBuilder;
 use grep_searcher::{sinks, BinaryDetection, SearcherBuilder};
 use ignore::{DirEntry, WalkBuilder, WalkState};
 
+use helix_plugin::PluginManager;
+
 pub type OnKeyCallback = Box<dyn FnOnce(&mut Context, KeyEvent)>;
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub enum OnKeyCallbackKind {
@@ -117,6 +119,7 @@ pub struct Context<'a> {
     pub callback: Vec<crate::compositor::Callback>,
     pub on_next_key_callback: Option<(OnKeyCallback, OnKeyCallbackKind)>,
     pub jobs: &'a mut Jobs,
+    pub plugin_manager: Option<std::sync::Arc<PluginManager>>,
 }
 
 impl Context<'_> {
@@ -181,6 +184,7 @@ impl Context<'_> {
             editor: self.editor,
             jobs: self.jobs,
             scroll: None,
+            plugin_manager: self.plugin_manager.clone(),
         }
         .block_try_flush_writes()
     }
@@ -262,10 +266,17 @@ impl MappableCommand {
                         editor: cx.editor,
                         jobs: cx.jobs,
                         scroll: None,
+                        plugin_manager: cx.plugin_manager.clone(),
                     };
                     if let Err(e) =
                         typed::execute_command(&mut cx, command, args, PromptEvent::Validate)
                     {
+                        cx.editor.set_error(format!("{}", e));
+                    }
+                } else if let Some(plugin_manager) = &cx.plugin_manager {
+                    let args: Vec<String> =
+                        args.split_whitespace().map(|s| s.to_string()).collect();
+                    if let Err(e) = plugin_manager.execute_command(cx.editor, name, args) {
                         cx.editor.set_error(format!("{}", e));
                     }
                 } else {
@@ -3989,15 +4000,24 @@ pub fn command_palette(cx: &mut Context) {
                 [&cx.editor.mode]
                 .reverse_map();
 
-            let commands = MappableCommand::STATIC_COMMAND_LIST.iter().cloned().chain(
-                typed::TYPABLE_COMMAND_LIST
-                    .iter()
-                    .map(|cmd| MappableCommand::Typable {
-                        name: cmd.name.to_owned(),
+            let mut commands: Vec<MappableCommand> = MappableCommand::STATIC_COMMAND_LIST.to_vec();
+            commands.extend(typed::TYPABLE_COMMAND_MAP.values().map(|cmd| {
+                MappableCommand::Typable {
+                    name: cmd.name.to_owned(),
+                    args: String::new(),
+                    doc: cmd.doc.to_owned(),
+                }
+            }));
+
+            if let Some(pm) = &cx.plugin_manager {
+                commands.extend(pm.get_commands().into_iter().map(|meta| {
+                    MappableCommand::Typable {
+                        name: meta.name,
                         args: String::new(),
-                        doc: cmd.doc.to_owned(),
-                    }),
-            );
+                        doc: meta.doc,
+                    }
+                }));
+            }
 
             let columns = [
                 ui::PickerColumn::new("name", |item, _| match item {
@@ -4038,6 +4058,7 @@ pub fn command_palette(cx: &mut Context) {
                     callback: Vec::new(),
                     on_next_key_callback: None,
                     jobs: cx.jobs,
+                    plugin_manager: cx.plugin_manager.clone(),
                 };
                 let focus = view!(ctx.editor).id;
 

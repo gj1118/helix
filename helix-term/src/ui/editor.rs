@@ -1935,6 +1935,7 @@ impl Component for EditorView {
             callback: Vec::new(),
             on_next_key_callback: None,
             jobs: context.jobs,
+            plugin_manager: context.plugin_manager.clone(),
         };
 
         match event {
@@ -1983,6 +1984,7 @@ impl Component for EditorView {
                                         editor: cx.editor,
                                         jobs: cx.jobs,
                                         scroll: None,
+                                        plugin_manager: cx.plugin_manager.clone(),
                                     };
 
                                     if let EventResult::Consumed(callback) =

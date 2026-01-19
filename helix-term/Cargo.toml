@@ -49,6 +49,7 @@ helix-lsp = { path = "../helix-lsp" }
 helix-dap = { path = "../helix-dap" }
 helix-vcs = { path = "../helix-vcs" }
 helix-loader = { path = "../helix-loader" }
+helix-plugin = { path = "../helix-plugin" }
 
 anyhow = "1"
 once_cell = "1.21"
