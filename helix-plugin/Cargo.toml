@@ -18,7 +18,7 @@ helix-event = { path = "../helix-event" }
 helix-stdx = { path = "../helix-stdx" }
 helix-loader = { path = "../helix-loader" }
 
-mlua = { version = "0.10", features = ["lua54", "async", "send", "serialize"] }
+mlua = { version = "0.10", features = ["lua54", "async", "send", "serialize", "vendored"] }
 anyhow = "1"
 thiserror.workspace = true
 tokio = { version = "1", features = ["sync", "rt"] }
