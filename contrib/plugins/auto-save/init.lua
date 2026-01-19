@@ -24,6 +24,24 @@ function M.setup(user_config)
         helix.on("buffer_post_save", M.on_buffer_save)
     end
 
+    -- Register a command that can be bound to a key in config.toml
+    helix.register_command({
+        name = "toggle_auto_save",
+        doc = "Toggles the auto-save plugin",
+        handler = function()
+            config.enabled = not config.enabled
+            helix.ui.notify("Auto-save " .. (config.enabled and "enabled" or "disabled"))
+        end
+    })
+
+    -- Listen for key presses directly (optional)
+    helix.on("key_press", function(event)
+        if event.key == "C-s" then
+            -- This is just an example of direct key interception
+            helix.log.warn("[auto-save] key pressed: " .. event.key)
+        end
+    end)
+
     helix.log.warn("[auto-save] Plugin loaded")
 end
 

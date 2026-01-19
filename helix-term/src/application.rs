@@ -988,7 +988,20 @@ impl Application {
                 kind: crossterm::event::KeyEventKind::Release,
                 ..
             }) => false,
-            event => self.compositor.handle_event(&event.into(), &mut cx),
+            event => {
+                let event: helix_view::input::Event = event.into();
+                if let helix_view::input::Event::Key(key) = &event {
+                    if let Ok(mut events) = PENDING_PLUGIN_EVENTS.lock() {
+                        events.push(PluginEvent {
+                            event_type: EventType::OnKeyPress,
+                            data: EventData::KeyPress {
+                                key: key.to_string(),
+                            },
+                        });
+                    }
+                }
+                self.compositor.handle_event(&event, &mut cx)
+            }
         };
 
         if should_redraw && !self.editor.should_close() {

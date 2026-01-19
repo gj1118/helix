@@ -706,21 +706,23 @@ impl std::str::FromStr for MappableCommand {
         if let Some(suffix) = s.strip_prefix(':') {
             let (name, args, _) = command_line::split(suffix);
             ensure!(!name.is_empty(), "Expected typable command name");
-            typed::TYPABLE_COMMAND_MAP
-                .get(name)
-                .map(|cmd| {
-                    let doc = if args.is_empty() {
-                        cmd.doc.to_string()
-                    } else {
-                        format!(":{} {:?}", cmd.name, args)
-                    };
-                    MappableCommand::Typable {
-                        name: cmd.name.to_owned(),
-                        doc,
-                        args: args.to_string(),
-                    }
-                })
-                .ok_or_else(|| anyhow!("No TypableCommand named '{}'", s))
+            let cmd = typed::TYPABLE_COMMAND_MAP.get(name);
+
+            let doc = if let Some(cmd) = cmd {
+                if args.is_empty() {
+                    cmd.doc.to_string()
+                } else {
+                    format!(":{} {:?}", cmd.name, args)
+                }
+            } else {
+                format!(":{} {:?}", name, args)
+            };
+
+            Ok(MappableCommand::Typable {
+                name: name.to_owned(),
+                doc,
+                args: args.to_string(),
+            })
         } else if let Some(suffix) = s.strip_prefix('@') {
             helix_view::input::parse_macro(suffix).map(|keys| Self::Macro {
                 name: s.to_string(),
