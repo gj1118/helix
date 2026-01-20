@@ -119,7 +119,7 @@ impl LuaEngine {
     }
 
     /// Register the Helix API with Lua
-    pub fn register_api(&self) -> Result<()> {
+    pub fn register_api(&self, config: crate::types::PluginConfig) -> Result<()> {
         let globals = self.lua.globals();
 
         if let Some(ref registry) = self.builtin_commands {
@@ -140,6 +140,7 @@ impl LuaEngine {
             .set_app_data(crate::types::UiCallbackCounter(Arc::clone(
                 &self.next_ui_callback_id,
             )));
+        self.lua.set_app_data(config);
 
         // Create the main helix table
         let helix = self.lua.create_table()?;
@@ -147,6 +148,7 @@ impl LuaEngine {
         // Register the event system
         self.register_event_api(&helix)?;
         self.register_command_api(&helix)?;
+        self.register_config_api(&helix)?;
 
         // Register API namespaces
         api::register_buffer_api(&self.lua, &helix)?;
@@ -195,6 +197,49 @@ impl LuaEngine {
         )?;
 
         helix.set("on", on)?;
+
+        Ok(())
+    }
+
+    /// Register the config API
+    fn register_config_api(&self, helix: &LuaTable) -> Result<()> {
+        // helix.get_config() - Get configuration for the current plugin
+        let get_config = self.lua.create_function(move |lua, ()| {
+            let plugin_name = lua
+                .globals()
+                .get::<String>("_current_plugin_name")
+                .unwrap_or_else(|_| "unknown".to_string());
+
+            if let Some(config) = lua.app_data_ref::<crate::types::PluginConfig>() {
+                if let Some(plugin_config) = config.plugins.iter().find(|p| p.name == plugin_name) {
+                    // Convert serde_json::Value to LuaValue
+                    let val = match &plugin_config.config {
+                        serde_json::Value::Object(map) => {
+                            let table = lua.create_table()?;
+                            for (k, v) in map {
+                                // Simple conversion for common types
+                                match v {
+                                    serde_json::Value::String(s) => {
+                                        table.set(k.clone(), s.clone())?
+                                    }
+                                    serde_json::Value::Number(n) => {
+                                        table.set(k.clone(), n.as_f64().unwrap_or(0.0))?
+                                    }
+                                    serde_json::Value::Bool(b) => table.set(k.clone(), *b)?,
+                                    _ => {} // Skip complex types for now
+                                }
+                            }
+                            Some(table)
+                        }
+                        _ => None,
+                    };
+                    return Ok(val);
+                }
+            }
+            Ok(None)
+        })?;
+
+        helix.set("get_config", get_config)?;
 
         Ok(())
     }
@@ -344,6 +389,38 @@ impl LuaEngine {
                     .set("type", event.event_type.as_str())
                     .map_err(PluginError::LuaError)?;
 
+                // Set event-specific data
+                match &event.data {
+                    crate::types::EventData::Buffer { document_id, path } => {
+                        event_data
+                            .set("document_id", format!("{:?}", document_id))
+                            .ok();
+                        event_data
+                            .set(
+                                "path",
+                                path.as_ref().map(|p| p.to_string_lossy().to_string()),
+                            )
+                            .ok();
+                    }
+                    crate::types::EventData::ModeChange { old_mode, new_mode } => {
+                        event_data.set("old_mode", old_mode.clone()).ok();
+                        event_data.set("new_mode", new_mode.clone()).ok();
+                    }
+                    crate::types::EventData::KeyPress { key } => {
+                        event_data.set("key", key.clone()).ok();
+                    }
+                    crate::types::EventData::LspDiagnostic {
+                        document_id,
+                        diagnostic_count,
+                    } => {
+                        event_data
+                            .set("document_id", format!("{:?}", document_id))
+                            .ok();
+                        event_data.set("diagnostic_count", *diagnostic_count).ok();
+                    }
+                    _ => {}
+                }
+
                 let plugin_name_captured = plugin_name.clone();
                 with_editor_context(editor, || {
                     callback
@@ -383,7 +460,9 @@ mod tests {
     #[test]
     fn test_api_registration() {
         let engine = LuaEngine::new().unwrap();
-        assert!(engine.register_api().is_ok());
+        assert!(engine
+            .register_api(crate::types::PluginConfig::default())
+            .is_ok());
 
         // Test that helix global exists
         let result: std::result::Result<(), mlua::Error> =
@@ -394,7 +473,9 @@ mod tests {
     #[test]
     fn test_event_registration() {
         let engine = LuaEngine::new().unwrap();
-        engine.register_api().unwrap();
+        engine
+            .register_api(crate::types::PluginConfig::default())
+            .unwrap();
 
         let result: std::result::Result<(), mlua::Error> = engine
             .lua
@@ -429,7 +510,9 @@ mod tests {
     #[test]
     fn test_full_api_availability() {
         let engine = LuaEngine::new().unwrap();
-        engine.register_api().unwrap();
+        engine
+            .register_api(crate::types::PluginConfig::default())
+            .unwrap();
 
         let code = r#"
             -- Test Buffer API

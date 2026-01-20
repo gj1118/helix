@@ -47,7 +47,7 @@ impl PluginManager {
     /// Create a new plugin manager
     pub fn new(config: PluginConfig) -> Result<Self> {
         let engine = LuaEngine::new()?;
-        engine.register_api()?;
+        engine.register_api(config.clone())?;
 
         Ok(Self {
             engine: Arc::new(RwLock::new(engine)),

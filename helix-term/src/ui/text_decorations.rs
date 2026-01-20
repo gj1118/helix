@@ -13,6 +13,9 @@ pub use diagnostics::InlineDiagnostics;
 
 pub mod blame;
 mod diagnostics;
+mod plugins;
+
+pub use plugins::PluginDecoration;
 
 /// Decorations are the primary mechanism for extending the text rendering.
 ///

@@ -1,0 +1,5 @@
+name = "inline-diagnostic"
+version = "0.1.0"
+description = "Tiny inline diagnostic port for Helix"
+author = "Antigravity"
+entry = "init.lua"
