@@ -1,12 +1,12 @@
--- Clean panel-style diagnostics inspired by tiny-inline-diagnostic.nvim
--- First line inline, subsequent lines as virtual lines below
+-- Clean panel-style diagnostics with rounded corners and colored bullets
+-- Inspired by tiny-inline-diagnostic.nvim
 
 local config = {
-    -- Softer, more muted colors like the Neovim plugin
+    -- Panel colors
     panel_bg = "#2d4f5e",    -- Muted teal background
     panel_fg = "#c0ccd4",    -- Soft gray text
     
-    -- Severity indicator colors (dots)
+    -- Severity colors (for inline first line)
     error_color = "#ff6b6b",
     warning_color = "#ffd93d", 
     info_color = "#6bcb77",
@@ -15,8 +15,12 @@ local config = {
     -- Arrow pointing to the panel
     arrow = "←",
     
-    -- Bullet character for each diagnostic
+    -- Bullet character
     bullet = "●",
+    
+    -- Powerline rounded caps (only for first line)
+    left_cap = utf8.char(0xE0B6),   -- 
+    right_cap = utf8.char(0xE0B4),  -- 
     
     -- Max lines before truncation
     max_lines = 4,
@@ -48,6 +52,19 @@ local function get_bullet_color(severity)
         return config.hint_color
     end
     return config.info_color
+end
+
+local function get_severity_symbol(severity)
+    if severity == "error" then
+        return "●"
+    elseif severity == "warning" then
+        return "●"
+    elseif severity == "info" then
+        return "●"
+    elseif severity == "hint" then
+        return "●"
+    end
+    return "●"
 end
 
 local function calculate_visual_width(text, tab_width)
@@ -98,7 +115,7 @@ local function update_diagnostics()
         show_diags = line_diags
     end
     
-    -- Calculate panel width based on longest message
+    -- Calculate panel content width (for padding)
     local max_msg_len = 0
     for _, diag in ipairs(show_diags) do
         local len = utf8.len(config.bullet .. " " .. diag.message) or #diag.message
@@ -115,9 +132,9 @@ local function update_diagnostics()
         end
     end
     
-    local panel_width = max_msg_len + 2  -- Add padding
+    local content_width = max_msg_len + 2  -- Add padding
     
-    -- Calculate alignment offset for virtual lines
+    -- Calculate alignment
     local current_line_text = buffer:get_text():sub(
         buffer:line_to_char(current_line_idx),
         buffer:line_to_char(current_line_idx + 1) - 2
@@ -125,64 +142,128 @@ local function update_diagnostics()
     local line_visual_width = calculate_visual_width(current_line_text, tab_width)
     if current_line_text == "" then line_visual_width = 0 end
     
-    -- The offset where the panel starts (after code + arrow + gap)
-    local panel_start_offset = line_visual_width + 6
-    
     local annotations = {}
     local char_idx = line_diags[1].range.start
     
-    -- Helper to pad message to panel width
-    local function pad_message(msg)
-        local display = config.bullet .. " " .. msg
-        local padding = panel_width - (utf8.len(display) or #display)
-        if padding > 0 then
-            display = display .. string.rep(" ", padding)
-        end
-        return " " .. display .. " "
+    -- ========================================
+    -- FIRST LINE (INLINE - same row as code)
+    -- Uses multi-part annotations for rounded caps + colored bullet
+    -- ========================================
+    local first_diag = show_diags[1]
+    local first_bullet_color = get_bullet_color(first_diag.severity)
+    local first_symbol = get_severity_symbol(first_diag.severity)
+    
+    -- Pad first message
+    local first_msg = first_diag.message
+    local first_len = utf8.len(first_symbol .. " " .. first_msg) or #first_msg
+    local first_padding = content_width - first_len
+    if first_padding > 0 then
+        first_msg = first_msg .. string.rep(" ", first_padding)
     end
     
-    -- 1. FIRST LINE: Arrow + First message (INLINE - same line as code)
-    local first_diag = show_diags[1]
-    local first_content = " " .. config.arrow .. " " .. pad_message(first_diag.message)
+    local offset = 1
     
+    -- Arrow
     table.insert(annotations, helix.buffer.annotation({
         char_idx = char_idx,
-        text = first_content,
+        text = " " .. config.arrow .. " ",
+        fg = config.panel_bg,
+        offset = offset,
+        is_line = false
+    }))
+    offset = offset + 3
+    
+    -- Left cap (fg=panel_bg, NO bg for transparency)
+    table.insert(annotations, helix.buffer.annotation({
+        char_idx = char_idx,
+        text = config.left_cap,
+        fg = config.panel_bg,
+        offset = offset,
+        is_line = false
+    }))
+    offset = offset + 1
+    
+    -- Colored bullet
+    table.insert(annotations, helix.buffer.annotation({
+        char_idx = char_idx,
+        text = " " .. first_symbol,
+        fg = first_bullet_color,
+        bg = config.panel_bg,
+        offset = offset,
+        is_line = false
+    }))
+    offset = offset + 2
+    
+    -- Message text (with padding)
+    table.insert(annotations, helix.buffer.annotation({
+        char_idx = char_idx,
+        text = " " .. first_msg .. " ",
         fg = config.panel_fg,
         bg = config.panel_bg,
-        offset = 1,
-        is_line = false  -- INLINE!
+        offset = offset,
+        is_line = false
+    }))
+    offset = offset + utf8.len(" " .. first_msg .. " ")
+    
+    -- Right cap (fg=panel_bg, NO bg for transparency)
+    table.insert(annotations, helix.buffer.annotation({
+        char_idx = char_idx,
+        text = config.right_cap,
+        fg = config.panel_bg,
+        offset = offset,
+        is_line = false
     }))
     
-    -- 2. SUBSEQUENT LINES: Remaining messages as virtual lines
+    -- ========================================
+    -- SUBSEQUENT LINES (Virtual - single annotation, no caps)
+    -- Rectangular shape to avoid color issues
+    -- ========================================
+    local virt_line_offset = line_visual_width + 5  -- Align with first line's content (after left cap)
+    
     for i = 2, #show_diags do
         local diag = show_diags[i]
-        local content = pad_message(diag.message)
+        local symbol = get_severity_symbol(diag.severity)
         
+        -- Build row content (no caps for virtual lines)
+        local msg = diag.message
+        local msg_len = utf8.len(symbol .. " " .. msg) or #msg
+        local msg_padding = content_width - msg_len
+        if msg_padding > 0 then
+            msg = msg .. string.rep(" ", msg_padding)
+        end
+        
+        local row_text = " " .. symbol .. " " .. msg .. " "
+        
+        -- Single annotation for the entire virtual line
         table.insert(annotations, helix.buffer.annotation({
             char_idx = char_idx,
-            text = content,
+            text = row_text,
             fg = config.panel_fg,
             bg = config.panel_bg,
-            offset = panel_start_offset,
-            is_line = true  -- Virtual line below
+            offset = virt_line_offset,
+            is_line = true
         }))
     end
     
-    -- 3. Truncation message if needed (as virtual line)
+    -- ========================================
+    -- TRUNCATION LINE (if needed)
+    -- ========================================
     if hidden_count > 0 then
         local trunc_msg = "... (+" .. hidden_count .. " more)"
-        local padding = panel_width - (utf8.len(trunc_msg) or #trunc_msg)
-        if padding > 0 then
-            trunc_msg = trunc_msg .. string.rep(" ", padding)
+        local trunc_len = utf8.len(trunc_msg) or #trunc_msg
+        local trunc_padding = content_width - trunc_len
+        if trunc_padding > 0 then
+            trunc_msg = trunc_msg .. string.rep(" ", trunc_padding)
         end
+        
+        local trunc_row = " " .. trunc_msg .. " "
         
         table.insert(annotations, helix.buffer.annotation({
             char_idx = char_idx,
-            text = " " .. trunc_msg .. " ",
+            text = trunc_row,
             fg = config.panel_fg,
             bg = config.panel_bg,
-            offset = panel_start_offset,
+            offset = virt_line_offset,
             is_line = true
         }))
     end
@@ -198,4 +279,4 @@ helix.on("lsp_diagnostic", function(event)
     update_diagnostics()
 end)
 
-helix.log.info("[inline-diagnostic] Panel style v2 enabled")
+helix.log.info("[inline-diagnostic] Fixed cap colors - rounded first line only")
