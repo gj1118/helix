@@ -1499,7 +1499,8 @@ async fn open() -> anyhow::Result<()> {
                 ),
                 Some(&|app| {
                     let expected = ("    new text\n".into(), 0);
-                    assert_eq!(result(app, 55), expected);
+                    let result = result(app, 55);
+                    assert_eq!((result.0.replace("\r\n", "\n"), result.1), expected);
                 }),
             ),
             (Some("xd"), None),
@@ -1511,7 +1512,8 @@ async fn open() -> anyhow::Result<()> {
                 ),
                 Some(&|app| {
                     let expected = ("    new text\n".into(), 0);
-                    assert_eq!(result(app, 55), expected);
+                    let result = result(app, 55);
+                    assert_eq!((result.0.replace("\r\n", "\n"), result.1), expected);
                 }),
             ),
             (Some("xd"), None),
@@ -1523,7 +1525,8 @@ async fn open() -> anyhow::Result<()> {
                 ),
                 Some(&|app| {
                     let expected = ("        new text\n".into(), -1);
-                    assert_eq!(result(app, 71), expected);
+                    let result = result(app, 71);
+                    assert_eq!((result.0.replace("\r\n", "\n"), result.1), expected);
                 }),
             ),
             (
@@ -1545,7 +1548,8 @@ async fn open() -> anyhow::Result<()> {
                 ),
                 Some(&|app| {
                     let expected = ("        new text\n".into(), -1);
-                    assert_eq!(result(app, 71), expected);
+                    let result = result(app, 71);
+                    assert_eq!((result.0.replace("\r\n", "\n"), result.1), expected);
                 }),
             ),
             (
@@ -1556,7 +1560,8 @@ async fn open() -> anyhow::Result<()> {
                 ),
                 Some(&|app| {
                     let expected = ("new text\n".into(), 0);
-                    assert_eq!(result(app, 4), expected);
+                    let result = result(app, 4);
+                    assert_eq!((result.0.replace("\r\n", "\n"), result.1), expected);
                 }),
             ),
             (
@@ -1582,7 +1587,8 @@ async fn open() -> anyhow::Result<()> {
                 ),
                 Some(&|app| {
                     let expected = ("//! new text\n".into(), 0);
-                    assert_eq!(result(app, 4), expected);
+                    let result = result(app, 4);
+                    assert_eq!((result.0.replace("\r\n", "\n"), result.1), expected);
                 }),
             ),
         ],
