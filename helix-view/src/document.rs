@@ -139,6 +139,20 @@ pub enum DocumentOpenError {
     IoError(#[from] io::Error),
 }
 
+#[derive(Debug, Clone)]
+pub struct PluginAnnotation {
+    pub char_idx: usize,
+    pub text: String,
+    pub style: Option<String>,
+    pub fg: Option<String>,
+    pub bg: Option<String>,
+    pub offset: u16,
+    pub is_line: bool,
+    /// For virtual lines: which row index this belongs to (0-indexed).
+    /// Multiple annotations with the same virt_line_idx will render on the same virtual line.
+    pub virt_line_idx: Option<u16>,
+}
+
 pub struct Document {
     pub(crate) id: DocumentId,
     text: Rope,
@@ -151,6 +165,7 @@ pub struct Document {
     /// To know if they're up-to-date, check the `id` field in `DocumentInlayHints`.
     pub(crate) inlay_hints: HashMap<ViewId, DocumentInlayHints>,
     pub(crate) jump_labels: HashMap<ViewId, Vec<Overlay>>,
+    pub plugin_annotations: HashMap<ViewId, Vec<PluginAnnotation>>,
     fold_container: HashMap<ViewId, FoldContainer>,
     /// Set to `true` when the document is updated, reset to `false` on the next inlay hints
     /// update from the LSP
@@ -750,6 +765,7 @@ impl Document {
             focused_at: std::time::Instant::now(),
             readonly: false,
             jump_labels: HashMap::new(),
+            plugin_annotations: HashMap::new(),
             color_swatches: None,
             color_swatch_controller: TaskController::new(),
             is_welcome: false,

@@ -40,7 +40,7 @@ use std::{
 
 use helix_event::register_hook;
 use helix_plugin::{EventData, EventType, PluginConfig, PluginEvent, PluginManager};
-use helix_view::events::DocumentDidOpen;
+use helix_view::events::{DiagnosticsDidChange, DocumentDidOpen, SelectionDidChange};
 use std::sync::Mutex;
 
 helix_event::runtime_local! {
@@ -306,6 +306,35 @@ impl Application {
                 });
             }
             helix_event::request_redraw();
+            Ok(())
+        });
+
+        register_hook!(move |event: &mut SelectionDidChange<'_>| {
+            if let Ok(mut events) = PENDING_PLUGIN_EVENTS.lock() {
+                events.push(PluginEvent {
+                    event_type: EventType::OnSelectionChange,
+                    data: EventData::Buffer {
+                        document_id: event.doc.id(),
+                        path: event
+                            .doc
+                            .path()
+                            .map(|p: &std::path::PathBuf| p.to_path_buf()),
+                    },
+                });
+            }
+            Ok(())
+        });
+
+        register_hook!(move |event: &mut DiagnosticsDidChange<'_>| {
+            if let Ok(mut events) = PENDING_PLUGIN_EVENTS.lock() {
+                events.push(PluginEvent {
+                    event_type: EventType::OnLspDiagnostic,
+                    data: EventData::Buffer {
+                        document_id: event.doc,
+                        path: None, // We could look it up but doc_id is usually enough
+                    },
+                });
+            }
             Ok(())
         });
 

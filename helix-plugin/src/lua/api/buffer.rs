@@ -190,25 +190,112 @@ impl LuaUserData for LuaBuffer {
             Ok(selections)
         });
 
-        // Replace text
+        // Get diagnostics
+        methods.add_method("get_diagnostics", |lua, this, ()| {
+            let editor = crate::lua::get_editor_mut()?;
+            let doc = editor.document(this.document_id).ok_or_else(|| {
+                LuaError::RuntimeError(format!("Buffer {:?} no longer exists", this.document_id))
+            })?;
+
+            let diagnostics = lua.create_table()?;
+            for (i, diag) in doc.diagnostics().iter().enumerate() {
+                diagnostics.set(i + 1, LuaDiagnostic::from(diag.clone()))?;
+            }
+            Ok(diagnostics)
+        });
+
+        // Set annotations
         methods.add_method(
-            "replace",
-            |_lua,
-             this,
-             (start_line, start_col, end_line, end_col, text): (
-                usize,
-                usize,
-                usize,
-                usize,
-                String,
-            )| {
-                // TODO: Implement actual replacement
-                Ok(format!(
-                    "Would replace {}:{} to {}:{} with '{}' in buffer {}",
-                    start_line, start_col, end_line, end_col, text, this.document_id
-                ))
+            "set_annotations",
+            |_lua, this, annotations: Vec<LuaPluginAnnotation>| {
+                let editor = crate::lua::get_editor_mut()?;
+                let (view, doc) = helix_view::current!(editor);
+
+                // For now, only support current doc
+                if doc.id() != this.document_id {
+                    return Err(LuaError::RuntimeError(
+                        "Annotations currently only supported for the active buffer.".to_string(),
+                    ));
+                }
+
+                let plugin_annots: Vec<helix_view::document::PluginAnnotation> = annotations
+                    .into_iter()
+                    .map(|a| helix_view::document::PluginAnnotation {
+                        char_idx: a.char_idx,
+                        text: a.text,
+                        style: a.style,
+                        fg: a.fg,
+                        bg: a.bg,
+                        offset: a.offset,
+                        is_line: a.is_line,
+                        virt_line_idx: a.virt_line_idx,
+                    })
+                    .collect();
+
+                doc.plugin_annotations.insert(view.id, plugin_annots);
+                Ok(())
             },
         );
+
+        // Get cursor position (char index)
+        methods.add_method("get_cursor", |_lua, this, ()| {
+            let editor = crate::lua::get_editor_mut()?;
+            let (view, doc) = helix_view::current!(editor);
+            if doc.id() != this.document_id {
+                return Err(LuaError::RuntimeError(
+                    "Current view is not showing this buffer".into(),
+                ));
+            }
+            let cursor = doc
+                .selection(view.id)
+                .primary()
+                .cursor(doc.text().slice(..));
+            Ok(cursor)
+        });
+
+        // Convert char index to line index (0-based)
+        methods.add_method("char_to_line", |_lua, this, char_idx: usize| {
+            let editor = crate::lua::get_editor_mut()?;
+            let doc = editor.document(this.document_id).ok_or_else(|| {
+                LuaError::RuntimeError(format!("Buffer {:?} no longer exists", this.document_id))
+            })?;
+            Ok(doc
+                .text()
+                .char_to_line(char_idx.min(doc.text().len_chars())))
+        });
+
+        // Convert line index to char index (0-based)
+        methods.add_method("line_to_char", |_lua, this, line_idx: usize| {
+            let editor = crate::lua::get_editor_mut()?;
+            let doc = editor.document(this.document_id).ok_or_else(|| {
+                LuaError::RuntimeError(format!("Buffer {:?} no longer exists", this.document_id))
+            })?;
+            Ok(doc
+                .text()
+                .line_to_char(line_idx.min(doc.text().len_lines())))
+        });
+
+        // Get visual column for char index
+        methods.add_method("get_visual_column", |_lua, this, char_idx: usize| {
+            let editor = crate::lua::get_editor_mut()?;
+            let doc = editor.document(this.document_id).ok_or_else(|| {
+                LuaError::RuntimeError(format!("Buffer {:?} no longer exists", this.document_id))
+            })?;
+            let text = doc.text();
+            let line_idx = text.char_to_line(char_idx);
+            let line_start = text.line_to_char(line_idx);
+            let tab_width = doc.tab_width();
+
+            let mut column = 0;
+            for ch in text.slice(line_start..char_idx).chars() {
+                if ch == '\t' {
+                    column += tab_width - (column % tab_width);
+                } else {
+                    column += helix_core::unicode::width::UnicodeWidthChar::width(ch).unwrap_or(1);
+                }
+            }
+            Ok(column)
+        });
     }
 
     fn add_fields<'lua, F: LuaUserDataFields<Self>>(fields: &mut F) {
@@ -216,6 +303,57 @@ impl LuaUserData for LuaBuffer {
         fields.add_field_method_get("document_id", |_lua, this| {
             Ok(format!("{:?}", this.document_id))
         });
+    }
+}
+
+/// Lua wrapper for a plugin annotation
+#[derive(Clone)]
+pub struct LuaPluginAnnotation {
+    pub char_idx: usize,
+    pub text: String,
+    pub style: Option<String>,
+    pub fg: Option<String>,
+    pub bg: Option<String>,
+    pub offset: u16,
+    pub is_line: bool,
+    pub virt_line_idx: Option<u16>,
+}
+
+impl LuaUserData for LuaPluginAnnotation {
+    fn add_fields<'lua, F: LuaUserDataFields<Self>>(fields: &mut F) {
+        fields.add_field_method_get("char_idx", |_lua, this| Ok(this.char_idx));
+        fields.add_field_method_get("text", |_lua, this| Ok(this.text.clone()));
+        fields.add_field_method_get("style", |_lua, this| Ok(this.style.clone()));
+        fields.add_field_method_get("fg", |_lua, this| Ok(this.fg.clone()));
+        fields.add_field_method_get("bg", |_lua, this| Ok(this.bg.clone()));
+        fields.add_field_method_get("offset", |_lua, this| Ok(this.offset));
+        fields.add_field_method_get("is_line", |_lua, this| Ok(this.is_line));
+        fields.add_field_method_get("virt_line_idx", |_lua, this| Ok(this.virt_line_idx));
+    }
+
+    fn add_methods<'lua, M: LuaUserDataMethods<Self>>(_methods: &mut M) {}
+}
+
+impl FromLua for LuaPluginAnnotation {
+    fn from_lua(lua_value: LuaValue, _lua: &Lua) -> LuaResult<Self> {
+        match lua_value {
+            LuaValue::Table(table) => Ok(LuaPluginAnnotation {
+                char_idx: table.get("char_idx")?,
+                text: table.get("text")?,
+                style: table.get("style").ok(),
+                fg: table.get("fg").ok(),
+                bg: table.get("bg").ok(),
+                offset: table.get("offset").unwrap_or(0),
+                is_line: table.get("is_line").unwrap_or(false),
+                virt_line_idx: table.get("virt_line_idx").ok(),
+            }),
+            LuaValue::UserData(ud) => ud.borrow::<Self>().map(|s| s.clone()),
+            _ => Err(LuaError::FromLuaConversionError {
+                from: "LuaValue",
+                to: "LuaPluginAnnotation".to_string(),
+                message: Some("Expected UserData".to_string()),
+            }),
+        }
     }
 }
 
@@ -260,8 +398,8 @@ impl From<LuaPosition> for Position {
 /// Lua wrapper for a text range
 #[derive(Clone, Copy)]
 pub struct LuaRange {
-    pub start: LuaPosition,
-    pub end: LuaPosition,
+    pub start: usize,
+    pub end: usize,
 }
 
 impl LuaUserData for LuaRange {
@@ -272,11 +410,50 @@ impl LuaUserData for LuaRange {
 
     fn add_methods<'lua, M: LuaUserDataMethods<Self>>(methods: &mut M) {
         methods.add_meta_method(LuaMetaMethod::ToString, |_lua, this, ()| {
-            Ok(format!(
-                "Range({}:{} - {}:{})",
-                this.start.row, this.start.col, this.end.row, this.end.col
-            ))
+            Ok(format!("Range({}-{})", this.start, this.end))
         });
+    }
+}
+
+/// Lua wrapper for a diagnostic
+#[derive(Clone)]
+pub struct LuaDiagnostic {
+    pub range: LuaRange,
+    pub line: usize,
+    pub message: String,
+    pub severity: Option<String>,
+}
+
+impl LuaUserData for LuaDiagnostic {
+    fn add_fields<'lua, F: LuaUserDataFields<Self>>(fields: &mut F) {
+        fields.add_field_method_get("range", |_lua, this| Ok(this.range));
+        fields.add_field_method_get("line", |_lua, this| Ok(this.line));
+        fields.add_field_method_get("message", |_lua, this| Ok(this.message.clone()));
+        fields.add_field_method_get("severity", |_lua, this| Ok(this.severity.clone()));
+    }
+}
+
+impl From<helix_core::Diagnostic> for LuaDiagnostic {
+    fn from(diag: helix_core::Diagnostic) -> Self {
+        let severity = diag.severity.map(|s| {
+            match s {
+                helix_core::diagnostic::Severity::Hint => "hint",
+                helix_core::diagnostic::Severity::Info => "info",
+                helix_core::diagnostic::Severity::Warning => "warning",
+                helix_core::diagnostic::Severity::Error => "error",
+            }
+            .to_string()
+        });
+
+        Self {
+            range: LuaRange {
+                start: diag.range.start,
+                end: diag.range.end,
+            },
+            line: diag.line,
+            message: diag.message,
+            severity,
+        }
     }
 }
 
@@ -310,6 +487,21 @@ pub fn register_buffer_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
         Ok(buffers)
     })?;
     buffer_module.set("list", list)?;
+
+    // helix.buffer.annotation(table) - Create a new annotation
+    let annotation = lua.create_function(|_lua, table: LuaTable| {
+        Ok(LuaPluginAnnotation {
+            char_idx: table.get("char_idx")?,
+            text: table.get("text")?,
+            style: table.get("style").ok(),
+            fg: table.get("fg").ok(),
+            bg: table.get("bg").ok(),
+            offset: table.get("offset").unwrap_or(0),
+            is_line: table.get("is_line").unwrap_or(false),
+            virt_line_idx: table.get("virt_line_idx").ok(),
+        })
+    })?;
+    buffer_module.set("annotation", annotation)?;
 
     helix_table.set("buffer", buffer_module)?;
 

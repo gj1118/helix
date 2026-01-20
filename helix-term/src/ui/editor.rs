@@ -10,6 +10,7 @@ use crate::{
         statusline,
         text_decorations::{
             self, Decoration, DecorationManager, FoldDecoration, InlineDiagnostics,
+            PluginDecoration,
         },
         Completion, NotificationPopup, ProgressSpinners,
     },
@@ -27,14 +28,18 @@ use helix_core::{
 };
 use helix_loader::VERSION_AND_GIT_HASH;
 use helix_view::{
-    annotations::diagnostics::DiagnosticFilter,
+    // annotations::diagnostics::DiagnosticFilter,
     document::{Mode, SCRATCH_BUFFER_NAME},
     editor::{CompleteAction, CursorShapeConfig, InlineBlameConfig, InlineBlameShow},
     graphics::{Color, CursorKind, Modifier, Rect, Style},
     icons::ICONS,
     input::{KeyEvent, MouseButton, MouseEvent, MouseEventKind},
     keyboard::{KeyCode, KeyModifiers},
-    Document, DocumentId, Editor, Theme, View,
+    Document,
+    DocumentId,
+    Editor,
+    Theme,
+    View,
 };
 use std::{
     mem::take,
@@ -503,6 +508,8 @@ impl EditorView {
             config.end_of_line_diagnostics,
         ));
 
+        decorations.add_decoration(PluginDecoration::new(doc, theme, view.id));
+
         render_document(
             surface,
             inner,
@@ -515,8 +522,7 @@ impl EditorView {
             decorations,
         );
 
-        // Draw rulers after document so background-style shows behind text and
-        // glyph-style can selectively draw on blank cells without being overwritten.
+        // Draw rulers after document. Skip cells that already have content.
         Self::render_rulers(editor, doc, view, inner, surface, theme);
 
         // if we're not at the edge of the screen, draw a right border
@@ -531,11 +537,11 @@ impl EditorView {
             }
         }
 
-        if config.inline_diagnostics.disabled()
-            && config.end_of_line_diagnostics == DiagnosticFilter::Disable
-        {
-            Self::render_diagnostics(doc, view, inner, surface, theme);
-        }
+        // if config.inline_diagnostics.disabled()
+        //     && config.end_of_line_diagnostics == DiagnosticFilter::Disable
+        // {
+        //     Self::render_diagnostics(doc, view, inner, surface, theme);
+        // }
 
         // Statusline on the last row of the view area.
         // The cmdline space reservation is handled at the top level in EditorView::render.
@@ -642,21 +648,29 @@ impl EditorView {
             .map(|ruler| viewport.clip_left(ruler).with_width(1))
             .for_each(|area| {
                 if ruler_char.is_empty() {
-                    // Background-style ruler (legacy behavior)
-                    surface.set_style(area, bg_style);
+                    // Background-style ruler: only apply to cells without content
+                    for y in area.top()..area.bottom() {
+                        let cell = &surface[(area.x, y)];
+                        // Skip cells that have non-whitespace content (like diagnostic bubbles)
+                        if cell.symbol == " " || cell.symbol.is_empty() {
+                            surface[(area.x, y)].set_style(bg_style);
+                        }
+                    }
                 } else {
-                    // Foreground glyph ruler: draw the configured character on each visible row
-                    // Do NOT force a background color here to avoid making the glyph invisible
-                    // when fg == bg in the theme.
+                    // Foreground glyph ruler: only draw on empty/space cells
                     let mut glyph_style = base_style;
                     glyph_style.bg = None;
                     if glyph_style.fg.is_none() {
                         glyph_style = glyph_style.fg(Color::Gray);
                     }
                     for y in area.top()..area.bottom() {
-                        surface[(area.x, y)]
-                            .set_symbol(ruler_char)
-                            .set_style(glyph_style);
+                        let cell = &surface[(area.x, y)];
+                        // Only draw ruler glyph on empty/space cells to avoid overwriting content
+                        if cell.symbol == " " || cell.symbol.is_empty() {
+                            surface[(area.x, y)]
+                                .set_symbol(ruler_char)
+                                .set_style(glyph_style);
+                        }
                     }
                 }
             })
