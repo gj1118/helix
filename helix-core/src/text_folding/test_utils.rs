@@ -137,8 +137,8 @@ pub(crate) fn folds_eq_by(
 ) -> bool {
     if container1.len() != container2.len() {
         eprintln!(
-            "left has lenght = {}\n\
-            right has lenght = {}",
+            "left has length = {}\n\
+            right has length = {}",
             container1.len(),
             container2.len(),
         );
