@@ -3443,6 +3443,28 @@ fn notifications_test(
     Ok(())
 }
 
+fn reload_all_plugins(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    if let Some(plugin_manager) = &cx.plugin_manager {
+        if let Err(e) = plugin_manager.reload_plugins(cx.editor) {
+            cx.editor.set_error(format!("Failed to reload plugins: {}", e));
+        } else {
+            cx.editor.set_status("Plugins reloaded");
+        }
+    } else {
+        cx.editor.set_error("Plugin system not enabled".to_string());
+    }
+
+    Ok(())
+}
+
 pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
     TypableCommand {
         name: "exit",
@@ -4339,6 +4361,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Refresh user config.",
         fun: refresh_config,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "reload-all-plugins",
+        aliases: &[],
+        doc: "Reload all plugins.",
+        fun: reload_all_plugins,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

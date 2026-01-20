@@ -61,7 +61,7 @@ impl PluginManager {
     }
 
     /// Initialize and load all plugins
-    pub fn initialize(&mut self, editor: &mut Editor) -> Result<()> {
+    pub fn initialize(&self, editor: &mut Editor) -> Result<()> {
         // Determine plugin directories
         let plugin_dirs = if self.config.plugin_dirs.is_empty() {
             lua::loader::PluginLoader::default_plugin_dirs()
@@ -105,6 +105,21 @@ impl PluginManager {
         )?;
 
         Ok(())
+    }
+
+    /// Reload all plugins
+    pub fn reload_plugins(&self, editor: &mut Editor) -> Result<()> {
+        // Reset engine state
+        {
+            let mut engine = self.engine.write();
+            engine.reset()?;
+            
+            // Re-register API
+            engine.register_api(self.config.clone())?;
+        }
+
+        // Re-initialize (discover and load)
+        self.initialize(editor)
     }
 
     /// Check if a plugin is enabled in the configuration
