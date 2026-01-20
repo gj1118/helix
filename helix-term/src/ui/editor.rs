@@ -484,8 +484,6 @@ impl EditorView {
             );
         }
 
-
-
         let primary_cursor = doc
             .selection(view.id)
             .primary()
@@ -511,8 +509,6 @@ impl EditorView {
         ));
 
         decorations.add_decoration(PluginDecoration::new(doc, theme, view.id));
-
-
 
         render_document(
             surface,

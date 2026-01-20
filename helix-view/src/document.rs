@@ -148,6 +148,9 @@ pub struct PluginAnnotation {
     pub bg: Option<String>,
     pub offset: u16,
     pub is_line: bool,
+    /// For virtual lines: which row index this belongs to (0-indexed).
+    /// Multiple annotations with the same virt_line_idx will render on the same virtual line.
+    pub virt_line_idx: Option<u16>,
 }
 
 pub struct Document {

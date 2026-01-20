@@ -95,19 +95,45 @@ impl Decoration for PluginDecoration<'_> {
             }
 
             // Second pass: draw virtual lines (is_line = true)
-            // These appear below the current line
-            for annot in annots.iter().filter(|a| a.is_line) {
-                if annot.char_idx >= line_start && annot.char_idx < line_end {
-                    let style = self.build_style(annot);
+            // Group by virt_line_idx so multiple annotations can share the same virtual line row
+            let virt_annots: Vec<_> = annots
+                .iter()
+                .filter(|a| a.is_line && a.char_idx >= line_start && a.char_idx < line_end)
+                .collect();
 
-                    renderer.set_string(
-                        renderer.viewport.x + annot.offset,
-                        pos.visual_line + virt_off.row as u16 + virt_lines_drawn as u16,
-                        &annot.text,
-                        style,
-                    );
-                    virt_lines_drawn += 1;
+            // Find the maximum virt_line_idx used (or count unique ones if None)
+            let mut max_virt_idx: i32 = -1;
+            let mut next_auto_idx: u16 = 0;
+
+            for annot in &virt_annots {
+                if let Some(idx) = annot.virt_line_idx {
+                    max_virt_idx = max_virt_idx.max(idx as i32);
                 }
+            }
+
+            // Render each annotation at the correct Y position
+            for annot in &virt_annots {
+                let style = self.build_style(annot);
+
+                // Determine which virtual line row this annotation belongs to
+                let row_idx = if let Some(idx) = annot.virt_line_idx {
+                    idx
+                } else {
+                    // Auto-assign indices for annotations without explicit virt_line_idx
+                    let idx = (max_virt_idx + 1) as u16 + next_auto_idx;
+                    next_auto_idx += 1;
+                    idx
+                };
+
+                renderer.set_string(
+                    renderer.viewport.x + annot.offset,
+                    pos.visual_line + virt_off.row as u16 + row_idx,
+                    &annot.text,
+                    style,
+                );
+
+                // Track the maximum row used
+                virt_lines_drawn = virt_lines_drawn.max(row_idx as usize + 1);
             }
         }
 
