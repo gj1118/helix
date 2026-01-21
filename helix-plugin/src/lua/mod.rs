@@ -105,6 +105,35 @@ impl LuaEngine {
         })
     }
 
+    /// Reset the Lua engine, clearing all state and plugins
+    pub fn reset(&mut self) -> Result<()> {
+        let lua = Lua::new();
+
+        // Set up sandboxing - remove dangerous functions
+        lua.load(
+            r#"
+            -- Remove dangerous functions
+            os.execute = nil
+            os.exit = nil
+            io = nil
+            loadfile = nil
+            dofile = nil
+            "#,
+        )
+        .exec()
+        .map_err(|e| {
+            PluginError::InitializationFailed(format!("Failed to setup sandbox: {}", e))
+        })?;
+
+        self.lua = lua;
+        self.event_handlers.write().clear();
+        self.commands.write().clear();
+        self.plugins.clear();
+        self.ui_callbacks.write().clear();
+        
+        Ok(())
+    }
+
     /// Set the builtin command registry
     pub fn set_builtin_command_registry(
         &mut self,
