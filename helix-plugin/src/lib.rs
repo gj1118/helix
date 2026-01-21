@@ -113,7 +113,7 @@ impl PluginManager {
         {
             let mut engine = self.engine.write();
             engine.reset()?;
-            
+
             // Re-register API
             engine.register_api(self.config.clone())?;
         }

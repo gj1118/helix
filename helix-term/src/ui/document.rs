@@ -283,7 +283,7 @@ impl<'a> TextRenderer<'a> {
     pub fn draw_decoration_grapheme(
         &mut self,
         grapheme: Grapheme,
-        mut style: Style,
+        style: Style,
         mut row: u16,
         col: u16,
     ) -> bool {
@@ -294,10 +294,6 @@ impl<'a> TextRenderer<'a> {
             return false;
         }
         row -= self.offset.row as u16;
-        // TODO is it correct to apply the whitspace style to all unicode white spaces?
-        if grapheme.is_whitespace() {
-            style = style.patch(self.whitespace_style);
-        }
 
         let grapheme = match grapheme {
             Grapheme::Tab { width } => {
