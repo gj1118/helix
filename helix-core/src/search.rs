@@ -36,7 +36,8 @@ pub fn find_nth_next(
     }
 
     let mut count = 0;
-    for (i, g) in text.graphemes_at(pos).skip(1).enumerate() {
+    let bpos = text.char_to_byte(pos);
+    for (i, g) in text.graphemes_at(bpos).skip(1).enumerate() {
         if matcher.grapheme_match(g) {
             count = i + 1;
             n -= 1;
@@ -60,7 +61,8 @@ pub fn find_nth_prev(
     }
 
     let mut count = 0;
-    for (i, g) in text.graphemes_at(pos).reversed().enumerate() {
+    let bpos = text.char_to_byte(pos);
+    for (i, g) in text.graphemes_at(bpos).reversed().enumerate() {
         if matcher.grapheme_match(g) {
             count = i + 1;
             n -= 1;
