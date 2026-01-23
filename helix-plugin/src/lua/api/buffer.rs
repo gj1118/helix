@@ -229,6 +229,7 @@ impl LuaUserData for LuaBuffer {
                         offset: a.offset,
                         is_line: a.is_line,
                         virt_line_idx: a.virt_line_idx,
+                        dropped_text: a.dropped_text,
                     })
                     .collect();
 
@@ -317,6 +318,7 @@ pub struct LuaPluginAnnotation {
     pub offset: u16,
     pub is_line: bool,
     pub virt_line_idx: Option<u16>,
+    pub dropped_text: Option<String>,
 }
 
 impl LuaUserData for LuaPluginAnnotation {
@@ -329,6 +331,7 @@ impl LuaUserData for LuaPluginAnnotation {
         fields.add_field_method_get("offset", |_lua, this| Ok(this.offset));
         fields.add_field_method_get("is_line", |_lua, this| Ok(this.is_line));
         fields.add_field_method_get("virt_line_idx", |_lua, this| Ok(this.virt_line_idx));
+        fields.add_field_method_get("dropped_text", |_lua, this| Ok(this.dropped_text.clone()));
     }
 
     fn add_methods<'lua, M: LuaUserDataMethods<Self>>(_methods: &mut M) {}
@@ -346,6 +349,7 @@ impl FromLua for LuaPluginAnnotation {
                 offset: table.get("offset").unwrap_or(0),
                 is_line: table.get("is_line").unwrap_or(false),
                 virt_line_idx: table.get("virt_line_idx").ok(),
+                dropped_text: table.get("dropped_text").ok(),
             }),
             LuaValue::UserData(ud) => ud.borrow::<Self>().map(|s| s.clone()),
             _ => Err(LuaError::FromLuaConversionError {
@@ -499,6 +503,7 @@ pub fn register_buffer_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
             offset: table.get("offset").unwrap_or(0),
             is_line: table.get("is_line").unwrap_or(false),
             virt_line_idx: table.get("virt_line_idx").ok(),
+            dropped_text: table.get("dropped_text").ok(),
         })
     })?;
     buffer_module.set("annotation", annotation)?;
