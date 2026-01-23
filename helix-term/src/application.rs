@@ -272,7 +272,7 @@ impl Application {
         ])
         .context("build signal handler")?;
 
-        let mut plugin_manager =
+        let plugin_manager =
             PluginManager::new(PluginConfig::default()).expect("Failed to create plugin manager");
 
         let (ui_handler, ui_receiver) = crate::plugin_registry::get_ui_handler();

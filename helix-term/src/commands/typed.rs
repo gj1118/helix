@@ -3454,7 +3454,8 @@ fn reload_all_plugins(
 
     if let Some(plugin_manager) = &cx.plugin_manager {
         if let Err(e) = plugin_manager.reload_plugins(cx.editor) {
-            cx.editor.set_error(format!("Failed to reload plugins: {}", e));
+            cx.editor
+                .set_error(format!("Failed to reload plugins: {}", e));
         } else {
             cx.editor.set_status("Plugins reloaded");
         }

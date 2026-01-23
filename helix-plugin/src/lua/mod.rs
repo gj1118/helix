@@ -130,7 +130,7 @@ impl LuaEngine {
         self.commands.write().clear();
         self.plugins.clear();
         self.ui_callbacks.write().clear();
-        
+
         Ok(())
     }
 

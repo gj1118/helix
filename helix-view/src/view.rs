@@ -524,7 +524,8 @@ impl View {
             ));
         }
 
-        text_annotations.add_line_annotation(Box::new(PluginLineAnnotations::new(doc, self.id)));
+        text_annotations
+            .add_line_annotation(Box::new(PluginLineAnnotations::new(doc, self.id, width)));
 
         if let Some(fold_container) = doc.fold_container(self.id) {
             text_annotations.add_folds(fold_container);

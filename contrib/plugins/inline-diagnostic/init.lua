@@ -17,8 +17,11 @@ local config = {
   info_color = "#6bcb77",
   hint_color = "#4d96ff",
 
-  -- Arrow pointing to the panel
-  arrow = "← ",
+  -- Arrow pointing to the panel (used when inline on same line as code)
+  arrow = "←",
+
+  -- Arrow for dropped diagnostics (used when moved to virtual line below)
+  arrow_dropped = "╰",
 
   -- Bullet character
   bullet = "●",
@@ -144,19 +147,16 @@ local function update_diagnostics()
   local first_diag = show_diags[1]
   local first_bullet_color = get_bullet_color(first_diag.severity)
 
+  -- Don't add padding to inline message - only virtual lines need alignment padding
   local first_msg = first_diag.message
-  local first_len = utf8.len(config.bullet .. " " .. first_msg) or #first_msg
-  local first_padding = content_width - first_len
-  if first_padding > 0 then
-    first_msg = first_msg .. string.rep(" ", first_padding)
-  end
 
   local offset = 1
 
-  -- Arrow
+  -- Arrow (uses dropped_text when diagnostic moves to virtual line)
   table.insert(annotations, helix.buffer.annotation({
     char_idx = char_idx,
     text = " " .. config.arrow .. " ",
+    dropped_text = " " .. config.arrow_dropped .. " ",
     fg = config.panel_bg,
     offset = offset,
     is_line = false
@@ -173,16 +173,16 @@ local function update_diagnostics()
   }))
   offset = offset + 1
 
-  -- Colored bullet
+  -- Colored bullet (no leading space - left cap provides transition)
   table.insert(annotations, helix.buffer.annotation({
     char_idx = char_idx,
-    text = " " .. config.bullet,
+    text = config.bullet,
     fg = first_bullet_color,
     bg = config.panel_bg,
     offset = offset,
     is_line = false
   }))
-  offset = offset + 2
+  offset = offset + 1
 
   -- Message text
   table.insert(annotations, helix.buffer.annotation({
