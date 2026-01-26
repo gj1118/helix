@@ -13,6 +13,7 @@ pub mod overlay;
 pub mod picker;
 pub mod popup;
 pub mod prompt;
+mod select;
 mod spinner;
 mod statusline;
 mod text;
@@ -33,6 +34,7 @@ pub use notification_popup::NotificationPopup;
 pub use picker::{Column as PickerColumn, FileLocation, Picker};
 pub use popup::Popup;
 pub use prompt::{Prompt, PromptEvent};
+pub use select::Select;
 pub use spinner::{ProgressSpinners, Spinner};
 pub use text::Text;
 

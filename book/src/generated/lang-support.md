@@ -161,6 +161,7 @@
 | ldif | ✓ |  |  |  |  |  |
 | lean | ✓ |  |  |  |  | `lake` |
 | ledger | ✓ |  |  |  |  |  |
+| less | ✓ |  | ✓ |  | ✓ | `vscode-css-language-server` |
 | llvm | ✓ | ✓ | ✓ |  |  |  |
 | llvm-mir | ✓ | ✓ | ✓ |  |  |  |
 | llvm-mir-yaml | ✓ |  | ✓ |  |  |  |
@@ -238,7 +239,7 @@
 | ron | ✓ |  | ✓ | ✓ | ✓ | `ron-lsp` |
 | rpmspec | ✓ |  |  |  |  |  |
 | rshtml | ✓ | ✓ |  |  |  | `rshtml-analyzer`, `vscode-html-language-server`, `superhtml` |
-| rst | ✓ |  |  |  |  |  |
+| rst | ✓ |  |  | ✓ |  |  |
 | ruby | ✓ | ✓ | ✓ | ✓ | ✓ | `ruby-lsp`, `solargraph` |
 | rust | ✓ | ✓ | ✓ | ✓ | ✓ | `rust-analyzer` |
 | rust-format-args | ✓ |  |  |  |  |  |
@@ -246,13 +247,13 @@
 | sage | ✓ | ✓ |  |  |  |  |
 | scala | ✓ | ✓ | ✓ |  |  | `metals` |
 | scfg | ✓ |  |  |  |  |  |
-| scheme | ✓ | ✓ | ✓ |  | ✓ |  |
+| scheme | ✓ | ✓ | ✓ | ✓ | ✓ |  |
 | scss | ✓ |  |  |  | ✓ | `vscode-css-language-server` |
 | shellcheckrc | ✓ | ✓ |  |  |  |  |
 | slang | ✓ | ✓ | ✓ |  |  | `slangd` |
 | slint | ✓ | ✓ | ✓ |  |  | `slint-lsp` |
 | slisp | ✓ |  |  | ✓ |  |  |
-| smali | ✓ |  | ✓ |  |  |  |
+| smali | ✓ |  | ✓ |  |  | `smalisp` |
 | smithy | ✓ |  |  |  |  | `cs` |
 | sml | ✓ |  |  |  |  |  |
 | snakemake | ✓ |  | ✓ |  |  | `pylsp` |
