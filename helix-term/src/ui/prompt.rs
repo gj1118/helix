@@ -619,6 +619,7 @@ impl Prompt {
         self.line_area = area.clip_left(label_len).clip_top(line).clip_right(2);
 
         if self.line.is_empty() {
+            self.anchor = 0;
             // Show the most recently entered value as a suggestion.
             if let Some(suggestion) = self.first_history_completion(cx.editor) {
                 surface.set_string(
