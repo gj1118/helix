@@ -50,7 +50,6 @@ const fn byte_from_hex(mut h: [u8; 2]) -> Option<u8> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "lowercase")]
 /// UNSTABLE
-#[derive(Default)]
 pub enum CursorKind {
     /// █
     #[default]
