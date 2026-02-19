@@ -1,0 +1,179 @@
+From 97b1f931050a73e031fe0d003caba7152abf5f37 Mon Sep 17 00:00:00 2001
+From: TheAvonian <29378966+TheAvonian@users.noreply.github.com>
+Date: Tue, 20 Jan 2026 14:37:01 -0500
+Subject: [PATCH] fix: finding next and previous char can fail in crlf
+
+---
+ helix-core/src/text_folding/ropex.rs          | 35 ++++---------------
+ helix-core/src/text_folding/test_utils.rs     |  4 +--
+ .../tests/test/commands/text_folding.rs       | 18 ++++++----
+ 3 files changed, 20 insertions(+), 37 deletions(-)
+
+diff --git a/helix-core/src/text_folding/ropex.rs b/helix-core/src/text_folding/ropex.rs
+index f58093f6a512..9f111534222c 100644
+--- a/helix-core/src/text_folding/ropex.rs
++++ b/helix-core/src/text_folding/ropex.rs
+@@ -366,21 +366,14 @@ impl<'a, Items: TextItems<'a>> FoldedTextItems<'a, Items> {
+             return self.prev_impl();
+         }
+ 
++        let item = self.items.prev_impl()?;
++
+         self.last_idx = Some(self.idx);
+ 
+-        Some(
+-            self.items
+-                .prev_impl()
+-                .expect("The `idx` field must equal the item index."),
+-        )
++        Some(item)
+     }
+ 
+     fn next_impl(&mut self) -> Option<Items::Item> {
+-        if self.idx == Items::len(self.slice) {
+-            self.last_idx = None;
+-            return None;
+-        }
+-
+         if let Some(position) = Items::consume_next(self.annotations, self.idx) {
+             self.idx = position + 1;
+             self.items = Items::at(self.slice, self.idx);
+@@ -388,15 +381,12 @@ impl<'a, Items: TextItems<'a>> FoldedTextItems<'a, Items> {
+             return self.next_impl();
+         }
+ 
+-        self.last_idx = Some(self.idx);
++        let item = self.items.next_impl()?;
+ 
+-        let result = self
+-            .items
+-            .next_impl()
+-            .expect("The `idx` field must equal the item index.");
++        self.last_idx = Some(self.idx);
+         self.idx += 1;
+ 
+-        Some(result)
++        Some(item)
+     }
+ }
+ 
+@@ -416,7 +406,6 @@ impl<'a, Items: TextItems<'a>> Iterator for FoldedTextItems<'a, Items> {
+ trait TextItems<'a>: Iterator {
+     fn at(slice: RopeSlice<'a>, idx: usize) -> Self;
+     fn reset_pos(annotations: &FoldAnnotations, idx: usize);
+-    fn len(slice: RopeSlice) -> usize;
+     fn prev_impl(&mut self) -> Option<Self::Item>;
+     fn next_impl(&mut self) -> Option<Self::Item>;
+     fn consume_prev(annotations: &FoldAnnotations, idx: usize) -> Option<usize>;
+@@ -432,10 +421,6 @@ impl<'a> TextItems<'a> for Chars<'a> {
+         annotations.reset_pos(char_idx, |fold| fold.start.char)
+     }
+ 
+-    fn len(slice: RopeSlice) -> usize {
+-        slice.len_chars()
+-    }
+-
+     fn prev_impl(&mut self) -> Option<Self::Item> {
+         self.prev()
+     }
+@@ -466,10 +451,6 @@ impl<'a> TextItems<'a> for RopeGraphemes<'a> {
+         annotations.reset_pos(byte_idx, |fold| fold.start.byte)
+     }
+ 
+-    fn len(slice: RopeSlice) -> usize {
+-        slice.len_bytes()
+-    }
+-
+     fn prev_impl(&mut self) -> Option<Self::Item> {
+         self.prev()
+     }
+@@ -500,10 +481,6 @@ impl<'a> TextItems<'a> for Lines<'a> {
+         annotations.reset_pos(line_idx, |fold| fold.start.line)
+     }
+ 
+-    fn len(slice: RopeSlice) -> usize {
+-        slice.len_lines()
+-    }
+-
+     fn prev_impl(&mut self) -> Option<Self::Item> {
+         self.prev()
+     }
+diff --git a/helix-core/src/text_folding/test_utils.rs b/helix-core/src/text_folding/test_utils.rs
+index d03eb76f5d82..d785837997da 100644
+--- a/helix-core/src/text_folding/test_utils.rs
++++ b/helix-core/src/text_folding/test_utils.rs
+@@ -137,8 +137,8 @@ pub(crate) fn folds_eq_by(
+ ) -> bool {
+     if container1.len() != container2.len() {
+         eprintln!(
+-            "left has lenght = {}\n\
+-            right has lenght = {}",
++            "left has length = {}\n\
++            right has length = {}",
+             container1.len(),
+             container2.len(),
+         );
+diff --git a/helix-term/tests/test/commands/text_folding.rs b/helix-term/tests/test/commands/text_folding.rs
+index addc3f05c10e..0f45c137066f 100644
+--- a/helix-term/tests/test/commands/text_folding.rs
++++ b/helix-term/tests/test/commands/text_folding.rs
+@@ -1499,7 +1499,8 @@ async fn open() -> anyhow::Result<()> {
+                 ),
+                 Some(&|app| {
+                     let expected = ("    new text\n".into(), 0);
+-                    assert_eq!(result(app, 55), expected);
++                    let result = result(app, 55);
++                    assert_eq!((result.0.replace("\r\n", "\n"), result.1), expected);
+                 }),
+             ),
+             (Some("xd"), None),
+@@ -1511,7 +1512,8 @@ async fn open() -> anyhow::Result<()> {
+                 ),
+                 Some(&|app| {
+                     let expected = ("    new text\n".into(), 0);
+-                    assert_eq!(result(app, 55), expected);
++                    let result = result(app, 55);
++                    assert_eq!((result.0.replace("\r\n", "\n"), result.1), expected);
+                 }),
+             ),
+             (Some("xd"), None),
+@@ -1523,7 +1525,8 @@ async fn open() -> anyhow::Result<()> {
+                 ),
+                 Some(&|app| {
+                     let expected = ("        new text\n".into(), -1);
+-                    assert_eq!(result(app, 71), expected);
++                    let result = result(app, 71);
++                    assert_eq!((result.0.replace("\r\n", "\n"), result.1), expected);
+                 }),
+             ),
+             (
+@@ -1545,7 +1548,8 @@ async fn open() -> anyhow::Result<()> {
+                 ),
+                 Some(&|app| {
+                     let expected = ("        new text\n".into(), -1);
+-                    assert_eq!(result(app, 71), expected);
++                    let result = result(app, 71);
++                    assert_eq!((result.0.replace("\r\n", "\n"), result.1), expected);
+                 }),
+             ),
+             (
+@@ -1556,7 +1560,8 @@ async fn open() -> anyhow::Result<()> {
+                 ),
+                 Some(&|app| {
+                     let expected = ("new text\n".into(), 0);
+-                    assert_eq!(result(app, 4), expected);
++                    let result = result(app, 4);
++                    assert_eq!((result.0.replace("\r\n", "\n"), result.1), expected);
+                 }),
+             ),
+             (
+@@ -1582,7 +1587,8 @@ async fn open() -> anyhow::Result<()> {
+                 ),
+                 Some(&|app| {
+                     let expected = ("//! new text\n".into(), 0);
+-                    assert_eq!(result(app, 4), expected);
++                    let result = result(app, 4);
++                    assert_eq!((result.0.replace("\r\n", "\n"), result.1), expected);
+                 }),
+             ),
+         ],

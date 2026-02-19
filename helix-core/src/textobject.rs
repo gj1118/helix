@@ -246,7 +246,7 @@ fn textobject_pair_surround_impl(
 ) -> Range {
     let pair_pos = match find_variant {
         FindVariant::Char((ch, find_type, count)) => {
-            surround::find_nth_pairs_pos(slice, ch, range, find_type, count)
+            surround::find_nth_pairs_pos(syntax, slice, ch, range, find_type, count)
         }
         FindVariant::Closest(count) => {
             surround::find_nth_closest_pairs_pos(syntax, slice, range, count)
