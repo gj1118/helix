@@ -662,7 +662,17 @@ where
 {
     let function_name = get_current_function_name_cached(context);
     if let Some(name) = function_name {
-        write(context, format!(" {} ", name).into());
+        let icons = ICONS.load();
+        if let Some(icon) = icons.kind().get("function") {
+            let glyph = icon.glyph();
+            if let Some(style) = icon.color().map(|color| Style::default().fg(color)) {
+                write(context, Span::styled(format!(" {} {}", glyph, name), style));
+            } else {
+                write(context, format!(" {} {} ", glyph, name).into());
+            }
+        } else {
+            write(context, format!(" {} ", name).into());
+        }
     }
 }
 
