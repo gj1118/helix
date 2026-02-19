@@ -205,15 +205,21 @@ impl Widget for Paragraph<'_> {
             if y >= self.scroll.0 {
                 let mut x = get_line_offset(current_line_width, text_area.width, self.alignment);
                 for StyledGrapheme { symbol, style } in current_line {
-                    buf[(text_area.left() + x, text_area.top() + y - self.scroll.0)]
-                        .set_symbol(if symbol.is_empty() {
-                            // If the symbol is empty, the last char which rendered last time will
-                            // leave on the line. It's a quick fix.
-                            " "
-                        } else {
-                            symbol
-                        })
-                        .set_style(*style);
+                    let coord_x = text_area.left() + x;
+                    let coord_y = text_area.top() + y - self.scroll.0;
+
+                    // Add bounds checking to prevent panic using Buffer's in_bounds method
+                    if buf.in_bounds(coord_x, coord_y) {
+                        buf[(coord_x, coord_y)]
+                            .set_symbol(if symbol.is_empty() {
+                                // If the symbol is empty, the last char which rendered last time will
+                                // leave on the line. It's a quick fix.
+                                " "
+                            } else {
+                                symbol
+                            })
+                            .set_style(*style);
+                    }
                     x += symbol.width() as u16;
                 }
             }

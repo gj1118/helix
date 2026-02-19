@@ -1,6 +1,7 @@
 use crate::keymap;
 use crate::keymap::{merge_keys, KeyTrie};
 use helix_loader::merge_toml_values;
+use helix_plugin::PluginConfig;
 use helix_view::{
     document::Mode,
     icons::{Icons, ICONS},
@@ -19,6 +20,7 @@ pub struct Config {
     pub theme: Option<theme::Config>,
     pub keys: HashMap<Mode, KeyTrie>,
     pub editor: helix_view::editor::Config,
+    pub plugin_config: PluginConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -28,6 +30,7 @@ pub struct ConfigRaw {
     pub keys: Option<HashMap<Mode, KeyTrie>>,
     pub editor: Option<toml::Value>,
     pub icons: Option<toml::Value>,
+    pub plugins: Option<toml::Value>,
 }
 
 impl Default for Config {
@@ -36,6 +39,7 @@ impl Default for Config {
             theme: None,
             keys: keymap::default(),
             editor: helix_view::editor::Config::default(),
+            plugin_config: PluginConfig::default(),
         }
     }
 }
@@ -103,10 +107,21 @@ impl Config {
 
                 ICONS.store(Arc::new(icons));
 
+                let plugin_config: PluginConfig = match (global.plugins, local.plugins) {
+                    (None, None) => PluginConfig::default(),
+                    (None, Some(val)) | (Some(val), None) => {
+                        val.try_into().map_err(ConfigLoadError::BadConfig)?
+                    }
+                    (Some(global_p), Some(local_p)) => merge_toml_values(global_p, local_p, 3)
+                        .try_into()
+                        .map_err(ConfigLoadError::BadConfig)?,
+                };
+
                 Config {
                     theme: local.theme.or(global.theme),
                     keys,
                     editor,
+                    plugin_config,
                 }
             }
             // if any configs are invalid return that first
@@ -127,6 +142,11 @@ impl Config {
 
                 ICONS.store(Arc::new(icons));
 
+                let plugin_config: PluginConfig = config.plugins.map_or_else(
+                    || Ok(PluginConfig::default()),
+                    |val| val.try_into().map_err(ConfigLoadError::BadConfig),
+                )?;
+
                 Config {
                     theme: config.theme,
                     keys,
@@ -134,6 +154,7 @@ impl Config {
                         || Ok(helix_view::editor::Config::default()),
                         |val| val.try_into().map_err(ConfigLoadError::BadConfig),
                     )?,
+                    plugin_config,
                 }
             }
 

@@ -26,12 +26,12 @@ pub mod types;
 // Re-exports
 pub use error::{PluginError, Result};
 pub use lua::LuaEngine;
-pub use types::{
-    EventData, EventType, IndividualPluginConfig, Plugin, PluginConfig, PluginEvent, PluginMetadata,
-};
+pub use types::{EventData, EventType, Plugin, PluginConfig, PluginEvent, PluginMetadata};
 
 use helix_view::Editor;
 use log::info;
+use mlua::prelude::LuaFunction;
+use mlua::LuaSerdeExt;
 use parking_lot::RwLock;
 use std::sync::Arc;
 
@@ -124,13 +124,12 @@ impl PluginManager {
 
     /// Check if a plugin is enabled in the configuration
     fn is_plugin_enabled(&self, name: &str) -> bool {
-        // If there's specific config for this plugin, use that
-        if let Some(plugin_config) = self.config.plugins.iter().find(|p| p.name == name) {
-            return plugin_config.enabled;
+        match &self.config.enabled_plugins {
+            // No allowlist → all plugins are enabled
+            None => true,
+            // Allowlist present → only listed plugins are enabled
+            Some(list) => list.iter().any(|n| n == name),
         }
-
-        // Otherwise, enabled by default
-        true
     }
 
     /// Fire an event to all registered handlers
@@ -140,12 +139,9 @@ impl PluginManager {
     }
 
     /// Get plugin configuration for a specific plugin
-    pub fn get_plugin_config(&self, name: &str) -> Option<&serde_json::Value> {
-        self.config
-            .plugins
-            .iter()
-            .find(|p| p.name == name)
-            .map(|p| &p.config)
+    /// Per-plugin config is now handled within each plugin's own Lua code.
+    pub fn get_plugin_config(&self, _name: &str) -> Option<&serde_json::Value> {
+        None
     }
 
     /// Get the Lua engine (for advanced operations)
@@ -178,6 +174,56 @@ impl PluginManager {
     ) -> Result<()> {
         let engine = self.engine.read();
         engine.handle_ui_callback(editor, plugin_name, callback_id, value)
+    }
+
+    /// Transform hover text through plugins
+    /// Returns the transformed text if any plugin provides a transformation, otherwise returns the original
+    pub fn transform_hover_text(&self, original_text: String) -> String {
+        let engine = self.engine.read();
+
+        // Try to call a global transform_hover function if it exists
+        if let Ok(transform_fn) = engine
+            .lua()
+            .globals()
+            .get::<LuaFunction>("_transform_hover")
+        {
+            if let Ok(result) = transform_fn.call::<String>(original_text.clone()) {
+                return result;
+            }
+        }
+
+        // If no transformation or error, return original
+        original_text
+    }
+
+    /// Render hover content through plugins
+    /// Returns a RenderObject if any plugin provides a specific rendering, otherwise None
+    pub fn render_hover(&self, original_text: String) -> Option<crate::types::RenderObject> {
+        let engine = self.engine.read();
+        let lua = engine.lua();
+
+        // Try to call a global render_hover function if it exists
+        if let Ok(render_fn) = lua.globals().get::<LuaFunction>("_render_hover") {
+            // Call Lua function: function(text) -> RenderObject (table)
+            if let Ok(lua_value) = render_fn.call::<mlua::Value>(original_text) {
+                // Determine if we have a valid value (not nil)
+                if let mlua::Value::Nil = lua_value {
+                    return None;
+                }
+
+                // Attempt to deserialize into RenderObject
+                match lua.from_value::<crate::types::RenderObject>(lua_value) {
+                    Ok(render_object) => return Some(render_object),
+                    Err(e) => {
+                        log::warn!(
+                            "Plugin returned invalid RenderObject from _render_hover: {}",
+                            e
+                        );
+                    }
+                }
+            }
+        }
+        None
     }
 }
 

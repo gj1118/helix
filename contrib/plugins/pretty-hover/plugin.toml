@@ -1,0 +1,5 @@
+name = "pretty-hover"
+version = "0.1.0"
+description = "Prettify LSP hover messages by transforming Doxygen documentation to Markdown"
+author = "Helix Community"
+entry = "init.lua"

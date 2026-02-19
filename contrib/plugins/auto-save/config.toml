@@ -1,0 +1,26 @@
+# Auto-Save Plugin Configuration
+
+[plugin]
+enabled = true
+
+[behavior]
+# Auto-save interval in seconds
+interval = 30
+
+# Save on focus loss
+save_on_focus_loss = true
+
+# Save on buffer switch
+save_on_buffer_switch = false
+
+# Only save modified files
+only_modified = true
+
+# Show notification when saving
+show_notifications = false
+
+# File types to exclude from auto-save
+exclude_filetypes = ["markdown", "text"]
+
+# Minimum time between saves (in seconds) to prevent excessive saving
+min_save_interval = 5

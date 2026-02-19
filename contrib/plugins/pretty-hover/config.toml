@@ -1,0 +1,150 @@
+# Pretty-Hover Plugin Configuration
+# This file configures the enhanced hover documentation display
+
+[plugin]
+enabled = true
+
+[behavior]
+max_width = 120
+max_height = 30
+wrap = true
+multi_server = true
+number_conversion = true
+
+# ========================================================================
+# BORDER STYLING CONFIGURATION
+# ========================================================================
+
+[border]
+# Border style: "rounded", "all", "top", "bottom", "left", "right", "none"
+style = "rounded"
+
+# Border thickness (1-5): 1=thin, 2=thick, 3=double, 4=block, 5=full
+thickness = 1
+
+# Simple solid color (fallback if gradient is not specified)
+color = "ui.text.focus"
+
+# Animation speed (0 = no animation, 1-10 = speed)
+animation_speed = 0
+
+# ========================================================================
+# GRADIENT CONFIGURATION
+# ========================================================================
+
+[border.gradient]
+# Enable gradient borders
+enabled = true
+
+# Gradient colors (hex colors)
+colors = ["#dc8a78", "#1e66f5"]
+
+# Gradient direction: "horizontal", "vertical", "diagonal", "radial"
+direction = "horizontal"
+
+# Number of interpolation steps for smoother gradients
+steps = 10
+
+# ========================================================================
+# PRESET THEMES
+# ========================================================================
+# Uncomment one of these sections to use a preset theme
+
+# [preset]
+# theme = "ocean"
+# [preset.border.gradient]
+# colors = ["#1e3a8a", "#3b82f6", "#06b6d4", "#0891b2"]
+# direction = "vertical"
+# steps = 15
+
+# [preset]
+# theme = "sunset"
+# [preset.border.gradient]
+# colors = ["#fbbf24", "#f59e0b", "#dc2626", "#7c2d12"]
+# direction = "diagonal"
+# steps = 12
+
+# [preset]
+# theme = "rainbow"
+# [preset.border.gradient]
+# colors = ["#ff0000", "#ff8000", "#ffff00", "#80ff00", "#00ff00", "#00ff80", "#00ffff", "#0080ff", "#0000ff", "#8000ff", "#ff00ff", "#ff0080"]
+# direction = "horizontal"
+# steps = 24
+# [preset.border]
+# animation_speed = 2
+
+# [preset]
+# theme = "retro"
+# [preset.border.gradient]
+# colors = ["#00ff41", "#39ff14"]
+# direction = "vertical"
+# steps = 8
+# [preset.border]
+# thickness = 3
+# style = "all"
+
+# [preset]
+# theme = "minimal"
+# [preset.border]
+# color = "ui.text"
+# style = "all"
+# thickness = 1
+# [preset.border.gradient]
+# enabled = false
+
+# ========================================================================
+# ADVANCED PARSING OPTIONS
+# ========================================================================
+
+[parsing]
+
+[parsing.header]
+detect = ["[\\@]class"]
+styler = "###"
+
+[parsing.line]
+detect = ["[\\@]brief"]
+styler = "**"
+
+[parsing.listing]
+detect = ["[\\@]li"]
+styler = " - "
+
+[parsing.references]
+detect = ["[\\@]ref", "[\\@]c", "[\\@]name"]
+styler = ["**", "`"]
+
+[parsing.group]
+styler = "`"
+
+[parsing.group.detect]
+Parameters = ["[\\@]param", "[\\@]*param*"]
+Types = ["[\\@]tparam"]
+See = ["[\\@]see"]
+"Return Value" = ["[\\@]retval"]
+
+[parsing.code]
+start = ["[\\@]code"]
+ending = ["[\\@]endcode"]
+
+[parsing.return_statement]
+patterns = ["[\\@]return", "[\\@]*return*"]
+
+# ========================================================================
+# SYNTAX HIGHLIGHTING
+# ========================================================================
+
+[highlighting.error]
+color = "#DC2626"
+detect = ["[\\@]error", "[\\@]bug"]
+line = false
+
+[highlighting.warning]
+color = "#FBBF24"
+detect = ["[\\@]warning", "[\\@]thread_safety", "[\\@]throw"]
+line = false
+
+[highlighting.info]
+color = "#2563EB"
+detect = ["[\\@]remark", "[\\@]note", "[\\@]notes"]
+line = false

@@ -152,44 +152,22 @@ pub struct Plugin {
 }
 
 /// Plugin configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct PluginConfig {
     /// Whether plugins are enabled globally
-    #[serde(default = "default_true")]
+    #[serde(default = "default_false")]
     pub enabled: bool,
     /// Plugin directories to search
     #[serde(default)]
     pub plugin_dirs: Vec<PathBuf>,
-    /// Individual plugin configurations
+    /// Allowlist of plugin names to load. If None, all discovered plugins are loaded.
+    /// If Some(list), only plugins whose names appear in the list are loaded.
     #[serde(default)]
-    pub plugins: Vec<IndividualPluginConfig>,
+    pub enabled_plugins: Option<Vec<String>>,
 }
 
-fn default_true() -> bool {
-    true
-}
-
-impl Default for PluginConfig {
-    fn default() -> Self {
-        Self {
-            enabled: true,
-            plugin_dirs: vec![],
-            plugins: vec![],
-        }
-    }
-}
-
-/// Configuration for an individual plugin
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IndividualPluginConfig {
-    /// Plugin name
-    pub name: String,
-    /// Whether this plugin is enabled
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    /// Plugin-specific configuration
-    #[serde(default)]
-    pub config: serde_json::Value,
+fn default_false() -> bool {
+    false
 }
 
 /// Metadata for a registered command
@@ -255,3 +233,64 @@ pub struct UiCallbackRegistry(
 
 /// Wrapper for UI callback counter to store in Lua app data
 pub struct UiCallbackCounter(pub std::sync::Arc<std::sync::atomic::AtomicU64>);
+
+// ========================================================================
+// Custom Rendering Types
+// ========================================================================
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RenderAlignment {
+    Left,
+    Center,
+    Right,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LayoutParams {
+    pub width: Option<u16>,
+    pub height: Option<u16>,
+    pub align: Option<RenderAlignment>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RenderGradient {
+    pub colors: Vec<String>,
+    pub direction: Option<String>,
+    pub steps: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RenderStyle {
+    pub fg: Option<String>,
+    pub bg: Option<String>,
+    pub modifiers: Option<Vec<String>>,
+    pub gradient: Option<RenderGradient>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum RenderObject {
+    Text {
+        content: String,
+        style: Option<RenderStyle>,
+    },
+    Markdown {
+        content: String,
+    },
+    Block {
+        children: Vec<RenderObject>,
+        direction: Option<String>, // "vertical", "horizontal"
+        style: Option<RenderStyle>,
+        params: Option<LayoutParams>,
+        border: Option<String>,
+        title: Option<String>,
+    },
+    Code {
+        content: String,
+        language: Option<String>,
+    },
+    Separator {
+        style: Option<RenderStyle>,
+    },
+}

@@ -39,7 +39,7 @@ use std::{
 };
 
 use helix_event::register_hook;
-use helix_plugin::{EventData, EventType, PluginConfig, PluginEvent, PluginManager};
+use helix_plugin::{EventData, EventType, PluginEvent, PluginManager};
 use helix_view::events::{DiagnosticsDidChange, DocumentDidOpen, SelectionDidChange};
 use std::sync::Mutex;
 
@@ -272,8 +272,8 @@ impl Application {
         ])
         .context("build signal handler")?;
 
-        let plugin_manager =
-            PluginManager::new(PluginConfig::default()).expect("Failed to create plugin manager");
+        let plugin_manager = PluginManager::new(config.load().plugin_config.clone())
+            .expect("Failed to create plugin manager");
 
         let (ui_handler, ui_receiver) = crate::plugin_registry::get_ui_handler();
 

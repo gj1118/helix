@@ -16,7 +16,7 @@ use helix_view::{
 };
 
 const MIN_HEIGHT: u16 = 6;
-const MAX_HEIGHT: u16 = 26;
+const MAX_HEIGHT: u16 = 40; // Increased from 26 to show more content
 const MAX_WIDTH: u16 = 120;
 
 struct RenderInfo {

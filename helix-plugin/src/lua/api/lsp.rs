@@ -22,6 +22,21 @@ pub fn register_lsp_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     })?;
     lsp_module.set("get_clients", get_clients)?;
 
+    // helix.lsp.register_hover_transformer(fn) - Register a function to transform hover text
+    let register_transformer = lua.create_function(|lua, transformer: LuaFunction| {
+        // Store the transformer in globals so PluginManager can call it
+        lua.globals().set("_transform_hover", transformer)?;
+        Ok(())
+    })?;
+    lsp_module.set("register_hover_transformer", register_transformer)?;
+
+    // helix.lsp.register_hover_renderer(fn) - Register a function to provide custom render object
+    let register_renderer = lua.create_function(|lua, renderer: LuaFunction| {
+        lua.globals().set("_render_hover", renderer)?;
+        Ok(())
+    })?;
+    lsp_module.set("register_hover_renderer", register_renderer)?;
+
     helix_table.set("lsp", lsp_module)?;
 
     Ok(())

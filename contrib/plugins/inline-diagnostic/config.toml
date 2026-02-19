@@ -1,0 +1,39 @@
+# Inline-Diagnostic Plugin Configuration
+
+[plugin]
+enabled = true
+
+[display]
+# Show inline diagnostics on cursor line
+show_on_cursor_line = true
+
+# Show inline diagnostics on all lines
+show_on_all_lines = false
+
+# Minimum severity level to display: "error", "warning", "info", "hint"
+min_severity = "warning"
+
+# Maximum number of diagnostics to show per line
+max_per_line = 3
+
+# Position of inline diagnostics: "after", "overlay"
+position = "after"
+
+# Prefix for diagnostic messages
+prefix = "► "
+
+[styling]
+# Colors for different severity levels
+error_color = "#DC2626"
+warning_color = "#FBBF24"
+info_color = "#2563EB"
+hint_color = "#6B7280"
+
+# Use icons instead of text
+use_icons = true
+
+[icons]
+error = "✖"
+warning = "⚠"
+info = "ℹ"
+hint = "💡"

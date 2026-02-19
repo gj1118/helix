@@ -1176,6 +1176,8 @@ fn hover_impl(cx: &mut Context, hover_action: HoverDisplay) {
         })
         .collect();
 
+    let plugin_manager = cx.plugin_manager.clone();
+
     cx.jobs.callback(async move {
         let mut hovers: Vec<(String, lsp::Hover)> = Vec::new();
 
@@ -1193,7 +1195,7 @@ fn hover_impl(cx: &mut Context, hover_action: HoverDisplay) {
                 return;
             }
 
-            let hover = Hover::new(hovers, editor.syn_loader.clone());
+            let hover = Hover::new(hovers, editor.syn_loader.clone(), plugin_manager.clone());
 
             match hover_action {
                 HoverDisplay::Popup => {

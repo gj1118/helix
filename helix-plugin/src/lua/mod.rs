@@ -233,39 +233,11 @@ impl LuaEngine {
     /// Register the config API
     fn register_config_api(&self, helix: &LuaTable) -> Result<()> {
         // helix.get_config() - Get configuration for the current plugin
+        // Per-plugin config is now handled within each plugin's own Lua code.
+        // This returns an empty table as a placeholder.
         let get_config = self.lua.create_function(move |lua, ()| {
-            let plugin_name = lua
-                .globals()
-                .get::<String>("_current_plugin_name")
-                .unwrap_or_else(|_| "unknown".to_string());
-
-            if let Some(config) = lua.app_data_ref::<crate::types::PluginConfig>() {
-                if let Some(plugin_config) = config.plugins.iter().find(|p| p.name == plugin_name) {
-                    // Convert serde_json::Value to LuaValue
-                    let val = match &plugin_config.config {
-                        serde_json::Value::Object(map) => {
-                            let table = lua.create_table()?;
-                            for (k, v) in map {
-                                // Simple conversion for common types
-                                match v {
-                                    serde_json::Value::String(s) => {
-                                        table.set(k.clone(), s.clone())?
-                                    }
-                                    serde_json::Value::Number(n) => {
-                                        table.set(k.clone(), n.as_f64().unwrap_or(0.0))?
-                                    }
-                                    serde_json::Value::Bool(b) => table.set(k.clone(), *b)?,
-                                    _ => {} // Skip complex types for now
-                                }
-                            }
-                            Some(table)
-                        }
-                        _ => None,
-                    };
-                    return Ok(val);
-                }
-            }
-            Ok(None)
+            let table = lua.create_table()?;
+            Ok(Some(table))
         })?;
 
         helix.set("get_config", get_config)?;
