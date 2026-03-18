@@ -12,8 +12,8 @@ use helix_view::{
 
 use crate::ui::ProgressSpinners;
 
-use helix_view::editor::StatusLineElement as StatusLineElementID;
 use helix_core::{tree_sitter::Node as TsNode, RopeSlice};
+use helix_view::editor::StatusLineElement as StatusLineElementID;
 use std::sync::{LazyLock, Mutex};
 use tui::buffer::Buffer as Surface;
 use tui::text::{Span, Spans};

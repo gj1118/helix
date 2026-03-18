@@ -359,13 +359,16 @@ impl TerminaBackend {
     // after clearing the terminal).
 
     fn start_synchronized_render(&mut self) -> io::Result<()> {
-        if self.capabilities.synchronized_output && !self.is_synchronized_output_set {
+        // Always send synchronized output start, even if capability wasn't detected.
+        // Many terminals support it but don't report it via DECRPM.
+        if !self.is_synchronized_output_set {
             write!(self.terminal, "{}", decset!(SynchronizedOutput))?;
             self.is_synchronized_output_set = true;
         }
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn end_sychronized_render(&mut self) -> io::Result<()> {
         if self.is_synchronized_output_set {
             write!(self.terminal, "{}", decreset!(SynchronizedOutput))?;
@@ -393,9 +396,6 @@ impl Backend for TerminaBackend {
         self.enable_mouse_capture()?;
         self.enable_extensions()?;
 
-        // Ensure mode changes (alt-screen, mouse, etc.) take effect immediately.
-        self.terminal.flush()?;
-
         Ok(())
     }
 
@@ -407,8 +407,6 @@ impl Backend for TerminaBackend {
             } else {
                 self.disable_mouse_capture()?;
             }
-            // Apply mouse mode change immediately.
-            self.terminal.flush()?;
         }
         self.capabilities.extended_underlines |= self.config.force_enable_extended_underlines;
         Ok(())
@@ -434,8 +432,6 @@ impl Backend for TerminaBackend {
     where
         I: Iterator<Item = (u16, u16, &'a Cell)>,
     {
-        self.start_synchronized_render()?;
-
         let mut fg = Color::Reset;
         let mut bg = Color::Reset;
         let mut underline_color = Color::Reset;
@@ -513,8 +509,6 @@ impl Backend for TerminaBackend {
 
         write!(self.terminal, "{}", Csi::Sgr(csi::Sgr::Reset))?;
 
-        self.end_sychronized_render()?;
-
         Ok(())
     }
 
@@ -575,6 +569,12 @@ impl Backend for TerminaBackend {
 
     fn get_theme_mode(&self) -> Option<theme::Mode> {
         self.capabilities.theme_mode
+    }
+
+    fn set_background_color(&mut self, _color: Option<Color>) -> io::Result<()> {
+        // Background color changing requires termina 0.2+ OSC support.
+        // Disabled for compatibility with termina 0.1.1.
+        Ok(())
     }
 }
 

@@ -583,3 +583,67 @@ async fn test_jump_undo_redo() -> anyhow::Result<()> {
     .await?;
     Ok(())
 }
+
+// Test 1: at start of line with i<tab>
+// Fork adds 4 spaces to existing indentation (preserves relative)
+#[tokio::test(flavor = "multi_thread")]
+async fn test_indent_with_spaces_1() -> anyhow::Result<()> {
+    test_with_config(
+        AppBuilder::new().with_file("foo.rs", None),
+        (
+            indoc! {"\
+                SELECT *
+                  #[|FROM table]#
+                 #(|WHERE condition)#
+            "},
+            "i<tab>",
+            // Input: 2 spaces for FROM, 1 space for WHERE
+            // After i<tab>: 2+4=6 for FROM, 1+4=5 for WHERE
+            "SELECT *\n      #[|FROM table]#\n     #(|WHERE condition)#\n",
+        ),
+    )
+    .await?;
+    Ok(())
+}
+
+// Test 2: in the middle of line with i<S-tab>
+#[tokio::test(flavor = "multi_thread")]
+async fn test_indent_with_spaces_2() -> anyhow::Result<()> {
+    test_with_config(
+        AppBuilder::new().with_file("foo.rs", None),
+        (
+            indoc! {"\
+                SELECT #[*|]#
+                FROM #(table|)#
+                WHERE #(condition|)#
+            "},
+            "i<S-tab>",
+            "SELECT     #[|*]#\nFROM     #(|table)#\nWHERE     #(|condition)#\n",
+        ),
+    )
+    .await?;
+    Ok(())
+}
+
+// Test 3: indentation in normal mode with <gt>
+// Fork adds 4 spaces to existing indentation (preserves relative)
+#[tokio::test(flavor = "multi_thread")]
+async fn test_indent_with_spaces_3() -> anyhow::Result<()> {
+    test_with_config(
+        AppBuilder::new().with_file("foo.rs", None),
+        (
+            indoc! {"\
+                -- comment
+                #[|SELECT *
+                  FROM table
+                 WHERE condition]#
+            "},
+            "<gt>",
+            // Input: 0 spaces for SELECT, 2 for FROM, 1 for WHERE
+            // After <gt>: 0+4=4 for SELECT, 2+4=6 for FROM, 1+4=5 for WHERE
+            "-- comment\n    #[|SELECT *\n      FROM table\n     WHERE condition]#\n",
+        ),
+    )
+    .await?;
+    Ok(())
+}
