@@ -207,7 +207,9 @@ pub fn register_ui_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
         let editor = crate::lua::get_editor_mut()?;
         match editor.theme_loader.load(&name) {
             Ok(theme) => {
-                editor.set_theme(theme);
+                editor.set_theme(theme).map_err(|e| {
+                    LuaError::RuntimeError(format!("Failed to set theme {}: {}", name, e))
+                })?;
                 Ok(())
             }
             Err(e) => Err(LuaError::RuntimeError(format!(

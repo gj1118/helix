@@ -9,6 +9,7 @@ use termina::{
     escape::{
         csi::{self, Csi, SgrAttributes, SgrModifiers},
         dcs::{self, Dcs},
+        osc::{self, Osc},
     },
     style::{CursorStyle, RgbColor},
     Event, OneBased, PlatformTerminal, Terminal as _, WindowSize,
@@ -52,6 +53,8 @@ struct Capabilities {
     synchronized_output: bool,
     true_color: bool,
     extended_underlines: bool,
+    /// OSC11 / OSC111 - change the terminal's background color.
+    dynamic_background_color: bool,
     theme_mode: Option<theme::Mode>,
 }
 
@@ -76,6 +79,7 @@ pub struct TerminaBackend {
     capabilities: Capabilities,
     reset_cursor_command: String,
     is_synchronized_output_set: bool,
+    background_color: Option<RgbColor>,
 }
 
 impl TerminaBackend {
@@ -112,6 +116,7 @@ impl TerminaBackend {
             capabilities,
             reset_cursor_command,
             is_synchronized_output_set: false,
+            background_color: None,
         })
     }
 
@@ -132,6 +137,9 @@ impl TerminaBackend {
 
         let mut capabilities = Capabilities::default();
         let start = Instant::now();
+
+        // HACK: emitting OSC11 / OSC111 seems to break SGR and cause flickering in tmux.
+        capabilities.dynamic_background_color = std::env::var_os("TMUX").is_none();
 
         capabilities.kitty_keyboard = match config.kitty_keyboard_protocol {
             KittyKeyboardProtocolConfig::Disabled => KittyKeyboardSupport::None,
@@ -359,9 +367,7 @@ impl TerminaBackend {
     // after clearing the terminal).
 
     fn start_synchronized_render(&mut self) -> io::Result<()> {
-        // Always send synchronized output start, even if capability wasn't detected.
-        // Many terminals support it but don't report it via DECRPM.
-        if !self.is_synchronized_output_set {
+        if self.capabilities.synchronized_output && !self.is_synchronized_output_set {
             write!(self.terminal, "{}", decset!(SynchronizedOutput))?;
             self.is_synchronized_output_set = true;
         }
@@ -393,6 +399,16 @@ impl Backend for TerminaBackend {
             // things like mosh are buggy. See <https://github.com/helix-editor/helix/pull/1944>.
             Csi::Edit(csi::Edit::EraseInDisplay(csi::EraseInDisplay::EraseDisplay)),
         )?;
+        if let Some(color) = self.background_color {
+            write!(
+                self.terminal,
+                "{}",
+                Osc::ChangeDynamicColors(
+                    osc::DynamicColorNumber::TextBackgroundColor,
+                    vec![color.into()]
+                )
+            )?;
+        }
         self.enable_mouse_capture()?;
         self.enable_extensions()?;
 
@@ -423,6 +439,13 @@ impl Backend for TerminaBackend {
             decreset!(FocusTracking),
             decreset!(ClearAndEnableAlternateScreen),
         )?;
+        if self.background_color.is_some() {
+            write!(
+                self.terminal,
+                "{}",
+                Osc::ResetDynamicColor(osc::DynamicColorNumber::TextBackgroundColor)
+            )?;
+        }
         self.terminal.flush()?;
         self.terminal.enter_cooked_mode()?;
         Ok(())
@@ -571,10 +594,25 @@ impl Backend for TerminaBackend {
         self.capabilities.theme_mode
     }
 
-    fn set_background_color(&mut self, _color: Option<Color>) -> io::Result<()> {
-        // Background color changing requires termina 0.2+ OSC support.
-        // Disabled for compatibility with termina 0.1.1.
-        Ok(())
+    fn set_background_color(&mut self, color: Option<Color>) -> io::Result<()> {
+        if !self.capabilities.dynamic_background_color {
+            return Ok(());
+        }
+        self.background_color = match color {
+            Some(Color::Rgb(r, g, b)) => Some(RgbColor::new(r, g, b)),
+            _ => None,
+        };
+        write!(
+            self.terminal,
+            "{}",
+            match self.background_color {
+                Some(color) => Osc::ChangeDynamicColors(
+                    osc::DynamicColorNumber::TextBackgroundColor,
+                    vec![color.into()]
+                ),
+                _ => Osc::ResetDynamicColor(osc::DynamicColorNumber::TextBackgroundColor),
+            }
+        )
     }
 }
 
@@ -593,6 +631,13 @@ impl Drop for TerminaBackend {
                 decreset!(FocusTracking),
                 decreset!(ClearAndEnableAlternateScreen),
             );
+            if self.background_color.is_some() {
+                let _ = write!(
+                    self.terminal,
+                    "{}",
+                    Osc::ResetDynamicColor(osc::DynamicColorNumber::TextBackgroundColor)
+                );
+            }
             // NOTE: Drop for Platform terminal resets the mode and flushes the buffer when not
             // panicking.
         }
