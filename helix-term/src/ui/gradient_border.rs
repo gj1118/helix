@@ -239,22 +239,35 @@ impl GradientBorder {
         title: Option<&str>,
         rounded: bool,
     ) {
+        // If there's a title, we need to render the border but leave space for the title
+        // First render the border normally
         self.render(area, surface, theme, rounded);
 
-        // If there's a title, render it centered in the top border
+        // If there's a title, render it in the top border with padding
         if let Some(title) = title {
-            if !title.is_empty() && area.width > title.len() as u16 + 4 {
-                // Center the title
-                let title_start = area.x + (area.width.saturating_sub(title.len() as u16)) / 2;
-                let title_color = self.get_gradient_color(title_start, area.y, area);
-                let title_style = Style::default()
-                    .fg(title_color)
-                    .add_modifier(Modifier::BOLD);
+            if !title.is_empty() && area.width > title.len() as u16 + 6 {
+                // Format title with spaces for padding: " Title "
+                let padded_title = format!(" {} ", title);
 
-                // Clear the area for the title and render it
-                for (i, ch) in title.chars().enumerate() {
-                    if let Some(cell) = surface.get_mut(title_start + i as u16, area.top()) {
-                        cell.set_char(ch).set_style(title_style);
+                // Position title near the left side (after corner + some space)
+                let title_start = area.x + 2;
+
+                // Render each character of the padded title
+                for (i, ch) in padded_title.chars().enumerate() {
+                    let x = title_start + i as u16;
+                    if x < area.right() - 1 {
+                        let title_color = self.get_gradient_color(x, area.y, area);
+                        let title_style = Style::default()
+                            .fg(title_color)
+                            .add_modifier(Modifier::BOLD);
+
+                        if let Some(cell) = surface.get_mut(x, area.top()) {
+                            // Reset the cell first to clear any previous content
+                            cell.reset();
+                            // Use a string slice to properly set the character
+                            let ch_str: String = ch.to_string();
+                            cell.set_symbol(&ch_str).set_style(title_style);
+                        }
                     }
                 }
             }
