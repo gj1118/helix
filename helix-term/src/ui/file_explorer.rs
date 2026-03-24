@@ -416,7 +416,8 @@ pub fn file_explorer(
         alt!('d') => delete,
         alt!('c') => copy,
         alt!('y') => yank_path,
-    });
+    })
+    .with_title("File Explorer");
 
     Ok(picker)
 }

@@ -465,7 +465,8 @@ pub fn symbol_picker(cx: &mut Context) {
                 },
             )
             .with_preview(move |_editor, item| location_to_file_location(&item.location))
-            .truncate_start(false);
+            .truncate_start(false)
+            .with_title("Document Symbols");
 
             compositor.push(Box::new(overlaid(picker)))
         };
@@ -607,7 +608,8 @@ pub fn workspace_symbol_picker(cx: &mut Context) {
     )
     .with_preview(|_editor, item| location_to_file_location(&item.location))
     .with_dynamic_query(get_symbols, None)
-    .truncate_start(false);
+    .truncate_start(false)
+    .with_title("Workspace Symbols");
 
     cx.push_layer(Box::new(overlaid(picker)));
 }
@@ -616,7 +618,8 @@ pub fn diagnostics_picker(cx: &mut Context) {
     let doc = doc!(cx.editor);
     if let Some(uri) = doc.uri() {
         let diagnostics = cx.editor.diagnostics.get(&uri).cloned().unwrap_or_default();
-        let picker = diag_picker(cx, [(uri, diagnostics)], DiagnosticsFormat::HideSourcePath);
+        let picker = diag_picker(cx, [(uri, diagnostics)], DiagnosticsFormat::HideSourcePath)
+            .with_title("Diagnostics");
         cx.push_layer(Box::new(overlaid(picker)));
     }
 }
@@ -624,7 +627,8 @@ pub fn diagnostics_picker(cx: &mut Context) {
 pub fn workspace_diagnostics_picker(cx: &mut Context) {
     // TODO not yet filtered by LanguageServerFeature, need to do something similar as Document::shown_diagnostics here for all open documents
     let diagnostics = cx.editor.diagnostics.clone();
-    let picker = diag_picker(cx, diagnostics, DiagnosticsFormat::ShowSourcePath);
+    let picker = diag_picker(cx, diagnostics, DiagnosticsFormat::ShowSourcePath)
+        .with_title("Workspace Diagnostics");
     cx.push_layer(Box::new(overlaid(picker)));
 }
 
@@ -880,7 +884,8 @@ fn code_action_inner_picker(
                     lsp_item.language_server_id,
                 );
             },
-        );
+        )
+        .with_title("Code Actions");
         compositor.push(Box::new(overlaid(picker)));
     };
     Ok(Callback::EditorCompositor(Box::new(call)))
@@ -957,7 +962,7 @@ impl Display for ApplyEditErrorKind {
 
 /// Precondition: `locations` should be non-empty.
 fn goto_impl(
-    _title: &'static str,
+    title: &'static str,
     editor: &mut Editor,
     compositor: &mut Compositor,
     locations: Vec<Location>,
@@ -986,7 +991,8 @@ fn goto_impl(
             let picker = Picker::new(columns, 0, locations, cwdir, |cx, location, action| {
                 jump_to_location(cx.editor, location, action)
             })
-            .with_preview(|_editor, location| location_to_file_location(location));
+            .with_preview(|_editor, location| location_to_file_location(location))
+            .with_title(title);
             compositor.push(Box::new(overlaid(picker)));
         }
     }

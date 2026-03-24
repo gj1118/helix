@@ -27,3 +27,5 @@ lint:
 
 fmt:
     cargo fmt --all
+
+alias bi := build_and_install

@@ -188,7 +188,8 @@ pub fn syntax_symbol_picker(cx: &mut Context) {
     .with_preview(|_editor, tag| {
         Some((tag.doc.path_or_id()?, Some((tag.start_line, tag.end_line))))
     })
-    .truncate_start(false);
+    .truncate_start(false)
+    .with_title("Document Symbols");
 
     cx.push_layer(Box::new(overlaid(picker)));
 }
@@ -433,7 +434,8 @@ pub fn syntax_workspace_symbol_picker(cx: &mut Context) {
         ))
     })
     .with_history_register(Some(reg))
-    .truncate_start(false);
+    .truncate_start(false)
+    .with_title("Workspace Symbols");
     cx.push_layer(Box::new(overlaid(picker)));
 }
 

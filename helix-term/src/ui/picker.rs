@@ -274,6 +274,8 @@ pub struct Picker<T: 'static + Send + Sync, D: 'static> {
     dynamic_query_handler: Option<Sender<DynamicQueryChange>>,
     /// Cached gradient border for rendering when enabled in config
     gradient_border: Option<GradientBorder>,
+    /// Title to display at the top of the picker
+    title: Option<&'static str>,
 }
 
 impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
@@ -397,6 +399,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             preview_highlight_handler: PreviewHighlightHandler::<T, D>::default().spawn(),
             dynamic_query_handler: None,
             gradient_border: None,
+            title: None,
         }
     }
 
@@ -439,6 +442,12 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
 
     pub fn show_preview(mut self, show_preview: bool) -> Self {
         self.show_preview = show_preview;
+        self
+    }
+
+    /// Set a title to display at the top of the picker
+    pub fn with_title(mut self, title: &'static str) -> Self {
+        self.title = Some(title);
         self
     }
 
@@ -733,7 +742,13 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
 
             if let Some(ref mut gradient_border) = self.gradient_border {
                 let rounded = cx.editor.config().rounded_corners;
-                gradient_border.render(area, surface, &cx.editor.theme, rounded);
+                gradient_border.render_with_title(
+                    area,
+                    surface,
+                    &cx.editor.theme,
+                    self.title,
+                    rounded,
+                );
             }
 
             let t: u16 = cx.editor.config().gradient_borders.thickness as u16;
@@ -744,7 +759,11 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                 height: area.height.saturating_sub(t * 2),
             }
         } else {
-            let block = Block::bordered();
+            let block = if let Some(title) = self.title {
+                Block::bordered().title(title)
+            } else {
+                Block::bordered()
+            };
             let inner_area = block.inner(area);
             block.render(area, surface);
             inner_area

@@ -894,7 +894,8 @@ impl Application {
                             callback_id,
                             serde_json::Value::String(item.clone()),
                         );
-                    });
+                    })
+                    .with_title("Plugin");
                 self.compositor.push(Box::new(overlaid(picker)));
             }
         }
