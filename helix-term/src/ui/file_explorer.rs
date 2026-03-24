@@ -421,3 +421,175 @@ pub fn file_explorer(
 
     Ok(picker)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    // ===========================================
+    // Path Validation Tests
+    // ===========================================
+
+    #[test]
+    fn test_pathbuf_extension() {
+        let path = PathBuf::from("/home/user/test.txt");
+        assert_eq!(path.extension().and_then(|e| e.to_str()), Some("txt"));
+    }
+
+    #[test]
+    fn test_pathbuf_no_extension() {
+        let path = PathBuf::from("/home/user/Makefile");
+        assert!(path.extension().is_none());
+    }
+
+    #[test]
+    fn test_pathbuf_hidden_file() {
+        let path = PathBuf::from("/home/user/.gitignore");
+        assert_eq!(
+            path.file_name().and_then(|n| n.to_str()),
+            Some(".gitignore")
+        );
+    }
+
+    #[test]
+    fn test_pathbuf_parent() {
+        let path = PathBuf::from("/home/user/documents/file.txt");
+        let parent = path.parent().unwrap();
+        assert_eq!(parent, Path::new("/home/user/documents"));
+    }
+
+    #[test]
+    fn test_pathbuf_is_absolute() {
+        let abs_path = PathBuf::from("/home/user/file.txt");
+        let rel_path = PathBuf::from("./file.txt");
+
+        assert!(abs_path.is_absolute());
+        assert!(!rel_path.is_absolute());
+    }
+
+    // ===========================================
+    // ExplorerItem Type Tests
+    // ===========================================
+
+    #[test]
+    fn test_explorer_item_file() {
+        let item: ExplorerItem = (PathBuf::from("/test/file.txt"), false);
+        assert!(!item.1); // is_dir is false
+        assert_eq!(item.0, PathBuf::from("/test/file.txt"));
+    }
+
+    #[test]
+    fn test_explorer_item_directory() {
+        let item: ExplorerItem = (PathBuf::from("/test/folder"), true);
+        assert!(item.1); // is_dir is true
+        assert_eq!(item.0, PathBuf::from("/test/folder"));
+    }
+
+    // ===========================================
+    // Path Manipulation Tests
+    // ===========================================
+
+    #[test]
+    fn test_path_join() {
+        let base = PathBuf::from("/home/user");
+        let joined = base.join("documents").join("file.txt");
+        assert_eq!(joined, PathBuf::from("/home/user/documents/file.txt"));
+    }
+
+    #[test]
+    fn test_path_strip_prefix() {
+        let path = PathBuf::from("/home/user/documents/file.txt");
+        let prefix = PathBuf::from("/home/user");
+        let stripped = path.strip_prefix(&prefix).unwrap();
+        assert_eq!(stripped, Path::new("documents/file.txt"));
+    }
+
+    #[test]
+    fn test_path_strip_prefix_no_match() {
+        let path = PathBuf::from("/home/user/documents/file.txt");
+        let prefix = PathBuf::from("/var/log");
+        let result = path.strip_prefix(&prefix);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_path_file_name() {
+        let path = PathBuf::from("/home/user/documents/report.pdf");
+        assert_eq!(
+            path.file_name().and_then(|n| n.to_str()),
+            Some("report.pdf")
+        );
+    }
+
+    #[test]
+    fn test_path_file_stem() {
+        let path = PathBuf::from("/home/user/documents/report.pdf");
+        assert_eq!(path.file_stem().and_then(|n| n.to_str()), Some("report"));
+    }
+
+    // ===========================================
+    // Path Exists Tests (using temp paths)
+    // ===========================================
+
+    #[test]
+    fn test_path_exists_false_for_nonexistent() {
+        let path = PathBuf::from("/this/path/does/not/exist/hopefully");
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn test_path_exists_true_for_root() {
+        // Root directory should always exist on Unix-like systems
+        #[cfg(unix)]
+        {
+            let path = PathBuf::from("/");
+            assert!(path.exists());
+        }
+    }
+
+    // ===========================================
+    // Directory Content Ordering Tests
+    // ===========================================
+
+    #[test]
+    fn test_explorer_items_can_be_sorted() {
+        let mut items: Vec<ExplorerItem> = vec![
+            (PathBuf::from("z_file.txt"), false),
+            (PathBuf::from("a_file.txt"), false),
+            (PathBuf::from("m_folder"), true),
+            (PathBuf::from("b_folder"), true),
+        ];
+
+        // Sort by name
+        items.sort_by(|a, b| a.0.cmp(&b.0));
+
+        assert_eq!(items[0].0, PathBuf::from("a_file.txt"));
+        assert_eq!(items[1].0, PathBuf::from("b_folder"));
+        assert_eq!(items[2].0, PathBuf::from("m_folder"));
+        assert_eq!(items[3].0, PathBuf::from("z_file.txt"));
+    }
+
+    #[test]
+    fn test_explorer_items_directories_first_sort() {
+        let mut items: Vec<ExplorerItem> = vec![
+            (PathBuf::from("z_file.txt"), false),
+            (PathBuf::from("a_folder"), true),
+            (PathBuf::from("a_file.txt"), false),
+            (PathBuf::from("z_folder"), true),
+        ];
+
+        // Sort directories first, then by name
+        items.sort_by(|a, b| match (a.1, b.1) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.0.cmp(&b.0),
+        });
+
+        // Directories should come first
+        assert!(items[0].1); // a_folder
+        assert!(items[1].1); // z_folder
+        assert!(!items[2].1); // a_file.txt
+        assert!(!items[3].1); // z_file.txt
+    }
+}

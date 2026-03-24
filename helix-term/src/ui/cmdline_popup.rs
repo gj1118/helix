@@ -443,3 +443,117 @@ impl Component for CmdlinePopup {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ===========================================
+    // CmdlinePopup Construction Tests
+    // ===========================================
+
+    #[test]
+    fn test_cmdline_popup_default_properties() {
+        let popup = CmdlinePopup::new(
+            "Test:".into(),
+            None,
+            |_editor, _input| vec![],
+            |_ctx, _input, _event| {},
+            CmdlineStyle::Popup,
+        );
+
+        assert_eq!(popup.style, CmdlineStyle::Popup);
+        assert_eq!(popup.min_width, 40);
+        assert_eq!(popup.max_width, 80);
+        assert_eq!(popup.padding, 2);
+        assert!(popup.gradient_border.is_none());
+        assert_eq!(popup.popup_area, Rect::default());
+    }
+
+    #[test]
+    fn test_cmdline_popup_bottom_style() {
+        let popup = CmdlinePopup::new(
+            ":".into(),
+            None,
+            |_editor, _input| vec![],
+            |_ctx, _input, _event| {},
+            CmdlineStyle::Bottom,
+        );
+
+        assert_eq!(popup.style, CmdlineStyle::Bottom);
+    }
+
+    // ===========================================
+    // Popup Area Calculation Tests
+    // ===========================================
+
+    #[test]
+    fn test_calculate_popup_area_centered() {
+        let popup = CmdlinePopup::new(
+            ":".into(),
+            None,
+            |_editor, _input| vec![],
+            |_ctx, _input, _event| {},
+            CmdlineStyle::Popup,
+        );
+
+        let viewport = Rect::new(0, 0, 100, 50);
+        let area = popup.calculate_popup_area(viewport);
+
+        // Width should be between min_width (40) and max_width (80)
+        assert!(area.width >= popup.min_width);
+        assert!(area.width <= popup.max_width);
+
+        // Height should be 3 (base height for single line + borders)
+        assert_eq!(area.height, 3);
+
+        // Should be horizontally centered
+        let expected_x = viewport.x + (viewport.width.saturating_sub(area.width)) / 2;
+        assert_eq!(area.x, expected_x);
+
+        // Should be positioned in upper third
+        let expected_y = viewport.y + (viewport.height.saturating_sub(area.height)) / 3;
+        assert_eq!(area.y, expected_y);
+    }
+
+    #[test]
+    fn test_calculate_popup_area_small_viewport() {
+        let popup = CmdlinePopup::new(
+            ":".into(),
+            None,
+            |_editor, _input| vec![],
+            |_ctx, _input, _event| {},
+            CmdlineStyle::Popup,
+        );
+
+        // Viewport smaller than max_width
+        let viewport = Rect::new(0, 0, 50, 20);
+        let area = popup.calculate_popup_area(viewport);
+
+        // Width should be constrained by viewport
+        assert!(area.width <= viewport.width.saturating_sub(4));
+    }
+
+    // ===========================================
+    // CmdlineStyle Tests
+    // ===========================================
+
+    #[test]
+    fn test_cmdline_style_popup_variant() {
+        let style = CmdlineStyle::Popup;
+        assert_eq!(style, CmdlineStyle::Popup);
+    }
+
+    #[test]
+    fn test_cmdline_style_bottom_variant() {
+        let style = CmdlineStyle::Bottom;
+        assert_eq!(style, CmdlineStyle::Bottom);
+    }
+
+    #[test]
+    fn test_cmdline_style_equality() {
+        assert_eq!(CmdlineStyle::Popup, CmdlineStyle::Popup);
+        assert_eq!(CmdlineStyle::Bottom, CmdlineStyle::Bottom);
+        assert_ne!(CmdlineStyle::Popup, CmdlineStyle::Bottom);
+    }
+}

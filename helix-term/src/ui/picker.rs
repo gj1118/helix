@@ -1339,3 +1339,161 @@ impl<T: 'static + Send + Sync, D> Drop for Picker<T, D> {
 type PickerCallback<T> = Box<dyn Fn(&mut Context, &T, Action)>;
 pub type PickerKeyHandler<T, D> = Box<dyn Fn(&mut Context, &T, Arc<D>, u32) + 'static>;
 pub type PickerKeyHandlers<T, D> = HashMap<KeyEvent, PickerKeyHandler<T, D>>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ===========================================
+    // Picker Title Tests
+    // ===========================================
+
+    #[test]
+    fn test_picker_title_default_none() {
+        // Create a simple picker and verify title is None by default
+        let columns = [Column::new("test", |item: &String, _: &()| {
+            item.as_str().into()
+        })];
+        let picker: Picker<String, ()> = Picker::new(
+            columns,
+            0,
+            vec!["item1".to_string(), "item2".to_string()],
+            (),
+            |_cx, _item, _action| {},
+        );
+
+        assert!(picker.title.is_none());
+    }
+
+    #[test]
+    fn test_picker_with_title() {
+        let columns = [Column::new("test", |item: &String, _: &()| {
+            item.as_str().into()
+        })];
+        let picker: Picker<String, ()> = Picker::new(
+            columns,
+            0,
+            vec!["item1".to_string()],
+            (),
+            |_cx, _item, _action| {},
+        )
+        .with_title("Test Title");
+
+        assert_eq!(picker.title, Some("Test Title"));
+    }
+
+    #[test]
+    fn test_picker_title_chaining() {
+        // Test that with_title can be chained with other builder methods
+        let columns = [Column::new("test", |item: &String, _: &()| {
+            item.as_str().into()
+        })];
+        let picker: Picker<String, ()> = Picker::new(
+            columns,
+            0,
+            vec!["item1".to_string()],
+            (),
+            |_cx, _item, _action| {},
+        )
+        .truncate_start(false)
+        .with_title("Chained Title")
+        .show_preview(false);
+
+        assert_eq!(picker.title, Some("Chained Title"));
+        assert!(!picker.truncate_start);
+        assert!(!picker.show_preview);
+    }
+
+    #[test]
+    fn test_picker_title_empty_string() {
+        let columns = [Column::new("test", |item: &String, _: &()| {
+            item.as_str().into()
+        })];
+        let picker: Picker<String, ()> =
+            Picker::new(columns, 0, vec![], (), |_cx, _item, _action| {}).with_title("");
+
+        // Empty string is still Some("")
+        assert_eq!(picker.title, Some(""));
+    }
+
+    #[test]
+    fn test_picker_title_with_special_characters() {
+        let columns = [Column::new("test", |item: &String, _: &()| {
+            item.as_str().into()
+        })];
+        let picker: Picker<String, ()> =
+            Picker::new(columns, 0, vec![], (), |_cx, _item, _action| {})
+                .with_title("Files 📁 & Folders");
+
+        assert_eq!(picker.title, Some("Files 📁 & Folders"));
+    }
+
+    #[test]
+    fn test_picker_title_various_picker_types() {
+        // Test with different item types to ensure generics work correctly
+
+        // String items
+        let columns_str = [Column::new("name", |item: &String, _: &()| {
+            item.as_str().into()
+        })];
+        let picker_str: Picker<String, ()> = Picker::new(
+            columns_str,
+            0,
+            vec!["a".to_string()],
+            (),
+            |_cx, _item, _action| {},
+        )
+        .with_title("String Picker");
+        assert_eq!(picker_str.title, Some("String Picker"));
+
+        // Integer items
+        let columns_int = [Column::new("num", |item: &i32, _: &()| {
+            item.to_string().into()
+        })];
+        let picker_int: Picker<i32, ()> =
+            Picker::new(columns_int, 0, vec![1, 2, 3], (), |_cx, _item, _action| {})
+                .with_title("Integer Picker");
+        assert_eq!(picker_int.title, Some("Integer Picker"));
+    }
+
+    // ===========================================
+    // Picker Constants Tests
+    // ===========================================
+
+    #[test]
+    fn test_picker_id_constant() {
+        assert_eq!(ID, "picker");
+    }
+
+    #[test]
+    fn test_min_area_constants() {
+        assert_eq!(MIN_AREA_WIDTH_FOR_PREVIEW, 72);
+        assert_eq!(MIN_AREA_HEIGHT_FOR_PREVIEW, 24);
+    }
+
+    #[test]
+    fn test_max_file_size_for_preview() {
+        // 10 MB
+        assert_eq!(MAX_FILE_SIZE_FOR_PREVIEW, 10 * 1024 * 1024);
+    }
+
+    // ===========================================
+    // Picker Movement Tests
+    // ===========================================
+
+    #[test]
+    fn test_picker_cursor_starts_at_zero() {
+        let columns = [Column::new("test", |item: &String, _: &()| {
+            item.as_str().into()
+        })];
+        let picker: Picker<String, ()> = Picker::new(
+            columns,
+            0,
+            vec!["a".to_string(), "b".to_string(), "c".to_string()],
+            (),
+            |_cx, _item, _action| {},
+        );
+
+        assert_eq!(picker.cursor, 0);
+    }
+}

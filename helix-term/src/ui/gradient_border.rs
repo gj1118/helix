@@ -289,3 +289,450 @@ impl GradientBorder {
         Self::new(border_config)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn default_config() -> GradientBorderConfig {
+        GradientBorderConfig {
+            enable: true,
+            thickness: 1,
+            direction: GradientDirection::Horizontal,
+            start_color: "#FF0000".to_string(),
+            end_color: "#0000FF".to_string(),
+            middle_color: "".to_string(),
+            animation_speed: 0,
+        }
+    }
+
+    // ===========================================
+    // Hex Color Parsing Tests
+    // ===========================================
+
+    #[test]
+    fn test_parse_hex_color_valid() {
+        assert_eq!(
+            GradientBorder::parse_hex_color("#FF0000"),
+            Some((255, 0, 0))
+        );
+        assert_eq!(
+            GradientBorder::parse_hex_color("#00FF00"),
+            Some((0, 255, 0))
+        );
+        assert_eq!(
+            GradientBorder::parse_hex_color("#0000FF"),
+            Some((0, 0, 255))
+        );
+        assert_eq!(
+            GradientBorder::parse_hex_color("#FFFFFF"),
+            Some((255, 255, 255))
+        );
+        assert_eq!(GradientBorder::parse_hex_color("#000000"), Some((0, 0, 0)));
+        assert_eq!(
+            GradientBorder::parse_hex_color("#8A2BE2"),
+            Some((138, 43, 226))
+        );
+    }
+
+    #[test]
+    fn test_parse_hex_color_lowercase() {
+        assert_eq!(
+            GradientBorder::parse_hex_color("#ff0000"),
+            Some((255, 0, 0))
+        );
+        assert_eq!(
+            GradientBorder::parse_hex_color("#abcdef"),
+            Some((171, 205, 239))
+        );
+    }
+
+    #[test]
+    fn test_parse_hex_color_mixed_case() {
+        assert_eq!(
+            GradientBorder::parse_hex_color("#FfAaBb"),
+            Some((255, 170, 187))
+        );
+    }
+
+    #[test]
+    fn test_parse_hex_color_invalid_no_hash() {
+        assert_eq!(GradientBorder::parse_hex_color("FF0000"), None);
+    }
+
+    #[test]
+    fn test_parse_hex_color_invalid_wrong_length() {
+        assert_eq!(GradientBorder::parse_hex_color("#FF00"), None);
+        assert_eq!(GradientBorder::parse_hex_color("#FF00000"), None);
+        assert_eq!(GradientBorder::parse_hex_color("#F"), None);
+        assert_eq!(GradientBorder::parse_hex_color("#"), None);
+    }
+
+    #[test]
+    fn test_parse_hex_color_invalid_characters() {
+        assert_eq!(GradientBorder::parse_hex_color("#GGGGGG"), None);
+        assert_eq!(GradientBorder::parse_hex_color("#12345G"), None);
+        assert_eq!(GradientBorder::parse_hex_color("#-12345"), None);
+    }
+
+    #[test]
+    fn test_parse_hex_color_empty_string() {
+        assert_eq!(GradientBorder::parse_hex_color(""), None);
+    }
+
+    // ===========================================
+    // Color Interpolation Tests
+    // ===========================================
+
+    #[test]
+    fn test_interpolate_color_start() {
+        let color = GradientBorder::interpolate_color((255, 0, 0), (0, 0, 255), 0.0);
+        assert_eq!(color, Color::Rgb(255, 0, 0));
+    }
+
+    #[test]
+    fn test_interpolate_color_end() {
+        let color = GradientBorder::interpolate_color((255, 0, 0), (0, 0, 255), 1.0);
+        assert_eq!(color, Color::Rgb(0, 0, 255));
+    }
+
+    #[test]
+    fn test_interpolate_color_middle() {
+        let color = GradientBorder::interpolate_color((255, 0, 0), (0, 0, 255), 0.5);
+        // Should be roughly (127, 0, 127) - purple
+        assert_eq!(color, Color::Rgb(127, 0, 127));
+    }
+
+    #[test]
+    fn test_interpolate_color_quarter() {
+        let color = GradientBorder::interpolate_color((0, 0, 0), (100, 100, 100), 0.25);
+        assert_eq!(color, Color::Rgb(25, 25, 25));
+    }
+
+    #[test]
+    fn test_interpolate_color_clamps_below_zero() {
+        let color = GradientBorder::interpolate_color((255, 0, 0), (0, 0, 255), -0.5);
+        // Should clamp to 0.0, giving start color
+        assert_eq!(color, Color::Rgb(255, 0, 0));
+    }
+
+    #[test]
+    fn test_interpolate_color_clamps_above_one() {
+        let color = GradientBorder::interpolate_color((255, 0, 0), (0, 0, 255), 1.5);
+        // Should clamp to 1.0, giving end color
+        assert_eq!(color, Color::Rgb(0, 0, 255));
+    }
+
+    // ===========================================
+    // Three-Color Interpolation Tests
+    // ===========================================
+
+    #[test]
+    fn test_interpolate_three_colors_start() {
+        let color = GradientBorder::interpolate_three_colors(
+            (255, 0, 0), // red
+            (0, 255, 0), // green
+            (0, 0, 255), // blue
+            0.0,
+        );
+        assert_eq!(color, Color::Rgb(255, 0, 0));
+    }
+
+    #[test]
+    fn test_interpolate_three_colors_middle() {
+        let color = GradientBorder::interpolate_three_colors(
+            (255, 0, 0), // red
+            (0, 255, 0), // green
+            (0, 0, 255), // blue
+            0.5,
+        );
+        // At 0.5, should be exactly middle color
+        assert_eq!(color, Color::Rgb(0, 255, 0));
+    }
+
+    #[test]
+    fn test_interpolate_three_colors_end() {
+        let color = GradientBorder::interpolate_three_colors(
+            (255, 0, 0), // red
+            (0, 255, 0), // green
+            (0, 0, 255), // blue
+            1.0,
+        );
+        assert_eq!(color, Color::Rgb(0, 0, 255));
+    }
+
+    #[test]
+    fn test_interpolate_three_colors_first_quarter() {
+        let color = GradientBorder::interpolate_three_colors(
+            (255, 0, 0), // red
+            (0, 255, 0), // green
+            (0, 0, 255), // blue
+            0.25,
+        );
+        // At 0.25, halfway between red and green
+        assert_eq!(color, Color::Rgb(127, 127, 0));
+    }
+
+    #[test]
+    fn test_interpolate_three_colors_third_quarter() {
+        let color = GradientBorder::interpolate_three_colors(
+            (255, 0, 0), // red
+            (0, 255, 0), // green
+            (0, 0, 255), // blue
+            0.75,
+        );
+        // At 0.75, halfway between green and blue
+        assert_eq!(color, Color::Rgb(0, 127, 127));
+    }
+
+    // ===========================================
+    // Border Characters Tests
+    // ===========================================
+
+    #[test]
+    fn test_border_chars_thickness_1_square() {
+        let chars = GradientBorder::get_border_chars(1, false);
+        assert_eq!(chars, vec!["─", "│", "┌", "┐", "└", "┘"]);
+    }
+
+    #[test]
+    fn test_border_chars_thickness_1_rounded() {
+        let chars = GradientBorder::get_border_chars(1, true);
+        assert_eq!(chars, vec!["─", "│", "╭", "╮", "╰", "╯"]);
+    }
+
+    #[test]
+    fn test_border_chars_thickness_2() {
+        let chars = GradientBorder::get_border_chars(2, false);
+        assert_eq!(chars, vec!["━", "┃", "┏", "┓", "┗", "┛"]);
+    }
+
+    #[test]
+    fn test_border_chars_thickness_3_double() {
+        let chars = GradientBorder::get_border_chars(3, false);
+        assert_eq!(chars, vec!["═", "║", "╔", "╗", "╚", "╝"]);
+    }
+
+    #[test]
+    fn test_border_chars_thickness_4_block() {
+        let chars = GradientBorder::get_border_chars(4, false);
+        assert_eq!(chars, vec!["▄", "█", "█", "█", "█", "█"]);
+    }
+
+    #[test]
+    fn test_border_chars_thickness_5_full_block() {
+        let chars = GradientBorder::get_border_chars(5, false);
+        assert_eq!(chars, vec!["▀", "█", "█", "█", "█", "█"]);
+    }
+
+    #[test]
+    fn test_border_chars_invalid_thickness_fallback() {
+        // Thickness 0 or > 5 should fallback to thin
+        let chars = GradientBorder::get_border_chars(0, false);
+        assert_eq!(chars, vec!["─", "│", "┌", "┐", "└", "┘"]);
+
+        let chars = GradientBorder::get_border_chars(10, false);
+        assert_eq!(chars, vec!["─", "│", "┌", "┐", "└", "┘"]);
+    }
+
+    // ===========================================
+    // GradientBorder Construction Tests
+    // ===========================================
+
+    #[test]
+    fn test_gradient_border_new() {
+        let config = default_config();
+        let border = GradientBorder::new(config.clone());
+
+        assert_eq!(border.animation_frame, 0);
+        assert_eq!(border.start_rgb, (255, 0, 0));
+        assert_eq!(border.end_rgb, (0, 0, 255));
+        assert!(border.middle_rgb.is_none());
+    }
+
+    #[test]
+    fn test_gradient_border_with_middle_color() {
+        let mut config = default_config();
+        config.middle_color = "#00FF00".to_string();
+        let border = GradientBorder::new(config);
+
+        assert_eq!(border.middle_rgb, Some((0, 255, 0)));
+    }
+
+    #[test]
+    fn test_gradient_border_with_invalid_colors_uses_fallback() {
+        let config = GradientBorderConfig {
+            enable: true,
+            thickness: 1,
+            direction: GradientDirection::Horizontal,
+            start_color: "invalid".to_string(),
+            end_color: "also_invalid".to_string(),
+            middle_color: "".to_string(),
+            animation_speed: 0,
+        };
+        let border = GradientBorder::new(config);
+
+        // Should use fallback colors (138, 43, 226) and (0, 191, 255)
+        assert_eq!(border.start_rgb, (138, 43, 226));
+        assert_eq!(border.end_rgb, (0, 191, 255));
+    }
+
+    // ===========================================
+    // Animation Tests
+    // ===========================================
+
+    #[test]
+    fn test_tick_increments_frame_when_animated() {
+        let mut config = default_config();
+        config.animation_speed = 5;
+        let mut border = GradientBorder::new(config);
+
+        assert_eq!(border.animation_frame, 0);
+        border.tick();
+        assert_eq!(border.animation_frame, 1);
+        border.tick();
+        assert_eq!(border.animation_frame, 2);
+    }
+
+    #[test]
+    fn test_tick_does_not_increment_when_not_animated() {
+        let mut config = default_config();
+        config.animation_speed = 0;
+        let mut border = GradientBorder::new(config);
+
+        assert_eq!(border.animation_frame, 0);
+        border.tick();
+        assert_eq!(border.animation_frame, 0);
+    }
+
+    #[test]
+    fn test_disable_animation() {
+        let mut config = default_config();
+        config.animation_speed = 5;
+        let mut border = GradientBorder::new(config);
+
+        border.tick();
+        assert_eq!(border.animation_frame, 1);
+
+        border.disable_animation();
+        border.tick();
+        // Should not increment after disabling
+        assert_eq!(border.animation_frame, 1);
+    }
+
+    #[test]
+    fn test_animation_frame_wraps() {
+        let mut config = default_config();
+        config.animation_speed = 5;
+        let mut border = GradientBorder::new(config);
+
+        // Set to max u32 - 1
+        border.animation_frame = u32::MAX;
+        border.tick();
+        // Should wrap to 0
+        assert_eq!(border.animation_frame, 0);
+    }
+
+    // ===========================================
+    // Gradient Direction Color Tests
+    // ===========================================
+
+    #[test]
+    fn test_horizontal_gradient_colors() {
+        let mut config = default_config();
+        config.direction = GradientDirection::Horizontal;
+        let border = GradientBorder::new(config);
+
+        let area = Rect::new(0, 0, 10, 5);
+
+        // Left edge should be start color (red)
+        let left_color = border.get_gradient_color(0, 0, area);
+        assert_eq!(left_color, Color::Rgb(255, 0, 0));
+
+        // Right edge should be end color (blue)
+        // Note: ratio = 9/10 = 0.9, so not quite pure blue
+        let right_color = border.get_gradient_color(9, 0, area);
+        // At 90% interpolation: r = 255 * 0.1 = 25, b = 255 * 0.9 = 229
+        assert_eq!(right_color, Color::Rgb(25, 0, 229));
+    }
+
+    #[test]
+    fn test_vertical_gradient_colors() {
+        let mut config = default_config();
+        config.direction = GradientDirection::Vertical;
+        let border = GradientBorder::new(config);
+
+        let area = Rect::new(0, 0, 10, 10);
+
+        // Top edge should be start color
+        let top_color = border.get_gradient_color(5, 0, area);
+        assert_eq!(top_color, Color::Rgb(255, 0, 0));
+
+        // Bottom edge color at y=9 (ratio = 0.9)
+        let bottom_color = border.get_gradient_color(5, 9, area);
+        assert_eq!(bottom_color, Color::Rgb(25, 0, 229));
+    }
+
+    #[test]
+    fn test_diagonal_gradient_colors() {
+        let mut config = default_config();
+        config.direction = GradientDirection::Diagonal;
+        let border = GradientBorder::new(config);
+
+        let area = Rect::new(0, 0, 10, 10);
+
+        // Top-left corner should be start color
+        let tl_color = border.get_gradient_color(0, 0, area);
+        assert_eq!(tl_color, Color::Rgb(255, 0, 0));
+    }
+
+    #[test]
+    fn test_radial_gradient_colors() {
+        let mut config = default_config();
+        config.direction = GradientDirection::Radial;
+        let border = GradientBorder::new(config);
+
+        let area = Rect::new(0, 0, 10, 10);
+
+        // Center should be start color
+        let center_color = border.get_gradient_color(5, 5, area);
+        assert_eq!(center_color, Color::Rgb(255, 0, 0));
+    }
+
+    // ===========================================
+    // Computed Cached Colors Tests
+    // ===========================================
+
+    #[test]
+    fn test_compute_cached_colors_valid() {
+        let config = GradientBorderConfig {
+            enable: true,
+            thickness: 1,
+            direction: GradientDirection::Horizontal,
+            start_color: "#112233".to_string(),
+            end_color: "#445566".to_string(),
+            middle_color: "#778899".to_string(),
+            animation_speed: 0,
+        };
+
+        let (start, end, middle) = GradientBorder::compute_cached_colors(&config);
+        assert_eq!(start, (0x11, 0x22, 0x33));
+        assert_eq!(end, (0x44, 0x55, 0x66));
+        assert_eq!(middle, Some((0x77, 0x88, 0x99)));
+    }
+
+    #[test]
+    fn test_compute_cached_colors_empty_middle() {
+        let config = default_config();
+        let (_, _, middle) = GradientBorder::compute_cached_colors(&config);
+        assert!(middle.is_none());
+    }
+
+    #[test]
+    fn test_compute_cached_colors_invalid_middle() {
+        let mut config = default_config();
+        config.middle_color = "not_a_color".to_string();
+        let (_, _, middle) = GradientBorder::compute_cached_colors(&config);
+        assert!(middle.is_none());
+    }
+}

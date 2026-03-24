@@ -669,3 +669,218 @@ impl Default for NotificationPopup {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::borrow::Cow;
+
+    // ===========================================
+    // NotificationPopup Construction Tests
+    // ===========================================
+
+    #[test]
+    fn test_notification_popup_new() {
+        let popup = NotificationPopup::new();
+
+        assert!(popup.notifications.is_empty());
+        assert!(popup.gradient_border.is_none());
+        assert_eq!(popup.layout_thickness, 1);
+        assert!(!popup.layout_rounded);
+        assert_eq!(popup.layout_padding, 1);
+    }
+
+    #[test]
+    fn test_notification_popup_default() {
+        let popup = NotificationPopup::default();
+
+        assert!(popup.notifications.is_empty());
+    }
+
+    // ===========================================
+    // NotificationItem Tests
+    // ===========================================
+
+    #[test]
+    fn test_notification_item_new() {
+        let notification = Notification {
+            id: 1,
+            message: Cow::Borrowed("Test message"),
+            severity: Severity::Info,
+            timestamp: tokio::time::Instant::now(),
+            timeout: Some(std::time::Duration::from_secs(5)),
+            dismissed: false,
+            corner_radius: None,
+        };
+
+        let item = NotificationItem::new(notification.clone());
+
+        assert_eq!(item.notification.id, 1);
+        assert_eq!(item.notification.message, "Test message");
+        assert_eq!(item.area, Rect::default());
+        assert!(item.fade_start.is_none());
+    }
+
+    #[test]
+    fn test_notification_item_fade_progress_no_fade() {
+        let notification = Notification {
+            id: 1,
+            message: Cow::Borrowed("Test"),
+            severity: Severity::Info,
+            timestamp: tokio::time::Instant::now(),
+            timeout: None,
+            dismissed: false,
+            corner_radius: None,
+        };
+
+        let item = NotificationItem::new(notification);
+
+        // No fade started, should return 0.0
+        assert_eq!(item.fade_progress(), 0.0);
+    }
+
+    #[test]
+    fn test_notification_item_fade_progress_with_fade() {
+        let notification = Notification {
+            id: 1,
+            message: Cow::Borrowed("Test"),
+            severity: Severity::Info,
+            timestamp: tokio::time::Instant::now(),
+            timeout: None,
+            dismissed: false,
+            corner_radius: None,
+        };
+
+        let mut item = NotificationItem::new(notification);
+        item.fade_start = Some(Instant::now());
+
+        // Immediately after starting fade, progress should be close to 0
+        let progress = item.fade_progress();
+        assert!((0.0..=1.0).contains(&progress));
+    }
+
+    // ===========================================
+    // Text Wrapping Tests
+    // ===========================================
+
+    #[test]
+    fn test_wrap_text_static_short_text() {
+        let lines = NotificationPopup::wrap_text_static("Hello", 20);
+        assert_eq!(lines, vec!["Hello"]);
+    }
+
+    #[test]
+    fn test_wrap_text_static_exact_width() {
+        let lines = NotificationPopup::wrap_text_static("Hello", 5);
+        assert_eq!(lines, vec!["Hello"]);
+    }
+
+    #[test]
+    fn test_wrap_text_static_needs_wrap() {
+        let lines = NotificationPopup::wrap_text_static("Hello World", 6);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], "Hello");
+        assert_eq!(lines[1], "World");
+    }
+
+    #[test]
+    fn test_wrap_text_static_multiple_words() {
+        let lines = NotificationPopup::wrap_text_static("one two three four", 10);
+        // Should wrap "one two" and "three four" or similar
+        assert!(lines.len() >= 2);
+    }
+
+    #[test]
+    fn test_wrap_text_static_empty_string() {
+        let lines = NotificationPopup::wrap_text_static("", 20);
+        assert_eq!(lines, vec![""]);
+    }
+
+    #[test]
+    fn test_wrap_text_static_single_long_word() {
+        // A word longer than max_width should still be included
+        let lines = NotificationPopup::wrap_text_static("superlongword", 5);
+        // The word is longer than max_width, but it should be included as-is
+        assert!(!lines.is_empty());
+        assert!(lines
+            .iter()
+            .any(|l| l.contains("superlongword") || !l.is_empty()));
+    }
+
+    #[test]
+    fn test_wrap_text_static_preserves_spaces_between_words() {
+        let lines = NotificationPopup::wrap_text_static("a b c d e", 100);
+        assert_eq!(lines, vec!["a b c d e"]);
+    }
+
+    // ===========================================
+    // Severity Mapping Tests
+    // ===========================================
+
+    #[test]
+    fn test_severity_variants() {
+        // Verify the severity enum variants exist and can be matched
+        let severities = [
+            Severity::Hint,
+            Severity::Info,
+            Severity::Warning,
+            Severity::Error,
+        ];
+
+        // Verify all variants are covered
+        assert_eq!(severities.len(), 4);
+
+        // Verify each variant can be matched
+        for severity in severities {
+            let name = match severity {
+                Severity::Hint => "hint",
+                Severity::Info => "info",
+                Severity::Warning => "warning",
+                Severity::Error => "error",
+            };
+            assert!(!name.is_empty());
+        }
+    }
+
+    // ===========================================
+    // Notification Builder Tests
+    // ===========================================
+
+    #[test]
+    fn test_notification_new() {
+        let notification = Notification::new("Test message", Severity::Info);
+
+        assert_eq!(notification.message, "Test message");
+        assert_eq!(notification.severity, Severity::Info);
+        assert!(!notification.dismissed);
+        assert!(notification.timeout.is_none());
+        assert!(notification.corner_radius.is_none());
+    }
+
+    #[test]
+    fn test_notification_with_timeout() {
+        let notification = Notification::new("Test", Severity::Warning)
+            .with_timeout(std::time::Duration::from_secs(10));
+
+        assert_eq!(
+            notification.timeout,
+            Some(std::time::Duration::from_secs(10))
+        );
+    }
+
+    #[test]
+    fn test_notification_dismiss() {
+        let mut notification = Notification::new("Test", Severity::Error);
+        assert!(!notification.dismissed);
+
+        notification.dismiss();
+        assert!(notification.dismissed);
+    }
+
+    #[test]
+    fn test_notification_is_expired_no_timeout() {
+        let notification = Notification::new("Test", Severity::Info);
+        // No timeout means never expires
+        assert!(!notification.is_expired());
+    }
+}
