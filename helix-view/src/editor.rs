@@ -15,6 +15,7 @@ use crate::{
     Document, DocumentId, View, ViewId,
 };
 use helix_event::dispatch;
+use helix_loader::workspace_trust::TrustStatus;
 use helix_vcs::DiffProviderRegistry;
 
 use futures_util::stream::select_all::SelectAll;
@@ -509,6 +510,8 @@ pub struct Config {
     /// Defines which text objects will be folded when a document is opened.
     #[serde(default)]
     pub fold_textobjects: Vec<String>,
+    /// Whether to implicitly trust every workspace or not
+    pub insecure: bool,
 }
 
 #[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, Clone, Copy)]
@@ -1660,6 +1663,7 @@ impl Default for Config {
             completion_highlight: CompletionHighlight::default(),
             buffer_picker: BufferPickerConfig::default(),
             fold_textobjects: Vec::new(),
+            insecure: false,
         }
     }
 }
@@ -2423,7 +2427,7 @@ impl Editor {
     }
 
     /// Launch a language server for a given document
-    fn launch_language_servers(&mut self, doc_id: DocumentId) {
+    pub fn launch_language_servers(&mut self, doc_id: DocumentId) {
         if !self.config().lsp.enable {
             return;
         }
@@ -2437,6 +2441,15 @@ impl Editor {
         let (lang, path) = (doc.language.clone(), doc.path().cloned());
         let config = doc.config.load();
         let root_dirs = &config.workspace_lsp_roots;
+
+        if let TrustStatus::Untrusted =
+            helix_loader::workspace_trust::quick_query_workspace(self.config.load().insecure)
+        {
+            self.set_status(
+                "Current workspace is not trusted. Run `:workspace-trust` to enable all features.",
+            );
+            return;
+        };
 
         // store only successfully started language servers
         let language_servers = lang.as_ref().map_or_else(HashMap::default, |language| {

@@ -566,7 +566,7 @@ impl Application {
             // Update the syntax language loader before setting the theme. Setting the theme will
             // call `Loader::set_scopes` which must be done before the documents are re-parsed for
             // the sake of locals highlighting.
-            let lang_loader = helix_core::config::user_lang_loader()?;
+            let lang_loader = helix_core::config::user_lang_loader(default_config.editor.insecure)?;
             self.editor.syn_loader.store(Arc::new(lang_loader));
             Self::load_configured_theme(
                 &mut self.editor,
@@ -1025,6 +1025,8 @@ impl Application {
                 kind: crossterm::event::KeyEventKind::Release,
                 ..
             }) => false,
+            #[cfg(not(windows))]
+            event if event.is_escape() => false,
             event => {
                 let event: helix_view::input::Event = event.into();
                 if let helix_view::input::Event::Key(key) = &event {
