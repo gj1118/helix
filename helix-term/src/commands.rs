@@ -1196,9 +1196,13 @@ fn align_selections(cx: &mut Context) {
     let selection = doc.selection(view.id);
 
     let tab_width = doc.tab_width();
-    let mut column_widths: Vec<Vec<_>> = Vec::new();
-    let mut last_line = text.len_lines() + 1;
-    let mut col = 0;
+
+    let mut column_widths: Vec<usize> = Vec::new();
+    let mut coordinates = Vec::with_capacity(selection.len());
+
+    let mut previous_line = usize::MAX;
+    let mut col_idx = 0;
+    let mut running_offset = 0;
 
     for range in selection {
         let coords = visual_coords_at_pos(text, range.head, tab_width);
@@ -1209,48 +1213,58 @@ fn align_selections(cx: &mut Context) {
                 .set_error("align cannot work with multi line selections");
             return;
         }
-
-        col = if coords.row == last_line { col + 1 } else { 0 };
-
-        if col >= column_widths.len() {
-            column_widths.push(Vec::new());
+        if coords.row != previous_line {
+            col_idx = 0;
+            running_offset = 0;
+            previous_line = coords.row;
         }
-        column_widths[col].push((range.from(), coords.col));
 
-        last_line = coords.row;
+        let width = coords.col - running_offset;
+
+        match column_widths.get_mut(col_idx) {
+            Some(n) => *n = (*n).max(width),
+            None => column_widths.push(width),
+        }
+
+        coordinates.push(coords);
+
+        running_offset += width;
+        col_idx += 1;
     }
 
-    let mut changes = Vec::with_capacity(selection.len());
+    let column_positions: Vec<_> = column_widths
+        .into_iter()
+        .scan(0, |sum, n| {
+            *sum += n;
+            Some(*sum)
+        })
+        .collect();
 
-    // Account for changes on each row
-    let len = column_widths.first().map(|cols| cols.len()).unwrap_or(0);
-    let mut offs = vec![0; len];
+    previous_line = usize::MAX;
 
-    for col in column_widths {
-        let max_col = col
-            .iter()
-            .enumerate()
-            .map(|(row, (_, cursor))| *cursor + offs[row])
-            .max()
-            .unwrap_or(0);
-
-        for (row, (insert_pos, last_col)) in col.into_iter().enumerate() {
-            let ins_count = max_col - (last_col + offs[row]);
-
-            if ins_count == 0 {
-                continue;
+    let changes = coordinates
+        .into_iter()
+        .zip(selection)
+        .map(|(coords, range)| {
+            if coords.row != previous_line {
+                col_idx = 0;
+                running_offset = 0;
+                previous_line = coords.row;
             }
+            let current_inserts = column_positions[col_idx] - coords.col - running_offset;
+            let insert_pos = range.from();
 
-            offs[row] += ins_count;
+            col_idx += 1;
+            running_offset += current_inserts;
 
-            changes.push((insert_pos, insert_pos, Some(" ".repeat(ins_count).into())));
-        }
-    }
+            (
+                insert_pos,
+                insert_pos,
+                Some(" ".repeat(current_inserts).into()),
+            )
+        });
 
-    // The changeset has to be sorted
-    changes.sort_unstable_by_key(|(from, _, _)| *from);
-
-    let transaction = Transaction::change(doc.text(), changes.into_iter());
+    let transaction = Transaction::change(doc.text(), changes);
     doc.apply(&transaction, view.id);
     exit_select_mode(cx);
 }
@@ -1459,21 +1473,134 @@ fn goto_file_vsplit(cx: &mut Context) {
     goto_file_impl(cx, Action::VerticalSplit);
 }
 
-/// Goto files in selection.
+/// Returns true when a selection overlaps an LSP document link range.
+fn selection_overlaps_document_link(
+    selection: &Range,
+    link: &helix_view::document::DocumentLink,
+) -> bool {
+    if selection.is_empty() {
+        let pos = selection.from();
+        link.start <= pos && pos < link.end
+    } else {
+        selection.from() < link.end && selection.to() > link.start
+    }
+}
+
+/// Create a document link resolve request when the target isn't already present.
+///
+/// This only builds the LSP request. The request is awaited from a background
+/// job so `goto_file_impl` does not block the UI thread while the language
+/// server resolves the target.
+fn resolve_document_link_request(
+    editor: &Editor,
+    link: &helix_view::document::DocumentLink,
+) -> Option<impl Future<Output = helix_lsp::Result<helix_lsp::lsp::DocumentLink>> + Send + 'static>
+{
+    let language_server = editor.language_server_by_id(link.language_server_id)?;
+    let supports_resolve = language_server
+        .capabilities()
+        .document_link_provider
+        .as_ref()?
+        .resolve_provider
+        .unwrap_or(false);
+
+    if !supports_resolve {
+        return None;
+    }
+
+    language_server.resolve_document_link(link.link.clone())
+}
+
+/// Goto files/URLs in selection.
+///
+/// Prefers LSP document links when the cursor/selection overlaps a link range,
+/// falling back to the built-in path/URL detection otherwise.
 fn goto_file_impl(cx: &mut Context, action: Action) {
     let (view, doc) = current_ref!(cx.editor);
-    let text = doc.text().slice(..);
-    let selections = doc.selection(view.id);
-    let primary = selections.primary();
+    let text = doc.text().clone();
+    let selections = doc.selection(view.id).ranges().to_vec();
     let rel_path = doc
         .relative_path()
         .map(|path| path.parent().unwrap().to_path_buf())
         .unwrap_or_default();
+    let text = text.slice(..);
 
-    let paths: Vec<_> = if selections.len() == 1 && primary.len() == 1 {
+    let mut lsp_targets = Vec::new();
+    let mut lsp_targets_seen = HashSet::new();
+    let mut unresolved_links = HashSet::new();
+    let mut resolve_requests = Vec::new();
+    let mut fallback_ranges = Vec::new();
+
+    if doc.document_links.is_empty() {
+        fallback_ranges.extend_from_slice(&selections);
+    } else {
+        for selection in &selections {
+            let mut matched = false;
+            for link in &doc.document_links {
+                if !selection_overlaps_document_link(selection, link) {
+                    continue;
+                }
+                matched = true;
+                if let Some(target) = link.link.target.clone() {
+                    if lsp_targets_seen.insert(target.clone()) {
+                        lsp_targets.push(target);
+                    }
+                } else if unresolved_links.insert((link.start, link.end, link.language_server_id)) {
+                    if let Some(request) = resolve_document_link_request(cx.editor, link) {
+                        resolve_requests.push(request);
+                    }
+                }
+            }
+            if !matched {
+                fallback_ranges.push(*selection);
+            }
+        }
+    }
+
+    for target in lsp_targets {
+        open_url(cx, target, action);
+    }
+
+    if !resolve_requests.is_empty() {
+        let rel_path = rel_path.clone();
+        cx.jobs.callback(async move {
+            let mut targets = Vec::new();
+            let mut seen = HashSet::new();
+
+            // Resolve links off the main thread, then hand the resulting URLs
+            // back to the editor/compositor callback once all requests finish.
+            for request in resolve_requests {
+                match request.await {
+                    Ok(link) => {
+                        if let Some(target) = link.target {
+                            if seen.insert(target.clone()) {
+                                targets.push(target);
+                            }
+                        }
+                    }
+                    Err(err) => log::warn!("Failed to resolve document link: {err}"),
+                }
+            }
+
+            Ok(Callback::EditorCompositor(Box::new(
+                move |editor, compositor| {
+                    for target in targets {
+                        open_url_in_callback(editor, compositor, target, action, &rel_path);
+                    }
+                },
+            )))
+        });
+    }
+
+    if fallback_ranges.is_empty() {
+        return;
+    }
+
+    let paths: Vec<_> = if fallback_ranges.len() == 1 && fallback_ranges[0].len() == 1 {
+        let selection = fallback_ranges[0];
         // Cap the search at roughly 1k bytes around the cursor.
         let lookaround = 1000;
-        let pos = text.char_to_byte(primary.cursor(text));
+        let pos = text.char_to_byte(selection.cursor(text));
         let search_start = text
             .line_to_byte(text.byte_to_line(pos))
             .max(text.floor_char_boundary(pos.saturating_sub(lookaround)));
@@ -1489,13 +1616,13 @@ fn goto_file_impl(cx: &mut Context, action: Action) {
             .find(|range| pos <= search_start + range.end)
             .map(|range| Cow::from(search_range.byte_slice(range)));
         log::debug!("goto_file auto-detected path: {path:?}");
-        let path = path.unwrap_or_else(|| primary.fragment(text));
+        let path = path.unwrap_or_else(|| selection.fragment(text));
         vec![path.into_owned()]
     } else {
         // Otherwise use each selection, trimmed.
-        selections
-            .fragments(text)
-            .map(|sel| sel.trim().to_owned())
+        fallback_ranges
+            .iter()
+            .map(|range| range.fragment(text).trim().to_owned())
             .filter(|sel| !sel.is_empty())
             .collect()
     };
@@ -1518,7 +1645,7 @@ fn goto_file_impl(cx: &mut Context, action: Action) {
 }
 
 /// Opens the given url. If the URL points to a valid textual file it is open in helix.
-//  Otherwise, the file is open using external program.
+/// Otherwise, the file is open using external program.
 fn open_url(cx: &mut Context, url: Url, action: Action) {
     let doc = doc!(cx.editor);
     let rel_path = doc
@@ -1526,8 +1653,58 @@ fn open_url(cx: &mut Context, url: Url, action: Action) {
         .map(|path| path.parent().unwrap().to_path_buf())
         .unwrap_or_default();
 
-    if url.scheme() != "file" {
+    if should_open_url_externally(&url) {
         return cx.jobs.callback(crate::open_external_url_callback(url));
+    }
+
+    let path = &rel_path.join(url.path());
+    if path.is_dir() {
+        let picker = ui::file_picker(cx.editor, path.into());
+        cx.push_layer(Box::new(overlaid(picker)));
+    } else if let Err(e) = cx.editor.open(path, action) {
+        cx.editor.set_error(format!("Open file failed: {:?}", e));
+    }
+}
+
+/// Open a URL from an editor/compositor callback.
+///
+/// This mirrors `open_url` but does not require a full `Context`, which makes
+/// it usable from async job completions such as deferred document link
+/// resolves.
+fn open_url_in_callback(
+    editor: &mut Editor,
+    compositor: &mut Compositor,
+    url: Url,
+    action: Action,
+    rel_path: &Path,
+) {
+    if should_open_url_externally(&url) {
+        tokio::spawn(async move {
+            match crate::open_external_url_callback(url).await {
+                Ok(callback) => job::dispatch_callback(callback).await,
+                Err(err) => status::report(err).await,
+            }
+        });
+        return;
+    }
+
+    let path = &rel_path.join(url.path());
+    if path.is_dir() {
+        let picker = ui::file_picker(editor, path.into());
+        compositor.push(Box::new(overlaid(picker)));
+    } else if let Err(e) = editor.open(path, action) {
+        editor.set_error(format!("Open file failed: {:?}", e));
+    }
+}
+
+/// Returns whether a URL should opened externally.
+///
+/// Non-`file` URLs always open externally. `file` URLs are opened externally
+/// only when the target looks like a binary file (a non-textual file that can't
+/// be viewed in helix).
+fn should_open_url_externally(url: &Url) -> bool {
+    if url.scheme() != "file" {
+        return true;
     }
 
     let content_type = std::fs::File::open(url.path()).and_then(|file| {
@@ -1537,22 +1714,7 @@ fn open_url(cx: &mut Context, url: Url, action: Action) {
         Ok(content_inspector::inspect(&read_buffer[..n]))
     });
 
-    // we attempt to open binary files - files that can't be open in helix - using external
-    // program as well, e.g. pdf files or images
-    match content_type {
-        Ok(content_inspector::ContentType::BINARY) => {
-            cx.jobs.callback(crate::open_external_url_callback(url))
-        }
-        Ok(_) | Err(_) => {
-            let path = &rel_path.join(url.path());
-            if path.is_dir() {
-                let picker = ui::file_picker(cx.editor, path.into());
-                cx.push_layer(Box::new(overlaid(picker)));
-            } else if let Err(e) = cx.editor.open(path, action) {
-                cx.editor.set_error(format!("Open file failed: {:?}", e));
-            }
-        }
-    }
+    matches!(content_type, Ok(content_inspector::ContentType::BINARY))
 }
 
 fn extend_word_impl<F>(cx: &mut Context, extend_fn: F)
@@ -7870,7 +8032,7 @@ fn jump_to_label(cx: &mut Context, labels: Vec<Range>, behaviour: Movement) {
     // Accept two characters matching a visible label. Jump to the candidate
     // for that label if it exists.
     let primary_selection = doc.selection(view.id).primary();
-    let view = view.id;
+    let view_id = view.id;
     let doc = doc.id();
     cx.on_next_key(move |cx, event| {
         let alphabet = &cx.editor.config().jump_label_alphabet;
@@ -7879,12 +8041,12 @@ fn jump_to_label(cx: &mut Context, labels: Vec<Range>, behaviour: Movement) {
             .filter(|_| event.modifiers.is_empty())
             .and_then(|ch| alphabet.iter().position(|&it| it == ch))
         else {
-            doc_mut!(cx.editor, &doc).remove_jump_labels(view);
+            doc_mut!(cx.editor, &doc).remove_jump_labels(view_id);
             return;
         };
 
         cx.on_next_key(move |cx, event| {
-            doc_mut!(cx.editor, &doc).remove_jump_labels(view);
+            doc_mut!(cx.editor, &doc).remove_jump_labels(view_id);
             let alphabet = &cx.editor.config().jump_label_alphabet;
             let Some(inner) = event
                 .char()
@@ -7925,8 +8087,9 @@ fn jump_to_label(cx: &mut Context, labels: Vec<Range>, behaviour: Movement) {
                 } else {
                     range.with_direction(Direction::Forward)
                 };
-                save_selection(cx);
-                doc_mut!(cx.editor, &doc).set_selection(view, range.into());
+                let (view, doc) = current!(cx.editor);
+                push_jump(view, doc);
+                doc.set_selection(view_id, range.into());
             }
         });
     });

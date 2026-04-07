@@ -999,3 +999,25 @@ async fn test_move_two_cursors_down() -> anyhow::Result<()> {
     .await?;
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn align_selections_with_varying_columns() -> anyhow::Result<()> {
+    test((
+        indoc! {r"
+            #[|]#I    I  II I
+            IIIIIIIII
+            IIIII
+            IIIIIIIII
+        "},
+        r"%sI<ret>&gg",
+        indoc! {r"
+            #[I|]#    I  II I
+            I    I  II IIIII
+            I    I  II I
+            I    I  II IIIII
+        "},
+    ))
+    .await?;
+
+    Ok(())
+}
