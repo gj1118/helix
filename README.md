@@ -291,6 +291,76 @@ show-icons = false
 - **Customizable appearance** - Full control over icons and dimensions
 - **Backward compatibility** - Traditional bottom style still available
 
+## Noice-style Notifications
+
+**Notifications Configuration:**
+
+This fork includes a modern notification system inspired by noice.nvim, displaying messages as popup windows instead of in the statusline.
+
+```toml
+[editor.notifications]
+enable = true              # Enable notification system
+style = "popup"            # "popup" (noice-style) or "statusline" (traditional)
+position = "top-right"     # Position: "top-right", "top-left", "bottom-right", "bottom-left"
+max-width = 60             # Maximum width for notification popups
+max-height = 10            # Maximum height for notification popups
+default-timeout = 5000     # Default timeout in milliseconds (0 = no timeout)
+show-icons = true          # Show notification type icons
+show-emojis = true         # Show notification type emojis
+max-history = 100          # Maximum notifications to keep in history
+
+# Border configuration
+[editor.notifications.border]
+enable = true              # Show borders around notifications
+width = 1                  # Border width
+radius = 0                 # Corner radius (0 for square corners)
+
+# Customize notification icons
+[editor.notifications.icons]
+info = "i"
+warning = "!"
+error = "x"
+success = "ok"
+
+# Customize notification emojis
+[editor.notifications.emojis]
+info = "info"
+warning = "warn"
+error = "err"
+success = "ok"
+```
+
+**Styling Notifications:**
+
+Notification appearance is controlled via theme settings. If notifications look poor with your theme, add these to your theme file:
+
+```toml
+# In ~/.config/helix/themes/my-theme.toml
+inherits = "your-base-theme"
+
+# Popup background and border
+"ui.popup" = { bg = "#1a1a1a", fg = "#ffffff" }
+"ui.popup.border" = { fg = "#888888" }
+
+# Notification text colors by severity
+"error" = { fg = "#ff5555" }
+"warning" = { fg = "#ffaa00" }
+"info" = { fg = "#55aaff" }
+"hint" = { fg = "#888888" }
+```
+
+**Commands:**
+- `:notifications-history` - Show notification history
+- `:notifications-clear` - Clear notification history
+- `:notifications-dismiss` - Dismiss all active notifications
+
+**Features:**
+- **Popup-style notifications** - Non-intrusive floating windows
+- **Severity-based styling** - Different colors for errors, warnings, info, hints
+- **Configurable position** - Place notifications where you prefer
+- **Auto-dismiss** - Notifications fade out after timeout
+- **History** - Review past notifications with `:notifications-history`
+
 ## Aesthetic Gradient Borders
 
 **Gradient Borders Configuration:**

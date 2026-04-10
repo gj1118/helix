@@ -329,8 +329,9 @@ These scopes are used for theming the editor interface:
 | `ui.bufferline`                   | Style for the buffer line                                                                      |
 | `ui.bufferline.active`            | Style for the active buffer in buffer line                                                     |
 | `ui.bufferline.background`        | Style for bufferline background                                                                |
-| `ui.popup`                        | Documentation popups (e.g. Space + k)                                                          |
+| `ui.popup`                        | Documentation popups (e.g. Space + k), notification popups, and cmdline popup background       |
 | `ui.popup.info`                   | Prompt for multiple key options                                                                |
+| `ui.popup.border`                 | Border styling for popups including notifications and cmdline                                  |
 | `ui.picker.header`                | Header row area in pickers with multiple columns                                               |
 | `ui.picker.header.column`         | Column names in pickers with multiple columns                                                  |
 | `ui.picker.header.column.active`  | The column name in pickers with multiple columns where the cursor is entering into.            |
@@ -362,10 +363,10 @@ These scopes are used for theming the editor interface:
 | `ui.cursorline.secondary`         | The lines of any other cursors ([if cursorline is enabled][editor-section])                    |
 | `ui.cursorcolumn.primary`         | The column of the primary cursor ([if cursorcolumn is enabled][editor-section])                |
 | `ui.cursorcolumn.secondary`       | The columns of any other cursors ([if cursorcolumn is enabled][editor-section])                |
-| `warning`                         | Diagnostics warning (gutter)                                                                   |
-| `error`                           | Diagnostics error (gutter)                                                                     |
-| `info`                            | Diagnostics info (gutter)                                                                      |
-| `hint`                            | Diagnostics hint (gutter)                                                                      |
+| `warning`                         | Diagnostics warning (gutter), warning notification text                                        |
+| `error`                           | Diagnostics error (gutter), error notification text                                            |
+| `info`                            | Diagnostics info (gutter), info notification text                                              |
+| `hint`                            | Diagnostics hint (gutter), hint notification text                                              |
 | `diagnostic`                      | Diagnostics fallback style (editing area)                                                      |
 | `diagnostic.hint`                 | Diagnostics hint (editing area)                                                                |
 | `diagnostic.info`                 | Diagnostics info (editing area)                                                                |
@@ -374,6 +375,34 @@ These scopes are used for theming the editor interface:
 | `diagnostic.unnecessary`          | Diagnostics with unnecessary tag (editing area)                                                |
 | `diagnostic.deprecated`           | Diagnostics with deprecated tag (editing area)                                                 |
 | `tabstop`                         | Snippet placeholder                                                                            |
+
+### Notification and Cmdline Popup Styling
+
+When using noice-style notifications (`editor.notifications.style = "popup"`) or the cmdline popup (`editor.cmdline.style = "popup"`), the following theme keys control their appearance:
+
+| Key | Description |
+| --- | ----------- |
+| `ui.popup` | Background color for notification and cmdline popups |
+| `ui.popup.border` | Border color for popups |
+| `error` | Text color for error notifications |
+| `warning` | Text color for warning notifications |
+| `info` | Text color for info notifications |
+| `hint` | Text color for hint notifications |
+| `ui.text.focus` | Command icon styling in cmdline popup |
+
+If your theme has poor contrast for notifications, you can override these values:
+
+```toml
+# In ~/.config/helix/themes/my-theme.toml
+inherits = "your-base-theme"
+
+"ui.popup" = { bg = "#1a1a1a", fg = "#ffffff" }
+"ui.popup.border" = { fg = "#888888" }
+"error" = { fg = "#ff5555" }
+"warning" = { fg = "#ffaa00" }
+"info" = { fg = "#55aaff" }
+"hint" = { fg = "#888888" }
+```
 
 [editor-section]: ./configuration.md#editor-section
 [#2380]: https://github.com/helix-editor/helix/issues/2380
