@@ -419,7 +419,7 @@ Or in expanded format:
 ```toml
 [editor.inline-blame]
 # Show inline blame on specific lines (default: "never")
-# Options: "cursor-line", "all", "never"
+# Options: "cursor-line", "all-lines", "never"
 show = "cursor-line"
 
 # Format string for blame display
@@ -449,7 +449,7 @@ format = "{commit} - {author} ({time-ago}): {title}"
 
 # Show blame for all lines (can be noisy)
 [editor.inline-blame]
-show = "all"
+show = "all-lines"
 format = "{author}"
 auto-fetch = true
 
