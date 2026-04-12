@@ -7501,23 +7501,36 @@ fn shell_prompt<F>(cx: &mut Context, prompt: Cow<'static, str>, mut callback_fn:
 where
     F: FnMut(&mut compositor::Context, Args) + 'static,
 {
-    ui::prompt(
-        cx,
-        prompt,
-        Some('|'),
-        |editor, input| complete_command_args(editor, SHELL_SIGNATURE, &SHELL_COMPLETER, input, 0),
-        move |cx, input, event| {
-            if event != PromptEvent::Validate || input.is_empty() {
-                return;
-            }
-            match Args::parse(input, SHELL_SIGNATURE, true, |token| {
-                expansion::expand(cx.editor, token).map_err(|err| err.into())
-            }) {
-                Ok(args) => callback_fn(cx, args),
-                Err(err) => cx.editor.set_error(err.to_string()),
-            }
-        },
-    );
+    use helix_view::editor::CmdlineStyle;
+
+    let cmdline_style = cx.editor.config().cmdline.style;
+    let completer = |editor: &Editor, input: &str| {
+        complete_command_args(editor, SHELL_SIGNATURE, &SHELL_COMPLETER, input, 0)
+    };
+    let callback = move |cx: &mut compositor::Context, input: &str, event: PromptEvent| {
+        if event != PromptEvent::Validate || input.is_empty() {
+            return;
+        }
+        match Args::parse(input, SHELL_SIGNATURE, true, |token| {
+            expansion::expand(cx.editor, token).map_err(|err| err.into())
+        }) {
+            Ok(args) => callback_fn(cx, args),
+            Err(err) => cx.editor.set_error(err.to_string()),
+        }
+    };
+
+    match cmdline_style {
+        CmdlineStyle::Popup => {
+            let cmdline =
+                ui::CmdlinePopup::new(prompt, Some('|'), completer, callback, CmdlineStyle::Popup);
+            cx.push_layer(Box::new(cmdline));
+        }
+        CmdlineStyle::Bottom => {
+            let mut prompt = Prompt::new(prompt, Some('|'), completer, callback);
+            prompt.recalculate_completion(cx.editor);
+            cx.push_layer(Box::new(prompt));
+        }
+    }
 }
 
 fn shell_prompt_for_behavior(cx: &mut Context, prompt: Cow<'static, str>, behavior: ShellBehavior) {
