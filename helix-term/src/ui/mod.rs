@@ -111,7 +111,7 @@ pub fn raw_regex_prompt(
     let offset_snapshot = doc.view_offset(view.id);
     let config = cx.editor.config();
 
-    match config.cmdline.style {
+match config.cmdline.style {
         CmdlineStyle::Popup => {
             let cmdline = CmdlinePopup::new(
                 prompt,
@@ -135,16 +135,19 @@ pub fn raw_regex_prompt(
                                 false
                             };
 
+                            let is_crlf = doc!(cx.editor).line_ending == helix_core::LineEnding::Crlf;
                             match rope::RegexBuilder::new()
                                 .syntax(
                                     rope::Config::new()
                                         .case_insensitive(case_insensitive)
-                                        .multi_line(true),
+                                        .multi_line(true)
+                                        .crlf(is_crlf),
                                 )
                                 .build(input)
                             {
                                 Ok(regex) => {
                                     let (view, doc) = current!(cx.editor);
+
                                     doc.set_selection(view.id, snapshot.clone());
 
                                     if event == PromptEvent::Validate {
@@ -186,7 +189,6 @@ pub fn raw_regex_prompt(
                         }
                     }
                 },
-                CmdlineStyle::Popup,
             )
             .with_language("regex", std::sync::Arc::clone(&cx.editor.syn_loader));
 
