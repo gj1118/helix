@@ -1692,6 +1692,7 @@ dependencies = [
  "kstring",
  "libc",
  "log",
+ "mlua",
  "once_cell",
  "parking_lot",
  "rustix 1.1.4",
