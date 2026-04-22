@@ -111,7 +111,7 @@ pub fn raw_regex_prompt(
     let offset_snapshot = doc.view_offset(view.id);
     let config = cx.editor.config();
 
-match config.cmdline.style {
+    match config.cmdline.style {
         CmdlineStyle::Popup => {
             let cmdline = CmdlinePopup::new(
                 prompt,
@@ -189,6 +189,7 @@ match config.cmdline.style {
                         }
                     }
                 },
+                CmdlineStyle::Popup,
             )
             .with_language("regex", std::sync::Arc::clone(&cx.editor.syn_loader));
 
