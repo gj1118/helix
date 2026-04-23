@@ -723,7 +723,12 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         }
 
         let text_style = cx.editor.theme.get("ui.text");
-        let selected = cx.editor.theme.get("ui.text.focus");
+        let selected = cx
+            .editor
+            .theme
+            .try_get("ui.text.focus")
+            .filter(|s| s.bg.is_some())
+            .unwrap_or_else(|| cx.editor.theme.get("ui.menu.selected"));
         let highlight_style = cx.editor.theme.get("special").add_modifier(Modifier::BOLD);
 
         // -- Render the frame:
