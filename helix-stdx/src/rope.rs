@@ -678,8 +678,11 @@ impl<'a> RopeGraphemes<'a> {
                     break;
                 }
                 Err(GraphemeIncomplete::PrevChunk) => {
-                    self.current_chunk = self.chunks.prev().unwrap_or("");
-                    self.chunk_byte_idx -= self.current_chunk.len();
+                    let (chunk, byte_idx, _, _) = self
+                        .text
+                        .chunk_at_byte(self.chunk_byte_idx.saturating_sub(1));
+                    self.current_chunk = chunk;
+                    self.chunk_byte_idx = byte_idx;
                 }
                 Err(GraphemeIncomplete::PreContext(idx)) => {
                     let (chunk, byte_idx, _, _) = self.text.chunk_at_byte(idx.saturating_sub(1));
