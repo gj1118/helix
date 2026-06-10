@@ -47,9 +47,6 @@
 | `:primary-clipboard-paste-replace` | Replace selections with content of system primary clipboard. |
 | `:show-clipboard-provider` | Show clipboard provider name in status bar. |
 | `:change-current-directory`, `:cd` | Change the current working directory. |
-| `:show-directory-stack` | Show the directory stack as a <space> delimited string. |
-| `:push-directory`, `:pushd` | Save and then change the current directory. |
-| `:pop-directory`, `:popd` | Remove the top entry from the directory stack, and cd to the new top directory.. |
 | `:show-directory`, `:pwd` | Show the current working directory. |
 | `:encoding` | Set encoding. Based on `https://encoding.spec.whatwg.org`. |
 | `:character-info`, `:char` | Get info about the character under the primary cursor. |
@@ -76,10 +73,11 @@
 | `:toggle-option`, `:toggle` | Toggle a config option at runtime.<br>For example to toggle smart case search, use `:toggle search.smart-case`. |
 | `:get-option`, `:get` | Get the current value of a config option. |
 | `:sort` | Sort ranges in selection. |
-| `:index` | Inserts indexes into selections. |
+| `:index`, `:i` | Inserts indexes into selections. |
 | `:reflow` | Hard-wrap the current selection of lines to a given width. |
 | `:tree-sitter-subtree`, `:ts-subtree` | Display the smallest tree-sitter subtree that spans the primary selection, primarily for debugging queries. |
 | `:config-reload` | Refresh user config. |
+| `:reload-all-plugins` | Reload all plugins. |
 | `:config-open` | Open the user config.toml file. |
 | `:config-open-workspace` | Open the workspace config.toml file. |
 | `:log-open` | Open the helix log file. |
@@ -93,12 +91,15 @@
 | `:set-register` | Set contents of the given register. |
 | `:redraw` | Clear and re-render the whole UI |
 | `:move`, `:mv` | Move the current buffer and its corresponding file to a different path |
-| `:move!`, `:mv!` | Move the current buffer and its corresponding file to a different path creating necessary subdirectories |
 | `:yank-diagnostic` | Yank diagnostic(s) under primary cursor to register, or clipboard by default |
 | `:read`, `:r` | Load a file into buffer |
 | `:echo` | Prints the given arguments to the statusline. |
-| `:fold` | Fold text. |
-| `:unfold` | Unfold text. |
+| `:fold` | Fold text. Accepts the textobjects `class`, `function`, `comment`, and `syntax` (regions captured by the language's `folds.scm` query). |
+| `:unfold` | Unfold text. Accepts the textobjects `class`, `function`, `comment`, and `syntax` (folds created from syntax regions). |
 | `:noop` | Does nothing. |
+| `:notifications-history`, `:notif-history`, `:nh` | Show notification history. |
+| `:notifications-clear`, `:notif-clear`, `:nc` | Clear notification history. |
+| `:notifications-dismiss`, `:notif-dismiss`, `:nd` | Dismiss all active notifications. |
+| `:notifications-test`, `:notif-test`, `:nt` | Test notification system with sample notifications. |
 | `:workspace-trust` | Add current workspace to the list of trusted workspaces. |
 | `:workspace-untrust` | Remove current workspace from the list of trusted workspaces. |

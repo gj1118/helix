@@ -667,9 +667,9 @@ impl MappableCommand {
         blame_line, "Show blame for the current line",
         rotate_selections_first, "Make the first selection your primary one",
         rotate_selections_last, "Make the last selection your primary one",
-        fold, "Fold text objects",
-        unfold, "Unfold text objects",
-        toggle_fold, "Toggle fold for the text object at the primary cursor",
+        fold, "Fold the selection if it spans multiple lines, otherwise fold text objects and syntax regions at the cursor",
+        unfold, "Unfold the innermost fold at the cursor, or all folds overlapping the selection",
+        toggle_fold, "Toggle fold for the text object or syntax region at the primary cursor",
     );
 }
 
@@ -8238,23 +8238,134 @@ fn lsp_or_syntax_workspace_symbol_picker(cx: &mut Context) {
 }
 
 fn fold(cx: &mut Context) {
-    let command: MappableCommand = ":fold --all".parse().unwrap();
+    use graphemes::prev_grapheme_boundary;
+
+    let (view, doc) = current_ref!(cx.editor);
+    let text = doc.text().slice(..);
+    let range = doc.selection(view.id).primary();
+
+    // the line of the last grapheme covered by the range;
+    // a one-grapheme range (a plain cursor) never counts as a selection
+    let start_line = text.char_to_line(range.from());
+    let end_line = if range.from() == range.to() {
+        start_line
+    } else {
+        text.char_to_line(prev_grapheme_boundary(text, range.to()))
+    };
+
+    // fold the selection when it spans multiple lines (like vim's `zf`),
+    // otherwise fold the textobjects and syntax regions at the cursor
+    let command: MappableCommand = if start_line != end_line {
+        ":fold --selection".parse().unwrap()
+    } else {
+        ":fold --all".parse().unwrap()
+    };
     command.execute(cx);
 }
 
 fn unfold(cx: &mut Context) {
-    let command: MappableCommand = ":unfold --all".parse().unwrap();
-    command.execute(cx);
+    use std::cmp::{max, min};
+
+    use graphemes::prev_grapheme_boundary;
+
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text().slice(..);
+
+    let Some(container) = doc
+        .fold_container(view.id)
+        .filter(|container| !container.is_empty())
+    else {
+        cx.editor.set_status("No folds in the current view.");
+        return;
+    };
+
+    let range = doc.selection(view.id).primary();
+    let search_range = {
+        let start = range.from();
+        let end = if range.is_empty() {
+            range.to()
+        } else {
+            prev_grapheme_boundary(text, range.to())
+        };
+        start..=end
+    };
+
+    let start_indices: Vec<_> = if search_range.start() == search_range.end() {
+        // a bare cursor unfolds the innermost fold of any kind at the cursor
+        let cursor = *search_range.start();
+        container
+            .start_points()
+            .iter()
+            .enumerate()
+            .filter(|(_, sfp)| {
+                let fold = sfp.fold(container);
+                (fold.header()..=fold.end.target).contains(&cursor)
+            })
+            .min_by_key(|(_, sfp)| {
+                let fold = sfp.fold(container);
+                fold.end.target - fold.header()
+            })
+            .map(|(idx, _)| vec![idx])
+            .unwrap_or_default()
+    } else {
+        // a selection unfolds all superest folds of any kind it overlaps
+        container
+            .start_points()
+            .iter()
+            .enumerate()
+            .filter(|(_, sfp)| sfp.is_superest())
+            .filter(|(_, sfp)| {
+                let fold = sfp.fold(container);
+                let fold_range = fold.header()..=fold.end.target;
+
+                let start = max(*fold_range.start(), *search_range.start());
+                let end = min(*fold_range.end(), *search_range.end());
+                !(start..=end).is_empty()
+            })
+            .map(|(idx, _)| idx)
+            .collect()
+    };
+
+    if start_indices.is_empty() {
+        cx.editor.set_status("Nothing to unfold at the selection.");
+        return;
+    }
+
+    doc.remove_folds(view, start_indices);
 }
 
 fn toggle_fold(cx: &mut Context) {
     use graphemes::ensure_grapheme_boundary_prev;
+    use helix_core::line_ending::get_line_ending;
     use text_folding::{Fold, FoldObject};
 
     let (view, doc) = current!(cx.editor);
     let text = doc.text().slice(..);
     let cursor = doc.selection(view.id).primary().cursor(text);
+    let cursor_line = text.char_to_line(cursor);
     let loader = cx.editor.syn_loader.load();
+
+    // a folded region keeps only its header line visible,
+    // so toggling on a header line means unfolding;
+    // unfold the widest fold of any kind whose header is on the cursor line,
+    // or the fold hiding the cursor (a stale selection can point into
+    // a folded block)
+    if let Some(container) = doc.fold_container(view.id) {
+        let fold = container
+            .start_points()
+            .iter()
+            .map(|sfp| sfp.fold(container))
+            .filter(|fold| text.char_to_line(fold.header()) == cursor_line)
+            .max_by_key(|fold| fold.end.line)
+            .or_else(|| {
+                container.superest_fold_containing(cursor, |fold| fold.header()..=fold.end.target)
+            });
+        if let Some(fold) = fold {
+            let start_idx = fold.start_idx();
+            doc.remove_folds(view, vec![start_idx]);
+            return;
+        }
+    }
 
     let Some(syntax) = doc.syntax() else {
         cx.editor
@@ -8262,54 +8373,97 @@ fn toggle_fold(cx: &mut Context) {
         return;
     };
 
-    let Some(textobject_query) = loader.textobject_query(syntax.root_language()) else {
-        cx.editor.set_error("Failed to compile text object query.");
-        return;
-    };
+    let textobject_query = loader.textobject_query(syntax.root_language());
+    let fold_query = loader.fold_query(syntax.root_language());
 
     let textobjects = &["class.around", "function.around", "comment.around"];
     let root_node = syntax.tree().root_node();
+    let cursor_byte = text.char_to_byte(cursor);
 
-    // search for a textobject at the cursor
-    let Some((capture_name, node_range)) = textobject_query
-        .capture_nodes_all(textobjects, &root_node, text)
-        .map(|(cap, node)| (cap.name(textobject_query.query()), node.byte_range()))
-        .filter(|(_, range)| range.contains(&text.char_to_byte(cursor)))
-        .min_by_key(|(_, range)| range.len())
-        .map(|(cap, range)| {
-            (cap, {
-                let start = text.byte_to_char(range.start);
-                let end = ensure_grapheme_boundary_prev(text, text.byte_to_char(range.end - 1));
-                start..=end
-            })
-        })
-    else {
-        cx.editor
-            .set_status("There is no text object at the cursor.");
-        return;
+    // a syntax region only folds when it spans multiple lines
+    // and its last line has a line ending
+    let foldable_region = |range: &std::ops::Range<usize>| {
+        if range.is_empty() {
+            return false;
+        }
+        let start_line = text.byte_to_line(range.start);
+        let end_line = text.byte_to_line(range.end - 1);
+        start_line < end_line && get_line_ending(&text.line(end_line)).is_some()
     };
 
-    let object = {
-        let textobject = match capture_name {
-            "class.around" => "class",
-            "function.around" => "function",
-            "comment.around" => "comment",
-            other => unreachable!("Unexpected textobject {other}"),
-        };
-        FoldObject::TextObject(textobject)
-    };
-
-    let fold = doc.fold_container(view.id).and_then(|container| {
-        container.find(&object, &node_range, |fold| fold.header()..=fold.end.target)
+    // the smallest textobject region containing the cursor
+    let textobject_candidate = textobject_query.and_then(|textobject_query| {
+        textobject_query
+            .capture_nodes_all(textobjects, &root_node, text)
+            .map(|(cap, node)| (cap.name(textobject_query.query()), node.byte_range()))
+            .filter(|(_, range)| range.contains(&cursor_byte))
+            .min_by_key(|(_, range)| range.len())
     });
-    if let Some(fold) = fold {
-        doc.remove_folds(view, vec![fold.start_idx()]);
-        return;
-    }
 
-    let header = *node_range.start();
-    let target = {
-        match capture_name {
+    // the smallest syntax region (a `folds.scm` capture) containing the cursor
+    let syntax_candidate = fold_query.and_then(|fold_query| {
+        fold_query
+            .fold_nodes(&root_node, text)
+            .map(|node| node.byte_range())
+            .filter(|range| range.contains(&cursor_byte))
+            .filter(&foldable_region)
+            .min_by_key(|range| range.len())
+    });
+
+    // fallback: the smallest multi-line named syntax node containing the cursor;
+    // gives languages without `folds.scm` arbitrary region folding
+    let node_candidate = || {
+        let mut node = syntax.descendant_for_byte_range(cursor_byte as u32, cursor_byte as u32)?;
+        loop {
+            let range = node.start_byte() as usize..node.end_byte() as usize;
+            if node.is_named() && foldable_region(&range) {
+                return Some(range);
+            }
+            node = node.parent()?;
+        }
+    };
+
+    // a syntax region wins over a textobject only when it is strictly smaller
+    let syntax_region = match (&textobject_candidate, syntax_candidate) {
+        (Some((_, to_range)), Some(syn_range)) if syn_range.len() < to_range.len() => {
+            Some(syn_range)
+        }
+        (Some(_), _) => None,
+        (None, syn_range) => syn_range.or_else(node_candidate),
+    };
+
+    let (object, header, target) = if let Some(range) = syntax_region {
+        let start_line = text.byte_to_line(range.start);
+        let header = text.byte_to_char(range.start);
+        let target = {
+            let start = text.line_to_char(start_line + 1)
+                + text
+                    .line(start_line + 1)
+                    .first_non_whitespace_char()
+                    .unwrap_or(0);
+            let end = ensure_grapheme_boundary_prev(text, text.byte_to_char(range.end - 1));
+            start..=end
+        };
+        (FoldObject::Syntax, header, target)
+    } else if let Some((capture_name, range)) = textobject_candidate {
+        let node_range = {
+            let start = text.byte_to_char(range.start);
+            let end = ensure_grapheme_boundary_prev(text, text.byte_to_char(range.end - 1));
+            start..=end
+        };
+
+        let object = {
+            let textobject = match capture_name {
+                "class.around" => "class",
+                "function.around" => "function",
+                "comment.around" => "comment",
+                other => unreachable!("Unexpected textobject {other}"),
+            };
+            FoldObject::TextObject(textobject)
+        };
+
+        let header = *node_range.start();
+        let target = match capture_name {
             "class.around" | "function.around" => {
                 let capture = match capture_name {
                     "class.around" => "class.inside",
@@ -8325,7 +8479,7 @@ fn toggle_fold(cx: &mut Context) {
                     .descendant_for_byte_range(byte_range.start as u32, byte_range.end as u32)
                     .expect("The range must belong to the captured node.");
                 let Some(target) = || -> Option<_> {
-                    textobject_query
+                    textobject_query?
                         .capture_nodes(capture, &node, text)?
                         .next()
                         .map(|cap_node| {
@@ -8356,8 +8510,27 @@ fn toggle_fold(cx: &mut Context) {
                 start..=*node_range.end()
             }
             other => unreachable!("Unexpected textobject {other}"),
-        }
+        };
+
+        (object, header, target)
+    } else {
+        cx.editor
+            .set_status("There is nothing to fold at the cursor.");
+        return;
     };
+
+    // the fold container forbids exact duplicates (same targets and object)
+    let duplicate = doc.fold_container(view.id).is_some_and(|container| {
+        container.start_points().iter().any(|sfp| {
+            let fold = sfp.fold(container);
+            fold.start.target == *target.start()
+                && fold.end.target == *target.end()
+                && fold.object() == &object
+        })
+    });
+    if duplicate {
+        return;
+    }
 
     let new_fold = Fold::new_points(text, object, header, &target);
     doc.add_folds(view, vec![new_fold]);

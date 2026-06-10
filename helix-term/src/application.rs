@@ -452,6 +452,13 @@ impl Application {
     where
         S: Stream<Item = std::io::Result<TerminalEvent>> + Unpin,
     {
+        // The idle timer may have elapsed while the caller was between event
+        // loops (e.g. an integration test callback inspecting the editor).
+        // Reset it so that a stale timeout cannot end this loop before the
+        // queued input and its effects have settled.
+        #[cfg(feature = "integration")]
+        self.editor.reset_idle_timer();
+
         loop {
             if self.editor.should_close() {
                 return false;

@@ -43,6 +43,7 @@ pub struct LanguageData {
     syntax: OnceCell<Option<SyntaxConfig>>,
     indent_query: OnceCell<Option<IndentQuery>>,
     textobject_query: OnceCell<Option<TextObjectQuery>>,
+    fold_query: OnceCell<Option<FoldQuery>>,
     tag_query: OnceCell<Option<TagQuery>>,
     rainbow_query: OnceCell<Option<RainbowQuery>>,
 }
@@ -54,6 +55,7 @@ impl LanguageData {
             syntax: OnceCell::new(),
             indent_query: OnceCell::new(),
             textobject_query: OnceCell::new(),
+            fold_query: OnceCell::new(),
             tag_query: OnceCell::new(),
             rainbow_query: OnceCell::new(),
         }
@@ -155,6 +157,42 @@ impl LanguageData {
             .get_or_init(|| {
                 let grammar = self.syntax_config(loader)?.grammar;
                 Self::compile_textobject_query(grammar, &self.config)
+                    .map_err(|err| {
+                        log::error!("{err}");
+                    })
+                    .ok()
+                    .flatten()
+            })
+            .as_ref()
+    }
+
+    /// Compiles the folds.scm query for a language.
+    /// This function should only be used by this module or the xtask crate.
+    pub fn compile_fold_query(
+        grammar: Grammar,
+        config: &LanguageConfiguration,
+    ) -> Result<Option<FoldQuery>> {
+        let name = &config.language_id;
+        let text = read_query(name, "folds.scm");
+        if text.is_empty() {
+            return Ok(None);
+        }
+        let query = Query::new(grammar, &text, |_pattern, predicate| match predicate {
+            // Properties and trimming are not used for folding (yet),
+            // but some queries set them for other consumers.
+            UserPredicate::SetProperty { .. } => Ok(()),
+            UserPredicate::Other(pred) if pred.name() == "trim!" => Ok(()),
+            _ => Err(InvalidPredicateError::unknown(predicate)),
+        })
+        .with_context(|| format!("Failed to compile folds.scm query for '{name}'"))?;
+        Ok(Some(FoldQuery::new(query)))
+    }
+
+    fn fold_query(&self, loader: &Loader) -> Option<&FoldQuery> {
+        self.fold_query
+            .get_or_init(|| {
+                let grammar = self.syntax_config(loader)?.grammar;
+                Self::compile_fold_query(grammar, &self.config)
                     .map_err(|err| {
                         log::error!("{err}");
                     })
@@ -415,6 +453,10 @@ impl Loader {
 
     pub fn textobject_query(&self, lang: Language) -> Option<&TextObjectQuery> {
         self.language(lang).textobject_query(self)
+    }
+
+    pub fn fold_query(&self, lang: Language) -> Option<&FoldQuery> {
+        self.language(lang).fold_query(self)
     }
 
     pub fn tag_query(&self, lang: Language) -> Option<&TagQuery> {
@@ -1119,6 +1161,55 @@ impl TextObjectQuery {
 #[derive(Debug)]
 pub struct TagQuery {
     pub query: Query,
+}
+
+/// A compiled `folds.scm` query.
+///
+/// The query marks foldable syntax regions with the `@fold` capture.
+#[derive(Debug)]
+pub struct FoldQuery {
+    query: Query,
+}
+
+impl FoldQuery {
+    pub fn new(query: Query) -> Self {
+        Self { query }
+    }
+
+    /// Runs the query on the given node and returns the nodes
+    /// captured as `@fold`.
+    pub fn fold_nodes<'a>(
+        &'a self,
+        node: &Node<'a>,
+        slice: RopeSlice<'a>,
+    ) -> impl Iterator<Item = CapturedNode<'a>> + 'a {
+        let capture = self.query.get_capture("fold");
+        let mut cursor = capture.map(|_| {
+            InactiveQueryCursor::new(0..u32::MAX, TREE_SITTER_MATCH_LIMIT).execute_query(
+                &self.query,
+                node,
+                RopeInput::new(slice),
+            )
+        });
+
+        iter::from_fn(move || {
+            let capture = capture?;
+            let cursor = cursor.as_mut()?;
+            loop {
+                let query_match = cursor.next_match()?;
+                let nodes: Vec<_> = query_match.nodes_for_capture(capture).cloned().collect();
+                match nodes.len() {
+                    0 => continue,
+                    1 => return nodes.into_iter().map(CapturedNode::Single).next(),
+                    2.. => return Some(CapturedNode::Grouped(nodes)),
+                }
+            }
+        })
+    }
+
+    pub fn query(&self) -> &Query {
+        &self.query
+    }
 }
 
 pub fn pretty_print_tree<W: fmt::Write>(fmt: &mut W, node: Node) -> fmt::Result {
