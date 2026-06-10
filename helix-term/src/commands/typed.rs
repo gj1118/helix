@@ -3153,21 +3153,42 @@ pub fn fold_textobjects(
                             let node = syntax
                                 .descendant_for_byte_range(range.start as u32, range.end as u32)
                                 .expect("The range must belong to the captured node.");
-                            textobject_query
-                                .capture_nodes(capture, &node, text)?
-                                .next()
-                                .map(|cap_node| {
-                                    let header = text.byte_to_char(range.start);
-                                    let target = {
-                                        let start = text.byte_to_char(cap_node.start_byte());
-                                        let end = ensure_grapheme_boundary_prev(
-                                            text,
-                                            text.byte_to_char(cap_node.end_byte() - 1),
-                                        );
-                                        start..=end
-                                    };
-                                    (FoldObject::TextObject(textobject), header, target)
-                                })
+                            let header = text.byte_to_char(range.start);
+                            // prefer the `.inside` capture for the fold target; when
+                            // the language's textobjects.scm omits it (e.g. latex
+                            // sections), fall back to a line-based target like
+                            // comment/syntax folds
+                            let inside = textobject_query
+                                .capture_nodes(capture, &node, text)
+                                .and_then(|mut nodes| nodes.next());
+                            let target = match inside {
+                                Some(cap_node) => {
+                                    let start = text.byte_to_char(cap_node.start_byte());
+                                    let end = ensure_grapheme_boundary_prev(
+                                        text,
+                                        text.byte_to_char(cap_node.end_byte() - 1),
+                                    );
+                                    start..=end
+                                }
+                                None => {
+                                    let start_line = text.byte_to_line(range.start);
+                                    let end_line = text.byte_to_line(range.end - 1);
+                                    if start_line >= end_line {
+                                        return None;
+                                    }
+                                    let start = text.line_to_char(start_line + 1)
+                                        + text
+                                            .line(start_line + 1)
+                                            .first_non_whitespace_char()
+                                            .unwrap_or(0);
+                                    let end = ensure_grapheme_boundary_prev(
+                                        text,
+                                        text.byte_to_char(range.end - 1),
+                                    );
+                                    start..=end
+                                }
+                            };
+                            Some((FoldObject::TextObject(textobject), header, target))
                         }
                         "comment.around" => {
                             let start_line = text.byte_to_line(range.start);

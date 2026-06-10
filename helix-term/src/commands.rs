@@ -8478,22 +8478,37 @@ fn toggle_fold(cx: &mut Context) {
                 let node = syntax
                     .descendant_for_byte_range(byte_range.start as u32, byte_range.end as u32)
                     .expect("The range must belong to the captured node.");
-                let Some(target) = || -> Option<_> {
-                    textobject_query?
-                        .capture_nodes(capture, &node, text)?
-                        .next()
-                        .map(|cap_node| {
-                            let start = text.byte_to_char(cap_node.start_byte());
-                            let end = ensure_grapheme_boundary_prev(
-                                text,
-                                text.byte_to_char(cap_node.end_byte() - 1),
-                            );
-                            start..=end
-                        })
-                }() else {
-                    return;
-                };
-                target
+                // prefer the `.inside` capture for the fold target; when the
+                // language's textobjects.scm omits it (e.g. latex sections),
+                // fall back to a line-based target like comment/syntax folds
+                let inside = textobject_query
+                    .and_then(|query| query.capture_nodes(capture, &node, text))
+                    .and_then(|mut nodes| nodes.next());
+                match inside {
+                    Some(cap_node) => {
+                        let start = text.byte_to_char(cap_node.start_byte());
+                        let end = ensure_grapheme_boundary_prev(
+                            text,
+                            text.byte_to_char(cap_node.end_byte() - 1),
+                        );
+                        start..=end
+                    }
+                    None => {
+                        let start_line = text.char_to_line(*node_range.start());
+                        let end_line = text.char_to_line(*node_range.end());
+                        if start_line >= end_line {
+                            cx.editor
+                                .set_status("There is nothing to fold at the cursor.");
+                            return;
+                        }
+                        let start = text.line_to_char(start_line + 1)
+                            + text
+                                .line(start_line + 1)
+                                .first_non_whitespace_char()
+                                .unwrap_or(0);
+                        start..=*node_range.end()
+                    }
+                }
             }
             "comment.around" => {
                 let start_line = text.char_to_line(*node_range.start());
