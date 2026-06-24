@@ -85,6 +85,7 @@ fn exit(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow:
             WriteOptions {
                 force: false,
                 auto_format: !args.has_flag(WRITE_NO_FORMAT_FLAG.name),
+                code_actions: !args.has_flag(WRITE_NO_CODE_ACTIONS_FLAG.name),
             },
         )?;
     }
@@ -104,6 +105,7 @@ fn force_exit(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> a
             WriteOptions {
                 force: true,
                 auto_format: !args.has_flag(WRITE_NO_FORMAT_FLAG.name),
+                code_actions: !args.has_flag(WRITE_NO_CODE_ACTIONS_FLAG.name),
             },
         )?;
     }
@@ -226,7 +228,7 @@ fn buffer_gather_paths_impl(editor: &mut Editor, args: Args) -> Vec<DocumentId> 
     for arg in args {
         let doc_id = editor.documents().find_map(|doc| {
             let arg_path = Some(Path::new(arg.as_ref()));
-            if doc.path().map(|p| p.as_path()) == arg_path || doc.relative_path() == arg_path {
+            if doc.path() == arg_path || doc.relative_path() == arg_path {
                 Some(doc.id())
             } else {
                 None
@@ -385,42 +387,76 @@ fn write_impl(
     options: WriteOptions,
 ) -> anyhow::Result<()> {
     let config = cx.editor.config();
-    let jobs = &mut cx.jobs;
     let (view, doc) = current!(cx.editor);
+    let doc_id = doc.id();
+    let view_id = view.id;
 
     if doc.trim_trailing_whitespace() {
-        trim_trailing_whitespace(doc, view.id);
+        trim_trailing_whitespace(doc, view_id);
     }
     if config.trim_final_newlines {
-        trim_final_newlines(doc, view.id);
+        trim_final_newlines(doc, view_id);
     }
     if doc.insert_final_newline() {
-        insert_final_newline(doc, view.id);
+        insert_final_newline(doc, view_id);
     }
 
     // Save an undo checkpoint for any outstanding changes.
     doc.append_changes_to_history(view);
 
-    let (view, doc) = current_ref!(cx.editor);
-    let fmt = if config.auto_format && options.auto_format {
-        doc.auto_format(cx.editor).map(|fmt| {
-            let callback = make_format_callback(
-                doc.id(),
-                doc.version(),
-                view.id,
-                fmt,
-                Some((path.map(Into::into), options.force)),
-            );
+    let auto_format = config.auto_format && options.auto_format;
+    let force = options.force;
+    let path: Option<PathBuf> = path.map(Into::into);
 
-            jobs.add(Job::with_callback(callback).wait_before_exiting());
-        })
+    // Does the document configure any code actions to run on save?
+    let run_code_actions = options.code_actions
+        && doc!(cx.editor, &doc_id)
+            .language_config()
+            .and_then(|c| c.code_actions_on_save.as_deref())
+            .is_some_and(|kinds| !kinds.is_empty());
+
+    // The tail of the on-save chain: re-build the auto-format job against the
+    // latest document (so it formats after any code-action edits), or save
+    // directly when there's no formatter. Deferred via `Followup`, and always
+    // saves, so code-actions-on-save works even with auto-format off. Only
+    // built when there is pre-save work. A plain `:w` saves synchronously below.
+    let tail = (auto_format || run_code_actions).then(|| {
+        let path = path.clone();
+        let callback = Callback::Followup(Box::new(move |editor| {
+            let doc = doc!(editor, &doc_id);
+            let fmt_job = auto_format
+                .then(|| doc.auto_format(editor))
+                .flatten()
+                .map(|fmt| {
+                    let call = make_format_callback(
+                        doc_id,
+                        doc.version(),
+                        view_id,
+                        fmt,
+                        Some((path.clone(), force)),
+                    );
+                    Job::with_callback(call).wait_before_exiting()
+                });
+            if fmt_job.is_none() {
+                if let Err(err) = editor.save(doc_id, path, force) {
+                    editor.set_error(format!("Error saving: {}", err));
+                }
+            }
+            fmt_job
+        }));
+        Job::with_callback(async { Ok(callback) }).wait_before_exiting()
+    });
+
+    let job = if run_code_actions {
+        code_actions_on_save(cx, doc_id, tail)
     } else {
-        None
+        tail
     };
 
-    if fmt.is_none() {
-        let id = doc.id();
-        cx.editor.save(id, path, options.force)?;
+    if let Some(job) = job {
+        cx.jobs.add(job);
+    } else {
+        cx.editor.save(doc_id, path, force)?;
     }
 
     Ok(())
@@ -489,6 +525,12 @@ fn insert_final_newline(doc: &mut Document, view_id: ViewId) {
 pub struct WriteOptions {
     pub force: bool,
     pub auto_format: bool,
+    pub code_actions: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct MoveBufferOptions {
+    pub force: bool,
 }
 
 fn write(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
@@ -502,6 +544,7 @@ fn write(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow
         WriteOptions {
             force: false,
             auto_format: !args.has_flag(WRITE_NO_FORMAT_FLAG.name),
+            code_actions: !args.has_flag(WRITE_NO_CODE_ACTIONS_FLAG.name),
         },
     )
 }
@@ -517,6 +560,7 @@ fn force_write(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> 
         WriteOptions {
             force: true,
             auto_format: !args.has_flag(WRITE_NO_FORMAT_FLAG.name),
+            code_actions: !args.has_flag(WRITE_NO_CODE_ACTIONS_FLAG.name),
         },
     )
 }
@@ -536,6 +580,7 @@ fn write_buffer_close(
         WriteOptions {
             force: false,
             auto_format: !args.has_flag(WRITE_NO_FORMAT_FLAG.name),
+            code_actions: !args.has_flag(WRITE_NO_CODE_ACTIONS_FLAG.name),
         },
     )?;
 
@@ -558,6 +603,7 @@ fn force_write_buffer_close(
         WriteOptions {
             force: true,
             auto_format: !args.has_flag(WRITE_NO_FORMAT_FLAG.name),
+            code_actions: !args.has_flag(WRITE_NO_CODE_ACTIONS_FLAG.name),
         },
     )?;
 
@@ -746,6 +792,7 @@ fn write_quit(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> a
         WriteOptions {
             force: false,
             auto_format: !args.has_flag(WRITE_NO_FORMAT_FLAG.name),
+            code_actions: !args.has_flag(WRITE_NO_CODE_ACTIONS_FLAG.name),
         },
     )?;
     cx.block_try_flush_writes()?;
@@ -767,6 +814,7 @@ fn force_write_quit(
         WriteOptions {
             force: true,
             auto_format: !args.has_flag(WRITE_NO_FORMAT_FLAG.name),
+            code_actions: !args.has_flag(WRITE_NO_CODE_ACTIONS_FLAG.name),
         },
     )?;
     cx.block_try_flush_writes()?;
@@ -811,6 +859,7 @@ pub struct WriteAllOptions {
     pub force: bool,
     pub write_scratch: bool,
     pub auto_format: bool,
+    pub code_actions: bool,
 }
 
 pub fn write_all_impl(
@@ -819,7 +868,6 @@ pub fn write_all_impl(
 ) -> anyhow::Result<()> {
     let mut errors: Vec<&'static str> = Vec::new();
     let config = cx.editor.config();
-    let jobs = &mut cx.jobs;
     let saves: Vec<_> = cx
         .editor
         .documents
@@ -862,24 +910,53 @@ pub fn write_all_impl(
         // Save an undo checkpoint for any outstanding changes.
         doc.append_changes_to_history(view);
 
-        let fmt = if options.auto_format && config.auto_format {
-            let doc = doc!(cx.editor, &doc_id);
-            doc.auto_format(cx.editor).map(|fmt| {
-                let callback = make_format_callback(
-                    doc_id,
-                    doc.version(),
-                    target_view,
-                    fmt,
-                    Some((None, options.force)),
-                );
-                jobs.add(Job::with_callback(callback).wait_before_exiting());
-            })
+        let auto_format = config.auto_format && options.auto_format;
+        let force = options.force;
+
+        let run_code_actions = options.code_actions
+            && doc!(cx.editor, &doc_id)
+                .language_config()
+                .and_then(|c| c.code_actions_on_save.as_deref())
+                .is_some_and(|kinds| !kinds.is_empty());
+
+        // See `write_impl`: deferred format-or-save tail that always saves, only
+        // built when there is pre-save work; otherwise a synchronous save below.
+        let tail = (auto_format || run_code_actions).then(|| {
+            let callback: job::Callback = Callback::Followup(Box::new(move |editor| {
+                let doc = doc!(editor, &doc_id);
+                let fmt_job = auto_format
+                    .then(|| doc.auto_format(editor))
+                    .flatten()
+                    .map(|fmt| {
+                        let call = make_format_callback(
+                            doc_id,
+                            doc.version(),
+                            target_view,
+                            fmt,
+                            Some((None, force)),
+                        );
+                        Job::with_callback(call).wait_before_exiting()
+                    });
+                if fmt_job.is_none() {
+                    if let Err(err) = editor.save::<PathBuf>(doc_id, None, force) {
+                        editor.set_error(format!("Error saving: {}", err));
+                    }
+                }
+                fmt_job
+            }));
+            Job::with_callback(async { Ok(callback) }).wait_before_exiting()
+        });
+
+        let job = if run_code_actions {
+            code_actions_on_save(cx, doc_id, tail)
         } else {
-            None
+            tail
         };
 
-        if fmt.is_none() {
-            cx.editor.save::<PathBuf>(doc_id, None, options.force)?;
+        if let Some(job) = job {
+            cx.jobs.add(job);
+        } else {
+            cx.editor.save::<PathBuf>(doc_id, None, force)?;
         }
     }
 
@@ -901,6 +978,7 @@ fn write_all(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> an
             force: false,
             write_scratch: true,
             auto_format: !args.has_flag(WRITE_NO_FORMAT_FLAG.name),
+            code_actions: !args.has_flag(WRITE_NO_CODE_ACTIONS_FLAG.name),
         },
     )
 }
@@ -920,6 +998,7 @@ fn force_write_all(
             force: true,
             write_scratch: true,
             auto_format: !args.has_flag(WRITE_NO_FORMAT_FLAG.name),
+            code_actions: !args.has_flag(WRITE_NO_CODE_ACTIONS_FLAG.name),
         },
     )
 }
@@ -938,6 +1017,7 @@ fn write_all_quit(
             force: false,
             write_scratch: true,
             auto_format: !args.has_flag(WRITE_NO_FORMAT_FLAG.name),
+            code_actions: !args.has_flag(WRITE_NO_CODE_ACTIONS_FLAG.name),
         },
     )?;
     quit_all_impl(cx, false)
@@ -957,6 +1037,7 @@ fn force_write_all_quit(
             force: true,
             write_scratch: true,
             auto_format: !args.has_flag(WRITE_NO_FORMAT_FLAG.name),
+            code_actions: !args.has_flag(WRITE_NO_CODE_ACTIONS_FLAG.name),
         },
     );
     quit_all_impl(cx, true)
@@ -1418,16 +1499,18 @@ fn reload(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyh
 
     let scrolloff = cx.editor.config().scrolloff;
     let auto_fetch = cx.editor.config().inline_blame.auto_fetch;
+    let trust_full = doc_trust_full(cx.editor);
     let (view, doc) = current!(cx.editor);
-    doc.reload(view, &cx.editor.diff_providers).map(|_| {
-        view.ensure_cursor_in_view(doc, scrolloff);
-    })?;
+    doc.reload(view, &cx.editor.diff_providers, trust_full)
+        .map(|_| {
+            view.ensure_cursor_in_view(doc, scrolloff);
+        })?;
     let doc_id = doc.id();
-    if let Some(path) = doc.path() {
+    if let Some(path) = doc.path().map(ToOwned::to_owned) {
         cx.editor
             .language_servers
             .file_event_handler
-            .file_changed(path.clone());
+            .file_changed(path);
     }
 
     if doc.should_request_full_file_blame(auto_fetch) {
@@ -1485,21 +1568,37 @@ pub fn reload_all(
         // Ensure that the view is synced with the document's history.
         view.sync_changes(doc);
 
-        if let Err(error) = doc.reload(view, &cx.editor.diff_providers) {
+        // Per-document trust: each doc's workspace may differ.
+        let trust_full = cx
+            .editor
+            .workspace_trust
+            .query(
+                doc.workspace_root(),
+                helix_loader::workspace_trust::TrustQuery::Git,
+            )
+            .is_trusted();
+        if let Err(error) = doc.reload(view, &cx.editor.diff_providers, trust_full) {
             cx.editor.set_error(format!("{}", error));
             continue;
         }
 
-        if let Some(path) = doc.path() {
+        if let Some(path) = doc.path().map(ToOwned::to_owned) {
             cx.editor
                 .language_servers
                 .file_event_handler
-                .file_changed(path.clone());
+                .file_changed(path);
         }
 
         for view_id in view_ids {
             let view = view_mut!(cx.editor, view_id);
             if view.doc.eq(&doc_id) {
+                // Reloading commits the diff against disk through the first view
+                // only (above). Any other view onto this document is left
+                // pointing at the pre-reload revision, so sync it now; otherwise
+                // its jumplist entries keep referencing the old (e.g. larger)
+                // text and a later commit panics when mapping them through a
+                // changeset whose pre-image no longer contains them.
+                view.sync_changes(doc);
                 view.ensure_cursor_in_view(doc, scrolloff);
             }
         }
@@ -1536,6 +1635,7 @@ fn update(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
             WriteOptions {
                 force: false,
                 auto_format: !args.has_flag(WRITE_NO_FORMAT_FLAG.name),
+                code_actions: !args.has_flag(WRITE_NO_CODE_ACTIONS_FLAG.name),
             },
         )
     } else {
@@ -2089,7 +2189,7 @@ pub(super) fn goto_line_number(
                 .expect("update_goto_line_number_preview should always set last_selection");
 
             let (view, doc) = current!(cx.editor);
-            view.jumps.push((doc.id(), last_selection));
+            view.push_jump(doc, (doc.id(), last_selection));
         }
 
         // When a user hits backspace and there are no numbers left,
@@ -2764,12 +2864,33 @@ fn move_buffer(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> 
         return Ok(());
     }
 
+    let new_path: PathBuf = args.first().unwrap().into();
+    move_buffer_impl(cx, new_path, MoveBufferOptions { force: false })
+}
+
+fn force_move_buffer(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let new_path: PathBuf = args.first().unwrap().into();
+    move_buffer_impl(cx, new_path, MoveBufferOptions { force: true })
+}
+
+fn move_buffer_impl(
+    cx: &mut compositor::Context,
+    new_path: PathBuf,
+    options: MoveBufferOptions,
+) -> anyhow::Result<()> {
     let doc = doc!(cx.editor);
     let old_path = doc
         .path()
-        .context("Scratch buffer cannot be moved. Use :write instead")?
-        .clone();
-    let new_path: PathBuf = args.first().unwrap().into();
+        .map(ToOwned::to_owned)
+        .context("Scratch buffer cannot be moved. Use :write instead")?;
 
     // if new_path is a directory, append the original file name
     // to move the file into that directory.
@@ -2778,6 +2899,20 @@ fn move_buffer(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> 
         .filter(|_| new_path.is_dir())
         .map(|old_file_name| new_path.join(old_file_name))
         .unwrap_or(new_path);
+
+    if old_path.exists() {
+        if let Some(parent) = new_path.parent() {
+            if !parent.exists() {
+                if options.force {
+                    std::fs::DirBuilder::new().recursive(true).create(parent)?;
+                } else {
+                    bail!(
+                        "can't move file, parent directory does not exist (use :mv! to create it)"
+                    )
+                }
+            }
+        }
+    }
 
     if let Err(err) = cx.editor.move_path(&old_path, new_path.as_ref()) {
         bail!("Could not move file: {err}");
@@ -3609,6 +3744,12 @@ fn reload_all_plugins(
     Ok(())
 }
 
+const WRITE_NO_CODE_ACTIONS_FLAG: Flag = Flag {
+    name: "no-code-actions",
+    doc: "skip code actions on save",
+    ..Flag::DEFAULT
+};
+
 pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
     TypableCommand {
         name: "exit",
@@ -3618,7 +3759,7 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         completer: CommandCompleter::positional(&[completers::filename]),
         signature: Signature {
             positionals: (0, Some(1)),
-            flags: &[WRITE_NO_FORMAT_FLAG],
+            flags: &[WRITE_NO_FORMAT_FLAG, WRITE_NO_CODE_ACTIONS_FLAG],
             ..Signature::DEFAULT
         },
     },
@@ -3630,7 +3771,7 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         completer: CommandCompleter::positional(&[completers::filename]),
         signature: Signature {
             positionals: (0, Some(1)),
-            flags: &[WRITE_NO_FORMAT_FLAG],
+            flags: &[WRITE_NO_FORMAT_FLAG, WRITE_NO_CODE_ACTIONS_FLAG],
             ..Signature::DEFAULT
         },
     },
@@ -3757,7 +3898,7 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         completer: CommandCompleter::positional(&[completers::filename]),
         signature: Signature {
             positionals: (0, Some(1)),
-            flags: &[WRITE_NO_FORMAT_FLAG],
+            flags: &[WRITE_NO_FORMAT_FLAG, WRITE_NO_CODE_ACTIONS_FLAG],
             ..Signature::DEFAULT
         },
     },
@@ -3769,7 +3910,7 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         completer: CommandCompleter::positional(&[completers::filename]),
         signature: Signature {
             positionals: (0, Some(1)),
-            flags: &[WRITE_NO_FORMAT_FLAG],
+            flags: &[WRITE_NO_FORMAT_FLAG,WRITE_NO_CODE_ACTIONS_FLAG],
             ..Signature::DEFAULT
         },
     },
@@ -3781,7 +3922,7 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         completer: CommandCompleter::positional(&[completers::filename]),
         signature: Signature {
             positionals: (0, Some(1)),
-            flags: &[WRITE_NO_FORMAT_FLAG],
+            flags: &[WRITE_NO_FORMAT_FLAG,WRITE_NO_CODE_ACTIONS_FLAG],
             ..Signature::DEFAULT
         },
     },
@@ -3793,7 +3934,7 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         completer: CommandCompleter::positional(&[completers::filename]),
         signature: Signature {
             positionals: (0, Some(1)),
-            flags: &[WRITE_NO_FORMAT_FLAG],
+            flags: &[WRITE_NO_FORMAT_FLAG,WRITE_NO_CODE_ACTIONS_FLAG],
             ..Signature::DEFAULT
         },
     },
@@ -3874,7 +4015,7 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         completer: CommandCompleter::positional(&[completers::filename]),
         signature: Signature {
             positionals: (0, Some(1)),
-            flags: &[WRITE_NO_FORMAT_FLAG],
+            flags: &[WRITE_NO_FORMAT_FLAG, WRITE_NO_CODE_ACTIONS_FLAG],
             ..Signature::DEFAULT
         },
     },
@@ -3886,7 +4027,7 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         completer: CommandCompleter::positional(&[completers::filename]),
         signature: Signature {
             positionals: (0, Some(1)),
-            flags: &[WRITE_NO_FORMAT_FLAG],
+            flags: &[WRITE_NO_FORMAT_FLAG, WRITE_NO_CODE_ACTIONS_FLAG],
             ..Signature::DEFAULT
         },
     },
@@ -3898,7 +4039,7 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),
-            flags: &[WRITE_NO_FORMAT_FLAG],
+            flags: &[WRITE_NO_FORMAT_FLAG, WRITE_NO_CODE_ACTIONS_FLAG],
             ..Signature::DEFAULT
         },
     },
@@ -3910,7 +4051,7 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),
-            flags: &[WRITE_NO_FORMAT_FLAG],
+            flags: &[WRITE_NO_FORMAT_FLAG, WRITE_NO_CODE_ACTIONS_FLAG],
             ..Signature::DEFAULT
         },
     },
@@ -3922,7 +4063,7 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),
-            flags: &[WRITE_NO_FORMAT_FLAG],
+            flags: &[WRITE_NO_FORMAT_FLAG, WRITE_NO_CODE_ACTIONS_FLAG],
             ..Signature::DEFAULT
         },
     },
@@ -3934,7 +4075,7 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),
-            flags: &[WRITE_NO_FORMAT_FLAG],
+            flags: &[WRITE_NO_FORMAT_FLAG, WRITE_NO_CODE_ACTIONS_FLAG],
             ..Signature::DEFAULT
         },
     },
@@ -4652,6 +4793,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         },
     },
     TypableCommand {
+        name: "move!",
+        aliases: &["mv!"],
+        doc: "Move the current buffer and its corresponding file to a different path creating necessary subdirectories",
+        fun: force_move_buffer,
+        completer: CommandCompleter::positional(&[completers::filename]),
+        signature: Signature {
+            positionals: (1, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
         name: "yank-diagnostic",
         aliases: &[],
         doc: "Yank diagnostic(s) under primary cursor to register, or clipboard by default",
@@ -4789,7 +4941,7 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
     TypableCommand {
         name: "workspace-trust",
         aliases: &[],
-        doc: "Add current workspace to the list of trusted workspaces.",
+        doc: "Allow language servers and local config for the current workspace.",
         fun: trust_workspace,
         completer: CommandCompleter::none(),
         signature: Signature { positionals: (0, None), ..Signature::DEFAULT },
@@ -4797,8 +4949,16 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
     TypableCommand {
         name: "workspace-untrust",
         aliases: &[],
-        doc: "Remove current workspace from the list of trusted workspaces.",
+        doc: "Revoke the current workspace's trust grant or exclusion.",
         fun: untrust_workspace,
+        completer: CommandCompleter::none(),
+        signature: Signature { positionals: (0, None), ..Signature::DEFAULT },
+    },
+    TypableCommand {
+        name: "workspace-exclude",
+        aliases: &[],
+        doc: "Mark the current workspace as never-prompt. Never prompts for trust again.",
+        fun: exclude_workspace,
         completer: CommandCompleter::none(),
         signature: Signature { positionals: (0, None), ..Signature::DEFAULT },
     }
@@ -5300,6 +5460,24 @@ fn complete_expansion_kind(content: &str, offset: usize) -> Vec<ui::prompt::Comp
     .collect()
 }
 
+fn current_workspace(cx: &compositor::Context) -> std::path::PathBuf {
+    let (_, doc) = current_ref!(cx.editor);
+    doc.workspace_root().to_path_buf()
+}
+
+/// Whether the currently focused document's workspace is trusted for git operations (gix
+/// `Trust::Full`).
+fn doc_trust_full(editor: &helix_view::Editor) -> bool {
+    let (_, doc) = current_ref!(editor);
+    editor
+        .workspace_trust
+        .query(
+            doc.workspace_root(),
+            helix_loader::workspace_trust::TrustQuery::Git,
+        )
+        .is_trusted()
+}
+
 fn trust_workspace(
     cx: &mut compositor::Context,
     args: Args<'_>,
@@ -5309,15 +5487,16 @@ fn trust_workspace(
         return Ok(());
     }
 
-    helix_loader::workspace_trust::WorkspaceTrust::load(false).trust_workspace();
+    let workspace = current_workspace(cx);
+    cx.editor.workspace_trust.trust(&workspace);
 
     cx.editor.config_events.0.send(ConfigEvent::Refresh)?;
-    // HACK
+    // Restart any LSPs that didn't start because trust was missing.
     lsp_restart(cx, args, event)
 }
 
 fn untrust_workspace(
-    _cx: &mut compositor::Context,
+    cx: &mut compositor::Context,
     _args: Args<'_>,
     event: PromptEvent,
 ) -> anyhow::Result<()> {
@@ -5325,6 +5504,26 @@ fn untrust_workspace(
         return Ok(());
     }
 
-    helix_loader::workspace_trust::WorkspaceTrust::load(false).untrust_workspace();
+    let workspace = current_workspace(cx);
+    cx.editor.workspace_trust.untrust(&workspace);
+    // Drop any workspace overrides that were merged into the live editor config while trust was
+    // granted. Running LSPs are not stopped here (use `:lsp-stop` for that); this only handles
+    // in-memory config.
+    cx.editor.config_events.0.send(ConfigEvent::Refresh)?;
+    Ok(())
+}
+
+fn exclude_workspace(
+    cx: &mut compositor::Context,
+    _args: Args<'_>,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let workspace = current_workspace(cx);
+    cx.editor.workspace_trust.exclude(&workspace);
+    cx.editor.config_events.0.send(ConfigEvent::Refresh)?;
     Ok(())
 }

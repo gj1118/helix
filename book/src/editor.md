@@ -19,17 +19,19 @@
   - [`[editor.gutters.diagnostics]` Section](#editorguttersdiagnostics-section)
   - [`[editor.gutters.diff]` Section](#editorguttersdiff-section)
   - [`[editor.gutters.spacer]` Section](#editorguttersspacer-section)
+  - [`[editor.gutters.code-action-hint]` Section](#editorgutterscode-action-hint-section)
 - [`[editor.soft-wrap]` Section](#editorsoft-wrap-section)
 - [`[editor.smart-tab]` Section](#editorsmart-tab-section)
 - [`[editor.inline-diagnostics]` Section](#editorinline-diagnostics-section)
 - [`[editor.word-completion]` Section](#editorword-completion-section)
 - [`[editor.completion-highlight]` Section](#editorcompletion-highlight-section)
+- [`[editor.scrolloff]` Section](#editorscrolloff-section)
+- [`[editor.workspace-trust]` Section](#editorworkspace-trust-section)
 
 ### `[editor]` Section
 
 | Key | Description | Default |
 |--|--|---------|
-| `scrolloff` | Number of lines of padding around the edge of the screen when scrolling | `5` |
 | `mouse` | Enable mouse mode | `true` |
 | `mouse-yank-register` | Which register to use for mouse yanks. | `*` |
 | `middle-click-paste` | Middle click paste support | `true` |
@@ -40,7 +42,7 @@
 | `cursorline` | Highlight all lines with a cursor | `false` |
 | `cursorcolumn` | Highlight all columns with a cursor | `false` |
 | `continue-comments` | if helix should automatically add a line comment token if you create a new line inside a comment. | `true` |
-| `gutters` | Gutters to display: Available are `diagnostics` and `diff` and `line-numbers` and `spacer`, note that `diagnostics` also includes other features like breakpoints, 1-width padding will be inserted if gutters is non-empty | `["diagnostics", "spacer", "line-numbers", "spacer", "diff"]` |
+| `gutters` | Gutters to display: Available are `diagnostics` and `diff` and `line-numbers` and `spacer` and `code-action-hint`, note that `diagnostics` also includes other features like breakpoints, 1-width padding will be inserted if gutters is non-empty | `["diagnostics", "spacer", "line-numbers", "spacer", "diff"]` |
 | `auto-completion` | Enable automatic pop up of auto-completion | `true` |
 | `path-completion` | Enable filepath completion. Show files and directories if an existing path at the cursor was recognized, either absolute or relative to the current opened document or current working directory (if the buffer is not yet saved). Defaults to true. | `true` |
 | `auto-format` | Enable automatic formatting on save[^3] | `true` |
@@ -159,6 +161,7 @@ The following statusline elements can be configured:
 | `spacer` | Inserts a space between elements (multiple/contiguous spacers may be specified) |
 | `version-control` | The current branch name or detached commit hash of the opened workspace |
 | `register` | The current selected register |
+| `code-action-hint` | Indicator for when code actions are available |
 
 ### `[editor.lsp]` Section
 
@@ -445,6 +448,12 @@ There are currently no options for this section.
 
 Currently unused
 
+#### `[editor.gutters.code-action-hint]` Section
+
+The `code-action-hint` gutter option displays an indicator for whether a code action is available at current selection.
+
+There are currently no options for this section.
+
 ### `[editor.soft-wrap]` Section
 
 Options for soft wrapping lines that exceed the view width:
@@ -479,7 +488,7 @@ Options for navigating and editing using tab key.
 
 Due to lack of support for S-tab in some terminals, the default keybindings don't fully embrace smart-tab editing experience. If you enjoy smart-tab navigation and a terminal that supports the [Enhanced Keyboard protocol](https://github.com/helix-editor/helix/wiki/Terminal-Support#enhanced-keyboard-protocol), consider setting extra keybindings:
 
-```
+```toml
 [keys.normal]
 tab = "move_parent_node_end"
 S-tab = "move_parent_node_start"
@@ -496,12 +505,12 @@ S-tab = "extend_parent_node_start"
 
 Options for rendering diagnostics inside the text like shown below
 
-```
+```text
 fn main() {
   let foo = bar;
             └─ no such value in this scope
 }
-````
+```
 
 | Key        | Description | Default |
 |------------|-------------|---------|
@@ -515,7 +524,7 @@ The allowed values for `cursor-line` and `other-lines` are: `error`, `warning`, 
 
 The (first) diagnostic with the highest severity that is not shown inline is rendered at the end of the line (as long as its severity is higher than the `end-of-line-diagnostics` config option):
 
-```
+```text
 fn main() {
   let baz = 1;
   let foo = bar; a local variable with a similar name exists: baz
@@ -554,4 +563,50 @@ Example:
 ```toml
 [editor.completion-highlight]
 highlight-type = "vibrant"
+```
+
+### `[editor.scrolloff]` Section
+
+Options for setting scrolloff shown below
+
+
+| Key        | Description | Default |
+|------------|-------------|---------|
+| `vertical` | Number of lines of padding around the top and bottom of the screen when scrolling | `5` |
+| `horizontal` | Number of lines of padding around the left and right of the screen when scrolling | `5` |
+
+Settings the scrolloff to `999` for `vertical` will center the line with the cursor.
+```toml
+[editor.scrolloff]
+vertical = 5
+horizontal = 5
+```
+
+### `[editor.workspace-trust]` Section
+
+Controls implicit workspace trust. See the [workspace
+trust](./workspace-trust.md) chapter for the full feature.
+
+| Key       | Description                                                              | Default     |
+| ---       | ---                                                                      | ---         |
+| `level`   | The default level of trust for every workspace.                         | `"servers"` |
+| `prompt`  | Whether to show a modal when opening a file in an untrusted workspace.   | `true`      |
+| `trusted` | Glob patterns whose matching workspaces are trusted without a grant.     | `[]`        |
+
+Example:
+
+```toml
+[editor.workspace-trust]
+# Even if `false`, the statusline `[⚠]` indicator is still shown.
+prompt = false
+
+# "none":     prompt for every workspace.
+# "servers":  trust LSP and DAP launches but still gate local config and git;
+#             .helix/config.toml, .helix/languages.toml, etc. need :workspace-trust.
+# "insecure": trust everything (discouraged).
+level = "servers"
+
+# Discouraged: skips .helix/ change detection and trusts anything that lands
+# under a matching path. `~` and environment variables are expanded.
+trusted = ["~/src/github.com/me/*"]
 ```
