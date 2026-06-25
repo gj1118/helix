@@ -29,7 +29,7 @@
         <link rel="stylesheet" id="mdbook-ayu-highlight-css" href="ayu-highlight-3fdfc3ac.css">
 
         <!-- Custom theme stylesheets -->
-        <link rel="stylesheet" href="custom-a1acbc99.css">
+        <link rel="stylesheet" href="custom-10faeed5.css">
 
 
         <!-- Provide site root and default themes to javascript -->
@@ -37,7 +37,7 @@
             const path_to_root = "";
             const default_light_theme = "colibri";
             const default_dark_theme = "colibri";
-            window.path_to_searchindex_js = "searchindex-1adfc8bf.js";
+            window.path_to_searchindex_js = "searchindex-c70fb7d3.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-c2fa7ea4.js"></script>
@@ -181,8 +181,17 @@
                 <div id="mdbook-content" class="content">
                     <main>
                         <h1 id="helix"><a class="header" href="#helix">Helix</a></h1>
-<p>Docs for bleeding edge master can be found at
-<a href="https://docs.helix-editor.com/master">https://docs.helix-editor.com/master</a>.</p>
+<div class="version-tiles">
+  <a class="version-tile" href="/">
+    <strong>Stable</strong>
+    <span class="version-tile-sub">Documentation for the latest tagged release.</span>
+  </a>
+  <a class="version-tile" href="/master">
+    <strong>Latest (master)</strong>
+    <span class="version-tile-sub">Bleeding-edge docs built from the <code>master</code> branch.</span>
+  </a>
+</div>
+
 <p>See the <a href="#using-helix">usage</a> section for a quick overview of the editor, <a href="#keymap-1">keymap</a>
 section for all available keybindings and the <a href="#configuration-2">configuration</a> section
 for defining custom keybindings, setting themes, etc.
@@ -4127,6 +4136,25 @@ of the formatter command. In particular, the <code>%{buffer_name}</code> variabl
 argument to the formatter:</p>
 <pre><code class="language-toml">formatter = { command = "mylang-formatter" , args = ["--stdin", "--stdin-filename", "%{buffer_name}"] }
 </code></pre>
+<h3 id="configuring-code-actions-on-save"><a class="header" href="#configuring-code-actions-on-save">Configuring code actions on save</a></h3>
+<p>The <code>code-actions-on-save</code> key lists LSP code actions to run (in order) when
+the buffer is saved. The available actions depend on available language servers,
+below are common examples and may need adjusting for your setup.</p>
+<pre><code class="language-toml"># Python with ruff
+[[language]]
+name = "python"
+code-actions-on-save = ["source.organizeImports", "source.fixAll"]
+
+# TS/JS with tsserver
+[[language]]
+name = "typescript"
+code-actions-on-save = ["source.addMissingImports.ts"]
+
+# TS/JS with eslint
+[[language]]
+name = "javascript"
+code-actions-on-save = ["source.fixAll.eslint", "source.organizeImports"]
+</code></pre>
 <h2 id="language-server-configuration"><a class="header" href="#language-server-configuration">Language Server configuration</a></h2>
 <p>Language servers are configured separately in the table <code>language-server</code> in the same file as the languages <code>languages.toml</code></p>
 <p>For example:</p>
@@ -5169,6 +5197,7 @@ languages. It is only necessary when the node that increments the nesting level
 
         <!-- Custom JS scripts -->
         <script src="ts-query-56018970.js"></script>
+        <script src="version-3313557a.js"></script>
 
         <script src="book-c22b7243.js"></script>
 
