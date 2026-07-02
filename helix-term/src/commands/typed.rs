@@ -3129,15 +3129,14 @@ pub fn fold_textobjects(
     use std::ops;
 
     use graphemes::{ensure_grapheme_boundary_prev, prev_grapheme_boundary};
-    use text_folding::{Fold, FoldObject};
+    use text_folding::{EndFoldPoint, Fold, FoldObject, StartFoldPoint};
 
     let Some(syntax) = doc.syntax() else {
         return Err(anyhow!("Syntax is unavailable in the current buffer."));
     };
 
-    let Some(textobject_query) = loader.textobject_query(syntax.root_language()) else {
-        return Err(anyhow!("Failed to compile text object query."));
-    };
+    let textobject_query = loader.textobject_query(syntax.root_language());
+    let fold_query = loader.fold_query(syntax.root_language());
 
     let text = doc.text().slice(..);
     let root_node = syntax.tree().root_node();
@@ -3153,9 +3152,37 @@ pub fn fold_textobjects(
             other => unreachable!("Unexpected textobject {other}."),
         })
         .collect();
-    if textobjects.is_empty() {
+    // syntax regions captured by the `folds.scm` query are folded
+    // under the `syntax` pseudo textobject;
+    // unlike real textobjects it must be requested explicitly
+    // and is not implied by the `all` flag
+    let syntax_folds = args.contains("syntax") && !args.has_flag("all");
+
+    if textobjects.is_empty() && !syntax_folds {
         return Err(anyhow!("The list of text objects is empty."));
     }
+
+    let textobject_query = textobject_query.filter(|_| !textobjects.is_empty());
+    let fold_query = fold_query.filter(|_| syntax_folds);
+
+    if textobject_query.is_none() && fold_query.is_none() {
+        return Err(anyhow!(
+            "Neither text object nor fold queries are available in the current buffer."
+        ));
+    }
+
+    // byte ranges of all foldable capture nodes
+    let capture_ranges = || {
+        let textobject_ranges = textobject_query
+            .into_iter()
+            .flat_map(|query| query.capture_nodes_all(&textobjects, &root_node, text))
+            .map(|(_, cap_node)| cap_node.byte_range());
+        let fold_ranges = fold_query
+            .into_iter()
+            .flat_map(|query| query.fold_nodes(&root_node, text))
+            .map(|cap_node| cap_node.byte_range());
+        textobject_ranges.chain(fold_ranges)
+    };
 
     // the range is used to determine search boundaries
     let search_range = if args.has_flag("document") {
@@ -3183,16 +3210,12 @@ pub fn fold_textobjects(
         };
 
         // the range of the captured node contains the start byte
-        let top = textobject_query
-            .capture_nodes_all(&textobjects, &root_node, text)
-            .map(|(_, cap_node)| cap_node.byte_range())
+        let top = capture_ranges()
             .filter(|range| range.contains(&start))
             .min_by_key(|range| range.len());
 
         // the range of the captured node contains the end byte
-        let bottom = textobject_query
-            .capture_nodes_all(&textobjects, &root_node, text)
-            .map(|(_, cap_node)| cap_node.byte_range())
+        let bottom = capture_ranges()
             .filter(|range| range.contains(&end))
             .min_by_key(|range| range.len());
 
@@ -3212,98 +3235,185 @@ pub fn fold_textobjects(
         }
     };
 
-    let fold_points: Vec<_> = textobject_query
-        .capture_nodes_all(&textobjects, &root_node, text)
-        .filter_map(|(cap, cap_node)| {
-            let range = cap_node.byte_range();
+    // `true` when the byte range overlaps with the search range
+    // and is nested within the nesting range
+    let candidate = |range: &ops::Range<usize>| {
+        let overlapped = {
+            let start = max(range.start, search_range.start);
+            let end = min(range.end, search_range.end);
+            !(start..end).is_empty()
+        };
 
-            // the captured node's range overlaps with the search range
-            let overlapped = {
-                let start = max(range.start, search_range.start);
-                let end = min(range.end, search_range.end);
-                !(start..end).is_empty()
-            };
+        let nested = {
+            let start = max(range.start, nesting_range.start);
+            let end = min(range.end, nesting_range.end);
+            (start..end) == *range
+        };
 
-            // the captured node's range is nested within the nesting range
-            let nested = {
-                let start = max(range.start, nesting_range.start);
-                let end = min(range.end, nesting_range.end);
-                (start..end) == range
-            };
+        overlapped && nested
+    };
 
-            (overlapped && nested).then_some((cap, range))
+    // the last line of target must have line ending
+    let has_line_ending = |target: &ops::RangeInclusive<usize>| {
+        let end_line = text.line(text.char_to_line(*target.end()));
+        line_ending::get_line_ending(&end_line).is_some()
+    };
+
+    // `true` when the same fold (object and target) already exists in the container
+    let fold_exists = |sfp: &StartFoldPoint, efp: &EndFoldPoint| {
+        let Some(container) = doc.fold_container(view.id) else {
+            return false;
+        };
+        let fold = Fold::new(sfp, efp);
+        let target = |fold: Fold| fold.start.target..=fold.end.target;
+        container
+            .find(fold.object(), &target(fold), target)
+            .is_some()
+    };
+
+    // `true` when a fold hiding the same block already exists in the container
+    let block_exists = |sfp: &StartFoldPoint, efp: &EndFoldPoint| {
+        doc.fold_container(view.id).is_some_and(|container| {
+            container.start_points().iter().any(|start_point| {
+                let fold = start_point.fold(container);
+                fold.start.line == sfp.line && fold.end.line == efp.line
+            })
         })
-        .filter_map(|(cap, range)| {
-            let capture_name = cap.name(textobject_query.query());
-            match capture_name {
-                "class.around" | "function.around" => {
-                    let (capture, textobject) = match capture_name {
-                        "class.around" => ("class.inside", "class"),
-                        "function.around" => ("function.inside", "function"),
-                        _ => unreachable!(),
-                    };
-                    let node = syntax
-                        .descendant_for_byte_range(range.start as u32, range.end as u32)
-                        .expect("The range must belong to the captured node.");
-                    textobject_query
-                        .capture_nodes(capture, &node, text)?
-                        .next()
-                        .map(|cap_node| {
-                            let header = text.byte_to_char(range.start);
-                            let target = {
-                                let start = text.byte_to_char(cap_node.start_byte());
-                                let end = ensure_grapheme_boundary_prev(
-                                    text,
-                                    text.byte_to_char(cap_node.end_byte() - 1),
-                                );
-                                start..=end
+    };
+
+    let mut fold_points: Vec<_> = textobject_query
+        .into_iter()
+        .flat_map(|textobject_query| {
+            textobject_query
+                .capture_nodes_all(&textobjects, &root_node, text)
+                .filter_map(|(cap, cap_node)| {
+                    let range = cap_node.byte_range();
+                    candidate(&range).then_some((cap, range))
+                })
+                .filter_map(move |(cap, range)| {
+                    let capture_name = cap.name(textobject_query.query());
+                    match capture_name {
+                        "class.around" | "function.around" => {
+                            let (capture, textobject) = match capture_name {
+                                "class.around" => ("class.inside", "class"),
+                                "function.around" => ("function.inside", "function"),
+                                _ => unreachable!(),
                             };
-                            (FoldObject::TextObject(textobject), header, target)
-                        })
-                }
-                "comment.around" => {
-                    let start_line = text.byte_to_line(range.start);
-                    let end_line = text.byte_to_line(range.end - 1);
-                    (start_line < end_line).then(|| {
-                        let object = FoldObject::TextObject("comment");
-                        let header = text.byte_to_char(range.start);
-                        let target = {
-                            let start = text.line_to_char(start_line + 1)
-                                + text
-                                    .line(start_line + 1)
-                                    .first_non_whitespace_char()
-                                    .unwrap_or(0);
-                            let end = ensure_grapheme_boundary_prev(
-                                text,
-                                text.byte_to_char(range.end - 1),
-                            );
-                            start..=end
-                        };
-                        (object, header, target)
-                    })
-                }
-                other => unreachable!("Unexpected capture name: {other}."),
-            }
+                            let node = syntax
+                                .descendant_for_byte_range(range.start as u32, range.end as u32)
+                                .expect("The range must belong to the captured node.");
+                            let header = text.byte_to_char(range.start);
+                            // prefer the `.inside` capture for the fold target; when
+                            // the language's textobjects.scm omits it (e.g. latex
+                            // sections), fall back to a line-based target like
+                            // comment/syntax folds
+                            let inside = textobject_query
+                                .capture_nodes(capture, &node, text)
+                                .and_then(|mut nodes| nodes.next());
+                            let target = match inside {
+                                Some(cap_node) => {
+                                    let start = text.byte_to_char(cap_node.start_byte());
+                                    let end = ensure_grapheme_boundary_prev(
+                                        text,
+                                        text.byte_to_char(cap_node.end_byte() - 1),
+                                    );
+                                    start..=end
+                                }
+                                None => {
+                                    let start_line = text.byte_to_line(range.start);
+                                    let end_line = text.byte_to_line(range.end - 1);
+                                    if start_line >= end_line {
+                                        return None;
+                                    }
+                                    let start = text.line_to_char(start_line + 1)
+                                        + text
+                                            .line(start_line + 1)
+                                            .first_non_whitespace_char()
+                                            .unwrap_or(0);
+                                    let end = ensure_grapheme_boundary_prev(
+                                        text,
+                                        text.byte_to_char(range.end - 1),
+                                    );
+                                    start..=end
+                                }
+                            };
+                            Some((FoldObject::TextObject(textobject), header, target))
+                        }
+                        "comment.around" => {
+                            let start_line = text.byte_to_line(range.start);
+                            let end_line = text.byte_to_line(range.end - 1);
+                            (start_line < end_line).then(|| {
+                                let object = FoldObject::TextObject("comment");
+                                let header = text.byte_to_char(range.start);
+                                let target = {
+                                    let start = text.line_to_char(start_line + 1)
+                                        + text
+                                            .line(start_line + 1)
+                                            .first_non_whitespace_char()
+                                            .unwrap_or(0);
+                                    let end = ensure_grapheme_boundary_prev(
+                                        text,
+                                        text.byte_to_char(range.end - 1),
+                                    );
+                                    start..=end
+                                };
+                                (object, header, target)
+                            })
+                        }
+                        other => unreachable!("Unexpected capture name: {other}."),
+                    }
+                })
         })
         // the last line of target must have line ending
-        .filter(|(_, _, target)| {
-            let end_line = text.line(text.char_to_line(*target.end()));
-            line_ending::get_line_ending(&end_line).is_some()
-        })
+        .filter(|(_, _, target)| has_line_ending(target))
         // create fold points
         .map(|(object, header, target)| Fold::new_points(text, object, header, &target))
         // filter out existing folds
-        .filter(|(sfp, efp)| {
-            let Some(container) = doc.fold_container(view.id) else {
-                return true;
-            };
-            let fold = Fold::new(sfp, efp);
-            let target = |fold: Fold| fold.start.target..=fold.end.target;
-            container
-                .find(fold.object(), &target(fold), target)
-                .is_none()
-        })
+        .filter(|(sfp, efp)| !fold_exists(sfp, efp) && !block_exists(sfp, efp))
         .collect();
+
+    // syntax regions captured by the `folds.scm` query
+    if let Some(fold_query) = fold_query {
+        let syntax_points: Vec<_> = fold_query
+            .fold_nodes(&root_node, text)
+            .map(|cap_node| cap_node.byte_range())
+            .filter(&candidate)
+            .filter_map(|range| {
+                let start_line = text.byte_to_line(range.start);
+                let end_line = text.byte_to_line(range.end - 1);
+                // one-line regions do not fold
+                (start_line < end_line).then(|| {
+                    let header = text.byte_to_char(range.start);
+                    let target = {
+                        let start = text.line_to_char(start_line + 1)
+                            + text
+                                .line(start_line + 1)
+                                .first_non_whitespace_char()
+                                .unwrap_or(0);
+                        let end =
+                            ensure_grapheme_boundary_prev(text, text.byte_to_char(range.end - 1));
+                        start..=end
+                    };
+                    (FoldObject::Syntax, header, target)
+                })
+            })
+            .filter(|(_, _, target)| has_line_ending(target))
+            .map(|(object, header, target)| Fold::new_points(text, object, header, &target))
+            .filter(|(sfp, efp)| !fold_exists(sfp, efp) && !block_exists(sfp, efp))
+            .collect();
+
+        // a syntax region often coincides with a textobject (e.g. a function);
+        // prefer the textobject fold and skip in-batch duplicates
+        for (sfp, efp) in syntax_points {
+            let duplicate = fold_points
+                .iter()
+                .any(|(s, e)| s.line == sfp.line && e.line == efp.line);
+            if !duplicate {
+                fold_points.push((sfp, efp));
+            }
+        }
+    }
+
     if fold_points.is_empty() {
         return Err(anyhow!("Nothing to fold."));
     }
@@ -3403,9 +3513,8 @@ fn unfold_textobjects(
         return Err(anyhow!("Syntax is unavailable in the current buffer."));
     };
 
-    let Some(textobject_query) = loader.textobject_query(syntax.root_language()) else {
-        return Err(anyhow!("Failed to compile text object query."));
-    };
+    let textobject_query = loader.textobject_query(syntax.root_language());
+    let fold_query = loader.fold_query(syntax.root_language());
 
     let text = doc.text().slice(..);
     let root_node = syntax.tree().root_node();
@@ -3425,9 +3534,29 @@ fn unfold_textobjects(
             _ => unreachable!(),
         })
         .collect();
-    if textobjects.is_empty() {
+    // syntax folds (created from the `folds.scm` query or syntax nodes)
+    // are unfolded under the `syntax` pseudo textobject
+    let syntax_folds = args.contains("syntax") ^ args.has_flag("all");
+
+    if textobjects.is_empty() && !syntax_folds {
         return Err(anyhow!("The list of textobjects is empty."));
     }
+
+    let textobject_query = textobject_query.filter(|_| !textobjects.is_empty());
+    let fold_query = fold_query.filter(|_| syntax_folds);
+
+    // byte ranges of all foldable capture nodes
+    let capture_ranges = || {
+        let textobject_ranges = textobject_query
+            .into_iter()
+            .flat_map(|query| query.capture_nodes_all(&textobjects, &root_node, text))
+            .map(|(_, cap_node)| cap_node.byte_range());
+        let fold_ranges = fold_query
+            .into_iter()
+            .flat_map(|query| query.fold_nodes(&root_node, text))
+            .map(|cap_node| cap_node.byte_range());
+        textobject_ranges.chain(fold_ranges)
+    };
 
     // the range is used to determine search boundaries
     let search_range = if args.has_flag("document") {
@@ -3448,16 +3577,12 @@ fn unfold_textobjects(
         };
 
         // the range of the captured node contains the start byte
-        let top = textobject_query
-            .capture_nodes_all(&textobjects, &root_node, text)
-            .map(|(_, cap_node)| cap_node.byte_range())
+        let top = capture_ranges()
             .filter(|range| range.contains(&start))
             .min_by_key(|range| range.len());
 
         // the range of the captured node contains the end byte
-        let bottom = textobject_query
-            .capture_nodes_all(&textobjects, &root_node, text)
-            .map(|(_, cap_node)| cap_node.byte_range())
+        let bottom = capture_ranges()
             .filter(|range| range.contains(&end))
             .min_by_key(|range| range.len());
 
@@ -3482,11 +3607,10 @@ fn unfold_textobjects(
         .start_points()
         .iter()
         .enumerate()
-        .filter(|(_, sfp)| {
-            matches!(sfp.object,
-                FoldObject::TextObject(textobject)
-                    if args.contains(textobject) ^ args.has_flag("all")
-            )
+        .filter(|(_, sfp)| match sfp.object {
+            FoldObject::TextObject(textobject) => args.contains(textobject) ^ args.has_flag("all"),
+            FoldObject::Syntax => syntax_folds,
+            FoldObject::Selection => false,
         })
         .filter(|(_, sfp)| sfp.is_superest() || args.has_flag("recursive"))
         .filter(|(_, sfp)| {
@@ -4729,7 +4853,8 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
     TypableCommand {
         name: "fold",
         aliases: &[],
-        doc: "Fold text.",
+        doc: "Fold text. Accepts the textobjects `class`, `function`, `comment`, \
+            and `syntax` (regions captured by the language's `folds.scm` query).",
         fun: fold,
         completer: CommandCompleter::all(completers::foldable_textobjects),
         signature: FOLD_SIGNATURE,
@@ -4737,7 +4862,8 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
     TypableCommand {
         name: "unfold",
         aliases: &[],
-        doc: "Unfold text.",
+        doc: "Unfold text. Accepts the textobjects `class`, `function`, `comment`, \
+            and `syntax` (folds created from syntax regions).",
         fun: unfold,
         completer: CommandCompleter::all(completers::foldable_textobjects),
         signature: Signature {
