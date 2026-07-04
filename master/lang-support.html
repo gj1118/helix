@@ -36,7 +36,7 @@
             const path_to_root = "";
             const default_light_theme = "colibri";
             const default_dark_theme = "colibri";
-            window.path_to_searchindex_js = "searchindex-c70fb7d3.js";
+            window.path_to_searchindex_js = "searchindex-cfcaa1ea.js";
         </script>
         <!-- Start loading toc.js asap -->
         <script src="toc-c2fa7ea4.js"></script>
@@ -222,7 +222,7 @@ Languages</a> guide for more language configuration information.</p>
 <tr><td>cel</td><td>✓</td><td></td><td></td><td></td><td></td><td></td></tr>
 <tr><td>chuck</td><td>✓</td><td></td><td></td><td></td><td></td><td></td></tr>
 <tr><td>circom</td><td>✓</td><td></td><td></td><td></td><td></td><td><code>circom-lsp</code></td></tr>
-<tr><td>clarity</td><td>✓</td><td></td><td></td><td></td><td></td><td><code>clarinet</code></td></tr>
+<tr><td>clarity</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td><code>clarinet</code></td></tr>
 <tr><td>clojure</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td><code>clojure-lsp</code></td></tr>
 <tr><td>cmake</td><td>✓</td><td>✓</td><td>✓</td><td></td><td>✓</td><td><code>neocmakelsp</code>, <code>cmake-language-server</code></td></tr>
 <tr><td>codeql</td><td>✓</td><td>✓</td><td></td><td></td><td></td><td><code>codeql</code></td></tr>
@@ -280,10 +280,10 @@ Languages</a> guide for more language configuration information.</p>
 <tr><td>freebasic</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td></td><td></td></tr>
 <tr><td>fsharp</td><td>✓</td><td></td><td></td><td></td><td>✓</td><td><code>fsautocomplete</code></td></tr>
 <tr><td>gas</td><td>✓</td><td>✓</td><td></td><td></td><td></td><td><code>asm-lsp</code></td></tr>
-<tr><td>gdscript</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td></td></tr>
+<tr><td>gdscript</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td><code>ncat</code></td></tr>
 <tr><td>gemini</td><td>✓</td><td></td><td></td><td></td><td></td><td></td></tr>
 <tr><td>gherkin</td><td>✓</td><td></td><td></td><td></td><td></td><td></td></tr>
-<tr><td>ghostty</td><td>✓</td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td>ghostty</td><td>✓</td><td></td><td></td><td></td><td></td><td><code>ghostty-ls</code></td></tr>
 <tr><td>git-attributes</td><td>✓</td><td></td><td></td><td></td><td></td><td></td></tr>
 <tr><td>git-cliff-config</td><td>✓</td><td>✓</td><td></td><td></td><td>✓</td><td><code>taplo</code>, <code>tombi</code></td></tr>
 <tr><td>git-commit</td><td>✓</td><td>✓</td><td></td><td></td><td></td><td><code>commit-lsp</code></td></tr>
@@ -389,7 +389,7 @@ Languages</a> guide for more language configuration information.</p>
 <tr><td>nasm</td><td>✓</td><td>✓</td><td></td><td></td><td></td><td><code>asm-lsp</code></td></tr>
 <tr><td>nearley</td><td>✓</td><td></td><td></td><td></td><td>✓</td><td></td></tr>
 <tr><td>nestedtext</td><td>✓</td><td>✓</td><td>✓</td><td></td><td></td><td></td></tr>
-<tr><td>nginx</td><td>✓</td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td>nginx</td><td>✓</td><td></td><td></td><td></td><td></td><td><code>nginx-language-server</code></td></tr>
 <tr><td>nickel</td><td>✓</td><td></td><td>✓</td><td></td><td></td><td><code>nls</code></td></tr>
 <tr><td>nim</td><td>✓</td><td>✓</td><td>✓</td><td></td><td>✓</td><td><code>nimlangserver</code></td></tr>
 <tr><td>nix</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td><code>nil</code>, <code>nixd</code></td></tr>
@@ -402,6 +402,7 @@ Languages</a> guide for more language configuration information.</p>
 <tr><td>opencl</td><td>✓</td><td>✓</td><td>✓</td><td></td><td></td><td><code>clangd</code></td></tr>
 <tr><td>openscad</td><td>✓</td><td></td><td></td><td></td><td></td><td><code>openscad-lsp</code></td></tr>
 <tr><td>org</td><td>✓</td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td>p</td><td>✓</td><td></td><td></td><td></td><td></td><td></td></tr>
 <tr><td>pascal</td><td>✓</td><td>✓</td><td></td><td></td><td></td><td><code>pasls</code></td></tr>
 <tr><td>passwd</td><td>✓</td><td></td><td></td><td></td><td></td><td></td></tr>
 <tr><td>pem</td><td>✓</td><td></td><td></td><td></td><td></td><td></td></tr>
@@ -426,6 +427,7 @@ Languages</a> guide for more language configuration information.</p>
 <tr><td>prql</td><td>✓</td><td></td><td></td><td></td><td></td><td></td></tr>
 <tr><td>ptx</td><td>✓</td><td></td><td>✓</td><td></td><td></td><td></td></tr>
 <tr><td>pug</td><td>✓</td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td>puppet</td><td>✓</td><td></td><td>✓</td><td></td><td></td><td><code>puppet-languageserver</code></td></tr>
 <tr><td>purescript</td><td>✓</td><td>✓</td><td></td><td></td><td></td><td><code>purescript-language-server</code></td></tr>
 <tr><td>python</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td><code>ty</code>, <code>ruff</code>, <code>jedi-language-server</code>, <code>pylsp</code>, <code>zuban</code></td></tr>
 <tr><td>qml</td><td>✓</td><td>✓</td><td>✓</td><td></td><td></td><td><code>qmlls</code></td></tr>
@@ -454,13 +456,14 @@ Languages</a> guide for more language configuration information.</p>
 <tr><td>scfg</td><td>✓</td><td></td><td></td><td></td><td></td><td></td></tr>
 <tr><td>scheme</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td>✓</td><td></td></tr>
 <tr><td>scss</td><td>✓</td><td></td><td>✓</td><td></td><td>✓</td><td><code>vscode-css-language-server</code></td></tr>
+<tr><td>sgf</td><td>✓</td><td>✓</td><td>✓</td><td></td><td></td><td></td></tr>
 <tr><td>shellcheckrc</td><td>✓</td><td>✓</td><td></td><td></td><td></td><td></td></tr>
 <tr><td>slang</td><td>✓</td><td>✓</td><td>✓</td><td></td><td></td><td><code>slangd</code></td></tr>
 <tr><td>slint</td><td>✓</td><td>✓</td><td>✓</td><td></td><td></td><td><code>slint-lsp</code></td></tr>
 <tr><td>slisp</td><td>✓</td><td></td><td></td><td>✓</td><td></td><td></td></tr>
 <tr><td>smali</td><td>✓</td><td></td><td>✓</td><td></td><td></td><td><code>smalisp</code></td></tr>
 <tr><td>smithy</td><td>✓</td><td></td><td></td><td></td><td></td><td><code>cs</code></td></tr>
-<tr><td>sml</td><td>✓</td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td>sml</td><td>✓</td><td></td><td></td><td></td><td></td><td><code>millet-ls</code></td></tr>
 <tr><td>snakemake</td><td>✓</td><td></td><td>✓</td><td></td><td></td><td><code>pylsp</code></td></tr>
 <tr><td>solidity</td><td>✓</td><td>✓</td><td></td><td></td><td>✓</td><td><code>solc</code></td></tr>
 <tr><td>sourcepawn</td><td>✓</td><td>✓</td><td></td><td></td><td></td><td><code>sourcepawn-studio</code></td></tr>
@@ -484,7 +487,7 @@ Languages</a> guide for more language configuration information.</p>
 <tr><td>task</td><td>✓</td><td></td><td></td><td></td><td></td><td></td></tr>
 <tr><td>tcl</td><td>✓</td><td></td><td>✓</td><td></td><td></td><td></td></tr>
 <tr><td>teal</td><td>✓</td><td></td><td></td><td></td><td></td><td><code>teal-language-server</code></td></tr>
-<tr><td>templ</td><td>✓</td><td></td><td></td><td></td><td></td><td><code>templ</code></td></tr>
+<tr><td>templ</td><td>✓</td><td>✓</td><td></td><td>✓</td><td>✓</td><td><code>templ</code></td></tr>
 <tr><td>tera</td><td>✓</td><td></td><td></td><td></td><td></td><td></td></tr>
 <tr><td>textproto</td><td>✓</td><td>✓</td><td>✓</td><td></td><td></td><td></td></tr>
 <tr><td>tfvars</td><td>✓</td><td></td><td>✓</td><td></td><td></td><td><code>terraform-ls</code></td></tr>
@@ -506,6 +509,7 @@ Languages</a> guide for more language configuration information.</p>
 <tr><td>uxntal</td><td>✓</td><td></td><td></td><td></td><td></td><td></td></tr>
 <tr><td>v</td><td>✓</td><td>✓</td><td>✓</td><td></td><td></td><td><code>v-analyzer</code></td></tr>
 <tr><td>vala</td><td>✓</td><td>✓</td><td></td><td></td><td></td><td><code>vala-language-server</code></td></tr>
+<tr><td>varlink</td><td>✓</td><td></td><td></td><td></td><td></td><td><code>varlink-language-server</code></td></tr>
 <tr><td>vento</td><td>✓</td><td></td><td></td><td></td><td></td><td></td></tr>
 <tr><td>verilog</td><td>✓</td><td>✓</td><td></td><td></td><td></td><td><code>verible-verilog-ls</code></td></tr>
 <tr><td>vhdl</td><td>✓</td><td></td><td></td><td></td><td></td><td><code>vhdl_ls</code></td></tr>
@@ -525,6 +529,7 @@ Languages</a> guide for more language configuration information.</p>
 <tr><td>xit</td><td>✓</td><td></td><td></td><td></td><td></td><td></td></tr>
 <tr><td>xml</td><td>✓</td><td>✓</td><td>✓</td><td></td><td>✓</td><td></td></tr>
 <tr><td>xtc</td><td>✓</td><td></td><td></td><td></td><td></td><td></td></tr>
+<tr><td>xwiki</td><td>✓</td><td></td><td></td><td></td><td></td><td></td></tr>
 <tr><td>yaml</td><td>✓</td><td>✓</td><td>✓</td><td></td><td>✓</td><td><code>yaml-language-server</code>, <code>ansible-language-server</code></td></tr>
 <tr><td>yara</td><td>✓</td><td></td><td></td><td></td><td></td><td><code>yls</code></td></tr>
 <tr><td>yuck</td><td>✓</td><td></td><td>✓</td><td></td><td>✓</td><td></td></tr>
