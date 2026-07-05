@@ -375,4 +375,3 @@ mod tests {
             "MixEdCaseString" -> "mixedcasestring"
     }
 }
-
