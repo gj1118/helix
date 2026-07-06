@@ -425,7 +425,7 @@ pub fn symbol_picker(cx: &mut Context) {
                 Err(err) => log::error!("Error requesting document symbols: {err}"),
             }
         }
-        let call = move |_editor: &mut Editor, compositor: &mut Compositor| {
+        let call = move |editor: &mut Editor, compositor: &mut Compositor| {
             let columns = [
                 ui::PickerColumn::new("kind", |item: &SymbolInformationItem, _| {
                     let icons = ICONS.load();
@@ -473,7 +473,10 @@ pub fn symbol_picker(cx: &mut Context) {
             .truncate_start(false)
             .with_title("Document Symbols");
 
-            compositor.push(Box::new(overlaid(picker)))
+            compositor.push(Box::new(overlaid(
+                picker,
+                editor.config().fullscreen_overlay,
+            )))
         };
 
         Ok(Callback::EditorCompositor(Box::new(call)))
@@ -616,7 +619,10 @@ pub fn workspace_symbol_picker(cx: &mut Context) {
     .truncate_start(false)
     .with_title("Workspace Symbols");
 
-    cx.push_layer(Box::new(overlaid(picker)));
+    cx.push_layer(Box::new(overlaid(
+        picker,
+        cx.editor.config().fullscreen_overlay,
+    )));
 }
 
 pub fn diagnostics_picker(cx: &mut Context) {
@@ -625,7 +631,10 @@ pub fn diagnostics_picker(cx: &mut Context) {
         let diagnostics = cx.editor.diagnostics.get(&uri).cloned().unwrap_or_default();
         let picker = diag_picker(cx, [(uri, diagnostics)], DiagnosticsFormat::HideSourcePath)
             .with_title("Diagnostics");
-        cx.push_layer(Box::new(overlaid(picker)));
+        cx.push_layer(Box::new(overlaid(
+            picker,
+            cx.editor.config().fullscreen_overlay,
+        )));
     }
 }
 
@@ -634,7 +643,10 @@ pub fn workspace_diagnostics_picker(cx: &mut Context) {
     let diagnostics = cx.editor.diagnostics.clone();
     let picker = diag_picker(cx, diagnostics, DiagnosticsFormat::ShowSourcePath)
         .with_title("Workspace Diagnostics");
-    cx.push_layer(Box::new(overlaid(picker)));
+    cx.push_layer(Box::new(overlaid(
+        picker,
+        cx.editor.config().fullscreen_overlay,
+    )));
 }
 
 impl ui::menu::Item for CodeActionItem {
@@ -751,7 +763,10 @@ fn code_action_inner_picker(actions: Vec<CodeActionItem>) -> Result<Callback, an
             },
         )
         .with_title("Code Actions");
-        compositor.push(Box::new(overlaid(picker)));
+        compositor.push(Box::new(overlaid(
+            picker,
+            editor.config().fullscreen_overlay,
+        )));
     };
     Ok(Callback::EditorCompositor(Box::new(call)))
 }
@@ -829,8 +844,11 @@ fn code_action_on_save_step(
         return tail;
     };
 
-    // Runs with `&mut Editor`, so it sees the document the previous link left.
     let build_request = move |editor: &mut Editor| -> Option<Job> {
+        // The document could have been closed mid-chain
+        if !editor.documents.contains_key(&doc_id) {
+            return None;
+        }
         let doc = doc!(editor, &doc_id);
         let version = doc.version();
         let full_range = helix_core::Range::new(0, doc.text().len_chars());
@@ -848,11 +866,12 @@ fn code_action_on_save_step(
 
         let future = async move {
             let actions = request.await?;
-            let apply = move |editor: &mut Editor| -> Option<Job> {
-                apply_code_actions_of_kind(editor, doc_id, version, ls_id, &kind, actions);
-                code_action_on_save_step(doc_id, kinds, tail)
+            let resolve = move |editor: &mut Editor| -> Option<Job> {
+                resolve_and_apply_code_actions_of_kind(
+                    editor, doc_id, version, ls_id, kind, kinds, tail, actions,
+                )
             };
-            Ok(Callback::Followup(Box::new(apply)))
+            Ok(Callback::Followup(Box::new(resolve)))
         };
         Some(Job::with_callback(future).wait_before_exiting())
     };
@@ -875,69 +894,96 @@ fn code_action_kind_matches(action: &CodeAction, requested: &CodeActionKind) -> 
     })
 }
 
-/// Apply every returned action whose kind matches `kind` (servers may ignore the
-/// `only` filter, and `source.fixAll` legitimately resolves to several actions),
-/// resolving any that need it. Skips entirely if the document changed between the
-/// request and now, so a stale edit can't be applied at positions that moved.
-fn apply_code_actions_of_kind(
+/// One matching action, in server order: an edit ready to apply, or a  future
+/// resolving the action's edit off the event loop.
+///
+/// Keeping one ordered list preserves apply order, which matters when a kind yields
+/// several edits.
+type ResolveFuture =
+    std::pin::Pin<Box<dyn Future<Output = Result<lsp::CodeAction, helix_lsp::Error>> + Send>>;
+enum ResolveStep {
+    Ready(lsp::WorkspaceEdit),
+    Resolve(ResolveFuture),
+}
+
+/// Resolve (off the event loop) and apply the actions matching `kind`, then
+/// continue the on-save chain. The resolve is awaited in the returned job.
+#[allow(clippy::too_many_arguments)]
+fn resolve_and_apply_code_actions_of_kind(
     editor: &mut Editor,
     doc_id: DocumentId,
     version: i32,
     ls_id: LanguageServerId,
-    kind: &CodeActionKind,
+    kind: CodeActionKind,
+    kinds: VecDeque<CodeActionKind>,
+    tail: Option<Job>,
     actions: Option<Vec<CodeActionOrCommand>>,
-) {
-    let Some(actions) = actions else {
-        return;
-    };
-    if doc!(editor, &doc_id).version() != version {
-        log::debug!("code-actions-on-save: document changed, skipping {kind:?}");
-        return;
-    }
-    let Some(language_server) = editor.language_server_by_id(ls_id) else {
-        return;
-    };
-    let offset_encoding = language_server.offset_encoding();
-
-    // Collect the (resolved) edits while holding the immutable language-server
-    // borrow, then apply them once the borrow is dropped.
-    let edits: Vec<lsp::WorkspaceEdit> = actions
-        .iter()
-        .filter_map(|action| match action {
-            CodeActionOrCommand::CodeAction(code_action) if code_action.disabled.is_none() => {
-                Some(code_action)
-            }
-            _ => None,
-        })
-        .filter(|code_action| code_action_kind_matches(code_action, kind))
-        .filter_map(|code_action| {
-            match resolve_code_action_blocking(code_action, language_server) {
-                Some(resolved) => resolved.edit,
-                None => code_action.edit.clone(),
-            }
-        })
-        .collect();
-
-    for edit in edits {
-        if let Err(err) = editor.apply_workspace_edit(offset_encoding, &edit) {
-            log::error!("code-actions-on-save: failed to apply workspace edit: {err:?}");
+) -> Option<Job> {
+    // Build the matching actions, in order, while holding the language-server
+    // borrow, resolving only those the server left incomplete.
+    let prepared = (|| -> Option<(OffsetEncoding, Vec<ResolveStep>)> {
+        let actions = actions?;
+        if editor.documents.get(&doc_id)?.version() != version {
+            log::debug!("code-actions-on-save: document changed, skipping {kind:?}");
+            return None;
         }
-    }
-}
+        let ls = editor.language_server_by_id(ls_id)?;
+        let steps = actions
+            .iter()
+            .filter_map(|action| match action {
+                CodeActionOrCommand::CodeAction(ca) if ca.disabled.is_none() => Some(ca),
+                _ => None,
+            })
+            .filter(|ca| code_action_kind_matches(ca, &kind))
+            .filter_map(|ca| {
+                // Resolve only when the server left out the edit or command.
+                if ca.edit.is_none() || ca.command.is_none() {
+                    if let Some(future) = ls.resolve_code_action(ca) {
+                        return Some(ResolveStep::Resolve(Box::pin(future)));
+                    }
+                }
+                ca.edit.clone().map(ResolveStep::Ready)
+            })
+            .collect();
+        Some((ls.offset_encoding(), steps))
+    })();
+    let Some((offset_encoding, steps)) = prepared else {
+        return code_action_on_save_step(doc_id, kinds, tail);
+    };
 
-pub fn resolve_code_action_blocking(
-    code_action: &CodeAction,
-    language_server: &Client,
-) -> Option<CodeAction> {
-    let mut resolved_code_action = None;
-    if code_action.edit.is_none() || code_action.command.is_none() {
-        if let Some(future) = language_server.resolve_code_action(code_action) {
-            if let Ok(code_action) = helix_lsp::block_on(future) {
-                resolved_code_action = Some(code_action);
+    let future = async move {
+        let mut edits = Vec::new();
+        for step in steps {
+            match step {
+                ResolveStep::Ready(edit) => edits.push(edit),
+                ResolveStep::Resolve(future) => match future.await {
+                    Ok(resolved) => edits.extend(resolved.edit),
+                    Err(err) => log::error!("code-actions-on-save: resolve failed: {err:?}"),
+                },
             }
         }
-    }
-    resolved_code_action
+        let apply = move |editor: &mut Editor| -> Option<Job> {
+            // A plain :w runs this in the live event loop so the document can
+            // change while resolving: re-check the version and skip rather than
+            // applying a stale edit.
+            if editor
+                .documents
+                .get(&doc_id)
+                .is_some_and(|doc| doc.version() == version)
+            {
+                for edit in &edits {
+                    if let Err(err) = editor.apply_workspace_edit(offset_encoding, edit) {
+                        log::error!("code-actions-on-save: failed to apply edit: {err:?}");
+                    }
+                }
+            } else {
+                log::debug!("code-actions-on-save: document changed, skipping {kind:?}");
+            }
+            code_action_on_save_step(doc_id, kinds, tail)
+        };
+        Ok(Callback::Followup(Box::new(apply)))
+    };
+    Some(Job::with_callback(future).wait_before_exiting())
 }
 
 #[derive(Debug)]
@@ -1000,7 +1046,10 @@ fn goto_impl(
             })
             .with_preview(|_editor, location| location_to_file_location(location))
             .with_title(title);
-            compositor.push(Box::new(overlaid(picker)));
+            compositor.push(Box::new(overlaid(
+                picker,
+                editor.config().fullscreen_overlay,
+            )));
         }
     }
 }
