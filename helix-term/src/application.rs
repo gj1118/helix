@@ -488,7 +488,7 @@ impl Application {
                 }
                 Some(request) = self.ui_receiver.recv() => {
                     self.handle_ui_request(request).await;
-                    helix_event::request_redraw();
+                    self.render().await;
                 }
                 event = self.editor.wait_event() => {
                     let _idle_handled = self.handle_editor_event(event).await;
@@ -917,7 +917,7 @@ impl Application {
         match event {
             EditorEvent::DocumentSaved(event) => {
                 self.handle_document_write(event);
-                helix_event::request_redraw();
+                self.render().await;
             }
             EditorEvent::ConfigEvent(event) => {
                 self.handle_config_events(event);

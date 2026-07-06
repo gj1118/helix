@@ -75,11 +75,16 @@ pub struct EditorView {
     bufferline_cache: BufferlineCache,
 }
 
-/// Cached data for bufferline rendering, recomputed only when document set changes
+/// Cached data for bufferline rendering.
+/// Names (display name per document) are recomputed only when document set changes.
+/// Texts (formatted strings including modified indicator) are recomputed when
+/// document modified status or document set changes.
 #[derive(Default)]
 struct BufferlineCache {
     doc_ids: Vec<DocumentId>,
+    doc_paths: Vec<String>,
     names: Vec<(DocumentId, String)>,
+    modified: Vec<bool>,
     texts: Vec<String>,
     widths: Vec<u16>,
     positions: Vec<u16>,
@@ -1208,26 +1213,11 @@ impl EditorView {
     }
 
     fn refresh_bufferline_cache(&mut self, editor: &Editor) {
-        let current_ids: Vec<DocumentId> = editor.documents().map(|d| d.id()).collect();
-
-        // Check if cache is still valid
-        if self.bufferline_cache.doc_ids == current_ids {
-            // Check if any document's modified status has changed
-            let cache_valid = self.bufferline_cache.names.iter().all(|(id, _)| {
-                editor
-                    .documents()
-                    .find(|d| d.id() == *id)
-                    .is_some_and(|d| !d.is_modified())
-            });
-            if cache_valid {
-                return;
-            }
-        }
-
         let scratch = PathBuf::from(SCRATCH_BUFFER_NAME);
 
-        // Collect all paths once
-        let paths: Vec<String> = editor
+        let current_ids: Vec<DocumentId> = editor.documents().map(|d| d.id()).collect();
+        let current_modified: Vec<bool> = editor.documents().map(|d| d.is_modified()).collect();
+        let current_paths: Vec<String> = editor
             .documents()
             .map(|d| {
                 d.path()
@@ -1237,23 +1227,40 @@ impl EditorView {
                     .to_string()
             })
             .collect();
-        let components: Vec<Vec<String>> = paths
-            .iter()
-            .map(|p| p.split(MAIN_SEPARATOR).map(String::from).collect())
-            .collect();
 
-        // Compute unique display names for all documents at once
-        let names: Vec<(DocumentId, String)> = editor
-            .documents()
-            .enumerate()
-            .map(|(idx, doc)| {
-                let name = Self::compute_display_name(&components, idx);
-                (doc.id(), name)
-            })
-            .collect();
+        // Cache is fully valid only if doc IDs, paths, and modified states all match
+        if self.bufferline_cache.doc_ids == current_ids
+            && self.bufferline_cache.doc_paths == current_paths
+            && self.bufferline_cache.modified == current_modified
+        {
+            return;
+        }
 
-        // Build texts and widths
         let icons = ICONS.load();
+
+        // Recompute names (O(n²)) when document set OR paths change
+        let names: Vec<(DocumentId, String)> = if self.bufferline_cache.doc_ids == current_ids
+            && self.bufferline_cache.doc_paths == current_paths
+        {
+            // Only modified status changed — reuse existing names
+            self.bufferline_cache.names.clone()
+        } else {
+            // Doc set or paths changed — recompute names
+            let components: Vec<Vec<String>> = current_paths
+                .iter()
+                .map(|p| p.split(MAIN_SEPARATOR).map(String::from).collect())
+                .collect();
+            editor
+                .documents()
+                .enumerate()
+                .map(|(idx, doc)| {
+                    let name = Self::compute_display_name(&components, idx);
+                    (doc.id(), name)
+                })
+                .collect()
+        };
+
+        // Build texts and widths (always recompute when anything changed)
         let mut texts = Vec::new();
         let mut widths = Vec::new();
         let mut positions = Vec::new();
@@ -1286,7 +1293,9 @@ impl EditorView {
 
         self.bufferline_cache = BufferlineCache {
             doc_ids: current_ids,
+            doc_paths: current_paths,
             names,
+            modified: current_modified,
             texts,
             widths,
             positions,
