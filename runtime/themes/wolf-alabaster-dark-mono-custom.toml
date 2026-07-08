@@ -17,6 +17,8 @@ inherits = "wolf-alabaster-dark-mono"
 "ui.linenr.selected" = { fg = "selected_line_color", modifiers = ["bold"] }
 
 
+"ui.cursorline.primary" = { bg = "cursorline-primary" }
+"ui.cursorline.secondary" = { bg = "cursorline" }
 "ui.cursor.match" = { "bg" = "#6C6999", "fg" = "#212121" }
 "ui.menu.selected" = { fg = "dark", bg = "yellow" }
 "ui.cursor.primary.normal" = { fg = "dark", bg = "mauve" }
@@ -43,6 +45,7 @@ menu_background_color = "#1e1e2e"
 menu_selected_foreground = "#f9e2af"
 ruler_color = "#404040"
 cursorline = "#2a2b3c"
+cursorline-primary = "#32344c"
 # Dark monochromatic palette
 fg = "#feffff"           # Main text - light grey
 
