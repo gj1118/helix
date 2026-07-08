@@ -44,8 +44,8 @@ mauve = "#cba6f7"
 menu_background_color = "#1e1e2e"
 menu_selected_foreground = "#f9e2af"
 ruler_color = "#404040"
-cursorline = "#2a2b3c"
-cursorline-primary = "#32344c"
+cursorline = "#1e1e1e"
+cursorline-primary = "#1e1e1e"
 # Dark monochromatic palette
 fg = "#feffff"           # Main text - light grey
 
