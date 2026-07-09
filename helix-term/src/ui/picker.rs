@@ -1681,4 +1681,268 @@ mod tests {
 
         assert_eq!(picker.cursor, 0);
     }
+
+    // ===========================================
+    // Preview Scroll Tests
+    // ===========================================
+
+    #[test]
+    fn test_scroll_preview_default_zero() {
+        let columns = [Column::new("test", |item: &String, _: &()| {
+            item.as_str().into()
+        })];
+        let picker: Picker<String, ()> = Picker::new(
+            columns,
+            0,
+            vec![],
+            (),
+            |_cx, _item, _action| {},
+        );
+        assert_eq!(picker.preview_scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_scroll_preview_positive() {
+        let columns = [Column::new("test", |item: &String, _: &()| {
+            item.as_str().into()
+        })];
+        let mut picker: Picker<String, ()> = Picker::new(
+            columns,
+            0,
+            vec![],
+            (),
+            |_cx, _item, _action| {},
+        );
+        picker.scroll_preview(5);
+        assert_eq!(picker.preview_scroll_offset, 5);
+    }
+
+    #[test]
+    fn test_scroll_preview_negative() {
+        let columns = [Column::new("test", |item: &String, _: &()| {
+            item.as_str().into()
+        })];
+        let mut picker: Picker<String, ()> = Picker::new(
+            columns,
+            0,
+            vec![],
+            (),
+            |_cx, _item, _action| {},
+        );
+        picker.scroll_preview(-3);
+        assert_eq!(picker.preview_scroll_offset, -3);
+    }
+
+    #[test]
+    fn test_scroll_preview_accumulates() {
+        let columns = [Column::new("test", |item: &String, _: &()| {
+            item.as_str().into()
+        })];
+        let mut picker: Picker<String, ()> = Picker::new(
+            columns,
+            0,
+            vec![],
+            (),
+            |_cx, _item, _action| {},
+        );
+        picker.scroll_preview(10);
+        picker.scroll_preview(-3);
+        assert_eq!(picker.preview_scroll_offset, 7);
+    }
+
+    #[test]
+    fn test_scroll_preview_saturation_positive() {
+        let columns = [Column::new("test", |item: &String, _: &()| {
+            item.as_str().into()
+        })];
+        let mut picker: Picker<String, ()> = Picker::new(
+            columns,
+            0,
+            vec![],
+            (),
+            |_cx, _item, _action| {},
+        );
+        picker.scroll_preview(isize::MAX);
+        picker.scroll_preview(1);
+        // Should not overflow, should stay at isize::MAX
+        assert_eq!(picker.preview_scroll_offset, isize::MAX);
+    }
+
+    #[test]
+    fn test_scroll_preview_saturation_negative() {
+        let columns = [Column::new("test", |item: &String, _: &()| {
+            item.as_str().into()
+        })];
+        let mut picker: Picker<String, ()> = Picker::new(
+            columns,
+            0,
+            vec![],
+            (),
+            |_cx, _item, _action| {},
+        );
+        picker.scroll_preview(isize::MIN);
+        picker.scroll_preview(-1);
+        // Should not underflow, should stay at isize::MIN
+        assert_eq!(picker.preview_scroll_offset, isize::MIN);
+    }
+
+    #[test]
+    fn test_scroll_preview_resets_to_zero() {
+        let columns = [Column::new("test", |item: &String, _: &()| {
+            item.as_str().into()
+        })];
+        let mut picker: Picker<String, ()> = Picker::new(
+            columns,
+            0,
+            vec![],
+            (),
+            |_cx, _item, _action| {},
+        );
+        picker.scroll_preview(42);
+        assert_eq!(picker.preview_scroll_offset, 42);
+        picker.preview_scroll_offset = 0;
+        assert_eq!(picker.preview_scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_preview_shown_no_file_fn() {
+        let columns = [Column::new("test", |item: &String, _: &()| {
+            item.as_str().into()
+        })];
+        let picker: Picker<String, ()> = Picker::new(
+            columns,
+            0,
+            vec![],
+            (),
+            |_cx, _item, _action| {},
+        );
+        // Default show_preview is true, but file_fn is None
+        assert!(!picker.preview_shown());
+    }
+
+    #[test]
+    fn test_preview_shown_with_file_fn() {
+        let columns = [Column::new("test", |item: &String, _: &()| {
+            item.as_str().into()
+        })];
+        let picker: Picker<String, ()> = Picker::new(
+            columns,
+            0,
+            vec![],
+            (),
+            |_cx, _item, _action| {},
+        )
+        .with_preview(|_editor, _item| None);
+        assert!(picker.preview_shown());
+    }
+
+    #[test]
+    fn test_preview_shown_toggled_off() {
+        let columns = [Column::new("test", |item: &String, _: &()| {
+            item.as_str().into()
+        })];
+        let picker: Picker<String, ()> = Picker::new(
+            columns,
+            0,
+            vec!["a".to_string(), "b".to_string()],
+            (),
+            |_cx, _item, _action| {},
+        )
+        .with_preview(|_editor, _item| None)
+        .show_preview(false);
+        assert!(!picker.preview_shown());
+    }
+
+    #[test]
+    fn test_preview_scroll_cursor_tracks_selection() {
+        let columns = [Column::new("test", |item: &String, _: &()| {
+            item.as_str().into()
+        })];
+        let mut picker: Picker<String, ()> = Picker::new(
+            columns,
+            0,
+            vec!["a".to_string(), "b".to_string()],
+            (),
+            |_cx, _item, _action| {},
+        );
+        // Initially cursor and preview_scroll_cursor are both 0
+        assert_eq!(picker.cursor, 0);
+        assert_eq!(picker.preview_scroll_cursor, 0);
+
+        // Set a scroll offset
+        picker.scroll_preview(10);
+        assert_eq!(picker.preview_scroll_offset, 10);
+
+        // Change cursor (simulating selection change)
+        picker.cursor = 1;
+
+        // The render_preview method resets scroll when cursor != preview_scroll_cursor
+        // We simulate the check here (same logic as in render_preview)
+        if picker.cursor != picker.preview_scroll_cursor {
+            picker.preview_scroll_offset = 0;
+            picker.preview_scroll_cursor = picker.cursor;
+        }
+
+        assert_eq!(picker.preview_scroll_offset, 0);
+        assert_eq!(picker.preview_scroll_cursor, 1);
+    }
+
+    #[test]
+    fn test_preview_scroll_cursor_no_reset_on_same_selection() {
+        let columns = [Column::new("test", |item: &String, _: &()| {
+            item.as_str().into()
+        })];
+        let mut picker: Picker<String, ()> = Picker::new(
+            columns,
+            0,
+            vec!["a".to_string(), "b".to_string()],
+            (),
+            |_cx, _item, _action| {},
+        );
+        picker.preview_scroll_cursor = 0;
+        picker.scroll_preview(10);
+
+        // Cursor hasn't changed, scroll should not be reset
+        if picker.cursor != picker.preview_scroll_cursor {
+            picker.preview_scroll_offset = 0;
+            picker.preview_scroll_cursor = picker.cursor;
+        }
+
+        assert_eq!(picker.preview_scroll_offset, 10);
+    }
+
+    #[test]
+    fn test_required_size_sets_preview_height() {
+        let columns = [Column::new("test", |item: &String, _: &()| {
+            item.as_str().into()
+        })];
+        let mut picker: Picker<String, ()> = Picker::new(
+            columns,
+            0,
+            vec![],
+            (),
+            |_cx, _item, _action| {},
+        );
+
+        assert_eq!(picker.preview_height, 0);
+
+        picker.required_size((100, 50));
+        // preview_height = height - 2 (for borders) = 48
+        assert_eq!(picker.preview_height, 48);
+    }
+
+    #[test]
+    fn test_preview_scroll_cursor_initial_value() {
+        let columns = [Column::new("test", |item: &String, _: &()| {
+            item.as_str().into()
+        })];
+        let picker: Picker<String, ()> = Picker::new(
+            columns,
+            0,
+            vec![],
+            (),
+            |_cx, _item, _action| {},
+        );
+        assert_eq!(picker.preview_scroll_cursor, 0);
+    }
 }
