@@ -71,6 +71,24 @@ pub struct EditorView {
     /// Tracks if there are prompt layers active (updated by compositor)
     pub prompt_active: bool,
     notification_popup: NotificationPopup,
+    /// Cache for bufferline display names to avoid O(n³) recomputation per frame
+    bufferline_cache: BufferlineCache,
+}
+
+/// Cached data for bufferline rendering.
+/// Names (display name per document) are recomputed only when document set changes.
+/// Texts (formatted strings including modified indicator) are recomputed when
+/// document modified status or document set changes.
+#[derive(Default)]
+struct BufferlineCache {
+    doc_ids: Vec<DocumentId>,
+    doc_paths: Vec<String>,
+    names: Vec<(DocumentId, String)>,
+    modified: Vec<bool>,
+    texts: Vec<String>,
+    widths: Vec<u16>,
+    positions: Vec<u16>,
+    total_width: u16,
 }
 
 #[derive(Debug, Clone)]
@@ -98,6 +116,7 @@ impl EditorView {
             bufferline_positions: Vec::new(),
             prompt_active: false,
             notification_popup: NotificationPopup::new(),
+            bufferline_cache: BufferlineCache::default(),
         }
     }
 
@@ -1096,39 +1115,14 @@ impl EditorView {
 
         self.bufferline_info.clear();
 
-        // First pass: calculate all buffer positions and determine if scrolling is needed
-        let mut total_width = 0u16;
-        let mut buffer_texts = Vec::new();
-        let mut buffer_widths = Vec::new();
+        // Rebuild cache if document set changed
+        self.refresh_bufferline_cache(editor);
 
-        for (idx, doc) in editor.documents().enumerate() {
-            let fname = Self::make_document_name(doc, editor);
-
-            // Add separator width if not the first document
-            if idx > 0 {
-                let sep = &editor.config().bufferline.separator;
-                total_width += sep.len() as u16;
-            }
-
-            let icons = ICONS.load();
-
-            let text = if let Some(icon) = icons.mime().get(doc.path(), doc.language_name()) {
-                format!(
-                    " {}  {} {}",
-                    icon.glyph(),
-                    fname,
-                    if doc.is_modified() { "[+] " } else { "" }
-                )
-            } else {
-                format!(" {} {}", fname, if doc.is_modified() { "[+] " } else { "" })
-            };
-
-            self.bufferline_positions.push(total_width);
-            let text_width = text.len() as u16;
-            buffer_texts.push(text);
-            buffer_widths.push(text_width);
-            total_width += text_width;
-        }
+        // Use cached values directly
+        let total_width = self.bufferline_cache.total_width;
+        let buffer_texts = &self.bufferline_cache.texts;
+        let buffer_widths = &self.bufferline_cache.widths;
+        self.bufferline_positions = self.bufferline_cache.positions.clone();
 
         // Determine scroll offset
         let scroll_offset =
@@ -1218,10 +1212,12 @@ impl EditorView {
         }
     }
 
-    fn make_document_name(doc: &Document, editor: &Editor) -> String {
-        let scratch = PathBuf::from(SCRATCH_BUFFER_NAME); // default filename to use for scratch buffer
+    fn refresh_bufferline_cache(&mut self, editor: &Editor) {
+        let scratch = PathBuf::from(SCRATCH_BUFFER_NAME);
 
-        let paths: Vec<String> = editor
+        let current_ids: Vec<DocumentId> = editor.documents().map(|d| d.id()).collect();
+        let current_modified: Vec<bool> = editor.documents().map(|d| d.is_modified()).collect();
+        let current_paths: Vec<String> = editor
             .documents()
             .map(|d| {
                 d.path()
@@ -1232,21 +1228,85 @@ impl EditorView {
             })
             .collect();
 
-        let components: Vec<Vec<String>> = paths
-            .iter()
-            .map(|p| p.split(MAIN_SEPARATOR).map(String::from).collect())
-            .collect();
+        // Cache is fully valid only if doc IDs, paths, and modified states all match
+        if self.bufferline_cache.doc_ids == current_ids
+            && self.bufferline_cache.doc_paths == current_paths
+            && self.bufferline_cache.modified == current_modified
+        {
+            return;
+        }
 
-        let doc_path = doc
-            .path()
-            .unwrap_or(&scratch)
-            .to_str()
-            .unwrap_or_default()
-            .to_string();
+        let icons = ICONS.load();
 
-        let doc_index = paths.iter().position(|p| p == &doc_path).unwrap();
+        // Recompute names (O(n²)) when document set OR paths change
+        let names: Vec<(DocumentId, String)> = if self.bufferline_cache.doc_ids == current_ids
+            && self.bufferline_cache.doc_paths == current_paths
+        {
+            // Only modified status changed — reuse existing names
+            self.bufferline_cache.names.clone()
+        } else {
+            // Doc set or paths changed — recompute names
+            let components: Vec<Vec<String>> = current_paths
+                .iter()
+                .map(|p| p.split(MAIN_SEPARATOR).map(String::from).collect())
+                .collect();
+            editor
+                .documents()
+                .enumerate()
+                .map(|(idx, doc)| {
+                    let name = Self::compute_display_name(&components, idx);
+                    (doc.id(), name)
+                })
+                .collect()
+        };
+
+        // Build texts and widths (always recompute when anything changed)
+        let mut texts = Vec::new();
+        let mut widths = Vec::new();
+        let mut positions = Vec::new();
+        let mut total_width = 0u16;
+
+        for (idx, doc) in editor.documents().enumerate() {
+            if idx > 0 {
+                let sep = &editor.config().bufferline.separator;
+                total_width += sep.len() as u16;
+            }
+
+            let fname = &names[idx].1;
+            let text = if let Some(icon) = icons.mime().get(doc.path(), doc.language_name()) {
+                format!(
+                    " {}  {} {}",
+                    icon.glyph(),
+                    fname,
+                    if doc.is_modified() { "[+] " } else { "" }
+                )
+            } else {
+                format!(" {} {}", fname, if doc.is_modified() { "[+] " } else { "" })
+            };
+
+            positions.push(total_width);
+            let text_width = text.len() as u16;
+            texts.push(text);
+            widths.push(text_width);
+            total_width += text_width;
+        }
+
+        self.bufferline_cache = BufferlineCache {
+            doc_ids: current_ids,
+            doc_paths: current_paths,
+            names,
+            modified: current_modified,
+            texts,
+            widths,
+            positions,
+            total_width,
+        };
+    }
+
+    /// Compute a unique display name for the document at `doc_index` in the component list.
+    /// This is the O(n²) core of `make_document_name` but called only when documents change.
+    fn compute_display_name(components: &[Vec<String>], doc_index: usize) -> String {
         let doc_components_len = components[doc_index].len();
-
         let mut k = 1;
 
         loop {
@@ -1270,7 +1330,6 @@ impl EditorView {
             if count == 0 {
                 return curr_doc.join(MAIN_SEPARATOR_STR);
             }
-
             k += 1;
         }
     }

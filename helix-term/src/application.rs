@@ -467,7 +467,7 @@ impl Application {
                     if let Some(job) = self.jobs.handle_callback(&mut self.editor, &mut self.compositor, Ok(Some(callback))) {
                         self.jobs.add(job);
                     }
-                    self.render().await;
+                    helix_event::request_redraw();
                 }
                 Some(msg) = self.jobs.status_messages.recv() => {
                     let severity = match msg.severity{
@@ -484,7 +484,7 @@ impl Application {
                     if let Some(job) = self.jobs.handle_callback(&mut self.editor, &mut self.compositor, callback) {
                         self.jobs.add(job);
                     }
-                    self.render().await;
+                    helix_event::request_redraw();
                 }
                 Some(request) = self.ui_receiver.recv() => {
                     self.handle_ui_request(request).await;
