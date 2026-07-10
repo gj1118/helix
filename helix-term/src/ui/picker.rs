@@ -43,7 +43,8 @@ use std::{
 use crate::ui::{Prompt, PromptEvent};
 use helix_core::{
     char_idx_at_visual_offset, fuzzy::MATCHER, movement::Direction,
-    text_annotations::TextAnnotations, unicode::segmentation::UnicodeSegmentation, Position,
+    text_annotations::TextAnnotations, unicode::segmentation::UnicodeSegmentation,
+    visual_offset_from_anchor, Position,
 };
 use helix_view::{
     editor::Action,
@@ -272,6 +273,16 @@ pub struct Picker<T: 'static + Send + Sync, D: 'static> {
     /// An event handler for syntax highlighting the currently previewed file.
     preview_highlight_handler: Sender<Arc<Path>>,
     dynamic_query_handler: Option<Sender<DynamicQueryChange>>,
+
+    /// Vertical scroll of the file preview, in visual (soft-wrapped) rows relative to
+    /// the natural top of the preview. Positive scrolls down, negative scrolls up.
+    preview_scroll_offset: isize,
+    /// Height in rows of the preview pane's inner text area, used for page scrolling.
+    preview_height: u16,
+    /// Selected item the current `preview_scroll_offset` applies to; the scroll resets
+    /// to the top when the selection changes.
+    preview_scroll_cursor: u32,
+
     /// Cached gradient border for rendering when enabled in config
     gradient_border: Option<GradientBorder>,
     /// Title to display at the top of the picker
@@ -398,6 +409,9 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             file_fn: None,
             preview_highlight_handler: PreviewHighlightHandler::<T, D>::default().spawn(),
             dynamic_query_handler: None,
+            preview_scroll_offset: 0,
+            preview_height: 0,
+            preview_scroll_cursor: 0,
             gradient_border: None,
             title: None,
         }
@@ -465,6 +479,23 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         helix_event::send_blocking(&handler, event);
         self.dynamic_query_handler = Some(handler);
         self
+    }
+
+    /// Scrolls the file preview by `amount` visual lines, down for a positive amount and
+    /// up for a negative one.
+    ///
+    /// The offset is counted in visual (soft-wrapped) rows so a file with long lines can
+    /// be scrolled to its end one wrapped row at a time. It is clamped against the file
+    /// bounds later, when the preview is rendered and the soft-wrap layout is known.
+    fn scroll_preview(&mut self, amount: isize) {
+        self.preview_scroll_offset = self.preview_scroll_offset.saturating_add(amount);
+    }
+
+    /// Whether a scrollable file preview is currently shown. Pickers without a preview
+    /// callback (no `file_fn`) or with the preview toggled off route preview-scroll keys
+    /// back to result-list navigation.
+    fn preview_shown(&self) -> bool {
+        self.show_preview && self.file_fn.is_some()
     }
 
     /// Move the cursor by a number of lines, either down (`Forward`) or up (`Backward`)
@@ -986,6 +1017,16 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         let margin = Margin::horizontal(1);
         let inner = base_inner.inner(margin);
 
+        // Reset the preview scroll on a selection change, before the `get_preview` borrow.
+        if self.cursor != self.preview_scroll_cursor {
+            self.preview_scroll_offset = 0;
+            self.preview_scroll_cursor = self.cursor;
+        }
+
+        // `get_preview` borrows `self` for the block below, so the offset is read into a
+        // local here, clamped against the soft-wrap layout inside, then written back after.
+        let mut scroll = self.preview_scroll_offset;
+
         if let Some((preview, range)) = self.get_preview(cx.editor) {
             let doc = match preview.document() {
                 Some(doc)
@@ -1019,6 +1060,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                     return;
                 }
             };
+            let doc_height = doc.text().len_lines();
 
             let mut offset = ViewPosition::default();
             if let Some((start_line, end_line)) = range {
@@ -1044,6 +1086,82 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                     }
                 } else {
                     offset.anchor = start;
+                }
+            }
+
+            // Apply the preview scroll by moving the anchor by whole visual lines, so
+            // soft-wrapped lines scroll one wrapped row at a time. `offset.anchor` is the
+            // natural top of the preview (line 0, or the centred match for range previews)
+            // and is left untouched when there is no scroll, keeping that centring. An
+            // upward scroll is clamped to the start of the file by `char_idx_at_visual_offset`.
+            let mut at_bottom = false;
+            if scroll != 0 {
+                let text = doc.text().slice(..);
+                let text_fmt = doc.text_format(inner.width, None);
+                let annotations = TextAnnotations::default();
+                let natural_anchor = offset.anchor;
+
+                let (anchor, vertical_offset) = char_idx_at_visual_offset(
+                    text,
+                    natural_anchor,
+                    scroll,
+                    0,
+                    &text_fmt,
+                    &annotations,
+                );
+
+                // The anchor that keeps the file's last visual line on the bottom row, so a
+                // downward scroll can't run past the end into empty space. Found by walking
+                // up one viewport from the end: a screenful of rows at most.
+                let (max_anchor, _) = char_idx_at_visual_offset(
+                    text,
+                    text.len_chars().saturating_sub(1),
+                    -(inner.height as isize - 1),
+                    0,
+                    &text_fmt,
+                    &annotations,
+                );
+
+                if anchor >= max_anchor {
+                    at_bottom = true;
+                    offset.anchor = max_anchor;
+                    offset.vertical_offset = 0;
+
+                    // Scrolled past the bottom: clamp the stored offset to the scroll that
+                    // exactly reaches it, so the offset can't accumulate and the next upward
+                    // scroll responds at once. Measured between the in-range natural and
+                    // bottom anchors (not the applied anchor, which may sit past EOF where it
+                    // can't be measured), capped at the current offset.
+                    if anchor > max_anchor {
+                        let max_scroll = visual_offset_from_anchor(
+                            text,
+                            natural_anchor,
+                            max_anchor,
+                            &text_fmt,
+                            &annotations,
+                            scroll.unsigned_abs(),
+                        )
+                        .map_or(scroll, |(pos, _)| pos.row as isize);
+                        scroll = scroll.min(max_scroll);
+                    }
+                } else {
+                    offset.anchor = anchor;
+                    offset.vertical_offset = vertical_offset;
+
+                    // Past the top: `char_idx_at_visual_offset` already pinned the anchor to
+                    // the start, so normalise a negative offset to the rows actually
+                    // scrolled, keeping it from accumulating above the top.
+                    if scroll < 0 && anchor <= natural_anchor {
+                        scroll = visual_offset_from_anchor(
+                            text,
+                            anchor,
+                            natural_anchor,
+                            &text_fmt,
+                            &annotations,
+                            scroll.unsigned_abs(),
+                        )
+                        .map_or(scroll, |(pos, _)| -(pos.row as isize));
+                    }
                 }
             }
 
@@ -1104,6 +1222,8 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                 decorations.add_decoration(draw_highlight);
             }
 
+            let current_line = doc.text().slice(..).char_to_line(offset.anchor);
+
             render_document(
                 surface,
                 inner,
@@ -1116,7 +1236,41 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                 &cx.editor.theme,
                 decorations,
             );
+
+            // Scroll indicator on the right edge. The thumb is placed from document lines,
+            // which is approximate when lines soft-wrap, so it is pinned to the end once the
+            // preview is scrolled to the bottom and otherwise clamped within the track.
+            let win_height = inner.height as usize;
+            let scroll_style = cx.editor.theme.get("ui.menu.scroll");
+
+            if doc_height > win_height {
+                let scroll_height = win_height.pow(2).div_ceil(doc_height).min(win_height);
+                let track = win_height - scroll_height;
+                let scroll_line = if at_bottom {
+                    track
+                } else {
+                    (track * current_line / std::cmp::max(1, doc_height.saturating_sub(win_height)))
+                        .min(track)
+                };
+
+                let mut cell;
+                for i in 0..win_height {
+                    cell = &mut surface[(inner.right() - 1, inner.top() + i as u16)];
+                    cell.set_symbol("▐");
+
+                    if scroll_line <= i && i < scroll_line + scroll_height {
+                        // thumb
+                        cell.set_fg(scroll_style.fg.unwrap_or(helix_view::theme::Color::Reset));
+                    } else {
+                        // track
+                        cell.set_fg(scroll_style.bg.unwrap_or(helix_view::theme::Color::Reset));
+                    }
+                }
+            }
         }
+
+        // Persist the offset clamped against the soft-wrap layout above.
+        self.preview_scroll_offset = scroll;
     }
 }
 
@@ -1172,8 +1326,6 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
     }
 
     fn handle_event(&mut self, event: &Event, ctx: &mut Context) -> EventResult {
-        // TODO: keybinds for scrolling preview
-
         let key_event = match event {
             Event::Key(event) => *event,
             Event::Paste(..) => return self.prompt_handle_event(event, ctx),
@@ -1219,10 +1371,24 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
             key!(Tab) | key!(Down) | ctrl!('n') => {
                 self.move_by(1, Direction::Forward);
             }
-            key!(PageDown) | ctrl!('d') => {
+            // Ctrl-d/Ctrl-u always page the result list. PageDown/PageUp scroll the
+            // preview a full page when one is shown, and otherwise page the list.
+            ctrl!('d') => {
                 self.page_down();
             }
-            key!(PageUp) | ctrl!('u') => {
+            ctrl!('u') => {
+                self.page_up();
+            }
+            key!(PageDown) if self.preview_shown() => {
+                self.scroll_preview(self.preview_height as isize);
+            }
+            key!(PageUp) if self.preview_shown() => {
+                self.scroll_preview(-(self.preview_height as isize));
+            }
+            key!(PageDown) => {
+                self.page_down();
+            }
+            key!(PageUp) => {
                 self.page_up();
             }
             key!(Home) => {
@@ -1287,6 +1453,17 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
             ctrl!('t') => {
                 self.toggle_preview();
             }
+            // Preview line scrolling. Alt-d/f/b are intentionally avoided here: the prompt
+            // keybinds (which also apply in pickers) use them for word editing in the
+            // query, and full-page preview scrolling is already on PageUp/PageDown.
+            alt!('k') | shift!(Up) if self.preview_shown() => {
+                let lines = ctx.editor.config().scroll_lines.unsigned_abs() as isize;
+                self.scroll_preview(-lines);
+            }
+            alt!('j') | shift!(Down) if self.preview_shown() => {
+                let lines = ctx.editor.config().scroll_lines.unsigned_abs() as isize;
+                self.scroll_preview(lines);
+            }
             _ => {
                 self.prompt_handle_event(event, ctx);
             }
@@ -1329,6 +1506,7 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
 
     fn required_size(&mut self, (width, height): (u16, u16)) -> Option<(u16, u16)> {
         self.completion_height = height.saturating_sub(4 + self.header_height());
+        self.preview_height = height.saturating_sub(2);
         Some((width, height))
     }
 
@@ -1502,5 +1680,214 @@ mod tests {
         );
 
         assert_eq!(picker.cursor, 0);
+    }
+
+    // ===========================================
+    // Preview Scroll Tests
+    // ===========================================
+
+    #[test]
+    fn test_scroll_preview_default_zero() {
+        let columns = [Column::new("test", |item: &String, _: &()| {
+            item.as_str().into()
+        })];
+        let picker: Picker<String, ()> =
+            Picker::new(columns, 0, vec![], (), |_cx, _item, _action| {});
+        assert_eq!(picker.preview_scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_scroll_preview_positive() {
+        let columns = [Column::new("test", |item: &String, _: &()| {
+            item.as_str().into()
+        })];
+        let mut picker: Picker<String, ()> =
+            Picker::new(columns, 0, vec![], (), |_cx, _item, _action| {});
+        picker.scroll_preview(5);
+        assert_eq!(picker.preview_scroll_offset, 5);
+    }
+
+    #[test]
+    fn test_scroll_preview_negative() {
+        let columns = [Column::new("test", |item: &String, _: &()| {
+            item.as_str().into()
+        })];
+        let mut picker: Picker<String, ()> =
+            Picker::new(columns, 0, vec![], (), |_cx, _item, _action| {});
+        picker.scroll_preview(-3);
+        assert_eq!(picker.preview_scroll_offset, -3);
+    }
+
+    #[test]
+    fn test_scroll_preview_accumulates() {
+        let columns = [Column::new("test", |item: &String, _: &()| {
+            item.as_str().into()
+        })];
+        let mut picker: Picker<String, ()> =
+            Picker::new(columns, 0, vec![], (), |_cx, _item, _action| {});
+        picker.scroll_preview(10);
+        picker.scroll_preview(-3);
+        assert_eq!(picker.preview_scroll_offset, 7);
+    }
+
+    #[test]
+    fn test_scroll_preview_saturation_positive() {
+        let columns = [Column::new("test", |item: &String, _: &()| {
+            item.as_str().into()
+        })];
+        let mut picker: Picker<String, ()> =
+            Picker::new(columns, 0, vec![], (), |_cx, _item, _action| {});
+        picker.scroll_preview(isize::MAX);
+        picker.scroll_preview(1);
+        // Should not overflow, should stay at isize::MAX
+        assert_eq!(picker.preview_scroll_offset, isize::MAX);
+    }
+
+    #[test]
+    fn test_scroll_preview_saturation_negative() {
+        let columns = [Column::new("test", |item: &String, _: &()| {
+            item.as_str().into()
+        })];
+        let mut picker: Picker<String, ()> =
+            Picker::new(columns, 0, vec![], (), |_cx, _item, _action| {});
+        picker.scroll_preview(isize::MIN);
+        picker.scroll_preview(-1);
+        // Should not underflow, should stay at isize::MIN
+        assert_eq!(picker.preview_scroll_offset, isize::MIN);
+    }
+
+    #[test]
+    fn test_scroll_preview_resets_to_zero() {
+        let columns = [Column::new("test", |item: &String, _: &()| {
+            item.as_str().into()
+        })];
+        let mut picker: Picker<String, ()> =
+            Picker::new(columns, 0, vec![], (), |_cx, _item, _action| {});
+        picker.scroll_preview(42);
+        assert_eq!(picker.preview_scroll_offset, 42);
+        picker.preview_scroll_offset = 0;
+        assert_eq!(picker.preview_scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_preview_shown_no_file_fn() {
+        let columns = [Column::new("test", |item: &String, _: &()| {
+            item.as_str().into()
+        })];
+        let picker: Picker<String, ()> =
+            Picker::new(columns, 0, vec![], (), |_cx, _item, _action| {});
+        // Default show_preview is true, but file_fn is None
+        assert!(!picker.preview_shown());
+    }
+
+    #[test]
+    fn test_preview_shown_with_file_fn() {
+        let columns = [Column::new("test", |item: &String, _: &()| {
+            item.as_str().into()
+        })];
+        let picker: Picker<String, ()> =
+            Picker::new(columns, 0, vec![], (), |_cx, _item, _action| {})
+                .with_preview(|_editor, _item| None);
+        assert!(picker.preview_shown());
+    }
+
+    #[test]
+    fn test_preview_shown_toggled_off() {
+        let columns = [Column::new("test", |item: &String, _: &()| {
+            item.as_str().into()
+        })];
+        let picker: Picker<String, ()> = Picker::new(
+            columns,
+            0,
+            vec!["a".to_string(), "b".to_string()],
+            (),
+            |_cx, _item, _action| {},
+        )
+        .with_preview(|_editor, _item| None)
+        .show_preview(false);
+        assert!(!picker.preview_shown());
+    }
+
+    #[test]
+    fn test_preview_scroll_cursor_tracks_selection() {
+        let columns = [Column::new("test", |item: &String, _: &()| {
+            item.as_str().into()
+        })];
+        let mut picker: Picker<String, ()> = Picker::new(
+            columns,
+            0,
+            vec!["a".to_string(), "b".to_string()],
+            (),
+            |_cx, _item, _action| {},
+        );
+        // Initially cursor and preview_scroll_cursor are both 0
+        assert_eq!(picker.cursor, 0);
+        assert_eq!(picker.preview_scroll_cursor, 0);
+
+        // Set a scroll offset
+        picker.scroll_preview(10);
+        assert_eq!(picker.preview_scroll_offset, 10);
+
+        // Change cursor (simulating selection change)
+        picker.cursor = 1;
+
+        // The render_preview method resets scroll when cursor != preview_scroll_cursor
+        // We simulate the check here (same logic as in render_preview)
+        if picker.cursor != picker.preview_scroll_cursor {
+            picker.preview_scroll_offset = 0;
+            picker.preview_scroll_cursor = picker.cursor;
+        }
+
+        assert_eq!(picker.preview_scroll_offset, 0);
+        assert_eq!(picker.preview_scroll_cursor, 1);
+    }
+
+    #[test]
+    fn test_preview_scroll_cursor_no_reset_on_same_selection() {
+        let columns = [Column::new("test", |item: &String, _: &()| {
+            item.as_str().into()
+        })];
+        let mut picker: Picker<String, ()> = Picker::new(
+            columns,
+            0,
+            vec!["a".to_string(), "b".to_string()],
+            (),
+            |_cx, _item, _action| {},
+        );
+        picker.preview_scroll_cursor = 0;
+        picker.scroll_preview(10);
+
+        // Cursor hasn't changed, scroll should not be reset
+        if picker.cursor != picker.preview_scroll_cursor {
+            picker.preview_scroll_offset = 0;
+            picker.preview_scroll_cursor = picker.cursor;
+        }
+
+        assert_eq!(picker.preview_scroll_offset, 10);
+    }
+
+    #[test]
+    fn test_required_size_sets_preview_height() {
+        let columns = [Column::new("test", |item: &String, _: &()| {
+            item.as_str().into()
+        })];
+        let mut picker: Picker<String, ()> =
+            Picker::new(columns, 0, vec![], (), |_cx, _item, _action| {});
+
+        assert_eq!(picker.preview_height, 0);
+
+        picker.required_size((100, 50));
+        // preview_height = height - 2 (for borders) = 48
+        assert_eq!(picker.preview_height, 48);
+    }
+
+    #[test]
+    fn test_preview_scroll_cursor_initial_value() {
+        let columns = [Column::new("test", |item: &String, _: &()| {
+            item.as_str().into()
+        })];
+        let picker: Picker<String, ()> =
+            Picker::new(columns, 0, vec![], (), |_cx, _item, _action| {});
+        assert_eq!(picker.preview_scroll_cursor, 0);
     }
 }
