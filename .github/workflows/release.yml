@@ -310,6 +310,7 @@ jobs:
           file: dist/*
           file_glob: true
           tag: ${{ needs.version.outputs.version }}
+          release_name: ${{ needs.version.outputs.version }}
           overwrite: true
 
       - name: Upload binaries as artifact
