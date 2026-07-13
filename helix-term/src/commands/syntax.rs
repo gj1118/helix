@@ -382,7 +382,7 @@ pub fn syntax_workspace_symbol_picker(cx: &mut Context) {
                         return WalkState::Continue;
                     };
                     let mut quit = false;
-                    let sink = sinks::UTF8(|_line, _content| {
+                    let sink = sinks::Lossy(|_line, _content| {
                         if !syntax_cache.contains_key(path) {
                             // Read the file into a Rope and attempt to recognize the language
                             // and parse it with tree-sitter. Save the Rope and Syntax for future

@@ -2839,7 +2839,7 @@ fn global_search(cx: &mut Context) {
                         }
 
                         let mut stop = false;
-                        let sink = sinks::UTF8(|line_num, _line_content| {
+                        let sink = sinks::Lossy(|line_num, _line_content| {
                             stop = injector
                                 .push(FileResult::new(entry.path(), line_num as usize - 1))
                                 .is_err();
@@ -3072,7 +3072,7 @@ fn local_search_grep(cx: &mut Context) {
                         // TODO: Expose this setting to the user so they can control it.
                         let local_search_result_line_length = 80;
 
-                        let sink = sinks::UTF8(|line_num, line_content| {
+                        let sink = sinks::Lossy(|line_num, line_content| {
                             stop = injector
                                 .push(FileResult::new(
                                     entry.path(),
