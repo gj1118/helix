@@ -426,9 +426,9 @@ impl<'a> TextRenderer<'a> {
         }
     }
     pub fn fill_row_background(&mut self, visual_line: u16, bg_color: helix_view::graphics::Color) {
-        let screen_y = (self.viewport.y + visual_line);
+        let screen_y = self.viewport.y + visual_line;
         let start_x = self.viewport.x;
-        let end_x = (self.viewport.x + self.viewport.width);
+        let end_x = self.viewport.x + self.viewport.width;
 
         for x in start_x..end_x {
             // Grab a mutable reference to the single coordinate cell and mutate its bg color field

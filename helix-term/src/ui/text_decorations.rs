@@ -193,19 +193,15 @@ impl Decoration for Cursor<'_> {
 pub(crate) struct FoldDecoration<'a> {
     annotations: FoldAnnotations<'a>,
     style: Style,
-    text_rope: helix_core::Rope,
 }
 impl<'a> FoldDecoration<'a> {
     pub(crate) fn new(
         annotations: &'a TextAnnotations<'a>,
         theme: &Theme,
-        doc: &helix_view::Document,
     ) -> Self {
         Self {
             annotations: annotations.folds.clone(),
             style: theme.get("ui.virtual.fold-decoration"),
-            // Clone the Rope container (cloning a Rope is O(1) and uses structural sharing)
-            text_rope: doc.text().clone(),
         }
     }
 }
@@ -227,12 +223,12 @@ impl<'a> Decoration for FoldDecoration<'a> {
             return Position::new(0, 0);
         };
 
-        // 1. Force the solid uniform background across the ENTIRE row using our new method
+        // Solid Background
         if let Some(bg_color) = self.style.bg {
             renderer.fill_row_background(pos.visual_line, bg_color);
         }
 
-        // 2. Let the text draw naturally where the syntax-highlighted code line stops
+        // Text
         let draw_col = virt_off.col as u16 + 1;
         let width = renderer.viewport.width;
         let max_width = width.saturating_sub(draw_col) as usize;
@@ -241,15 +237,14 @@ impl<'a> Decoration for FoldDecoration<'a> {
             let mut text = Tendril::new();
             let len_lines = fold.end.line - fold.start.line + 1;
 
-            let tab_spaces = "    ";
-            let label = format!("{}+{}", tab_spaces, len_lines);
+            let label = format!(" +{}", len_lines);
 
             text.write_fmt(format_args!("{:<width$}", label, width = max_width))
                 .unwrap();
             text
         };
 
-        // 3. Render the trailing space ribbon and label on top of the modified surface background
+        // Tail
         renderer.set_string_truncated(
             renderer.viewport.x + draw_col,
             pos.visual_line,
