@@ -390,7 +390,9 @@ impl Tree {
 
         // Splice promoted children into grandparent at the dissolved container's position.
         let grandparent_container = self.container_mut(grandparent);
-        grandparent_container.children.splice(pos..pos + 1, promoted_children);
+        grandparent_container
+            .children
+            .splice(pos..pos + 1, promoted_children);
         grandparent_container
             .node_bounds
             .splice(pos..pos + 1, promoted_bounds);
