@@ -1470,8 +1470,7 @@ mod test {
         // Focus V0, hsplit V1 → creates h_container(Horizontal, [V0, V1])
         tree.focus = v0;
         let view = View::new(DocumentId::default(), GutterConfig::default());
-        tree.split(view, Layout::Horizontal);
-        let v1 = tree.focus;
+        let v1 = tree.split(view, Layout::Horizontal);
 
         // Focus V1, hsplit V2 → added to h_container (same layout)
         tree.focus = v1;
