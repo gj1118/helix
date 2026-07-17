@@ -194,9 +194,11 @@ pub(crate) struct FoldDecoration<'a> {
     annotations: FoldAnnotations<'a>,
     style: Style,
 }
-
 impl<'a> FoldDecoration<'a> {
-    pub(crate) fn new(annotations: &'a TextAnnotations<'a>, theme: &Theme) -> Self {
+    pub(crate) fn new(
+        annotations: &'a TextAnnotations<'a>,
+        theme: &Theme,
+    ) -> Self {
         Self {
             annotations: annotations.folds.clone(),
             style: theme.get("ui.virtual.fold-decoration"),
@@ -221,25 +223,33 @@ impl<'a> Decoration for FoldDecoration<'a> {
             return Position::new(0, 0);
         };
 
+        // Solid Background
+        if let Some(bg_color) = self.style.bg {
+            renderer.fill_row_background(pos.visual_line, bg_color);
+        }
+
+        // Text
         let draw_col = virt_off.col as u16 + 1;
         let width = renderer.viewport.width;
+        let max_width = width.saturating_sub(draw_col) as usize;
+
         let text = {
             let mut text = Tendril::new();
             let len_lines = fold.end.line - fold.start.line + 1;
-            text.write_fmt(format_args!(
-                "...+{len_lines} {object} {measure}",
-                object = fold.object(),
-                measure = if len_lines > 1 { "lines" } else { "line" },
-            ))
-            .unwrap();
+
+            let label = format!(" +{}", len_lines);
+
+            text.write_fmt(format_args!("{:<width$}", label, width = max_width))
+                .unwrap();
             text
         };
 
+        // Tail
         renderer.set_string_truncated(
             renderer.viewport.x + draw_col,
             pos.visual_line,
             &text,
-            width.saturating_sub(draw_col) as usize,
+            max_width,
             |_| self.style,
             true,
             false,
