@@ -104,7 +104,8 @@ nu-lint = { command = "nu-lint", args = ["--lsp"] }
 nu-lsp = { command = "nu", args = [ "--lsp" ] }
 ocamllsp = { command = "ocamllsp" }
 ols = { command = "ols", args = [] }
-oxlint-language-server = {command = "oxlint", args = ["--lsp"]}
+oxfmt-language-server = { command = "oxfmt", args = ["--lsp"] }
+oxlint-language-server = { command = "oxlint", args = ["--lsp"] }
 omnisharp = { command = "OmniSharp", args = [ "--languageserver" ] }
 openscad-lsp = { command = "openscad-lsp", args = ["--stdio"] }
 pasls = { command = "pasls", args = [] }
@@ -3472,6 +3473,7 @@ file-types = [
   { glob = ".buckconfig.d/*" },
   { glob = "/etc/buckconfig" },
   { glob = "/etc/buckconfig.d/*" },
+  { glob = "aerc/*.conf" }, # https://aerc-mail.org/
 ]
 injection-regex = "ini"
 comment-token = "#"
@@ -3641,6 +3643,11 @@ injection-regex = "tal"
 file-types = ["tal"]
 auto-format = false
 block-comment-tokens = { start = "(", end = ")" }
+
+[language.auto-pairs]
+'(' = ')'
+'{' = '}'
+'[' = ']'
 
 [[grammar]]
 name = "uxntal"
@@ -3860,7 +3867,7 @@ formatter = { command = "just", args = ["--fmt", "--justfile", "-"] }
 
 [[grammar]]
 name = "just"
-source = { git = "https://github.com/poliorcetics/tree-sitter-just", rev = "f749ec853adcacc5f14e9ec375f244104e033d88" }
+source = { git = "https://github.com/poliorcetics/tree-sitter-just", rev = "00859eebfb774d371af174ea1e582d46e697b469" }
 
 [[language]]
 name = "gn"
@@ -5648,4 +5655,3 @@ comment-tokens = ["REM", "::"]
 [[grammar]]
 name = "batch"
 source = { git = "https://github.com/wharflab/tree-sitter-batch", rev = "5fc5f54267ef9a78e7a5319b80e092194252aabf" }
-
