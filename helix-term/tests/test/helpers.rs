@@ -302,6 +302,9 @@ pub fn test_editor_config() -> helix_view::editor::Config {
             enable: false,
             ..Default::default()
         },
+        // suppress the workspace-trust dialog: it pops up asynchronously
+        // and swallows test keys at unpredictable points
+        insecure: true,
         // The word-index hook accumulates per-document pending changes across
         // every `DocumentDidChange` and composes them on the next event for the
         // same doc id. Each test builds a fresh `Application` that reuses

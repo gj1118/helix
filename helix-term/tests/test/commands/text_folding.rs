@@ -203,6 +203,7 @@ async fn fold_class() -> anyhow::Result<()> {
                     assert_eq!(result(app), expected);
                 }),
             ),
+            // `zf` with a multi-line selection folds the selection itself
             (
                 Some(
                     "g105g\
@@ -210,7 +211,7 @@ async fn fold_class() -> anyhow::Result<()> {
                     zf",
                 ),
                 Some(&|app| {
-                    let expected = ((Position::new(104, 17), Position::new(104, 36)), 1);
+                    let expected = ((Position::new(105, 1), Position::new(105, 28)), 1);
                     assert_eq!(result(app), expected);
                 }),
             ),
@@ -235,6 +236,73 @@ async fn fold_class() -> anyhow::Result<()> {
                 Some(&|app| {
                     let expected = ((Position::new(51, 6), Position::new(51, 6)), 1);
                     assert_eq!(result(app), expected);
+                }),
+            ),
+        ],
+        false,
+    )
+    .await
+}
+
+/// Folding syntax regions captured by the `folds.scm` query
+/// via the `syntax` pseudo textobject.
+#[tokio::test(flavor = "multi_thread")]
+async fn fold_syntax() -> anyhow::Result<()> {
+    use helix_core::text_folding::FoldObject;
+
+    let app = &mut AppBuilder::new()
+        .with_file(RUST_CODE, None)
+        .with_lang_loader(helpers::test_syntax_loader(None))
+        .build()
+        .unwrap();
+
+    let folds = |app: &Application, object: fn(&FoldObject) -> bool| {
+        let (view, doc) = current_ref!(&app.editor);
+        doc.fold_container(view.id).map_or(0, |container| {
+            container
+                .start_points()
+                .iter()
+                .filter(|sfp| object(&sfp.object))
+                .count()
+        })
+    };
+
+    test_key_sequences(
+        app,
+        vec![
+            // every syntax region in the document folds:
+            // mod, 2 structs, trait, impl, 4 fns, 2 nested items, block comments, ...
+            (
+                Some(":fold --document syntax<ret>"),
+                Some(&|app| {
+                    assert!(folds(app, |object| matches!(object, FoldObject::Syntax)) > 5);
+                    assert_eq!(
+                        folds(app, |object| !matches!(object, FoldObject::Syntax)),
+                        0
+                    );
+                }),
+            ),
+            // `:unfold --all` also removes syntax folds
+            (
+                Some(":unfold --all --document --recursive<ret>"),
+                Some(&|app| {
+                    assert_eq!(folds(app, |_| true), 0);
+                }),
+            ),
+            // toggling at (7, 1) folds the `mod` syntax region:
+            // there is no class/function/comment textobject there
+            (
+                Some("g7gz<A-f>"),
+                Some(&|app| {
+                    assert_eq!(folds(app, |object| matches!(object, FoldObject::Syntax)), 1);
+                }),
+            ),
+            // `zF` with a bare cursor (placed on the header by the fold)
+            // unfolds the syntax fold again
+            (
+                Some("zF"),
+                Some(&|app| {
+                    assert_eq!(folds(app, |_| true), 0);
                 }),
             ),
         ],
@@ -639,27 +707,26 @@ async fn fold() -> anyhow::Result<()> {
                     assert_eq!(result(app), expected);
                 }),
             ),
+            // `zf` with a multi-line selection folds the selection itself
             (
                 Some(
                     "g37g\
-                    v\
-                    g46g\
+                    xxxxxxxxxx\
                     zf<esc>",
                 ),
                 Some(&|app| {
-                    let expected = ((Position::new(36, 1), Position::new(44, 13)), 3);
+                    let expected = ((Position::new(37, 1), Position::new(37, 14)), 1);
                     assert_eq!(result(app), expected);
                 }),
             ),
             (
                 Some(
                     "g64g\
-                    v\
-                    g80g\
+                    xxxxxxxxxxxxxxxxx\
                     zf<esc>",
                 ),
                 Some(&|app| {
-                    let expected = ((Position::new(60, 5), Position::new(75, 22)), 4);
+                    let expected = ((Position::new(64, 1), Position::new(64, 15)), 1);
                     assert_eq!(result(app), expected);
                 }),
             ),
@@ -670,14 +737,16 @@ async fn fold() -> anyhow::Result<()> {
                     :fold comment<ret>",
                 ),
                 Some(&|app| {
-                    let expected = ((Position::new(50, 1), Position::new(115, 1)), 6);
+                    let expected = ((Position::new(50, 1), Position::new(115, 1)), 8);
                     assert_eq!(result(app), expected);
                 }),
             ),
+            // `zf` with the selection spanning the impl block replaces
+            // the nested folds with a single selection fold
             (
                 Some("zf"),
                 Some(&|app| {
-                    let expected = ((Position::new(50, 1), Position::new(58, 13)), 6);
+                    let expected = ((Position::new(50, 1), Position::new(50, 57)), -8);
                     assert_eq!(result(app), expected);
                 }),
             ),
@@ -1068,6 +1137,12 @@ async fn unfold_comment() -> anyhow::Result<()> {
                     :unfold -r class<ret>\
                     gg",
                 ),
+                None,
+            ),
+            // an extra idle pass lets deferred fold updates settle
+            // before the baseline is captured
+            (
+                None,
                 Some(&|app| {
                     let (view, doc) = current_ref!(&app.editor);
                     let container = doc
@@ -1663,12 +1738,20 @@ async fn toggle_fold() -> anyhow::Result<()> {
                 Some("z<A-f>"),
                 Some(&|app| assert_eq!(folds_number(app), 0)),
             ),
+            // there is no textobject at (7, 1), but the cursor is inside
+            // the `mod` block, which is a foldable syntax region
             (
                 Some("g7gz<A-f>"),
+                Some(&|app| assert_eq!(folds_number(app), 1)),
+            ),
+            // folding moved the cursor to the fold header (the `mod` line),
+            // toggling there unfolds
+            (
+                Some("z<A-f>"),
                 Some(&|app| assert_eq!(folds_number(app), 0)),
             ),
             (
-                Some("g5|z<A-f>"),
+                Some("g7gg5|z<A-f>"),
                 Some(&|app| assert_eq!(folds_number(app), 1)),
             ),
             (
