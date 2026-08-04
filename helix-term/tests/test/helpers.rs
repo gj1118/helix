@@ -374,10 +374,10 @@ impl AppBuilder {
         path: P,
         pos: Option<helix_core::Position>,
     ) -> Self {
-        self.args
-            .files
-            .insert(path.into(), vec![pos.unwrap_or_default()]);
-
+        self.args.files.insert(
+            path.into(),
+            pos.map(|p| vec![p]).unwrap_or_default(),
+        );
         self
     }
 
