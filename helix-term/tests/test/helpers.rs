@@ -376,8 +376,7 @@ impl AppBuilder {
     ) -> Self {
         self.args
             .files
-            .insert(path.into(), vec![pos.unwrap_or_default()]);
-
+            .insert(path.into(), pos.map(|p| vec![p]).unwrap_or_default());
         self
     }
 

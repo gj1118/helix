@@ -13,7 +13,7 @@ use helix_view::{
     editor::{ConfigEvent, EditorEvent},
     events::EditorConfigDidChange,
     graphics::Rect,
-    theme,
+    persistence, theme,
     tree::Layout,
     Align, Editor,
 };
@@ -26,13 +26,14 @@ use crate::{
     config::Config,
     events::OnModeSwitch,
     handlers,
-    job::Jobs,
+    job::{Job, Jobs},
     keymap::Keymaps,
     ui::{self, overlay::overlaid},
 };
 
 use log::{debug, error, info, warn};
 use std::{
+    collections::HashMap,
     io::{stdin, IsTerminal},
     path::Path,
     sync::Arc,
@@ -134,6 +135,16 @@ impl Application {
         let mut compositor = Compositor::new(area);
         let config = Arc::new(ArcSwap::from_pointee(config));
         let handlers = handlers::setup(config.clone());
+        let persistence_config = config.load().editor.persistence.clone();
+        let old_file_locs = if persistence_config.old_files {
+            HashMap::from_iter(
+                persistence::read_file_history()
+                    .into_iter()
+                    .map(|entry| (entry.path.clone(), (entry.view_position, entry.selection))),
+            )
+        } else {
+            HashMap::new()
+        };
         let mut editor = Editor::new(
             area,
             Arc::new(theme_loader),
@@ -143,7 +154,29 @@ impl Application {
             })),
             handlers,
             workspace_trust,
+            old_file_locs,
         );
+
+        // Load cross-session history into registers when enabled.
+        if persistence_config.commands {
+            editor
+                .registers
+                .write(':', persistence::read_command_history())
+                .unwrap();
+        }
+        if persistence_config.search {
+            editor
+                .registers
+                .write('/', persistence::read_search_history())
+                .unwrap();
+        }
+        if persistence_config.clipboard {
+            editor
+                .registers
+                .write('"', persistence::read_clipboard_file())
+                .unwrap();
+        }
+
         Self::load_configured_theme(&mut editor, &config.load(), &mut terminal, theme_mode);
 
         let keys = Box::new(Map::new(Arc::clone(&config), |config: &Config| {
@@ -153,6 +186,36 @@ impl Application {
         compositor.push(editor_view);
 
         let jobs = Jobs::new();
+        if persistence_config.old_files {
+            let file_trim = persistence_config.old_files_trim;
+            jobs.add(
+                Job::new(async move {
+                    persistence::trim_file_history(file_trim);
+                    Ok(())
+                })
+                .wait_before_exiting(),
+            );
+        }
+        if persistence_config.commands {
+            let commands_trim = persistence_config.commands_trim;
+            jobs.add(
+                Job::new(async move {
+                    persistence::trim_command_history(commands_trim);
+                    Ok(())
+                })
+                .wait_before_exiting(),
+            );
+        }
+        if persistence_config.search {
+            let search_trim = persistence_config.search_trim;
+            jobs.add(
+                Job::new(async move {
+                    persistence::trim_search_history(search_trim);
+                    Ok(())
+                })
+                .wait_before_exiting(),
+            );
+        }
 
         if args.load_tutor {
             let path = helix_loader::runtime_file(Path::new("tutor"));
@@ -214,15 +277,27 @@ impl Application {
                         // NOTE: this isn't necessarily true anymore. If
                         // `--vsplit` or `--hsplit` are used, the file which is
                         // opened last is focused on.
-                        let view_id = editor.tree.focus;
-                        let doc = doc_mut!(editor, &doc_id);
-                        let selection = pos
-                            .into_iter()
-                            .map(|coords| {
-                                Range::point(pos_at_coords(doc.text().slice(..), coords, true))
-                            })
-                            .collect();
-                        doc.set_selection(view_id, selection);
+                        //
+                        // Only apply CLI positions when explicitly provided.
+                        // `parse_file` yields Position::default() (0,0) when no
+                        // `:line` is given; applying that would clobber
+                        // [editor.persistence] old-files restore from open().
+                        let apply_cli_pos = match pos.as_slice() {
+                            [] => false,
+                            [p] if *p == helix_core::Position::default() => false,
+                            _ => true,
+                        };
+                        if apply_cli_pos {
+                            let view_id = editor.tree.focus;
+                            let doc = doc_mut!(editor, &doc_id);
+                            let selection = pos
+                                .into_iter()
+                                .map(|coords| {
+                                    Range::point(pos_at_coords(doc.text().slice(..), coords, true))
+                                })
+                                .collect();
+                            doc.set_selection(view_id, selection);
+                        }
                     }
                 }
 
