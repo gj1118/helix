@@ -80,12 +80,7 @@ use crate::{
 
 use crate::job::{self, Jobs};
 use std::{
-    cmp::Ordering,
-    collections::{HashMap, HashSet},
-    error::Error,
-    fmt,
-    future::Future,
-    io::Read,
+    cmp::Ordering, collections::HashSet, error::Error, fmt, future::Future, io::Read,
     num::NonZeroUsize,
 };
 

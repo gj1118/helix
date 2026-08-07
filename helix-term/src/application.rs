@@ -13,8 +13,7 @@ use helix_view::{
     editor::{ConfigEvent, EditorEvent},
     events::EditorConfigDidChange,
     graphics::Rect,
-    persistence,
-    theme,
+    persistence, theme,
     tree::Layout,
     Align, Editor,
 };

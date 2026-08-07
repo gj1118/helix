@@ -10,8 +10,8 @@ use crate::{
     info::Info,
     input::KeyEvent,
     persistence::{self, FileHistoryEntry},
-    register::Registers,
     regex::EqRegex,
+    register::Registers,
     theme::{self, Theme},
     tree::{self, Dimension, Resize, Tree},
     view::ViewPosition,
@@ -19,8 +19,8 @@ use crate::{
 };
 use helix_event::dispatch;
 use helix_loader::workspace_trust::{ImplicitTrustLevel, TrustQuery, WorkspaceTrust};
-use regex::Regex;
 use helix_vcs::DiffProviderRegistry;
+use regex::Regex;
 
 use futures_util::stream::select_all::SelectAll;
 use futures_util::StreamExt;
@@ -1711,7 +1711,6 @@ impl Default for CompletionHighlight {
         }
     }
 }
-
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]

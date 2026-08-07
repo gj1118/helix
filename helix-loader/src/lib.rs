@@ -1,7 +1,7 @@
 pub mod config;
 pub mod grammar;
-pub mod workspace_trust;
 pub mod persistence;
+pub mod workspace_trust;
 
 use helix_stdx::{env::current_working_dir, path};
 
