@@ -1,4 +1,5 @@
 inherits = "wolf-alabaster-dark-mono"
+"ui.window" = { fg = "dark" }
 "ui.popup" = { bg = "#1E2230", fg = "#C8D3F5" }
 "ui.popup.border" = { fg = "#00CED1" }
 "ui.text.focus" = { fg = "#E5E9F0", modifiers = ["bold"] }
@@ -31,6 +32,7 @@ rainbow = ["#FFD700", "#DA70D6", "#179FFF"]
 
 [palette]
 dark = "#111111"
+
 line_heightlight_col_higlight = "#1e2030"
 line_numbers = "#9399b2"
 window_color = "#484a4d"
