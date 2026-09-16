@@ -107,6 +107,9 @@ pub enum FoldObject {
     Selection,
     /// Indicates a folded text of text object (class, function, etc.)
     TextObject(&'static str),
+    /// Indicates a folded syntax region (a node captured by a `folds.scm` query
+    /// or an arbitrary syntax node)
+    Syntax,
 }
 
 impl fmt::Display for FoldObject {
@@ -114,6 +117,7 @@ impl fmt::Display for FoldObject {
         match self {
             Self::Selection => write!(f, "something"),
             Self::TextObject(textobject) => write!(f, "{textobject}"),
+            Self::Syntax => write!(f, "block"),
         }
     }
 }
@@ -643,7 +647,7 @@ impl FoldContainer {
                 .take_while(|&next_fold| overlap(&range(fold), &range(next_fold)))
                 .find_map(|next_fold| {
                     let fold_range = &range(fold);
-                    let next_fold_range = &range(fold);
+                    let next_fold_range = &range(next_fold);
 
                     (!span(fold_range, next_fold_range) && !span(next_fold_range, fold_range))
                         .then(|| text.char_to_line(next_fold.header()) - 1)

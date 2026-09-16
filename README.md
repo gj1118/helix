@@ -1,15 +1,26 @@
-This is a just a fork of Helix. All claims rest with Helix maintainers and its copyright holders. I am just maintaining a fork. 
-For more information please see Helix's readme file. 
+# Keeping this fork up to date
+
+```bash
+git remote add upstream https://github.com/gj1118/helix.git
+git fetch upstream
+git merge upstream/main
+
+```
+
+# gj118's disclaimer
+
+This is a just a fork of Helix. All claims rest with Helix maintainers and its copyright holders. I am just maintaining a fork.
+For more information please see Helix's readme file.
 
 New Features
+
 1. Noice Cmdline
-   
+
    <img width="580" height="424" alt="image" src="https://github.com/user-attachments/assets/a91ef59a-0923-47ab-b35a-2d9cb22a6462" />
    <img width="1395" height="624" alt="image" src="https://github.com/user-attachments/assets/42c01975-b4a0-4d80-ab0e-8171dbf4df72" />
 
+2. Noice Notifications
 
-3. Noice Notifications
-   
    <img width="713" height="760" alt="image" src="https://github.com/user-attachments/assets/cf78a977-1fd1-421f-acb2-fe359791b3d9" />
 
 3. Cutomizable Picker border changes (now supports the gradients and the border thickness)
@@ -17,13 +28,11 @@ New Features
    <img width="1916" height="980" alt="image" src="https://github.com/user-attachments/assets/abfeef4a-e633-489f-9236-3e9adbad05bb" />
 
 4. Show function name in the status bar
-   Add this following to your editor.statusline config 
+   Add this following to your editor.statusline config
    <img width="428" height="220" alt="image" src="https://github.com/user-attachments/assets/dea63278-a649-4561-a29a-b1c0eddacf9f" />
 
-
-   
-
 This fork of Helix implements the following pull requests. Future pull requests that are merged will be merged and listed here.
+
 1. https://github.com/helix-editor/helix/pull/13354 (index command)
 2. https://github.com/helix-editor/helix/pull/13053 (local search in buffer)
 3. https://github.com/helix-editor/helix/pull/12369 (basic support for icons)
@@ -43,7 +52,7 @@ This fork of Helix implements the following pull requests. Future pull requests 
 17. https://github.com/helix-editor/helix/pull/14072 (auto-scrolling bufferline)
 18. https://github.com/helix-editor/helix/pull/13821 (fix block cursor in terminal)
 19. https://github.com/helix-editor/helix/pull/13760 (support workspace commands)
-20.  https://github.com/helix-editor/helix/pull/13988 (add support to swap splits)
+20. https://github.com/helix-editor/helix/pull/13988 (add support to swap splits)
 21. https://github.com/helix-editor/helix/pull/13133 (Inline Git Blame - show commit info for current line)
 22. https://github.com/helix-editor/helix/pull/14453 (ruler chars)
 23. https://github.com/helix-editor/helix/pull/12902 (File Explorer: create/delete/copy/move/rename)
@@ -67,13 +76,16 @@ cargo install --path helix-term --locked
 
 ```
 
-Or if you have `just` installed, you can simply run `just` recipes in the folder where you checked the source code. For more information please see the `justfile` 
+Or if you have `just` installed, you can simply run `just` recipes in the folder where you checked the source code. For more information please see the `justfile`
 
 THEN THE IMPORTANT PART that is missing from the docs page(this way you get all the default themes and gramars), [source](https://github.com/helix-editor/helix/discussions/7549#discussioncomment-6948696)
+
 ```bash
 cp -R runtime ~/.config/helix/
 hx -g fetch
 hx -g build
+
+simple-completion-language-server fetch-external-snippets  # Make sure your snippets are working, Ian!
 ```
 
 **Full Height Mode:**
@@ -95,18 +107,21 @@ use-full-height = false
 ## Window Resizing and Focus Mode Commands
 
 **Window Resizing:**
+
 - `Alt+w h` or `Alt+w left` - Shrink window width
-- `Alt+w l` or `Alt+w right` - Grow window width  
+- `Alt+w l` or `Alt+w right` - Grow window width
 - `Alt+w j` or `Alt+w down` - Shrink window height
 - `Alt+w k` or `Alt+w up` - Grow window height
 
 **Focus Mode:**
+
 - `Alt+w f` - Toggle focus mode (expands current window)
 
 **Sticky Mode:**
 Activate sticky mode with `Alt+W` (Alt + Shift + w), then use single keys for repeated resizing:
+
 - `h` or `left` - Shrink width
-- `l` or `right` - Grow width  
+- `l` or `right` - Grow width
 - `j` or `down` - Shrink height
 - `k` or `up` - Grow height
 - `f` - Toggle focus mode
@@ -151,6 +166,7 @@ max-panel-height-percent = 0.8
 ```
 
 **Benefits:**
+
 - Prevents performance issues with very large panels
 - Automatically adapts to your terminal size
 - Smooth resizing throughout the entire range
@@ -170,6 +186,7 @@ ruler-char = "┊"   # examples: "┊", "│", ".", "|"; set to "" for backgroun
 ## Hover Documentation Commands
 
 **Hover Documentation:**
+
 - `Space + k` - Show hover documentation in popup
 - `Space + K` - Open hover documentation in navigable buffer (goto_hover)
 
@@ -219,10 +236,12 @@ Color swatches appear next to color values in your code (CSS, configuration file
 ## Line Movement Commands
 
 **Move Lines Up/Down:**
+
 - `Ctrl+k` - Move current line or selected lines up
 - `Ctrl+j` - Move current line or selected lines down
 
 The line movement feature allows you to easily move the current line or multiple selected lines up and down in your document. This works with:
+
 - Single line: When cursor is on a line, moves that entire line
 - Multiple selections: Moves all selected lines while preserving their relative positions
 - Discontinuous selections: Handles multiple separate line selections correctly
@@ -288,6 +307,7 @@ show-icons = false
 ```
 
 **Features:**
+
 - **Popup-style command line** - Centered floating window instead of bottom line
 - **Command type icons** - Visual indicators for different command types
 - **Enhanced completion** - Better visual feedback and layout
@@ -353,11 +373,13 @@ inherits = "your-base-theme"
 ```
 
 **Commands:**
+
 - `:notifications-history` - Show notification history
 - `:notifications-clear` - Clear notification history
 - `:notifications-dismiss` - Dismiss all active notifications
 
 **Features:**
+
 - **Popup-style notifications** - Non-intrusive floating windows
 - **Severity-based styling** - Different colors for errors, warnings, info, hints
 - **Configurable position** - Place notifications where you prefer
@@ -432,6 +454,7 @@ animation-speed = 0
 ```
 
 **Border Thickness Styles:**
+
 - **1**: Thin Unicode lines (─│┌┐└┘ square, ─│╭╮╰╯ rounded)
 - **2**: Thick Unicode lines (━┃┏┓┗┛)
 - **3**: Double Unicode lines (═║╔╗╚╝)
@@ -459,6 +482,7 @@ end-color = "#9370DB"
 - **Block styles**: Rounded corners don't apply to block characters
 
 **Features:**
+
 - **Applied to all components**: Pickers, command line popups, completion menus, preview panels
 - **Dynamic gradients**: Smooth color transitions across any direction
 - **Animation support**: Animated gradients with configurable speed
@@ -532,6 +556,7 @@ show = "never"
 ```
 
 **Features:**
+
 - **Virtual text display** - Non-intrusive blame info that doesn't affect text editing
 - **Cursor-based** - Shows blame only for the line you're currently on
 - **Customizable format** - Control what information is displayed
@@ -553,11 +578,12 @@ signature-help-position = "below"
 ```
 
 ## Auto reload buffers on focus / changes
+
 Implements automatic reloading of buffers when their corresponding files are changed on disk. This behavior can be configured to trigger when the editor window gains focus, at a periodic interval, or both.
 
-
 Here are some example snippets of configuration for this feature:
-```toml
+
+````toml
 
 # Disable auto-reloading (default)
 [editor]
@@ -594,11 +620,12 @@ You can choose to hide the file preview in the file picker to save screen space 
 ```toml
 [editor.file-picker]
 hide-preview = true
-```
+````
 
 ## Code Folding
 
 **Code Folding Commands:**
+
 - `fold` - Fold text objects
 - `unfold` - Unfold text objects
 - `toggle_fold` - Toggle fold for the text object at the primary cursor
