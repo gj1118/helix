@@ -5,6 +5,7 @@ use helix_core::text_folding::Fold;
 
 use crate::{
     editor::GutterType,
+    document::Mode,
     graphics::{Style, UnderlineStyle},
     icons::ICONS,
     Document, Editor, Theme, View,
@@ -168,6 +169,24 @@ pub fn line_numbers<'doc>(
 
     let linenr = theme.get("ui.linenr");
     let linenr_select = theme.get("ui.linenr.selected");
+    let mode = editor.mode;
+
+    let linenr_style = if view.gutters.line_numbers.same_color {
+        let mode_color = match mode {
+            Mode::Insert => theme.get("ui.linenr.insert"),
+            Mode::Select => theme.get("ui.linenr.select"),
+            Mode::Normal => theme.get("ui.linenr.normal"),
+        };
+        if mode_color.fg.is_some() {
+            mode_color
+        } else {
+            linenr
+        }
+    } else {
+        linenr
+    };
+
+    let same_color = view.gutters.line_numbers.same_color;
 
     let current_line = doc
         .text()
@@ -264,7 +283,9 @@ pub fn line_numbers<'doc>(
                     line + 1
                 };
 
-                let style = if selected && is_focused {
+                let style = if same_color {
+                    linenr_style
+                } else if selected && is_focused {
                     linenr_select
                 } else {
                     linenr
@@ -492,7 +513,7 @@ mod tests {
 
         let gutters = GutterConfig {
             layout: vec![GutterType::Diagnostics, GutterType::LineNumbers],
-            line_numbers: GutterLineNumbersConfig { min_width: 10 },
+            line_numbers: GutterLineNumbersConfig { min_width: 10, same_color: false },
         };
 
         let mut view = View::new(DocumentId::default(), gutters);
@@ -515,7 +536,7 @@ mod tests {
     fn test_line_numbers_gutter_width_resizes() {
         let gutters = GutterConfig {
             layout: vec![GutterType::Diagnostics, GutterType::LineNumbers],
-            line_numbers: GutterLineNumbersConfig { min_width: 1 },
+            line_numbers: GutterLineNumbersConfig { min_width: 1, same_color: false },
         };
 
         let mut view = View::new(DocumentId::default(), gutters);

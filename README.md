@@ -150,6 +150,23 @@ max-panel-height = 0
 max-panel-height-percent = 0.8
 ```
 
+### Line Numbers
+
+Show line numbers with the same color based on the current mode (insert/normal/select), ignoring the selection state.
+
+```toml
+[gutters]
+line-numbers.same_color = true
+```
+
+When enabled, you can also customize mode-specific line number colors in your theme:
+
+```toml
+"ui.linenr.insert" = { fg = "color_for_insert" }
+"ui.linenr.select" = { fg = "color_for_select" }
+"ui.linenr.normal" = { fg = "color_for_normal" }
+```
+
 **Benefits:**
 - Prevents performance issues with very large panels
 - Automatically adapts to your terminal size
