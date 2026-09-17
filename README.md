@@ -155,8 +155,8 @@ max-panel-height-percent = 0.8
 Show line numbers with the same color based on the current mode (insert/normal/select), ignoring the selection state.
 
 ```toml
-[gutters]
-line-numbers.same_color = true
+[editor]
+gutters.line_numbers.same_color = true
 ```
 
 When enabled, you can also customize mode-specific line number colors in your theme:
