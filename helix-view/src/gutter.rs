@@ -4,8 +4,8 @@ use helix_core::syntax::config::LanguageServerFeature;
 use helix_core::text_folding::Fold;
 
 use crate::{
-    editor::GutterType,
     document::Mode,
+    editor::GutterType,
     graphics::{Style, UnderlineStyle},
     icons::ICONS,
     Document, Editor, Theme, View,
@@ -516,7 +516,10 @@ mod tests {
 
         let gutters = GutterConfig {
             layout: vec![GutterType::Diagnostics, GutterType::LineNumbers],
-            line_numbers: GutterLineNumbersConfig { min_width: 10, same_color: false },
+            line_numbers: GutterLineNumbersConfig {
+                min_width: 10,
+                same_color: false,
+            },
         };
 
         let mut view = View::new(DocumentId::default(), gutters);
@@ -539,7 +542,10 @@ mod tests {
     fn test_line_numbers_gutter_width_resizes() {
         let gutters = GutterConfig {
             layout: vec![GutterType::Diagnostics, GutterType::LineNumbers],
-            line_numbers: GutterLineNumbersConfig { min_width: 1, same_color: false },
+            line_numbers: GutterLineNumbersConfig {
+                min_width: 1,
+                same_color: false,
+            },
         };
 
         let mut view = View::new(DocumentId::default(), gutters);
