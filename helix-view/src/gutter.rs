@@ -177,9 +177,10 @@ pub fn line_numbers<'doc>(
             Mode::Select => theme.get("ui.linenr.select"),
             Mode::Normal => theme.get("ui.linenr.normal"),
         };
-        if mode_color.fg.is_some() {
+        if mode_color.fg.is_some() || mode_color.bg.is_some() {
             mode_color
         } else {
+            // If mode-specific colors not defined, use base linenr with mode-appropriate color
             linenr
         }
     } else {

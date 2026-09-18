@@ -156,10 +156,17 @@ Show line numbers with the same color based on the current mode (insert/normal/s
 
 ```toml
 [editor]
-gutters.line_numbers.same_color = true
+# Structured format (recommended):
+gutters = { 
+    layout = ["line-numbers", "diagnostics"], 
+    line_numbers = { same_color = true } 
+}
+
+# Or array format (existing configs):
+# gutters = ["line-numbers", "diagnostics"]
 ```
 
-When enabled, you can also customize mode-specific line number colors in your theme:
+When using the structured format, you can also customize mode-specific line number colors in your theme:
 
 ```toml
 "ui.linenr.insert" = { fg = "color_for_insert" }
