@@ -171,7 +171,9 @@ pub fn line_numbers<'doc>(
     let linenr_select = theme.get("ui.linenr.selected");
     let mode = editor.mode;
 
-    let linenr_style = if view.gutters.line_numbers.same_color {
+    let same_color = view.gutters.line_numbers.same_color;
+
+    let linenr_style = if same_color {
         let mode_color = match mode {
             Mode::Insert => theme.get("ui.linenr.insert"),
             Mode::Select => theme.get("ui.linenr.select"),
@@ -284,7 +286,7 @@ pub fn line_numbers<'doc>(
                     line + 1
                 };
 
-                let style = if same_color {
+                let style = if same_color && selected && is_focused {
                     linenr_style
                 } else if selected && is_focused {
                     linenr_select
