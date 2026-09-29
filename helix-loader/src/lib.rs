@@ -10,12 +10,12 @@ use std::path::{Path, PathBuf};
 
 pub const VERSION_AND_GIT_HASH: &str = env!("VERSION_AND_GIT_HASH");
 
-static RUNTIME_DIRS: once_cell::sync::Lazy<Vec<PathBuf>> =
-    once_cell::sync::Lazy::new(prioritize_runtime_dirs);
+static RUNTIME_DIRS: std::sync::LazyLock<Vec<PathBuf>> =
+    std::sync::LazyLock::new(prioritize_runtime_dirs);
 
-static CONFIG_FILE: once_cell::sync::OnceCell<PathBuf> = once_cell::sync::OnceCell::new();
+static CONFIG_FILE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
-static LOG_FILE: once_cell::sync::OnceCell<PathBuf> = once_cell::sync::OnceCell::new();
+static LOG_FILE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
 static COMMAND_HISTFILE: once_cell::sync::OnceCell<PathBuf> = once_cell::sync::OnceCell::new();
 
