@@ -1,6 +1,7 @@
-use std::time::{Instant, SystemTime};
-
-use once_cell::sync::Lazy;
+use std::{
+    sync::LazyLock,
+    time::{Instant, SystemTime},
+};
 
 const SECOND: i64 = 1;
 const MINUTE: i64 = 60 * SECOND;
@@ -15,8 +16,8 @@ const YEAR: i64 = 365 * DAY;
 /// much cheaper and use the monotonic clock instead of trigerring a syscall.
 #[inline]
 fn now() -> SystemTime {
-    static START_INSTANT: Lazy<Instant> = Lazy::new(Instant::now);
-    static START_SYSTEM_TIME: Lazy<SystemTime> = Lazy::new(SystemTime::now);
+    static START_INSTANT: LazyLock<Instant> = LazyLock::new(Instant::now);
+    static START_SYSTEM_TIME: LazyLock<SystemTime> = LazyLock::new(SystemTime::now);
 
     *START_SYSTEM_TIME + START_INSTANT.elapsed()
 }
