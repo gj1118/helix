@@ -271,6 +271,11 @@ impl Decoration for InlineDiagnostics<'_> {
     ) -> Position {
         let mut col_off = 0;
         let filter = self.state.filter();
+        let filter = if self.state.config.show_virtual_lines {
+            filter
+        } else {
+            DiagnosticFilter::Disable
+        };
         let eol_diagnostic = match self.eol_diagnostics {
             DiagnosticFilter::Enable(eol_filter) => {
                 let eol_diganogistcs = self
@@ -298,6 +303,11 @@ impl Decoration for InlineDiagnostics<'_> {
                 styles: &self.styles,
             };
             col_off = renderer.draw_eol_diagnostic(eol_diagnostic, pos.visual_line, virt_off.col);
+        }
+
+        if !self.state.config.show_virtual_lines {
+            self.state.stack.clear();
+            return Position::new(0, col_off as usize);
         }
 
         self.state.compute_line_diagnostics();

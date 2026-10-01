@@ -548,6 +548,7 @@ fn main() {
 
 | Key        | Description | Default |
 |------------|-------------|---------|
+| `show-virtual-lines` | Whether to show the connector lines and diagnostic messages below source lines. When `false`, diagnostics can still appear at line ends according to `end-of-line-diagnostics`, and their normal highlights and gutter markers remain. | `false` |
 | `cursor-line` | The minimum severity that a diagnostic must have to be shown inline on the line that contains the primary cursor. Set to `disable` to not show any diagnostics inline. This option does not have any effect when in insert-mode and will only take effect 350ms after moving the cursor to a different line. | `"warning"` |
 | `other-lines` | The minimum severity that a diagnostic must have to be shown inline on a line that does not contain the cursor-line. Set to `disable` to not show any diagnostics inline. | `"disable"` |
 | `prefix-len` | How many horizontal bars `─` are rendered before the diagnostic text.  | `1` |

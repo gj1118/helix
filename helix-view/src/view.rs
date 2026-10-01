@@ -545,7 +545,7 @@ impl View {
             .diagnostics_handler
             .show_cursorline_diagnostics(doc, self.id);
         let config = config.inline_diagnostics.prepare(width, enable_cursor_line);
-        if !config.disabled() {
+        if config.show_virtual_lines && !config.disabled() {
             let cursor = doc
                 .selection(self.id)
                 .primary()

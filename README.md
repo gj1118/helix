@@ -150,6 +150,20 @@ max-panel-height = 0
 max-panel-height-percent = 0.8
 ```
 
+### Inline Diagnostics
+
+The connector lines and diagnostic messages displayed below source lines can be toggled with
+`editor.inline-diagnostics.show-virtual-lines`. It defaults to `false` to keep the display close
+to upstream Helix. Set it to `true` to enable the inline diagnostic UI:
+
+```toml
+[editor.inline-diagnostics]
+show-virtual-lines = true
+```
+
+When disabled, diagnostic highlights and gutter markers remain; end-of-line messages are controlled
+separately by `editor.end-of-line-diagnostics`.
+
 ### Line Numbers
 
 Show line numbers with the same color based on the current mode (insert/normal/select), ignoring the selection state.
