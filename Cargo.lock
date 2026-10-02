@@ -1748,7 +1748,6 @@ dependencies = [
  "helix-view",
  "log",
  "mlua",
- "once_cell",
  "parking_lot",
  "serde",
  "serde_json",

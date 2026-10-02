@@ -17,13 +17,13 @@ static CONFIG_FILE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
 static LOG_FILE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
-static COMMAND_HISTFILE: once_cell::sync::OnceCell<PathBuf> = once_cell::sync::OnceCell::new();
+static COMMAND_HISTFILE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
-static SEARCH_HISTFILE: once_cell::sync::OnceCell<PathBuf> = once_cell::sync::OnceCell::new();
+static SEARCH_HISTFILE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
-static FILE_HISTFILE: once_cell::sync::OnceCell<PathBuf> = once_cell::sync::OnceCell::new();
+static FILE_HISTFILE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
-static CLIPBOARD_FILE: once_cell::sync::OnceCell<PathBuf> = once_cell::sync::OnceCell::new();
+static CLIPBOARD_FILE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
 pub fn initialize_config_file(specified_file: Option<PathBuf>) {
     let config_file = specified_file.unwrap_or_else(default_config_file);

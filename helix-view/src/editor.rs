@@ -173,11 +173,17 @@ where
 pub struct GutterLineNumbersConfig {
     /// Minimum number of characters to use for line number gutter. Defaults to 3.
     pub min_width: usize,
+    /// When true, line numbers use the same color based on the mode,
+    /// ignoring the selection state (selected vs not selected).
+    pub same_color: bool,
 }
 
 impl Default for GutterLineNumbersConfig {
     fn default() -> Self {
-        Self { min_width: 3 }
+        Self {
+            min_width: 3,
+            same_color: false,
+        }
     }
 }
 
