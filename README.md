@@ -53,6 +53,7 @@ This fork of Helix implements the following pull requests. Future pull requests 
 27. https://github.com/helix-editor/helix/pull/14593 (code folding)
 28. https://github.com/helix-editor/helix/pull/12043 (6 new case conversion commands: PascalCase, camelCase, snake_case, Title Case, kebab-case, Sentence case)
 29. https://github.com/helix-editor/helix/pull/15854 (scrollable file preview in picker)
+30. https://github.com/helix-editor/helix/pull/15573 (breadcrumb navigation bar - with tree-sitter fallback, depth/name truncation, debounced LSP requests and icon support)
 
 ## Setup
 

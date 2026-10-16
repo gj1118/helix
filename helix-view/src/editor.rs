@@ -9,14 +9,18 @@ use crate::{
     handlers::Handlers,
     info::Info,
     input::KeyEvent,
+    persistence::{self, FileHistoryEntry},
+    regex::EqRegex,
     register::Registers,
     theme::{self, Theme},
     tree::{self, Dimension, Resize, Tree},
+    view::ViewPosition,
     Document, DocumentId, View, ViewId,
 };
 use helix_event::dispatch;
 use helix_loader::workspace_trust::{ImplicitTrustLevel, TrustQuery, WorkspaceTrust};
 use helix_vcs::DiffProviderRegistry;
+use regex::Regex;
 
 use futures_util::stream::select_all::SelectAll;
 use futures_util::StreamExt;
@@ -451,6 +455,8 @@ pub struct Config {
     pub file_picker: FilePickerConfig,
     /// Configuration of the bufferline
     pub bufferline: BufferLineConfig,
+    /// Persistently display a breadcrumb navigation bar along the top of each view
+    pub breadcrumb: BreadcrumbConfig,
     /// Configuration of the file explorer
     pub file_explorer: FileExplorerConfig,
     /// Configuration of the statusline elements
@@ -555,6 +561,8 @@ pub struct Config {
     pub insecure: bool,
     /// Workspace-trust configuration.
     pub workspace_trust: WorkspaceTrustConfig,
+    /// Cross-session persistence of command/search history, clipboard, and file positions.
+    pub persistence: PersistenceConfig,
 }
 
 /// User-facing configuration for `[editor.workspace-trust]`.
@@ -1148,6 +1156,43 @@ impl Default for BufferLineConfig {
     }
 }
 
+/// How much path information is shown in the breadcrumb bar
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BreadcrumbPathOptions {
+    /// Show the full relative path before the symbols
+    #[default]
+    Full,
+    /// Show only the file name
+    File,
+    /// Show no path information
+    None,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct BreadcrumbConfig {
+    pub enable: bool,
+    pub path: BreadcrumbPathOptions,
+    /// Maximum number of symbol levels shown; when exceeded the outermost
+    /// symbols are elided with `…`. `0` means unlimited.
+    pub max_depth: usize,
+    /// Maximum length of a single crumb name; longer names are truncated in
+    /// the middle with `…`. `0` means unlimited.
+    pub max_name_length: usize,
+}
+
+impl Default for BreadcrumbConfig {
+    fn default() -> Self {
+        Self {
+            enable: false,
+            path: BreadcrumbPathOptions::Full,
+            max_depth: 8,
+            max_name_length: 32,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
 pub struct StatusLineConfig {
@@ -1706,6 +1751,38 @@ impl Default for CompletionHighlight {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct PersistenceConfig {
+    pub old_files: bool,
+    pub commands: bool,
+    pub search: bool,
+    pub clipboard: bool,
+    pub old_files_exclusions: Vec<EqRegex>,
+    pub old_files_trim: usize,
+    pub commands_trim: usize,
+    pub search_trim: usize,
+}
+
+impl Default for PersistenceConfig {
+    fn default() -> Self {
+        Self {
+            old_files: false,
+            commands: false,
+            search: false,
+            clipboard: false,
+            // TODO: any more defaults we should add here?
+            old_files_exclusions: [r".*/\.git/.*", r".*/COMMIT_EDITMSG"]
+                .iter()
+                .map(|s| Regex::new(s).unwrap().into())
+                .collect(),
+            old_files_trim: 100,
+            commands_trim: 100,
+            search_trim: 100,
+        }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -1740,6 +1817,7 @@ impl Default for Config {
             auto_info: true,
             file_picker: FilePickerConfig::default(),
             bufferline: BufferLineConfig::default(),
+            breadcrumb: BreadcrumbConfig::default(),
             file_explorer: FileExplorerConfig::default(),
             statusline: StatusLineConfig::default(),
             cursor_shape: CursorShapeConfig::default(),
@@ -1791,6 +1869,7 @@ impl Default for Config {
             fold_textobjects: Vec::new(),
             insecure: false,
             workspace_trust: WorkspaceTrustConfig::default(),
+            persistence: PersistenceConfig::default(),
         }
     }
 }
@@ -2025,6 +2104,8 @@ pub struct Editor {
     pub mouse_down_range: Option<Range>,
     pub cursor_cache: CursorCache,
     pub workspace_trust: WorkspaceTrust,
+    /// File positions restored from / written to persistent state.
+    pub old_file_locs: HashMap<PathBuf, (ViewPosition, Selection)>,
 }
 
 pub type Motion = Box<dyn Fn(&mut Editor)>;
@@ -2099,6 +2180,7 @@ impl Editor {
         config: Arc<dyn DynAccess<Config>>,
         handlers: Handlers,
         workspace_trust: WorkspaceTrust,
+        old_file_locs: HashMap<PathBuf, (ViewPosition, Selection)>,
     ) -> Self {
         let language_servers = helix_lsp::Registry::new(syn_loader.clone());
         let conf = config.load();
@@ -2151,6 +2233,7 @@ impl Editor {
             cursor_cache: CursorCache::default(),
             dir_stack: VecDeque::with_capacity(DIR_STACK_CAP),
             workspace_trust,
+            old_file_locs,
         }
     }
 
@@ -2957,9 +3040,11 @@ impl Editor {
         let path = helix_stdx::path::canonicalize(path);
         let id = self.document_id_by_path(&path);
 
+        let mut id_was_new = false;
         let id = if let Some(id) = id {
             id
         } else {
+            id_was_new = true;
             let mut doc = Document::open(
                 &path,
                 None,
@@ -2996,16 +3081,72 @@ impl Editor {
             id
         };
 
+        let new_doc = id_was_new;
         self.switch(id, action);
+
+        // Restore file position from persistent history when enabled.
+        // This needs to happen after switch, since switch messes with view offsets.
+        if new_doc
+            && self.config().persistence.old_files
+            && !self
+                .config()
+                .persistence
+                .old_files_exclusions
+                .iter()
+                .any(|r| r.is_match(&path.to_string_lossy()))
+        {
+            if let Some((view_position, selection)) =
+                self.old_file_locs.get(&path).map(|x| x.to_owned())
+            {
+                let (view, doc) = current!(self);
+
+                let doc_len = doc.text().len_chars();
+                // Don't restore if selection goes beyond the file's end
+                if !selection.ranges().iter().any(|range| range.to() > doc_len) {
+                    doc.set_view_offset(view.id, view_position);
+                    doc.set_selection(view.id, selection);
+                }
+            }
+        }
 
         Ok(id)
     }
 
     pub fn close(&mut self, id: ViewId) {
-        // Remove selections for the closed view on all documents.
+        let mut file_locs = Vec::new();
+
         for doc in self.documents_mut() {
+            // Persist file location history for this view
+            if doc.selections().contains_key(&id) {
+                if let Some(path) = doc.path() {
+                    file_locs.push(FileHistoryEntry::new(
+                        path.to_path_buf(),
+                        doc.view_offset(id),
+                        doc.selection(id).clone(),
+                    ));
+                }
+            }
+
+            // Remove selections for the closed view on all documents.
             doc.remove_view(id);
         }
+
+        if self.config().persistence.old_files {
+            for loc in file_locs {
+                if !self
+                    .config()
+                    .persistence
+                    .old_files_exclusions
+                    .iter()
+                    .any(|r| r.is_match(&loc.path.to_string_lossy()))
+                {
+                    persistence::push_file_history(&loc);
+                    self.old_file_locs
+                        .insert(loc.path, (loc.view_position, loc.selection));
+                }
+            }
+        }
+
         self.tree.remove(id);
         self._refresh();
     }
@@ -3027,6 +3168,8 @@ impl Editor {
             ReplaceDoc(ViewId, DocumentId),
         }
 
+        let mut file_locs = Vec::new();
+
         let actions: Vec<Action> = self
             .tree
             .views_mut()
@@ -3034,6 +3177,14 @@ impl Editor {
                 view.remove_document(&doc_id);
 
                 if view.doc == doc_id {
+                    if let Some(path) = doc.path() {
+                        file_locs.push(FileHistoryEntry::new(
+                            path.to_path_buf(),
+                            doc.view_offset(view.id),
+                            doc.selection(view.id).clone(),
+                        ));
+                    }
+
                     // something was previously open in the view, switch to previous doc
                     if let Some(prev_doc) = view.docs_access_history.pop() {
                         Some(Action::ReplaceDoc(view.id, prev_doc))
@@ -3046,6 +3197,22 @@ impl Editor {
                 }
             })
             .collect();
+
+        if self.config().persistence.old_files {
+            for loc in file_locs {
+                if !self
+                    .config()
+                    .persistence
+                    .old_files_exclusions
+                    .iter()
+                    .any(|r| r.is_match(&loc.path.to_string_lossy()))
+                {
+                    persistence::push_file_history(&loc);
+                    self.old_file_locs
+                        .insert(loc.path, (loc.view_position, loc.selection));
+                }
+            }
+        }
 
         for action in actions {
             match action {

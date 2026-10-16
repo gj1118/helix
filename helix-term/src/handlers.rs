@@ -16,6 +16,7 @@ pub use helix_view::handlers::{word_index, Handlers};
 use self::blame::BlameHandler;
 use self::document_colors::DocumentColorsHandler;
 use self::document_links::DocumentLinksHandler;
+use self::document_symbols::DocumentSymbolsHandler;
 
 pub(super) mod auto_reload;
 mod auto_save;
@@ -26,6 +27,7 @@ pub mod diagnostics;
 mod document_colors;
 mod document_highlight;
 mod document_links;
+mod document_symbols;
 mod prompt;
 mod signature_help;
 mod snippet;
@@ -45,6 +47,7 @@ pub fn setup(config: Arc<ArcSwap<Config>>) -> Handlers {
     let auto_reload = AutoReloadHandler::new().spawn();
     let code_action_hint = code_action_hint::Handler::default().spawn();
     let document_colors = DocumentColorsHandler::default().spawn();
+    let document_symbols = DocumentSymbolsHandler::default().spawn();
     let blame = BlameHandler::default().spawn();
     let document_links = DocumentLinksHandler::default().spawn();
     let word_index = word_index::Handler::spawn();
@@ -57,6 +60,7 @@ pub fn setup(config: Arc<ArcSwap<Config>>) -> Handlers {
         auto_save,
         auto_reload,
         document_colors,
+        document_symbols,
         blame,
         document_links,
         word_index,
@@ -76,6 +80,7 @@ pub fn setup(config: Arc<ArcSwap<Config>>) -> Handlers {
     snippet::register_hooks(&handlers);
     document_colors::register_hooks(&handlers);
     document_links::register_hooks(&handlers);
+    document_symbols::register_hooks(&handlers);
     prompt::register_hooks(&handlers);
     blame::register_hooks(&handlers);
     workspace_trust::register_hooks(&handlers);

@@ -21,7 +21,7 @@ helix-loader = { path = "../helix-loader" }
 helix-parsec = { path = "../helix-parsec" }
 
 ropey.workspace = true
-smallvec = "1.15"
+smallvec = { version = "1.15", features = ["serde"] }
 smartstring = "1.0.1"
 unicode-segmentation.workspace = true
 # unicode-width is changing width definitions
@@ -33,9 +33,8 @@ unicode-width = "=0.1.12"
 unicode-general-category = "1.1"
 slotmap.workspace = true
 tree-house.workspace = true
-once_cell = "1.21"
 arc-swap = "1"
-regex = "1"
+regex.workspace = true
 bitflags.workspace = true
 foldhash.workspace = true
 

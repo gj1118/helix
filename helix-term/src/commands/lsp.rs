@@ -169,7 +169,7 @@ fn jump_to_position(
     }
 }
 
-fn display_symbol_kind(kind: lsp::SymbolKind) -> &'static str {
+pub(crate) fn display_symbol_kind(kind: lsp::SymbolKind) -> &'static str {
     match kind {
         lsp::SymbolKind::FILE => "file",
         lsp::SymbolKind::MODULE => "module",
@@ -1555,7 +1555,7 @@ fn compute_inlay_hints_for_view(
     // will not show half the view with hints and half without while still being faster
     // than computing all the hints for the full file (which could be dozens of time
     // longer than the view is).
-    let view_height = view.inner_height();
+    let view_height = view.inner_height(doc);
     let first_visible_line =
         doc_text.char_to_line(doc.view_offset(view_id).anchor.min(doc_text.len_chars()));
     let first_line = first_visible_line.saturating_sub(view_height);

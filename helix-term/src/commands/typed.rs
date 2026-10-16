@@ -18,7 +18,9 @@ use helix_view::document::{read_to_string, DEFAULT_LANGUAGE_NAME};
 use helix_view::editor::{CloseError, ConfigEvent};
 use helix_view::expansion;
 use helix_view::handlers::BlameEvent;
+use helix_view::persistence;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::Arc;
 use ui::completers::{self, Completer};
 
@@ -174,8 +176,10 @@ fn open_impl(cx: &mut compositor::Context, args: Args, action: Action) -> anyhow
             // Otherwise, just open the file
             let _ = cx.editor.open(&path, action)?;
             let (view, doc) = current!(cx.editor);
-            let pos = Selection::point(pos_at_coords(doc.text().slice(..), pos, true));
-            doc.set_selection(view.id, pos);
+            if let Some(pos) = pos {
+                let pos = Selection::point(pos_at_coords(doc.text().slice(..), pos, true));
+                doc.set_selection(view.id, pos);
+            }
             // does not affect opening a buffer without pos
             align_view(doc, view, Align::Center);
         }
@@ -1875,6 +1879,7 @@ fn lsp_stop(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> any
                 doc.clear_diagnostics_for_language_server(client.id());
                 doc.reset_all_inlay_hints();
                 doc.inlay_hints_oudated = true;
+                doc.clear_document_symbols();
             }
         }
     }
@@ -4849,11 +4854,22 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         fun: exclude_workspace,
         completer: CommandCompleter::none(),
         signature: Signature { positionals: (0, None), ..Signature::DEFAULT },
-    }
+    },
+    TypableCommand {
+        name: "reload-history",
+        aliases: &[],
+        doc: "Reload history files for persistent state",
+        fun: reload_history,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
 ];
 
-pub static TYPABLE_COMMAND_MAP: Lazy<HashMap<&'static str, &'static TypableCommand>> =
-    Lazy::new(|| {
+pub static TYPABLE_COMMAND_MAP: LazyLock<HashMap<&'static str, &'static TypableCommand>> =
+    LazyLock::new(|| {
         TYPABLE_COMMAND_LIST
             .iter()
             .flat_map(|cmd| {
@@ -5413,5 +5429,65 @@ fn exclude_workspace(
     let workspace = current_workspace(cx);
     cx.editor.workspace_trust.exclude(&workspace);
     cx.editor.config_events.0.send(ConfigEvent::Refresh)?;
+    Ok(())
+}
+
+fn reload_history(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    if cx.editor.config().persistence.old_files {
+        cx.editor.old_file_locs = HashMap::from_iter(
+            persistence::read_file_history()
+                .into_iter()
+                .map(|entry| (entry.path.clone(), (entry.view_position, entry.selection))),
+        );
+        let file_trim = cx.editor.config().persistence.old_files_trim;
+        cx.jobs.add(
+            Job::new(async move {
+                persistence::trim_file_history(file_trim);
+                Ok(())
+            })
+            .wait_before_exiting(),
+        );
+    }
+    if cx.editor.config().persistence.commands {
+        cx.editor
+            .registers
+            .write(':', persistence::read_command_history())?;
+        let commands_trim = cx.editor.config().persistence.commands_trim;
+        cx.jobs.add(
+            Job::new(async move {
+                persistence::trim_command_history(commands_trim);
+                Ok(())
+            })
+            .wait_before_exiting(),
+        );
+    }
+    if cx.editor.config().persistence.search {
+        cx.editor
+            .registers
+            .write('/', persistence::read_search_history())?;
+        let search_trim = cx.editor.config().persistence.search_trim;
+        cx.jobs.add(
+            Job::new(async move {
+                persistence::trim_search_history(search_trim);
+                Ok(())
+            })
+            .wait_before_exiting(),
+        );
+    }
+    if cx.editor.config().persistence.clipboard {
+        cx.editor
+            .registers
+            .write('"', persistence::read_clipboard_file())?;
+    }
+
+    cx.editor.set_status("History reloaded");
     Ok(())
 }

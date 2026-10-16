@@ -42,6 +42,7 @@ pub struct Handlers {
     pub auto_save: Sender<AutoSaveEvent>,
     pub auto_reload: Sender<AutoReloadEvent>,
     pub document_colors: Sender<lsp::DocumentColorsEvent>,
+    pub document_symbols: Sender<lsp::DocumentSymbolsEvent>,
     pub blame: Sender<BlameEvent>,
     pub document_links: Sender<lsp::DocumentLinksEvent>,
     pub word_index: word_index::Handler,

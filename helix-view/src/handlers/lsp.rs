@@ -17,6 +17,7 @@ use super::Handlers;
 
 pub struct DocumentColorsEvent(pub DocumentId);
 pub struct DocumentLinksEvent(pub DocumentId);
+pub struct DocumentSymbolsEvent(pub DocumentId);
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum SignatureHelpInvoked {
