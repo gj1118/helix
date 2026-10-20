@@ -55,6 +55,10 @@ This fork of Helix implements the following pull requests. Future pull requests 
 29. https://github.com/helix-editor/helix/pull/15854 (scrollable file preview in picker)
 30. https://github.com/helix-editor/helix/pull/15573 (breadcrumb navigation bar - with tree-sitter fallback, depth/name truncation, debounced LSP requests and icon support)
 
+## Zenbones Themes
+
+The `runtime/themes` directory includes Helix ports of the Zenbones collection: `zenbones`, `zenwritten`, `neobones`, `vimbones`, `rosebones`, `forestbones`, `nordbones`, `tokyobones`, `seoulbones`, `duckbones`, `zenburned`, and `kanagawabones`. Light variants are available with the `_light` suffix for `zenbones`, `zenwritten`, `neobones`, `rosebones`, `forestbones`, `tokyobones`, and `seoulbones`. The upstream `randombones` scheme is a random selector rather than a palette, so it is not included as a static Helix theme.
+
 ## Setup
 
 [Docs](https://docs.helix-editor.com/building-from-source.html) on build it from source.

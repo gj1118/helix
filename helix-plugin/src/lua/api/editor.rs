@@ -129,6 +129,12 @@ pub fn register_editor_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
         table.set("auto_format", config.auto_format)?;
         table.set("auto_completion", config.auto_completion)?;
         table.set("auto_info", config.auto_info)?;
+        let inline_diagnostics = lua.create_table()?;
+        inline_diagnostics.set(
+            "show_virtual_lines",
+            config.inline_diagnostics.show_virtual_lines,
+        )?;
+        table.set("inline_diagnostics", inline_diagnostics)?;
         table.set(
             "line_number",
             match config.line_number {
