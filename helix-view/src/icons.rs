@@ -1,11 +1,10 @@
 use arc_swap::ArcSwap;
-use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, path::Path};
+use std::{collections::HashMap, path::Path, sync::LazyLock};
 
 use crate::theme::Color;
 
-pub static ICONS: Lazy<ArcSwap<Icons>> = Lazy::new(ArcSwap::default);
+pub static ICONS: LazyLock<ArcSwap<Icons>> = LazyLock::new(ArcSwap::default);
 
 /// Centralized location for icons that can be used throughout the UI.
 #[derive(Debug, Default, Deserialize, PartialEq, Eq, Clone)]
@@ -731,7 +730,7 @@ macro_rules! mimes {
     }};
 }
 
-static MIMES: once_cell::sync::Lazy<HashMap<String, Icon>> = once_cell::sync::Lazy::new(|| {
+static MIMES: LazyLock<HashMap<String, Icon>> = LazyLock::new(|| {
     mimes! {
     // Language name
         "git-commit" => {glyph: "", color: "#f15233" },
