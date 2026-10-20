@@ -425,7 +425,18 @@ impl<'a> TextRenderer<'a> {
                 .set_string(x, y, &self.indent_guide_char, self.indent_guide_style);
         }
     }
+    pub fn fill_row_background(&mut self, visual_line: u16, bg_color: helix_view::graphics::Color) {
+        let screen_y = self.viewport.y + visual_line;
+        let start_x = self.viewport.x;
+        let end_x = self.viewport.x + self.viewport.width;
 
+        for x in start_x..end_x {
+            // Grab a mutable reference to the single coordinate cell and mutate its bg color field
+            if let Some(cell) = self.surface.get_mut(x, screen_y) {
+                cell.set_bg(bg_color);
+            }
+        }
+    }
     pub fn set_string(&mut self, x: u16, y: u16, string: &str, style: Style) {
         if (y as usize) < self.offset.row {
             return;
