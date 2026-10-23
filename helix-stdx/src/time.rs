@@ -1,6 +1,7 @@
-use std::time::{Instant, SystemTime};
-
-use std::sync::LazyLock;
+use std::{
+    sync::LazyLock,
+    time::{Instant, SystemTime},
+};
 
 const SECOND: i64 = 1;
 const MINUTE: i64 = 60 * SECOND;

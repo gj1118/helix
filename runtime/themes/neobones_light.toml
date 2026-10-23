@@ -1,0 +1,143 @@
+# Palette adapted from zenbones-theme/zenbones.nvim (neobones).
+# License: MIT
+
+"attribute" = "special"
+"type" = "type"
+"type.builtin" = { fg = "type", modifiers = ["bold"] }
+"type.enum" = "type"
+"type.enum.variant" = "type"
+"constructor" = "type"
+"constant" = { fg = "constant", modifiers = ['italic'] }
+"constant.builtin.boolean" = { fg = "boolean", modifiers = ['italic'] }
+"constant.character" = "character"
+"constant.character.escape" = "special"
+"constant.numeric" = "number"
+"string" = { fg = "string", modifiers = ['italic'] }
+"string.regexp" = "special"
+"string.special" = "special"
+"comment" = { fg = "comment", modifiers = ['italic'] }
+"comment.line.documentation" = { fg = "comment", modifiers = ["bold"] }
+"comment.block.documentation" = { fg = "comment", modifiers = ["bold"] }
+"variable" = "identifier"
+"variable.builtin" = "constant"
+"variable.parameter" = "identifier"
+"variable.other.member" = "identifier"
+"label" = "special"
+"punctuation" = "delimiter"
+"punctuation.delimiter" = "delimiter"
+"punctuation.special" = "special"
+"keyword" = { fg = "statement", modifiers = ['bold'] }
+"keyword.control.import" = "preproc"
+"keyword.control.exception" = "error"
+"operator" = "operator"
+"function" = { fg = "function", modifiers = [] }
+"function.builtin" = "function"
+"function.macro" = "preproc"
+"tag" = "type"
+"namespace" = "preproc"
+"special" = "special"
+"markup.heading" = { fg = "title", modifiers = ["bold"] }
+"markup.list" = "number"
+"markup.bold" = { modifiers = ["bold"] }
+"markup.italic" = { modifiers = ["italic"] }
+"markup.strikethrough" = { modifiers = ["crossed_out"] }
+"markup.link" = { fg = "special", underline = { style = "line" } }
+"markup.link.url" = { fg = "special", underline = { style = "line" } }
+"markup.quote" = "comment"
+"markup.raw" = "string"
+
+"ui.background" = { fg = "foreground", bg = "background" }
+"ui.cursor" = { fg = "cursor_fg", bg = "cursor_bg" }
+"ui.cursor.primary" = { fg = "cursor_fg", bg = "cursor_bg" }
+"ui.cursor.match" = { fg = "match", bg = "search_bg", modifiers = ["bold"] }
+"ui.cursorline.primary" = { bg = "cursorline" }
+"ui.linenr" = "linenr"
+"ui.linenr.selected" = { fg = "linenr_selected", modifiers = ["bold"] }
+"ui.statusline" = { fg = "status_fg", bg = "status_bg" }
+"ui.statusline.inactive" = { fg = "status_inactive_fg", bg = "status_inactive_bg" }
+"ui.statusline.normal" = { fg = "status_fg", bg = "status_bg" }
+"ui.statusline.insert" = { fg = "status_fg", bg = "status_bg" }
+"ui.statusline.select" = { fg = "status_fg", bg = "status_bg" }
+"ui.popup" = { fg = "menu_fg", bg = "menu_bg" }
+"ui.window" = { fg = "separator", bg = "background" }
+"ui.help" = { fg = "menu_fg", bg = "menu_bg" }
+"ui.text" = "foreground"
+"ui.text.focus" = { modifiers = ["bold"] }
+"ui.virtual" = "nontext"
+"ui.virtual.ruler" = { bg = "colorcolumn" }
+"ui.virtual.whitespace" = "nontext"
+"ui.virtual.indent-guide" = "colorcolumn"
+"ui.virtual.jump-label" = { fg = "special", modifiers = ["bold"] }
+"ui.menu" = { fg = "menu_fg", bg = "menu_bg" }
+"ui.menu.selected" = { fg = "menu_selected_fg", bg = "menu_selected_bg" }
+"ui.selection" = { bg = "selection" }
+"ui.selection.primary" = { bg = "selection" }
+"diff.plus" = { fg = "diff_add_fg", bg = "diff_add_bg" }
+"diff.minus" = { fg = "diff_delete_fg", bg = "diff_delete_bg" }
+"diff.delta" = { fg = "diff_change_fg", bg = "diff_change_bg" }
+"warning" = "warning"
+"error" = "error"
+"info" = "info"
+"hint" = "hint"
+"diagnostic" = { modifiers = [] }
+"diagnostic.hint" = { underline = { color = "hint", style = "curl" } }
+"diagnostic.info" = { underline = { color = "info", style = "curl" } }
+"diagnostic.warning" = { underline = { color = "warning", style = "curl" } }
+"diagnostic.error" = { underline = { color = "error", style = "curl" } }
+"diagnostic.unnecessary" = { modifiers = ["dim"] }
+"diagnostic.deprecated" = { modifiers = ["crossed_out"] }
+
+[palette]
+background = "#e5ede6"
+foreground = "#202e18"
+comment = "#878d88"
+constant = "#476038"
+boolean = "#202e18"
+character = "#476038"
+string = "#476038"
+identifier = "#364a2a"
+statement = "#202e18"
+preproc = "#415934"
+type = "#495c4c"
+special = "#415934"
+function = "#202e18"
+number = "#476038"
+operator = "#7b837c"
+delimiter = "#7b837c"
+error = "#a8334c"
+warning = "#944927"
+info = "#286486"
+hint = "#88507d"
+cursor_fg = "#e5ede6"
+cursor_bg = "#202e18"
+cursorline = "#dae5db"
+linenr = "#8f9890"
+linenr_selected = "#202e18"
+status_fg = "#202e18"
+status_bg = "#c2cfc4"
+status_inactive_fg = "#4b663c"
+status_inactive_bg = "#d0ded2"
+menu_fg = "#202e18"
+menu_bg = "#c8d5c9"
+menu_selected_fg = "#202e18"
+menu_selected_bg = "#adb9af"
+selection = "#ade48c"
+search_fg = "#202e18"
+search_bg = "#dcb5d4"
+incsearch_fg = "#e5ede6"
+incsearch_bg = "#bd72af"
+diff_add_fg = "#567a30"
+diff_add_bg = "#c8e2b5"
+diff_change_fg = "#286486"
+diff_change_bg = "#d1dbe5"
+diff_delete_fg = "#a8334c"
+diff_delete_bg = "#ead5d7"
+diff_text_bg = "#a6bbcf"
+fold_fg = "#4a4f4a"
+fold_bg = "#b8c4b9"
+nontext = "#a3aea4"
+colorcolumn = "#e5c2b9"
+separator = "#8f9890"
+float_border = "#6a716b"
+title = "#202e18"
+match = "#202e18"

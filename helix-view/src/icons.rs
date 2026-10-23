@@ -1,7 +1,6 @@
 use arc_swap::ArcSwap;
 use serde::{Deserialize, Serialize};
-use std::sync::LazyLock;
-use std::{collections::HashMap, path::Path};
+use std::{collections::HashMap, path::Path, sync::LazyLock};
 
 use crate::theme::Color;
 

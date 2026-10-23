@@ -55,6 +55,10 @@ This fork of Helix implements the following pull requests. Future pull requests 
 29. https://github.com/helix-editor/helix/pull/15854 (scrollable file preview in picker)
 30. https://github.com/helix-editor/helix/pull/15573 (breadcrumb navigation bar - with tree-sitter fallback, depth/name truncation, debounced LSP requests and icon support)
 
+## Zenbones Themes
+
+The `runtime/themes` directory includes Helix ports of the Zenbones collection: `zenbones`, `zenwritten`, `neobones`, `vimbones`, `rosebones`, `forestbones`, `nordbones`, `tokyobones`, `seoulbones`, `duckbones`, `zenburned`, and `kanagawabones`. Light variants are available with the `_light` suffix for `zenbones`, `zenwritten`, `neobones`, `rosebones`, `forestbones`, `tokyobones`, and `seoulbones`. The upstream `randombones` scheme is a random selector rather than a palette, so it is not included as a static Helix theme.
+
 ## Setup
 
 [Docs](https://docs.helix-editor.com/building-from-source.html) on build it from source.
@@ -148,6 +152,44 @@ max-panel-height-percent = 0.95
 max-panel-width = 100
 max-panel-height = 0
 max-panel-height-percent = 0.8
+```
+
+### Inline Diagnostics
+
+The connector lines and diagnostic messages displayed below source lines can be toggled with
+`editor.inline-diagnostics.show-virtual-lines`. It defaults to `false` to keep the display close
+to upstream Helix. Set it to `true` to enable the inline diagnostic UI:
+
+```toml
+[editor.inline-diagnostics]
+show-virtual-lines = true
+```
+
+When disabled, diagnostic highlights and gutter markers remain; end-of-line messages are controlled
+separately by `editor.end-of-line-diagnostics`.
+
+### Line Numbers
+
+Show line numbers with the same color based on the current mode (insert/normal/select), ignoring the selection state.
+
+```toml
+[editor]
+# Structured format (recommended):
+gutters = { 
+    layout = ["line-numbers", "diagnostics"], 
+    line_numbers = { same_color = true } 
+}
+
+# Or array format (existing configs):
+# gutters = ["line-numbers", "diagnostics"]
+```
+
+When using the structured format, you can also customize mode-specific line number colors in your theme:
+
+```toml
+"ui.linenr.insert" = { fg = "color_for_insert" }
+"ui.linenr.select" = { fg = "color_for_select" }
+"ui.linenr.normal" = { fg = "color_for_normal" }
 ```
 
 **Benefits:**
