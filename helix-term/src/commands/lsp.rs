@@ -16,10 +16,10 @@ use super::{align_view, push_jump, Align, Context, Editor};
 
 use helix_core::{
     diagnostic::DiagnosticProvider, syntax::config::LanguageServerFeature,
-    text_annotations::InlineAnnotation, text_folding::ropex::RopeSliceFoldExt, Rope, Selection,
-    Uri,
+    text_annotations::InlineAnnotation, text_folding::ropex::RopeSliceFoldExt, Language, Rope,
+    Selection, Uri,
 };
-use helix_stdx::path;
+use helix_stdx::{path, Url};
 use helix_view::{
     action::Action as CodeActionItem,
     document::{DocumentInlayHints, DocumentInlayHintsId},
@@ -37,11 +37,15 @@ use crate::{
 };
 
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     fmt::Display,
     future::Future,
     path::Path,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
 };
 
 /// Gets the first language server that is attached to a document which supports a specific feature.
@@ -213,7 +217,7 @@ enum DiagnosticsFormat {
 type DiagnosticsPicker = Picker<PickerDiagnostic, DiagnosticStyles>;
 
 fn diag_picker(
-    cx: &Context,
+    editor: &Editor,
     diagnostics: impl IntoIterator<Item = (Uri, Vec<(lsp::Diagnostic, DiagnosticProvider)>)>,
     format: DiagnosticsFormat,
 ) -> DiagnosticsPicker {
@@ -227,7 +231,7 @@ fn diag_picker(
         for (diag, provider) in diags {
             if let Some(ls) = provider
                 .language_server_id()
-                .and_then(|id| cx.editor.language_server_by_id(id))
+                .and_then(|id| editor.language_server_by_id(id))
             {
                 flat_diag.push(PickerDiagnostic {
                     location: Location {
@@ -249,10 +253,10 @@ fn diag_picker(
     });
 
     let styles = DiagnosticStyles {
-        hint: cx.editor.theme.get("hint"),
-        info: cx.editor.theme.get("info"),
-        warning: cx.editor.theme.get("warning"),
-        error: cx.editor.theme.get("error"),
+        hint: editor.theme.get("hint"),
+        info: editor.theme.get("info"),
+        warning: editor.theme.get("warning"),
+        error: editor.theme.get("error"),
     };
 
     let mut columns = vec![
@@ -629,8 +633,12 @@ pub fn diagnostics_picker(cx: &mut Context) {
     let doc = doc!(cx.editor);
     if let Some(uri) = doc.uri() {
         let diagnostics = cx.editor.diagnostics.get(&uri).cloned().unwrap_or_default();
-        let picker = diag_picker(cx, [(uri, diagnostics)], DiagnosticsFormat::HideSourcePath)
-            .with_title("Diagnostics");
+        let picker = diag_picker(
+            cx.editor,
+            [(uri, diagnostics)],
+            DiagnosticsFormat::HideSourcePath,
+        )
+        .with_title("Diagnostics");
         cx.push_layer(Box::new(overlaid(
             picker,
             cx.editor.config().fullscreen_overlay,
@@ -640,13 +648,440 @@ pub fn diagnostics_picker(cx: &mut Context) {
 
 pub fn workspace_diagnostics_picker(cx: &mut Context) {
     // TODO not yet filtered by LanguageServerFeature, need to do something similar as Document::shown_diagnostics here for all open documents
+    if cx.editor.config().lsp.workspace_diagnostics && workspace_diagnostics_collection(cx) {
+        // The picker opens once all pull requests have settled (or timed out).
+        return;
+    }
+
+    // No language server candidates (or a collection is already running): fall back to
+    // the diagnostics that have been published so far.
     let diagnostics = cx.editor.diagnostics.clone();
-    let picker = diag_picker(cx, diagnostics, DiagnosticsFormat::ShowSourcePath)
+    let picker = diag_picker(cx.editor, diagnostics, DiagnosticsFormat::ShowSourcePath)
         .with_title("Workspace Diagnostics");
     cx.push_layer(Box::new(overlaid(
         picker,
         cx.editor.config().fullscreen_overlay,
     )));
+}
+
+fn push_workspace_diagnostics_picker(editor: &mut Editor, compositor: &mut Compositor) {
+    let fullscreen = editor.config().fullscreen_overlay;
+    let picker = diag_picker(
+        editor,
+        editor.diagnostics.clone(),
+        DiagnosticsFormat::ShowSourcePath,
+    )
+    .with_title("Workspace Diagnostics");
+    compositor.push(Box::new(overlaid(picker, fullscreen)));
+}
+
+/// Maximum number of files diagnostics are pulled for in a single workspace
+/// diagnostics collection.
+const MAX_WORKSPACE_FILES: usize = 1000;
+/// Files larger than this are skipped when collecting workspace diagnostics.
+const MAX_WORKSPACE_FILE_BYTES: u64 = 2 * 1024 * 1024;
+/// Maximum number of language server requests in flight at the same time while
+/// collecting workspace diagnostics.
+const WORKSPACE_DIAGNOSTICS_CONCURRENCY: usize = 32;
+/// After this much time the diagnostics collected so far are shown, even when some
+/// pull requests did not settle in time.
+const WORKSPACE_DIAGNOSTICS_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Set while workspace diagnostics are being collected.
+static COLLECTING: AtomicBool = AtomicBool::new(false);
+
+/// A diagnostics pull request sent to a language server on behalf of a file that is
+/// not opened (or, for the workspace variant, of the whole workspace).
+#[derive(Clone)]
+enum WorkspaceDiagnosticsRequest {
+    /// `textDocument/diagnostic` for a single file.
+    Document {
+        server: Arc<Client>,
+        /// The file the request is for.
+        uri: Uri,
+        /// The file URI as it is sent over LSP.
+        url: Url,
+        identifier: Option<Arc<str>>,
+    },
+    /// `workspace/diagnostic` for the whole workspace.
+    Workspace {
+        server: Arc<Client>,
+        identifier: Option<Arc<str>>,
+    },
+}
+
+/// The result of either of the two pull diagnostics request kinds.
+enum WorkspaceDiagnosticsResult {
+    Document(lsp::DocumentDiagnosticReportResult),
+    Workspace(lsp::WorkspaceDiagnosticReportResult),
+}
+
+impl WorkspaceDiagnosticsRequest {
+    async fn execute(self) -> Result<WorkspaceDiagnosticsResult, helix_lsp::Error> {
+        match self {
+            Self::Document { server, url, .. } => server
+                .text_document_diagnostic(lsp::TextDocumentIdentifier { uri: url }, None)
+                .ok_or_else(|| {
+                    helix_lsp::Error::Other(anyhow::anyhow!(
+                        "server does not advertise a pull diagnostics provider"
+                    ))
+                })?
+                .await
+                .map(WorkspaceDiagnosticsResult::Document),
+            Self::Workspace { server, .. } => server
+                .workspace_diagnostics(Vec::new())
+                .ok_or_else(|| {
+                    helix_lsp::Error::Other(anyhow::anyhow!(
+                        "server does not advertise workspace diagnostics support"
+                    ))
+                })?
+                .await
+                .map(WorkspaceDiagnosticsResult::Workspace),
+        }
+    }
+}
+
+/// Apply a full pulled diagnostics report for one file.
+///
+/// When the language server reports that a file without an open document has no
+/// diagnostics anymore, the provider's diagnostics for that file are pruned
+/// directly: `handle_lsp_diagnostics` retains such entries on empty publications
+/// (so that they survive the empty republish some servers send after a document
+/// close), but a pull response is authoritative and must clear them or stale
+/// diagnostics would never disappear from the workspace diagnostics picker.
+pub(crate) fn apply_pulled_diagnostics(
+    editor: &mut Editor,
+    provider: &DiagnosticProvider,
+    uri: Uri,
+    version: Option<i32>,
+    items: Vec<lsp::Diagnostic>,
+) {
+    let file_is_open = uri
+        .as_path()
+        .is_some_and(|path| editor.document_id_by_path(path).is_some());
+    if items.is_empty() && !file_is_open {
+        editor.clear_diagnostics(provider, &uri);
+    } else {
+        editor.handle_lsp_diagnostics(provider, uri, version, items);
+    }
+}
+
+/// Store the diagnostics of a settled pull request in the editor diagnostics map.
+fn apply_workspace_diagnostics_response(
+    editor: &mut Editor,
+    request: WorkspaceDiagnosticsRequest,
+    result: WorkspaceDiagnosticsResult,
+) {
+    match (request, result) {
+        (
+            WorkspaceDiagnosticsRequest::Document {
+                server,
+                uri,
+                identifier,
+                ..
+            },
+            WorkspaceDiagnosticsResult::Document(result),
+        ) => {
+            let provider = DiagnosticProvider::Lsp {
+                server_id: server.id(),
+                identifier,
+            };
+            let lsp::DocumentDiagnosticReportResult::Report(report) = result else {
+                // Partial results are not supported.
+                return;
+            };
+            let lsp::DocumentDiagnosticReport::Full(report) = report else {
+                // The report was unchanged since some previous result id, but we do not
+                // keep result ids for files without an open document.
+                return;
+            };
+            apply_pulled_diagnostics(
+                editor,
+                &provider,
+                uri,
+                None,
+                report.full_document_diagnostic_report.items,
+            );
+        }
+        (
+            WorkspaceDiagnosticsRequest::Workspace { server, identifier },
+            WorkspaceDiagnosticsResult::Workspace(result),
+        ) => {
+            let provider = DiagnosticProvider::Lsp {
+                server_id: server.id(),
+                identifier,
+            };
+            let lsp::WorkspaceDiagnosticReportResult::Report(report) = result else {
+                // Partial results are not supported.
+                return;
+            };
+            for report in report.items {
+                let lsp::WorkspaceDocumentDiagnosticReport::Full(report) = report else {
+                    // The report was unchanged since some previous result id, but we do
+                    // not keep result ids for files without an open document.
+                    continue;
+                };
+                let Ok(uri) = helix_core::Uri::try_from(report.uri) else {
+                    continue;
+                };
+                let version = report
+                    .version
+                    .and_then(|version| i32::try_from(version).ok());
+                apply_pulled_diagnostics(
+                    editor,
+                    &provider,
+                    uri,
+                    version,
+                    report.full_document_diagnostic_report.items,
+                );
+            }
+        }
+        _ => {
+            // The response could not be matched with the request; ignore it.
+        }
+    }
+}
+
+/// Collect diagnostics for the workspace from the running language servers and open
+/// the workspace diagnostics picker once the pull requests settle:
+///
+/// * A `workspace/diagnostic` request is sent to every running server advertising the
+///   workspace pull diagnostics capability. These cover all files the server knows
+///   about, whether they are open in helix or not.
+/// * Otherwise `textDocument/diagnostic` requests are sent for every workspace file
+///   (honoring the same ignore rules as the file picker) served by a running language
+///   server that supports pull diagnostics but not workspace-level requests. For
+///   this no documents are opened in helix; language servers compute the diagnostics
+///   for such files from the file system.
+///
+/// Push-only servers (which only publish diagnostics for files that are open in
+/// helix) don't have diagnostics pulled here; the diagnostics such servers last
+/// published for a file remain in the picker even after the file closes.
+///
+/// Returns true if collection was scheduled, in which case the diagnostics picker is
+/// shown once all pull requests settled (or after a timeout).
+fn workspace_diagnostics_collection(cx: &mut Context) -> bool {
+    use crate::filter_picker_entry;
+
+    if COLLECTING.swap(true, Ordering::SeqCst) {
+        // Another collection is under way; open the picker for what was collected so far.
+        return false;
+    }
+
+    let root = doc!(cx.editor).workspace_root().to_path_buf();
+    let file_picker_config = cx.editor.config().file_picker.clone();
+    let loader = cx.editor.syn_loader.load_full();
+
+    // The language servers running (and initialized) right now, by config name.
+    let mut running_servers: HashMap<String, Vec<Arc<Client>>> = HashMap::new();
+    for client in cx.editor.language_servers.iter_clients() {
+        if client.is_initialized() {
+            running_servers
+                .entry(client.name().to_owned())
+                .or_default()
+                .push(client.clone());
+        }
+    }
+
+    // Collect per language which running servers can serve pull requests for files of
+    // that language, and (separately) the servers supporting the workspace level
+    // request.
+    let mut workspace_server_ids = HashSet::new();
+    let mut language_servers: HashMap<Language, Vec<Arc<Client>>> = HashMap::new();
+    let mut workspace_servers: Vec<Arc<Client>> = Vec::new();
+    for language_config in loader.language_configs() {
+        for lsp_features in &language_config.language_servers {
+            if !lsp_features.has_feature(LanguageServerFeature::PullDiagnostics) {
+                continue;
+            }
+            let Some(clients) = running_servers.get(lsp_features.name.as_str()) else {
+                continue;
+            };
+            for client in clients {
+                let Some(diagnostic_provider) = client.capabilities().diagnostic_provider.as_ref()
+                else {
+                    continue;
+                };
+                let options = match diagnostic_provider {
+                    lsp::DiagnosticServerCapabilities::Options(options) => options,
+                    lsp::DiagnosticServerCapabilities::RegistrationOptions(options) => {
+                        &options.diagnostic_options
+                    }
+                };
+                if options.workspace_diagnostics {
+                    // A workspace level request covers all of the files this server
+                    // knows about, so per file requests aren't needed.
+                    if workspace_server_ids.insert(client.id()) {
+                        workspace_servers.push(client.clone());
+                    }
+                } else {
+                    language_servers
+                        .entry(language_config.language())
+                        .or_default()
+                        .push(client.clone());
+                }
+            }
+        }
+    }
+    let language_servers = Arc::new(language_servers);
+
+    cx.jobs.callback(async move {
+        // The walk is potentially slow (many files, ignore rule evaluation), so run it
+        // on the blocking thread pool.
+        let walked_files = {
+            let language_servers = language_servers.clone();
+            tokio::task::spawn_blocking(move || {
+                let absolute_root = root.canonicalize().unwrap_or_else(|_| root.clone());
+                let mut walk_builder = ignore::WalkBuilder::new(&root);
+                walk_builder
+                    .hidden(file_picker_config.hidden)
+                    .parents(file_picker_config.parents)
+                    .ignore(file_picker_config.ignore)
+                    .follow_links(file_picker_config.follow_symlinks)
+                    .git_ignore(file_picker_config.git_ignore)
+                    .git_global(file_picker_config.git_global)
+                    .git_exclude(file_picker_config.git_exclude)
+                    .max_depth(file_picker_config.max_depth)
+                    .filter_entry(move |entry| {
+                        filter_picker_entry(
+                            entry,
+                            &absolute_root,
+                            file_picker_config.deduplicate_links,
+                        )
+                    });
+                walk_builder.add_custom_ignore_filename(helix_loader::config_dir().join("ignore"));
+                walk_builder.add_custom_ignore_filename(".helix/ignore");
+
+                let mut files = Vec::new();
+                for entry in walk_builder.build() {
+                    if files.len() >= MAX_WORKSPACE_FILES {
+                        break;
+                    }
+                    let Ok(entry) = entry else { continue };
+                    if !entry
+                        .file_type()
+                        .is_some_and(|file_type| file_type.is_file())
+                    {
+                        continue;
+                    }
+                    let Ok(metadata) = entry.metadata() else {
+                        continue;
+                    };
+                    if metadata.len() > MAX_WORKSPACE_FILE_BYTES {
+                        continue;
+                    }
+                    let path = entry.into_path();
+                    let Some(language) = loader.language_for_filename(&path) else {
+                        continue;
+                    };
+                    let Some(clients) = language_servers.get(&language) else {
+                        continue;
+                    };
+                    files.push((path, clients.clone()));
+                }
+                files
+            })
+            .await
+            .unwrap_or_default()
+        };
+
+        crate::job::dispatch_blocking(move |editor, compositor| {
+            let mut requests: Vec<WorkspaceDiagnosticsRequest> = workspace_servers
+                .into_iter()
+                .map(|client| WorkspaceDiagnosticsRequest::Workspace {
+                    identifier: pull_diagnostics_identifier(&client),
+                    server: client,
+                })
+                .collect();
+
+            let mut file_count = 0usize;
+            for (path, clients) in walked_files {
+                // Documents that are open have their pull diagnostics refreshed by the
+                // regular engine, so skip them. Canonicalize first: document paths are
+                // stored canonicalized, walk entries may not be.
+                let path = helix_stdx::path::canonicalize(&path);
+                if editor.document_id_by_path(&path).is_some() {
+                    continue;
+                }
+                if file_count >= MAX_WORKSPACE_FILES {
+                    break;
+                }
+                let uri = Uri::from(path);
+                let Ok(url) = uri.to_url() else { continue };
+                for client in clients {
+                    requests.push(WorkspaceDiagnosticsRequest::Document {
+                        identifier: pull_diagnostics_identifier(&client),
+                        server: client.clone(),
+                        uri: uri.clone(),
+                        url: url.clone(),
+                    });
+                }
+                file_count += 1;
+            }
+
+            if requests.is_empty() {
+                COLLECTING.store(false, Ordering::SeqCst);
+                editor
+                    .set_status("No language server supports pull diagnostics for this workspace");
+                push_workspace_diagnostics_picker(editor, compositor);
+                return;
+            }
+            editor.set_status(format!(
+                "Collecting workspace diagnostics ({file_count} files)..."
+            ));
+
+            tokio::spawn(async move {
+                let deadline = tokio::time::Instant::now() + WORKSPACE_DIAGNOSTICS_TIMEOUT;
+                let mut queue = requests;
+                while !queue.is_empty() && tokio::time::Instant::now() < deadline {
+                    let count = queue.len().min(WORKSPACE_DIAGNOSTICS_CONCURRENCY);
+                    let mut batch: FuturesUnordered<_> = queue
+                        .drain(..count)
+                        .map(|request| async move {
+                            let result = request.clone().execute().await;
+                            (request, result)
+                        })
+                        .collect();
+
+                    while let Ok(Some((request, result))) =
+                        tokio::time::timeout_at(deadline, batch.next()).await
+                    {
+                        match result {
+                            Ok(result) => {
+                                crate::job::dispatch(move |editor, _| {
+                                    apply_workspace_diagnostics_response(editor, request, result);
+                                })
+                                .await;
+                            }
+                            Err(err) => {
+                                log::debug!("workspace diagnostics pull failed: {err}");
+                            }
+                        }
+                    }
+                }
+
+                crate::job::dispatch(move |editor, compositor| {
+                    COLLECTING.store(false, Ordering::SeqCst);
+                    push_workspace_diagnostics_picker(editor, compositor);
+                })
+                .await;
+            });
+        });
+
+        Ok(Callback::Editor(Box::new(|_| {})))
+    });
+    true
+}
+
+/// The identifier a language server advertises for its pull diagnostics provider, if
+/// any.
+fn pull_diagnostics_identifier(client: &Client) -> Option<Arc<str>> {
+    match client.capabilities().diagnostic_provider.as_ref()? {
+        lsp::DiagnosticServerCapabilities::Options(options) => options.identifier.clone(),
+        lsp::DiagnosticServerCapabilities::RegistrationOptions(options) => {
+            options.diagnostic_options.identifier.clone()
+        }
+    }
 }
 
 impl ui::menu::Item for CodeActionItem {

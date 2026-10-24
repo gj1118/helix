@@ -273,6 +273,60 @@ pub fn request_all_document_diagnostics_for_language_server(
     }
 }
 
+/// Fire a `workspace/diagnostic` request for the given language server and store the
+/// diagnostics of the workspace reports it returns, covering files that are not open
+/// as well.
+pub fn request_workspace_diagnostics(editor: &mut Editor, server_id: LanguageServerId) {
+    let Some(language_server) = editor.language_server_by_id(server_id) else {
+        return;
+    };
+    let Some(future) = language_server.workspace_diagnostics(Vec::new()) else {
+        return;
+    };
+
+    let identifier = language_server
+        .capabilities()
+        .diagnostic_provider
+        .as_ref()
+        .and_then(|provider| match provider {
+            lsp::DiagnosticServerCapabilities::Options(options) => options.identifier.clone(),
+            lsp::DiagnosticServerCapabilities::RegistrationOptions(options) => {
+                options.diagnostic_options.identifier.clone()
+            }
+        });
+    let provider = DiagnosticProvider::Lsp {
+        server_id,
+        identifier,
+    };
+
+    tokio::spawn(async move {
+        if let Ok(lsp::WorkspaceDiagnosticReportResult::Report(report)) = future.await {
+            for item in report.items {
+                let lsp::WorkspaceDocumentDiagnosticReport::Full(report) = item else {
+                    // The report was unchanged since some previous result id, but we do
+                    // not keep result ids for files without an open document.
+                    continue;
+                };
+                let Ok(uri) = Uri::try_from(report.uri) else {
+                    continue;
+                };
+                let version = report
+                    .version
+                    .and_then(|version| i32::try_from(version).ok());
+                let items = report.full_document_diagnostic_report.items;
+                let provider = provider.clone();
+
+                crate::job::dispatch(move |editor, _| {
+                    crate::commands::lsp::apply_pulled_diagnostics(
+                        editor, &provider, uri, version, items,
+                    );
+                })
+                .await;
+            }
+        }
+    });
+}
+
 pub fn request_document_diagnostics(editor: &mut Editor, doc_id: DocumentId) {
     let Some(doc) = editor.document(doc_id) else {
         return;

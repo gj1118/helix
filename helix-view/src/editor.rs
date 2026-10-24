@@ -1095,6 +1095,9 @@ pub struct LspConfig {
     pub snippets: bool,
     /// Whether to include declaration in the goto reference query
     pub goto_reference_include_declaration: bool,
+    /// Collect diagnostics for the whole workspace in the workspace diagnostics picker by
+    /// asking language servers for diagnostics of files that are not open.
+    pub workspace_diagnostics: bool,
 }
 
 impl Default for LspConfig {
@@ -1113,6 +1116,7 @@ impl Default for LspConfig {
             goto_reference_include_declaration: true,
             display_color_swatches: true,
             color_swatches_string: "■".to_owned(),
+            workspace_diagnostics: true,
         }
     }
 }
@@ -3039,6 +3043,26 @@ impl Editor {
 
     pub fn document_id_by_path(&self, path: &Path) -> Option<DocumentId> {
         self.document_by_path(path).map(|doc| doc.id)
+    }
+
+    /// Remove the diagnostics contributed by `provider` for `uri` from the workspace
+    /// diagnostics map, dropping the entry entirely when the file has no diagnostics
+    /// from any provider left.
+    ///
+    /// This is for pull responses which are authoritative, i.e. a language server
+    /// reporting that a file has no diagnostics anymore. Pruning pushed
+    /// (`publishDiagnostics`) empty reports for files without an open document is
+    /// handled by [`Self::handle_lsp_diagnostics`] instead, which retains the
+    /// diagnostics of such files.
+    pub fn clear_diagnostics(&mut self, provider: &DiagnosticProvider, uri: &Uri) {
+        let mut entry_is_empty = false;
+        if let Some(diagnostics) = self.diagnostics.get_mut(uri) {
+            diagnostics.retain(|(_, existing)| existing != provider);
+            entry_is_empty = diagnostics.is_empty();
+        }
+        if entry_is_empty {
+            self.diagnostics.remove(uri);
+        }
     }
 
     // ??? possible use for integration tests

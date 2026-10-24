@@ -1419,6 +1419,37 @@ impl Client {
         Some(self.call::<lsp::request::DocumentDiagnosticRequest>(params))
     }
 
+    pub fn workspace_diagnostics(
+        &self,
+        previous_result_ids: Vec<lsp::PreviousResultId>,
+    ) -> Option<impl Future<Output = Result<lsp::WorkspaceDiagnosticReportResult>>> {
+        let capabilities = self.capabilities();
+
+        // Return early if the server does not support pull diagnostics for the workspace.
+        let diagnostic_options = match capabilities.diagnostic_provider.as_ref()? {
+            lsp::DiagnosticServerCapabilities::Options(options) => options,
+            lsp::DiagnosticServerCapabilities::RegistrationOptions(options) => {
+                &options.diagnostic_options
+            }
+        };
+
+        if !diagnostic_options.workspace_diagnostics {
+            return None;
+        }
+
+        let params = lsp::WorkspaceDiagnosticParams {
+            identifier: diagnostic_options
+                .identifier
+                .as_ref()
+                .map(|identifier| identifier.to_string()),
+            previous_result_ids,
+            work_done_progress_params: lsp::WorkDoneProgressParams::default(),
+            partial_result_params: lsp::PartialResultParams::default(),
+        };
+
+        Some(self.call::<lsp::request::WorkspaceDiagnosticRequest>(params))
+    }
+
     pub fn text_document_document_highlight(
         &self,
         text_document: lsp::TextDocumentIdentifier,

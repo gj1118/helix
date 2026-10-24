@@ -1509,6 +1509,10 @@ impl Application {
                             &mut self.editor,
                             server_id,
                         );
+                        handlers::diagnostics::request_workspace_diagnostics(
+                            &mut self.editor,
+                            server_id,
+                        );
 
                         Ok(serde_json::Value::Null)
                     }
