@@ -186,9 +186,6 @@ pub struct Tree {
     visible: Vec<Entry>,
 }
 
-/// Guards against symlink cycles when walking ancestors in `reveal`.
-const MAX_REVEAL_DEPTH: usize = 256;
-
 impl Tree {
     /// Creates a tree rooted at `root`, loading the root's children.
     pub fn new(root: PathBuf, params: TreeParams) -> io::Result<Self> {
@@ -354,44 +351,38 @@ impl Tree {
 
     /// Expands every ancestor of `path` so it becomes visible. Returns `true`
     /// if `path` shows up in the tree afterwards.
+    ///
+    /// Paths are compared lexically, not canonically: the tree stores entry
+    /// paths in the same spelling as the root it was opened with (a root
+    /// reached through a symlink must not collide with the canonical
+    /// spelling of the same directory).
     pub fn reveal(&mut self, path: &Path, params: TreeParams) -> bool {
-        let path = match fs::canonicalize(path) {
-            Ok(path) => path,
-            Err(_) => return false,
-        };
-        let canonical_root = fs::canonicalize(&self.root).unwrap_or_else(|_| self.root.clone());
-        if !path.starts_with(&canonical_root) {
+        if !path.starts_with(&self.root) {
             return false;
-        }
-        if path == canonical_root {
-            if !self.is_expanded(&self.root) {
-                let root = self.root.clone();
-                match self.expand(&root, params) {
-                    Ok(()) => return true,
-                    Err(_) => return false,
-                }
-            }
-            return true;
         }
 
-        // Collect the ancestor chain from just above the target up to (and
-        // including) the root, then expand top-down.
-        let mut ancestors: Vec<PathBuf> = Vec::with_capacity(16);
-        let mut cur: PathBuf = path.clone();
-        for _ in 0..MAX_REVEAL_DEPTH {
-            if cur == canonical_root {
-                break;
+        // The root anchors every other expansion; make sure it is expanded.
+        if !self.is_expanded(&self.root) {
+            let root = self.root.clone();
+            if self.expand(&root, params).is_err() {
+                return false;
             }
+        }
+
+        // Collect the ancestor chain nearest-to-target-first, then expand
+        // top-down. The walk always shortens the path, so it terminates on
+        // its own.
+        let mut ancestors: Vec<PathBuf> = Vec::with_capacity(16);
+        let mut cur: PathBuf = path.to_path_buf();
+        while cur != self.root {
             let parent = match cur.parent() {
                 Some(parent) => parent.to_path_buf(),
-                None => break,
+                None => return false,
             };
             cur = parent.clone();
-            ancestors.push(parent);
-        }
-        if cur != canonical_root {
-            // Canonicalization walked past the configured root (symlinks).
-            return false;
+            if cur != self.root {
+                ancestors.push(parent);
+            }
         }
         ancestors.reverse();
 
@@ -642,6 +633,33 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let missing = tmp.path().join("no_such_dir");
         assert!(Tree::new(missing, params(false, true)).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reveal_works_through_symlinked_root() {
+        // The root is reached through a symlink (as happens when TMPDIR or
+        // /var on macOS resolves through one). Reveal must operate in the
+        // root's own spelling, not the canonical one.
+        let dir = TempDir::new().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        std::fs::create_dir_all(link.join("sub/deep")).unwrap();
+        let file = link.join("sub/deep/file.txt");
+        std::fs::write(&file, "f").unwrap();
+
+        let p = params(false, true);
+        let mut tree = Tree::new(link.clone(), p).unwrap();
+        assert!(tree.reveal(&file, p));
+        assert!(tree.visible().iter().any(|e| e.path == file));
+        assert!(tree.is_expanded(&link.join("sub")));
+        assert!(tree.is_expanded(&link.join("sub/deep")));
+
+        // The root itself still reveals.
+        assert!(tree.reveal(&link, p));
     }
 
     #[test]
