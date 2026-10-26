@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use helix_core::unicode::segmentation::UnicodeSegmentation;
 use helix_core::unicode::width::UnicodeWidthStr;
 use helix_view::icons::ICONS;
-use helix_view::input::{KeyCode, KeyEvent, KeyModifiers};
+use helix_view::input::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use helix_view::{
     document::Mode,
     editor::{Action, BufferLineRenderMode, CmdlineStyle},
@@ -108,6 +108,8 @@ pub struct Explorer {
     cursor: usize,
     /// First rendered row (scroll offset), adjusted during render.
     scroll: usize,
+    /// Content rect of the last render, used to hit-test mouse events.
+    area: Rect,
 }
 
 impl Explorer {
@@ -119,6 +121,7 @@ impl Explorer {
             tree,
             cursor: 0,
             scroll: 0,
+            area: Rect::default(),
         })
     }
 
@@ -377,6 +380,63 @@ impl Explorer {
             }
         }
         EventResult::Consumed(None)
+    }
+
+    /// Mouse handling inside the panel: left press selects the row under
+    /// the pointer and manipulates it (expand a directory, open a file),
+    /// the wheel scrolls the selection. Events outside the panel bubble
+    /// down to the editor underneath.
+    fn handle_mouse(&mut self, mouse: MouseEvent, cx: &mut Context) -> EventResult {
+        let area = self.area;
+        if mouse.column < area.x
+            || mouse.column >= area.x.saturating_add(area.width)
+            || mouse.row < area.y
+            || mouse.row >= area.y.saturating_add(area.height)
+        {
+            return EventResult::Ignored(None);
+        }
+
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                // Rows are drawn from `scroll` at `area.y` downwards, so a
+                // click at `row` maps to visible index `scroll + row - y`.
+                let i = self.scroll + (mouse.row - area.y) as usize;
+                if i >= self.len() {
+                    // Blank space below the last row: consumed but inert.
+                    return EventResult::Consumed(None);
+                }
+                self.cursor = i;
+                if mouse.modifiers != KeyModifiers::NONE {
+                    return EventResult::Consumed(None);
+                }
+                let Some(entry) = self.entry_cloned() else {
+                    return EventResult::Consumed(None);
+                };
+                if entry.is_dir {
+                    if let Err(err) = self.tree.toggle(&entry.path, tree_params(cx.editor)) {
+                        cx.editor
+                            .set_error(format!("Failed to read {}: {err}", entry.path.display()));
+                    }
+                    self.clamp_cursor();
+                } else {
+                    self.open_entry(cx, Action::Replace);
+                }
+                EventResult::Consumed(None)
+            }
+            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+                let lines = cx.editor.config().scroll_lines.unsigned_abs().max(1);
+                if mouse.kind == MouseEventKind::ScrollUp {
+                    self.cursor = self.cursor.saturating_sub(lines);
+                } else {
+                    self.cursor = (self.cursor + lines).min(self.len().saturating_sub(1));
+                }
+                EventResult::Consumed(None)
+            }
+            // Everything else over the panel (drag, right/middle click,
+            // click press) stays inside the panel: inert, not leaked to the
+            // editor underneath.
+            _ => EventResult::Consumed(None),
+        }
     }
 
     /// `.`: reveal and select the focused document's file.
@@ -800,6 +860,12 @@ impl Component for Explorer {
             return EventResult::Ignored(None);
         }
 
+        // Mouse: clicks inside the panel operate the tree (select, expand,
+        // open); anything else bubbles down to the editor underneath.
+        if let Event::Mouse(mouse) = event {
+            return self.handle_mouse(*mouse, cx);
+        }
+
         let Event::Key(key) = event else {
             return EventResult::Ignored(None);
         };
@@ -893,6 +959,9 @@ impl Component for Explorer {
         if rect.width == 0 || area.width == 0 {
             return;
         }
+        // Remember where the rows live so that mouse events can be
+        // hit-tested against the panel without re-deriving the layout.
+        self.area = rect;
 
         let theme = &cx.editor.theme;
         let text_style = theme.get("ui.text");

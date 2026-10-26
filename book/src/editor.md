@@ -363,6 +363,11 @@ Inside the panel (while it is focused):
 |`q` | Close the panel |
 |`Esc` | Hand keyboard focus back to the editor (panel keeps its tree) |
 
+With mouse support enabled (`[editor]` `mouse = true`, the default), left click
+selects and acts on the row under the pointer — a folder expands/collapses, a
+file opens in the buffer — and the scroll wheel moves the selection. Clicks
+outside the panel are unaffected.
+
 ### `[editor.buffer-picker]` Section
 
 Set options for buffer picker.

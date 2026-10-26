@@ -144,6 +144,11 @@ Inside the panel (while it is focused):
 |`q` | Close the panel |
 |`Esc` | Hand keyboard focus back to the editor (panel keeps its tree) |
 
+With mouse support enabled (`[editor] mouse = true`, the default), left click
+selects and acts on the row under the pointer — a folder expands/collapses, a
+file opens in the buffer — and the scroll wheel moves the selection. Clicks
+outside the panel keep working as usual.
+
 ## Zenbones Themes
 
 The `runtime/themes` directory includes Helix ports of the Zenbones collection: `zenbones`, `zenwritten`, `neobones`, `vimbones`, `rosebones`, `forestbones`, `nordbones`, `tokyobones`, `seoulbones`, `duckbones`, `zenburned`, and `kanagawabones`. Light variants are available with the `_light` suffix for `zenbones`, `zenwritten`, `neobones`, `rosebones`, `forestbones`, `tokyobones`, and `seoulbones`. The upstream `randombones` scheme is a random selector rather than a palette, so it is not included as a static Helix theme.
