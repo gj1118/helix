@@ -1741,6 +1741,10 @@ impl EditorView {
         self.pseudo_pending.extend(self.keymaps.pending());
         let key_result = self.keymaps.get(mode, event);
         cxt.editor.autoinfo = self.keymaps.sticky().map(|node| node.infobox());
+        // Publish the pending key sequence so sibling components (e.g. the
+        // explorer panel) can tell partial multi-key sequences like
+        // `<space>x` apart from bare keys.
+        cxt.editor.keymap_pending = self.keymaps.pending().to_vec();
 
         let mut execute_command = |command: &commands::MappableCommand| {
             command.execute(cxt);
@@ -2468,6 +2472,11 @@ impl Component for EditorView {
         if use_bufferline {
             editor_area = editor_area.clip_top(1);
         }
+
+        // Reserve the pinned explorer column from the editor framing so the
+        // views never allocate columns under the panel (no-op when the panel
+        // is hidden or floating).
+        let editor_area = crate::ui::explorer::layout(cx.editor, editor_area);
 
         // if the terminal size suddenly changed, we need to trigger a resize
         cx.editor.resize(editor_area);

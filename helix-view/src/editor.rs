@@ -5,6 +5,7 @@ use crate::{
         DocumentOpenError, DocumentSavedEventFuture, DocumentSavedEventResult, Mode, SavePoint,
     },
     events::{DocumentDidClose, DocumentDidOpen, DocumentFocusLost},
+    explorer::{ExplorerClipboard, ExplorerConfig},
     graphics::{CursorKind, Rect},
     handlers::Handlers,
     info::Info,
@@ -465,6 +466,8 @@ pub struct Config {
     pub breadcrumb: BreadcrumbConfig,
     /// Configuration of the file explorer
     pub file_explorer: FileExplorerConfig,
+    /// Configuration of the file tree explorer panel.
+    pub explorer: ExplorerConfig,
     /// Configuration of the statusline elements
     pub statusline: StatusLineConfig,
     /// Shape for cursor in each mode
@@ -1829,6 +1832,7 @@ impl Default for Config {
             bufferline: BufferLineConfig::default(),
             breadcrumb: BreadcrumbConfig::default(),
             file_explorer: FileExplorerConfig::default(),
+            explorer: ExplorerConfig::default(),
             statusline: StatusLineConfig::default(),
             cursor_shape: CursorShapeConfig::default(),
             true_color: false,
@@ -2093,6 +2097,17 @@ pub struct Editor {
     pub last_cwd: Option<PathBuf>,
     pub dir_stack: VecDeque<PathBuf>,
 
+    /// Pending key sequence (the keys typed so far of a multi-key
+    /// mapping, e.g. `[<space>]` after pressing space in normal mode).
+    /// Published by the editor view's keymap handling so components can
+    /// defer to in-progress sequences.
+    pub keymap_pending: Vec<KeyEvent>,
+
+    /// State of the file tree explorer panel.
+    pub explorer_panel: crate::explorer::ExplorerState,
+    /// Explorer internal clipboard for cut/copy-paste entries.
+    pub explorer_clipboard: Option<ExplorerClipboard>,
+
     pub exit_code: i32,
 
     pub config_events: (UnboundedSender<ConfigEvent>, UnboundedReceiver<ConfigEvent>),
@@ -2233,6 +2248,9 @@ impl Editor {
             last_motion: None,
             last_completion: None,
             last_cwd: None,
+            keymap_pending: Vec::new(),
+            explorer_panel: crate::explorer::ExplorerState::default(),
+            explorer_clipboard: None,
             config,
             auto_pairs,
             exit_code: 0,
@@ -2277,6 +2295,25 @@ impl Editor {
 
     pub fn config(&self) -> DynGuard<Config> {
         self.config.load()
+    }
+
+    /// The active explorer side, honoring the runtime override.
+    pub fn explorer_side(&self) -> crate::explorer::ExplorerSide {
+        let config = self.config.load();
+        self.explorer_panel.side(&config.explorer)
+    }
+
+    /// The active explorer width, honoring the runtime override.
+    pub fn explorer_width(&self) -> u16 {
+        let config = self.config.load();
+        self.explorer_panel.width(&config.explorer)
+    }
+
+    /// Whether hidden files are shown in the explorer, honoring the runtime
+    /// override.
+    pub fn explorer_show_hidden(&self) -> bool {
+        let config = self.config.load();
+        self.explorer_panel.show_hidden(&config.explorer)
     }
 
     /// Call if the config has changed to let the editor update all

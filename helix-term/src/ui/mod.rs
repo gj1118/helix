@@ -2,6 +2,7 @@ mod cmdline_popup;
 mod completion;
 mod document;
 pub(crate) mod editor;
+pub mod explorer;
 mod file_explorer;
 pub mod gradient_border;
 mod info;

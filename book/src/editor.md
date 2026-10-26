@@ -288,6 +288,57 @@ Note that the ignore files consulted by the file explorer when `ignore` is set t
 |`git-exclude` | Enables reading `.git/info/exclude` files | `false`
 |`flatten-dirs` | Enables flattening single child directories | `true`
 
+### `[editor.explorer]` Section
+
+Configuration for the explorer file tree panel (toggled with `<space>x` or
+`:explorer-toggle`). The panel is a real tree sidebar: pinned to one edge of
+the terminal it resizes the editor views around itself, or it can float over
+the editor. Opening the panel does not scan the whole workspace — directory
+children are read from disk on first expansion only.
+
+| Key | Description | Default |
+|--|--|---------|
+|`side` | Where the panel lives: `left`, `right`, or `floating` | `left` |
+|`width` | Width of the pinned panel in columns | `30` |
+|`floating-width` | Width of the floating window in columns | `40` |
+|`floating-height` | Height of the floating window in lines | `20` |
+|`icons` | Show per-file-type icons (also honors the global `[editor.icons]` settings) | `true` |
+|`auto-reveal` | Select the current buffer's file when the panel opens | `false` |
+|`show-hidden` | Show dotfiles (hidden files) | `false` |
+|`directories-first` | Sort directories before files in directory listings | `true` |
+
+Example:
+
+```toml
+[editor.explorer]
+side = "left"
+width = 35
+```
+
+The side and width can also be switched at runtime with
+`:explorer-left`, `:explorer-right`, `:explorer-float`, and
+`:explorer-width <columns>`. Inside the panel (while it is focused):
+
+| Key | Description |
+|--|--|
+|`j`/`k`, up/down | Move within the tree |
+|`g`/`G` | Jump to the top/bottom of the tree |
+|`h`, left | Collapse the directory under the cursor, or ascend to its parent |
+|`l`/Enter, right | Expand the directory under the cursor, or open the file |
+|`v` | Open the file under the cursor in a vertical split |
+|`s` | Open the file under the cursor in a horizontal split |
+|`.` | Reveal and select the current buffer's file |
+|`R` | Reload expanded directories from disk |
+|`H` | Toggle showing hidden files |
+|`a` | Create a file (or directory when the name ends in `/`) |
+|`r` | Rename the entry under the cursor |
+|`d` | Delete the entry under the cursor (after confirmation) |
+|`x` | Cut the entry under the cursor |
+|`c` | Copy the entry under the cursor |
+|`p` | Paste from the explorer clipboard into the directory under the cursor |
+|`q` | Close the panel |
+|`Esc` | Hand keyboard focus back to the editor (panel keeps its tree) |
+
 ### `[editor.buffer-picker]` Section
 
 Set options for buffer picker.
