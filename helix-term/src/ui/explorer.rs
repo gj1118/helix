@@ -261,6 +261,11 @@ impl Explorer {
                 EventResult::Consumed(None)
             }
             KeyCode::Esc => {
+                // Pinning keeps the tree visible and just hands focus back;
+                // a leftover float would cover the editor, so it closes.
+                if cx.editor.explorer_side() == ExplorerSide::Floating {
+                    cx.editor.explorer_panel.visible = false;
+                }
                 cx.editor.explorer_panel.focused = false;
                 EventResult::Consumed(None)
             }

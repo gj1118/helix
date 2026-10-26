@@ -69,9 +69,9 @@ While the panel is focused (in normal mode) a bare `x` cuts the file under the
 cursor, which is why the toggle itself is a two-key sequence. Moving back to a
 buffer is symmetrical: opening a file with `l`/Enter lands focus on that buffer
 directly, `Esc` hands focus back to the editor while keeping the tree open, and
-`q` hides the panel entirely. When the panel floats, opening a file (`l`/Enter,
-or a split with `v`/`s`) also closes the float, since it would otherwise cover
-the buffer it just opened.
+`q` hides the panel entirely. When the panel floats, anything that hands focus
+back into an opened buffer (`l`/Enter, a split with `v`/`s`) — or plain `Esc` —
+also closes the float, since it would otherwise cover the editor.
 
 The panel is pinned to one edge of the terminal (the editor views resize around
 it), or it can float over the editor. Opening it does not scan the whole
@@ -144,7 +144,7 @@ Inside the panel (while it is focused):
 |`c` | Copy the entry under the cursor |
 |`p` | Paste from the explorer clipboard into the directory under the cursor |
 |`q` | Close the panel |
-|`Esc` | Hand keyboard focus back to the editor (panel keeps its tree) |
+|`Esc` | Hand keyboard focus back to the editor (panel keeps its tree; a floating panel closes instead) |
 
 With mouse support enabled (`[editor] mouse = true`, the default), left click
 selects and acts on the row under the pointer — a folder expands/collapses, a
