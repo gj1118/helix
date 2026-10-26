@@ -4714,7 +4714,7 @@ fn open(cx: &mut Context, open: Open, comment_continuation: CommentContinuation)
         // calculate new selection ranges
         let pos = offs + above_next_line_end_index + above_next_line_end_width;
         let comment_len = continue_comment_token
-            .map(|token| token.len() + 1) // `+ 1` for the extra space added
+            .map(|token| token.chars().count() + 1) // `+ 1` for the extra space added
             .unwrap_or_default();
         for i in 0..count {
             // pos                     -> beginning of reference line,
