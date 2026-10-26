@@ -20,6 +20,8 @@ New Features
    Add this following to your editor.statusline config 
    <img width="428" height="220" alt="image" src="https://github.com/user-attachments/assets/dea63278-a649-4561-a29a-b1c0eddacf9f" />
 
+5. Explorer file tree panel — toggle with `<space>x`, pinned or floating, with file operations (see [Explorer](#explorer) below)
+
 
    
 
@@ -54,6 +56,64 @@ This fork of Helix implements the following pull requests. Future pull requests 
 28. https://github.com/helix-editor/helix/pull/12043 (6 new case conversion commands: PascalCase, camelCase, snake_case, Title Case, kebab-case, Sentence case)
 29. https://github.com/helix-editor/helix/pull/15854 (scrollable file preview in picker)
 30. https://github.com/helix-editor/helix/pull/15573 (breadcrumb navigation bar - with tree-sitter fallback, depth/name truncation, debounced LSP requests and icon support)
+
+## Explorer
+
+A keyboard-driven file tree sidebar. Toggle it with `<space>x` or `:explorer-toggle`.
+While the panel is focused (in normal mode) a bare `x` cuts the file under the
+cursor, which is why the toggle itself is a two-key sequence.
+
+The panel is pinned to one edge of the terminal (the editor views resize around
+it), or it can float over the editor. Opening it does not scan the whole
+workspace — directory children are read from disk on first expansion only.
+
+Default settings (`[editor.explorer]` in your `config.toml`):
+
+| Key | Description | Default |
+|--|--|---------|
+|`side` | Where the panel lives: `left`, `right`, or `floating` | `left` |
+|`width` | Width of the pinned panel in columns | `30` |
+|`floating-width` | Width of the floating window in columns | `40` |
+|`floating-height` | Height of the floating window in lines | `20` |
+|`icons` | Show per-file-type icons (also honors the global `[editor.icons]` settings) | `true` |
+|`auto-reveal` | Select the current buffer's file when the panel opens | `false` |
+|`show-hidden` | Show dotfiles (hidden files) | `false` |
+|`directories-first` | Sort directories before files in directory listings | `true` |
+
+Example:
+
+```toml
+[editor.explorer]
+side = "left"
+width = 35
+```
+
+The side and width can also be switched at runtime with `:explorer-left`,
+`:explorer-right`, `:explorer-float`, and `:explorer-width <columns>`.
+`:explorer-reveal` selects the current buffer's file, and `:explorer-refresh`
+re-reads the expanded directories from disk.
+
+Inside the panel (while it is focused):
+
+| Key | Description |
+|--|--|
+|`j`/`k`, up/down | Move within the tree |
+|`g`/`G` | Jump to the top/bottom of the tree |
+|`h`, left | Collapse the directory under the cursor, or ascend to its parent |
+|`l`/Enter, right | Expand the directory under the cursor, or open the file |
+|`v` | Open the file under the cursor in a vertical split |
+|`s` | Open the file under the cursor in a horizontal split |
+|`.` | Reveal and select the current buffer's file |
+|`R` | Reload expanded directories from disk |
+|`H` | Toggle showing hidden files |
+|`a` | Create a file (or directory when the name ends in `/`) |
+|`r` | Rename the entry under the cursor |
+|`d` | Delete the entry under the cursor (after confirmation) |
+|`x` | Cut the entry under the cursor |
+|`c` | Copy the entry under the cursor |
+|`p` | Paste from the explorer clipboard into the directory under the cursor |
+|`q` | Close the panel |
+|`Esc` | Hand keyboard focus back to the editor (panel keeps its tree) |
 
 ## Zenbones Themes
 
