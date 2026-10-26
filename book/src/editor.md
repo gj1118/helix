@@ -326,7 +326,9 @@ panel while it is focused. To move focus to an open panel without
 toggling, use `<space>wx` (the Window submode) or `:explorer-focus`.
 Opening a file with `l`/Enter lands focus on that buffer directly; `Esc`
 hands focus back to the editor while keeping the tree open, and `q` hides
-the panel entirely.
+the panel entirely. When the panel floats, opening a file (`l`/Enter, or
+a split with `v`/`s`) also closes the float, since it would otherwise
+cover the buffer it just opened.
 
 The tree uses the global `[icons]` configuration, shared with the file
 pickers. The folder glyph is the `directory` override in `[icons.mime]`,

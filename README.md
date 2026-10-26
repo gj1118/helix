@@ -69,7 +69,9 @@ While the panel is focused (in normal mode) a bare `x` cuts the file under the
 cursor, which is why the toggle itself is a two-key sequence. Moving back to a
 buffer is symmetrical: opening a file with `l`/Enter lands focus on that buffer
 directly, `Esc` hands focus back to the editor while keeping the tree open, and
-`q` hides the panel entirely.
+`q` hides the panel entirely. When the panel floats, opening a file (`l`/Enter,
+or a split with `v`/`s`) also closes the float, since it would otherwise cover
+the buffer it just opened.
 
 The panel is pinned to one edge of the terminal (the editor views resize around
 it), or it can float over the editor. Opening it does not scan the whole

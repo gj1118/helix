@@ -343,6 +343,11 @@ impl Explorer {
         };
         let path = entry.path.clone();
 
+        // A floating tree covers the buffers it opens, so any successful open
+        // also closes the float; a pinned panel just hands focus back and
+        // stays visible. Directory expansion and open errors keep the tree up.
+        let floating = cx.editor.explorer_side() == ExplorerSide::Floating;
+
         // A plain open (`l`/Enter) prefers focusing the view that already shows
         // this file, instead of replacing another view's buffer or opening a
         // duplicate. Split requests (`v`/`s`) always split, as asked.
@@ -360,6 +365,9 @@ impl Explorer {
                     cx.editor.focus(view_id);
                     // Hand keyboard focus back to the editor; the tree stays open.
                     cx.editor.explorer_panel.focused = false;
+                    if floating {
+                        cx.editor.explorer_panel.visible = false;
+                    }
                     return EventResult::Consumed(None);
                 }
             }
@@ -369,6 +377,9 @@ impl Explorer {
             Ok(_) => {
                 // Hand keyboard focus back to the editor; the tree stays open.
                 cx.editor.explorer_panel.focused = false;
+                if floating {
+                    cx.editor.explorer_panel.visible = false;
+                }
                 cx.editor.set_status(format!("Opened {}", path.display()));
             }
             Err(err) => {
