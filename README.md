@@ -123,6 +123,23 @@ toml = "⚙"
 Setting `[editor.explorer] icons = false` disables icons in the tree only;
 everything else keeps the global `[icons.*]` settings.
 
+### The panel background
+
+The panel background is styled by the `ui.popup.explorer` theme scope; when a
+theme does not define it, it falls back to the popup style (`ui.popup`). To
+give the floating window (or the pinned sidebar) its own background, create a
+theme that inherits from yours and override it:
+
+```toml
+# ~/.config/helix/themes/mine.toml
+inherits = "mytheme"
+"ui.popup.explorer" = { bg = "#202030" }
+```
+
+Then select it with `theme = "mine"` in `config.toml` or `:theme mine`.
+The same tweak also tints the panel's border, since the border inherits the
+backdrop color.
+
 Inside the panel (while it is focused):
 
 | Key | Description |

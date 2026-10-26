@@ -984,7 +984,9 @@ impl Component for Explorer {
         let dir_style = theme.get("ui.text.directory");
         let sel_style = theme.get("ui.selection");
         let virtual_style = theme.get("ui.virtual");
-        let background_style = theme.get("ui.popup");
+        // The panel's own scope so the background can be themed without
+        // touching every other popup; falls back to `ui.popup`.
+        let background_style = theme.get("ui.popup.explorer");
 
         match frame {
             Some(frame) => {
