@@ -66,7 +66,10 @@ while the tree is focused it hides the panel. `<space>wx` (the Window
 submode) and `:explorer-focus` move focus to the open panel without
 hiding it.
 While the panel is focused (in normal mode) a bare `x` cuts the file under the
-cursor, which is why the toggle itself is a two-key sequence.
+cursor, which is why the toggle itself is a two-key sequence. Moving back to a
+buffer is symmetrical: opening a file with `l`/Enter lands focus on that buffer
+directly, `Esc` hands focus back to the editor while keeping the tree open, and
+`q` hides the panel entirely.
 
 The panel is pinned to one edge of the terminal (the editor views resize around
 it), or it can float over the editor. Opening it does not scan the whole
@@ -80,7 +83,7 @@ Default settings (`[editor.explorer]` in your `config.toml`):
 |`width` | Width of the pinned panel in columns | `30` |
 |`floating-width` | Width of the floating window in columns | `40` |
 |`floating-height` | Height of the floating window in lines | `20` |
-|`icons` | Show per-file-type icons (also honors the global `[editor.icons]` settings) | `true` |
+|`icons` | Show per-file-type icons (honors the global `[icons.mime]` settings, see below) | `true` |
 |`auto-reveal` | Select the current buffer's file when the panel opens | `false` |
 |`show-hidden` | Show dotfiles (hidden files) | `false` |
 |`directories-first` | Sort directories before files in directory listings | `true` |
@@ -98,6 +101,25 @@ The side and width can also be switched at runtime with `:explorer-left`,
 `:explorer-reveal` selects the current buffer's file, and `:explorer-refresh`
 re-reads the expanded directories from disk. `:explorer-focus` moves focus back
 to an open panel.
+
+### Overriding the icons
+
+The tree uses the same icon configuration as the file pickers (nothing
+explorer-specific to set up). The folder glyph comes from the `directory`
+override in `[icons.mime]`; file icons are keyed by **exact file name**
+(`README.md`, `Cargo.toml`) or **file extension** (`rs`, `toml`) — language
+names like `rust` are not matched, use the extension instead:
+
+```toml
+[icons.mime]
+enabled = true
+directory = "📁"  # folder icon in the tree (default: built-in nerd-font folder)
+rs = "🦀"
+toml = "⚙"
+```
+
+Setting `[editor.explorer] icons = false` disables icons in the tree only;
+everything else keeps the global `[icons.*]` settings.
 
 Inside the panel (while it is focused):
 

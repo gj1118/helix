@@ -302,7 +302,7 @@ children are read from disk on first expansion only.
 |`width` | Width of the pinned panel in columns | `30` |
 |`floating-width` | Width of the floating window in columns | `40` |
 |`floating-height` | Height of the floating window in lines | `20` |
-|`icons` | Show per-file-type icons (also honors the global `[editor.icons]` settings) | `true` |
+|`icons` | Show per-file-type icons (honors the global `[icons.mime]` settings) | `true` |
 |`auto-reveal` | Select the current buffer's file when the panel opens | `false` |
 |`show-hidden` | Show dotfiles (hidden files) | `false` |
 |`directories-first` | Sort directories before files in directory listings | `true` |
@@ -324,6 +324,22 @@ is hidden, refocuses the tree while the panel is open but the editor has
 the keyboard (e.g. after opening a file from the tree), and hides the
 panel while it is focused. To move focus to an open panel without
 toggling, use `<space>wx` (the Window submode) or `:explorer-focus`.
+Opening a file with `l`/Enter lands focus on that buffer directly; `Esc`
+hands focus back to the editor while keeping the tree open, and `q` hides
+the panel entirely.
+
+The tree uses the global `[icons]` configuration, shared with the file
+pickers. The folder glyph is the `directory` override in `[icons.mime]`,
+and file icons are keyed by exact file name (`README.md`) or file
+extension (`rs`) — not by language name:
+
+```toml
+[icons.mime]
+enabled = true
+directory = "📁"
+rs = "🦀"
+```
+
 Inside the panel (while it is focused):
 
 | Key | Description |
