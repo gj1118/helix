@@ -429,6 +429,7 @@ impl MappableCommand {
         file_explorer_in_current_buffer_directory, "Open file explorer at current buffer's directory",
         file_explorer_in_current_directory, "Open file explorer at current working directory",
         explorer_toggle, "Toggle the explorer file tree panel",
+        explorer_focus, "Focus the explorer file tree panel (opening it if hidden)",
         explorer_left, "Show the explorer panel pinned to the left",
         explorer_right, "Show the explorer panel pinned to the right",
         explorer_float, "Show the explorer panel as a floating window",
@@ -3813,11 +3814,27 @@ fn file_picker_in_current_directory(cx: &mut Context) {
 }
 
 pub fn explorer_toggle(cx: &mut Context) {
-    cx.editor.explorer_panel.visible = !cx.editor.explorer_panel.visible;
-    cx.editor.explorer_panel.focused = cx.editor.explorer_panel.visible;
-    if cx.editor.explorer_panel.visible {
+    if !cx.editor.explorer_panel.visible {
+        // Hidden: show the panel and take focus.
+        cx.editor.explorer_panel.visible = true;
+        cx.editor.explorer_panel.focused = true;
         explorer_install_layer(cx);
+    } else if cx.editor.explorer_panel.focused {
+        // Focused: hide (the plain "toggle" case).
+        cx.editor.explorer_panel.visible = false;
+        cx.editor.explorer_panel.focused = false;
+    } else {
+        // Visible but the editor has the keyboard (e.g. after opening a
+        // file from the tree or Esc): refocus the tree.
+        cx.editor.explorer_panel.focused = true;
     }
+}
+
+pub fn explorer_focus(cx: &mut Context) {
+    // Move keyboard focus to the tree, opening the panel if it was hidden.
+    cx.editor.explorer_panel.visible = true;
+    cx.editor.explorer_panel.focused = true;
+    explorer_install_layer(cx);
 }
 
 pub fn explorer_left(cx: &mut Context) {

@@ -4875,6 +4875,14 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         signature: Signature { positionals: (0, Some(0)), ..Signature::DEFAULT },
     },
     TypableCommand {
+        name: "explorer-focus",
+        aliases: &[],
+        doc: "Focus the explorer file tree panel (opening it if hidden)",
+        fun: explorer_focus,
+        completer: CommandCompleter::none(),
+        signature: Signature { positionals: (0, Some(0)), ..Signature::DEFAULT },
+    },
+    TypableCommand {
         name: "explorer-left",
         aliases: &[],
         doc: "Show the explorer panel pinned to the editor's left edge",
@@ -5577,6 +5585,17 @@ fn explorer_toggle(
         return Ok(());
     }
     explorer_typable(cx, crate::commands::explorer_toggle)
+}
+
+fn explorer_focus(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    explorer_typable(cx, crate::commands::explorer_focus)
 }
 
 fn explorer_left(

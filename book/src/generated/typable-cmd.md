@@ -107,6 +107,7 @@
 | `:workspace-exclude` | Mark the current workspace as never-prompt. Never prompts for trust again. |
 | `:reload-history` | Reload history files for persistent state |
 | `:explorer-toggle` | Toggle the explorer file tree panel |
+| `:explorer-focus` | Focus the explorer file tree panel (opening it if hidden) |
 | `:explorer-left` | Show the explorer panel pinned to the editor's left edge |
 | `:explorer-right` | Show the explorer panel pinned to the editor's right edge |
 | `:explorer-float` | Show the explorer panel as a floating window over the editor |

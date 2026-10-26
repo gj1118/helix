@@ -59,7 +59,12 @@ This fork of Helix implements the following pull requests. Future pull requests 
 
 ## Explorer
 
-A keyboard-driven file tree sidebar. Toggle it with `<space>x` or `:explorer-toggle`.
+A keyboard-driven file tree sidebar. Toggle it with `<space>x` or
+`:explorer-toggle` — when the panel is hidden it opens and takes focus,
+when it is open but the editor has focus it re-focuses the tree, and
+while the tree is focused it hides the panel. `<space>wx` (the Window
+submode) and `:explorer-focus` move focus to the open panel without
+hiding it.
 While the panel is focused (in normal mode) a bare `x` cuts the file under the
 cursor, which is why the toggle itself is a two-key sequence.
 
@@ -91,7 +96,8 @@ width = 35
 The side and width can also be switched at runtime with `:explorer-left`,
 `:explorer-right`, `:explorer-float`, and `:explorer-width <columns>`.
 `:explorer-reveal` selects the current buffer's file, and `:explorer-refresh`
-re-reads the expanded directories from disk.
+re-reads the expanded directories from disk. `:explorer-focus` moves focus back
+to an open panel.
 
 Inside the panel (while it is focused):
 

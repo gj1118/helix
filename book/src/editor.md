@@ -317,7 +317,14 @@ width = 35
 
 The side and width can also be switched at runtime with
 `:explorer-left`, `:explorer-right`, `:explorer-float`, and
-`:explorer-width <columns>`. Inside the panel (while it is focused):
+`:explorer-width <columns>`.
+
+`<space>x` is a three-state toggle: it opens and focuses the panel when it
+is hidden, refocuses the tree while the panel is open but the editor has
+the keyboard (e.g. after opening a file from the tree), and hides the
+panel while it is focused. To move focus to an open panel without
+toggling, use `<space>wx` (the Window submode) or `:explorer-focus`.
+Inside the panel (while it is focused):
 
 | Key | Description |
 |--|--|
