@@ -225,6 +225,7 @@ impl Explorer {
                 EventResult::Consumed(None)
             }
             KeyCode::Char('h') | KeyCode::Left => self.on_collapse_or_ascend(),
+            KeyCode::Char('-') => self.on_parent_dir(),
             KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => self.on_primary_open(cx),
             KeyCode::Char('v') => self.on_open_split(cx, Action::VerticalSplit),
             KeyCode::Char('s') => self.on_open_split(cx, Action::HorizontalSplit),
@@ -279,6 +280,26 @@ impl Explorer {
                 if let Some(i) = self.tree.visible().iter().position(|e| e.path == parent) {
                     self.cursor = i;
                 }
+            }
+        }
+        EventResult::Consumed(None)
+    }
+
+    /// `-`: move the cursor to the parent directory row of the entry under
+    /// the cursor (nvim-tree "dir up"). The cursor stays at the root when
+    /// there is no parent row in the tree.
+    fn on_parent_dir(&mut self) -> EventResult {
+        let Some(entry) = self.entry_cloned() else {
+            return EventResult::Consumed(None);
+        };
+        if let Some(parent) = entry.path.parent() {
+            if let Some(i) = self
+                .tree
+                .visible()
+                .iter()
+                .position(|e| e.path == parent && e.is_dir)
+            {
+                self.cursor = i;
             }
         }
         EventResult::Consumed(None)

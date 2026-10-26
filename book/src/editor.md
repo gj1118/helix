@@ -324,6 +324,7 @@ The side and width can also be switched at runtime with
 |`j`/`k`, up/down | Move within the tree |
 |`g`/`G` | Jump to the top/bottom of the tree |
 |`h`, left | Collapse the directory under the cursor, or ascend to its parent |
+|`-` | Move the cursor to the parent directory row |
 |`l`/Enter, right | Expand the directory under the cursor, or open the file |
 |`v` | Open the file under the cursor in a vertical split |
 |`s` | Open the file under the cursor in a horizontal split |

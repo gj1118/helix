@@ -245,9 +245,16 @@ impl Tree {
             if !params.show_hidden && name.starts_with('.') {
                 continue;
             }
+            // Symlinks are classified by their target: a link pointing at a
+            // directory is expanded like a directory, not rendered as a file.
+            // `entry.file_type()` reports the link kind, so follow the target
+            // only when we must (this runs once per loaded directory).
             let is_dir = match entry.file_type() {
-                Ok(ft) => ft.is_dir(),
-                Err(_) => false,
+                Ok(ft) if ft.is_dir() => true,
+                Ok(ft) if ft.is_symlink() => {
+                    fs::metadata(&path).map(|m| m.is_dir()).unwrap_or(false)
+                }
+                _ => false,
             };
             let sort_key = name.to_lowercase();
             children.push(Child {
@@ -677,5 +684,48 @@ mod tests {
         // Files copy through too.
         copy_recursively(&root.join("src/top.txt"), &root.join("top2.txt")).unwrap();
         assert!(root.join("top2.txt").is_file());
+    }
+
+    // Symlink classification uses `fs::metadata`, which is not available on
+    // all targets' std APIs in the same shape; keep the test unix-only.
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_dirs_render_as_directories() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir(root.join("real_dir")).unwrap();
+        std::fs::write(root.join("real_dir/file.txt"), "f").unwrap();
+        std::fs::write(root.join("loose.txt"), "l").unwrap();
+        symlink(root.join("real_dir"), root.join("linked_dir")).unwrap();
+        // A link whose target does not exist is kind of a file row: it can
+        // not be expanded like a directory.
+        symlink(root.join("missing_target"), root.join("dangling")).unwrap();
+
+        let p = params(false, true);
+        let mut tree = Tree::new(root.to_path_buf(), p).unwrap();
+
+        let linked = tree
+            .visible()
+            .iter()
+            .find(|e| e.name == "linked_dir")
+            .expect("linked_dir row exists")
+            .clone();
+        assert!(linked.is_dir, "symlink to a directory is a dir row");
+        let dangling = tree
+            .visible()
+            .iter()
+            .find(|e| e.name == "dangling")
+            .expect("dangling row exists")
+            .clone();
+        assert!(!dangling.is_dir, "dangling link is a file-like row");
+
+        // Expanding the linked directory lists the target's children.
+        tree.expand_at(&root.join("linked_dir"), p).unwrap();
+        assert!(tree
+            .visible()
+            .iter()
+            .any(|e| e.name == "file.txt" && e.depth == 2));
     }
 }
