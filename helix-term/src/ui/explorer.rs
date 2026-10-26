@@ -297,7 +297,7 @@ impl Explorer {
             self.clamp_cursor();
             EventResult::Consumed(None)
         } else {
-            self.open_entry(cx, Action::Load)
+            self.open_entry(cx, Action::Replace)
         }
     }
 
@@ -318,8 +318,35 @@ impl Explorer {
             return EventResult::Consumed(None);
         };
         let path = entry.path.clone();
+
+        // A plain open (`l`/Enter) prefers focusing the view that already shows
+        // this file, instead of replacing another view's buffer or opening a
+        // duplicate. Split requests (`v`/`s`) always split, as asked.
+        if matches!(action, Action::Replace) {
+            let canonical = helix_stdx::path::canonicalize(&path);
+            if let Some(doc_id) = cx.editor.document_id_by_path(&canonical) {
+                let view_id = cx
+                    .editor
+                    .tree
+                    .views()
+                    .find(|(view, focused)| view.doc == doc_id && *focused)
+                    .or_else(|| cx.editor.tree.views().find(|(view, _)| view.doc == doc_id))
+                    .map(|(view, _)| view.id);
+                if let Some(view_id) = view_id {
+                    cx.editor.focus(view_id);
+                    // Hand keyboard focus back to the editor; the tree stays open.
+                    cx.editor.explorer_panel.focused = false;
+                    return EventResult::Consumed(None);
+                }
+            }
+        }
+
         match cx.editor.open(&path, action) {
-            Ok(_) => cx.editor.set_status(format!("Opened {}", path.display())),
+            Ok(_) => {
+                // Hand keyboard focus back to the editor; the tree stays open.
+                cx.editor.explorer_panel.focused = false;
+                cx.editor.set_status(format!("Opened {}", path.display()));
+            }
             Err(err) => {
                 let message = match err.source() {
                     Some(source) => format!("unable to open \"{}\": {source}", path.display()),
