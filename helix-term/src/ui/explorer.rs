@@ -1503,14 +1503,16 @@ impl Component for Explorer {
         match frame {
             Some(frame) => {
                 // Floating: paint the backdrop, then the frame.
-                surface.set_style(frame, background_style);
+                // Clear, not just restyle: the editor's text underneath would
+                // otherwise show through every cell this panel does not write.
+                surface.clear_with(frame, background_style);
                 let block = Block::bordered();
                 Widget::render(block, frame, surface);
             }
             None => {
                 // Pinned: paint the panel background and a separator line
                 // between panel and editor.
-                surface.set_style(rect, background_style);
+                surface.clear_with(rect, background_style);
                 let sep_x = if side == ExplorerSide::Left {
                     rect.x + rect.width
                 } else {
