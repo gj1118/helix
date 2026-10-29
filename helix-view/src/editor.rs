@@ -222,6 +222,30 @@ impl Default for InlineBlameConfig {
     }
 }
 
+/// The mouse pointer shape requested from the terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PointerShape {
+    /// The terminal's own pointer.
+    #[default]
+    Default,
+    /// Over a vertical resize handle (dragged left and right).
+    ColResize,
+    /// Over a horizontal resize handle (dragged up and down).
+    RowResize,
+}
+
+impl PointerShape {
+    /// The CSS cursor name used by the terminal's pointer shape escape
+    /// sequence; empty means "restore the terminal's pointer".
+    pub fn name(self) -> &'static str {
+        match self {
+            PointerShape::Default => "",
+            PointerShape::ColResize => "col-resize",
+            PointerShape::RowResize => "row-resize",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
 pub struct FilePickerConfig {
@@ -2128,6 +2152,9 @@ pub struct Editor {
 
     pub mouse_down_range: Option<Range>,
     pub cursor_cache: CursorCache,
+    /// Mouse pointer shape the terminal should show, set while handling mouse
+    /// events (resize handles) and applied by the application.
+    pub pointer_shape: PointerShape,
     pub workspace_trust: WorkspaceTrust,
     /// File positions restored from / written to persistent state.
     pub old_file_locs: HashMap<PathBuf, (ViewPosition, Selection)>,
@@ -2259,6 +2286,7 @@ impl Editor {
             handlers,
             mouse_down_range: None,
             cursor_cache: CursorCache::default(),
+            pointer_shape: PointerShape::default(),
             dir_stack: VecDeque::with_capacity(DIR_STACK_CAP),
             workspace_trust,
             old_file_locs,

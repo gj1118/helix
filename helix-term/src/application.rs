@@ -82,6 +82,8 @@ type Terminal = tui::terminal::Terminal<TerminalBackend>;
 pub struct Application {
     compositor: Compositor,
     terminal: Terminal,
+    /// Pointer shape last sent to the terminal.
+    pointer_shape: helix_view::editor::PointerShape,
     pub editor: Editor,
 
     config: Arc<ArcSwap<Config>>,
@@ -433,6 +435,7 @@ impl Application {
         let app = Self {
             compositor,
             terminal,
+            pointer_shape: helix_view::editor::PointerShape::Default,
             editor,
             config,
             signals,
@@ -1125,12 +1128,32 @@ impl Application {
                         });
                     }
                 }
+                if matches!(event, helix_view::input::Event::Mouse(_)) {
+                    // Components over a resize handle ask for another shape.
+                    cx.editor.pointer_shape = helix_view::editor::PointerShape::Default;
+                }
                 self.compositor.handle_event(&event, &mut cx)
             }
         };
 
+        self.sync_pointer_shape();
+
         if should_redraw && !self.editor.should_close() {
             self.render().await;
+        }
+    }
+
+    /// Tells the terminal about the pointer shape the last mouse event asked
+    /// for, once per change.
+    fn sync_pointer_shape(&mut self) {
+        let shape = self.editor.pointer_shape;
+        if shape == self.pointer_shape {
+            return;
+        }
+        self.pointer_shape = shape;
+        let backend = self.terminal.backend_mut();
+        if backend.set_pointer_shape(shape.name()).is_ok() {
+            let _ = backend.flush();
         }
     }
 

@@ -29,10 +29,10 @@ use helix_view::icons::ICONS;
 use helix_view::input::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use helix_view::{
     document::Mode,
-    editor::{Action, BufferLineRenderMode, CmdlineStyle},
+    editor::{Action, BufferLineRenderMode, CmdlineStyle, PointerShape},
     explorer::{
-        copy_recursively, Entry, ExplorerClipboard, ExplorerSide, Tree, TreeParams,
-        FILTER_SCAN_LIMIT,
+        copy_recursively, Entry, ExplorerClipboard, ExplorerSide, ScanOptions, Tree, TreeParams,
+        FILTER_RESULT_LIMIT, FILTER_SCAN_LIMIT,
     },
     graphics::{Color, Rect, Style},
     Editor,
@@ -66,6 +66,7 @@ const FILTER_PLACEHOLDER: &str = "filter: name or *.rs";
 pub fn tree_params(editor: &Editor) -> TreeParams {
     let config = editor.config();
     TreeParams::new(&config.explorer, &editor.explorer_panel)
+        .with_scan(ScanOptions::from(&config.file_picker))
 }
 
 /// Shrinks the editor's framing area around the pinned explorer column so
@@ -342,11 +343,7 @@ impl Explorer {
         let params = tree_params(editor);
         let keep = self.entry().map(|entry| entry.path.clone());
         self.tree.set_filter(&self.filter, params);
-        if self.tree.filter_truncated() {
-            editor.set_status(format!(
-                "Explorer: filter searched only the first {FILTER_SCAN_LIMIT} entries"
-            ));
-        }
+        self.report_filter_limits(editor);
 
         if self.tree.filter().is_none() {
             // Back to the full tree: keep the selected entry on screen, even
@@ -370,6 +367,19 @@ impl Explorer {
         }
         self.clamp_cursor();
         self.scroll = 0;
+    }
+
+    /// Tells the user when a filter result is incomplete.
+    fn report_filter_limits(&self, editor: &mut Editor) {
+        if self.tree.filter_truncated() {
+            editor.set_status(format!(
+                "Explorer: filter searched only the first {FILTER_SCAN_LIMIT} entries"
+            ));
+        } else if self.tree.filter_capped() {
+            editor.set_status(format!(
+                "Explorer: showing the first {FILTER_RESULT_LIMIT} matches, type more to narrow"
+            ));
+        }
     }
 
     fn start_filter_edit(&mut self) {
@@ -706,6 +716,7 @@ impl Explorer {
         // A separator drag owns the pointer until the button is released,
         // wherever it wanders.
         if self.resizing {
+            cx.editor.pointer_shape = PointerShape::ColResize;
             match mouse.kind {
                 MouseEventKind::Drag(MouseButton::Left) => self.resize_to(mouse.column, cx),
                 MouseEventKind::Up(_) => self.resizing = false,
@@ -719,6 +730,7 @@ impl Explorer {
             && mouse.row >= panel.y
             && mouse.row < panel.bottom();
         if on_separator {
+            cx.editor.pointer_shape = PointerShape::ColResize;
             return match mouse.kind {
                 MouseEventKind::Down(MouseButton::Left) => {
                     self.resizing = true;
@@ -1452,6 +1464,14 @@ impl Component for Explorer {
             }
         }
 
+        // Results stream in from the scan thread while a filter is active.
+        if self.tree.poll_scan(tree_params(cx.editor)) {
+            self.clamp_cursor();
+            if !self.tree.scanning() {
+                self.report_filter_limits(cx.editor);
+            }
+        }
+
         // Scroll bookkeeping: keep the cursor inside the rendered slice.
         let rows = rows_area.height as usize;
         if self.cursor < self.scroll {
@@ -1523,10 +1543,15 @@ impl Component for Explorer {
 
         // A filter that matched nothing leaves only the root row.
         if self.tree.filter().is_some() && self.len() <= 1 && rows > 1 {
+            let hint = if self.tree.scanning() {
+                "searching…"
+            } else {
+                "no matches"
+            };
             surface.set_stringn(
                 rows_area.x + 1,
                 rows_area.y + 1,
-                "no matches",
+                hint,
                 rows_area.width.saturating_sub(1) as usize,
                 inactive_style,
             );

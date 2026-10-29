@@ -105,6 +105,16 @@ pub enum InsertEvent {
     RequestCompletion,
 }
 
+/// The pointer shown over a split divider.
+fn split_pointer(divider: helix_view::tree::SplitDivider) -> helix_view::editor::PointerShape {
+    use helix_view::editor::PointerShape;
+    if divider.vertical {
+        PointerShape::ColResize
+    } else {
+        PointerShape::RowResize
+    }
+}
+
 impl EditorView {
     pub fn new(keymaps: Keymaps) -> Self {
         Self {
@@ -2053,6 +2063,7 @@ impl EditorView {
             match kind {
                 MouseEventKind::Drag(MouseButton::Left) => {
                     cxt.editor.tree.drag_divider(divider, row, column);
+                    cxt.editor.pointer_shape = split_pointer(divider);
                     return EventResult::Consumed(None);
                 }
                 MouseEventKind::Up(MouseButton::Left) => {
@@ -2060,6 +2071,13 @@ impl EditorView {
                     return EventResult::Consumed(None);
                 }
                 _ => {}
+            }
+        }
+
+        // Hovering a split divider offers the resize pointer.
+        if kind == MouseEventKind::Moved {
+            if let Some(divider) = cxt.editor.tree.divider_at(row, column) {
+                cxt.editor.pointer_shape = split_pointer(divider);
             }
         }
 
@@ -2085,6 +2103,7 @@ impl EditorView {
 
                 // Grabbing the line between two splits starts resizing them.
                 if let Some(divider) = editor.tree.divider_at(row, column) {
+                    editor.pointer_shape = split_pointer(divider);
                     self.split_drag = Some(divider);
                     return EventResult::Consumed(None);
                 }

@@ -6,10 +6,11 @@
 //! state, so opening the explorer is O(1) in project size and every frame
 //! renders straight out of cached rows.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 
 use serde::{Deserialize, Serialize};
 
@@ -148,6 +149,44 @@ impl ExplorerState {
 pub struct TreeParams {
     pub show_hidden: bool,
     pub directories_first: bool,
+    pub scan: ScanOptions,
+}
+
+/// Which ignore files the filter's recursive scan honors. Mirrors the file
+/// picker's settings (`[editor.file-picker]`), so a filtered tree hides what
+/// the picker hides: `.gitignore`, `.ignore`, `.helix/ignore`, the global
+/// git excludes and `.git/info/exclude`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScanOptions {
+    pub parents: bool,
+    pub ignore: bool,
+    pub git_ignore: bool,
+    pub git_global: bool,
+    pub git_exclude: bool,
+}
+
+impl Default for ScanOptions {
+    fn default() -> Self {
+        Self {
+            parents: true,
+            ignore: true,
+            git_ignore: true,
+            git_global: true,
+            git_exclude: true,
+        }
+    }
+}
+
+impl From<&crate::editor::FilePickerConfig> for ScanOptions {
+    fn from(config: &crate::editor::FilePickerConfig) -> Self {
+        Self {
+            parents: config.parents,
+            ignore: config.ignore,
+            git_ignore: config.git_ignore,
+            git_global: config.git_global,
+            git_exclude: config.git_exclude,
+        }
+    }
 }
 
 impl TreeParams {
@@ -155,7 +194,14 @@ impl TreeParams {
         Self {
             show_hidden: state.show_hidden(config),
             directories_first: config.directories_first,
+            scan: ScanOptions::default(),
         }
+    }
+
+    /// Replaces the ignore settings the filter scan uses.
+    pub fn with_scan(mut self, scan: ScanOptions) -> Self {
+        self.scan = scan;
+        self
     }
 }
 
@@ -201,6 +247,17 @@ struct Dir {
 /// Upper bound on the entries a filter scan collects. Past this the scan stops
 /// and the result is flagged as truncated (see [`Tree::filter_truncated`]).
 pub const FILTER_SCAN_LIMIT: usize = 100_000;
+
+/// Upper bound on the entries a filter shows. A broad query ("a") would
+/// otherwise turn into tens of thousands of rows that nobody can read and that
+/// make every keystroke slow; past this the result is flagged as capped (see
+/// [`Tree::filter_capped`]) and the user narrows the query instead.
+pub const FILTER_RESULT_LIMIT: usize = 2_000;
+
+/// Entries the scan thread hands over in its first chunk, so results appear
+/// almost immediately, and in every following chunk.
+const SCAN_FIRST_CHUNK: usize = 256;
+const SCAN_CHUNK: usize = 4_096;
 
 /// Case-insensitive glob match: `*` matches any run of characters, `?` one
 /// character, and `[abc]` / `[a-z]` / `[!abc]` a character class.
@@ -303,6 +360,38 @@ fn expand_braces(pattern: &str) -> Vec<String> {
     vec![pattern.to_string()]
 }
 
+/// One compiled alternative of a [`Filter`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Pattern {
+    /// Lowercased pattern characters, for the glob matcher.
+    chars: Vec<char>,
+    /// For plain queries, the lowercased text to look for. Substring search
+    /// over a string is far cheaper than the glob matcher, and plain queries
+    /// are what gets typed most.
+    needle: Option<String>,
+    /// Match against the relative path instead of the entry name.
+    on_path: bool,
+}
+
+impl Pattern {
+    fn glob(pattern: &str) -> Self {
+        Self {
+            chars: pattern.chars().flat_map(char::to_lowercase).collect(),
+            needle: None,
+            on_path: pattern.contains('/'),
+        }
+    }
+
+    fn substring(raw: &str) -> Self {
+        let needle = raw.to_lowercase();
+        Self {
+            chars: format!("*{needle}*").chars().collect(),
+            on_path: needle.contains('/'),
+            needle: Some(needle),
+        }
+    }
+}
+
 /// A parsed filter query for the explorer's input box.
 ///
 /// Matching is case-insensitive. A query with no wildcard characters
@@ -312,7 +401,7 @@ fn expand_braces(pattern: &str) -> Vec<String> {
 /// root, any other pattern against the entry's own name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Filter {
-    patterns: Vec<String>,
+    patterns: Vec<Pattern>,
 }
 
 impl Filter {
@@ -324,8 +413,11 @@ impl Filter {
         }
         let patterns = if raw.contains(['*', '?', '[', '{']) {
             expand_braces(raw)
+                .iter()
+                .map(|pattern| Pattern::glob(pattern))
+                .collect()
         } else {
-            vec![format!("*{raw}*")]
+            vec![Pattern::substring(raw)]
         };
         Some(Self { patterns })
     }
@@ -333,11 +425,25 @@ impl Filter {
     /// Whether an entry called `name`, at `relative` (a `/`-separated path
     /// below the tree root), passes the filter.
     pub fn matches(&self, name: &str, relative: &str) -> bool {
+        self.matches_lowered(
+            &name.to_lowercase(),
+            &relative.to_lowercase(),
+            &mut Vec::new(),
+        )
+    }
+
+    /// Like [`Filter::matches`] for text that is already lowercased. `scratch`
+    /// is a reusable buffer so scanning many entries does not allocate.
+    fn matches_lowered(&self, name: &str, relative: &str, scratch: &mut Vec<char>) -> bool {
         self.patterns.iter().any(|pattern| {
-            if pattern.contains('/') {
-                glob_match(pattern, relative)
-            } else {
-                glob_match(pattern, name)
+            let text = if pattern.on_path { relative } else { name };
+            match &pattern.needle {
+                Some(needle) => text.contains(needle.as_str()),
+                None => {
+                    scratch.clear();
+                    scratch.extend(text.chars());
+                    glob_match_chars(&pattern.chars, scratch)
+                }
             }
         })
     }
@@ -348,9 +454,107 @@ impl Filter {
 struct ScanEntry {
     path: PathBuf,
     name: String,
-    /// `/`-separated path below the tree root.
-    relative: String,
+    /// Lowercased `name`, so matching never has to lowercase again.
+    name_lower: String,
+    /// Lowercased `/`-separated path below the tree root.
+    relative_lower: String,
+    /// Index of the parent directory's entry, `None` for the root's children.
+    /// Parents always precede their children in the scan.
+    parent: Option<u32>,
     is_dir: bool,
+}
+
+/// What the scan thread sends back.
+enum ScanMsg {
+    Chunk(Vec<ScanEntry>),
+    Done { truncated: bool },
+}
+
+/// Walks `root` on its own thread, honoring the ignore files selected in
+/// `options`, and streams the entries back in chunks. The thread ends when
+/// the walk does, or as soon as the receiver is dropped.
+fn spawn_scan(root: PathBuf, show_hidden: bool, options: ScanOptions) -> mpsc::Receiver<ScanMsg> {
+    let (tx, rx) = mpsc::channel();
+    let _ = std::thread::Builder::new()
+        .name("explorer-scan".into())
+        .spawn(move || run_scan(&root, show_hidden, options, &tx));
+    rx
+}
+
+fn run_scan(root: &Path, show_hidden: bool, options: ScanOptions, tx: &mpsc::Sender<ScanMsg>) {
+    let mut walker = ignore::WalkBuilder::new(root);
+    walker
+        .hidden(!show_hidden)
+        .parents(options.parents)
+        .ignore(options.ignore)
+        .git_ignore(options.git_ignore)
+        .git_global(options.git_global)
+        .git_exclude(options.git_exclude)
+        // Never follow symlinks: it keeps the walk finite.
+        .follow_links(false)
+        .filter_entry(|entry| entry.file_name() != ".git")
+        .add_custom_ignore_filename(helix_loader::config_dir().join("ignore"))
+        .add_custom_ignore_filename(".helix/ignore");
+
+    let mut dir_index: HashMap<PathBuf, u32> = HashMap::new();
+    let mut chunk: Vec<ScanEntry> = Vec::with_capacity(SCAN_FIRST_CHUNK);
+    let mut chunk_size = SCAN_FIRST_CHUNK;
+    let mut total = 0usize;
+    let mut truncated = false;
+
+    for result in walker.build() {
+        let Ok(entry) = result else {
+            continue;
+        };
+        if entry.depth() == 0 {
+            continue;
+        }
+        if total >= FILTER_SCAN_LIMIT {
+            truncated = true;
+            break;
+        }
+        let file_type = entry.file_type();
+        let real_dir = file_type.is_some_and(|ft| ft.is_dir());
+        let path = entry.into_path();
+        let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+            continue;
+        };
+        let is_dir = real_dir
+            || file_type.is_some_and(|ft| ft.is_symlink())
+                && fs::metadata(&path).is_ok_and(|m| m.is_dir());
+        let relative = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let parent = path.parent().and_then(|p| dir_index.get(p).copied());
+        if real_dir {
+            dir_index.insert(path.clone(), total as u32);
+        }
+        chunk.push(ScanEntry {
+            name_lower: name.to_lowercase(),
+            relative_lower: relative.to_lowercase(),
+            path,
+            name,
+            parent,
+            is_dir,
+        });
+        total += 1;
+
+        if chunk.len() >= chunk_size {
+            if tx.send(ScanMsg::Chunk(std::mem::take(&mut chunk))).is_err() {
+                return;
+            }
+            chunk_size = SCAN_CHUNK;
+            helix_event::request_redraw();
+        }
+    }
+    if !chunk.is_empty() && tx.send(ScanMsg::Chunk(chunk)).is_err() {
+        return;
+    }
+    if tx.send(ScanMsg::Done { truncated }).is_ok() {
+        helix_event::request_redraw();
+    }
 }
 
 /// Lazily loaded directory tree.
@@ -363,10 +567,17 @@ pub struct Tree {
     /// matching entries and the directories leading to them) instead of `dirs`.
     filter: Option<Filter>,
     filter_dirs: HashMap<PathBuf, Dir>,
-    /// Recursive listing of the whole tree, taken once when a filter starts
-    /// and reused while the query is edited (cleared on filter reset/refresh).
-    scan: Option<Vec<ScanEntry>>,
+    /// Recursive listing of the whole tree, produced by a background thread
+    /// when a filter starts and reused while the query is edited (reset when
+    /// the filter is cleared or the tree is refreshed).
+    scan: Vec<ScanEntry>,
+    /// Whether a scan was started for the current filter.
+    scan_started: bool,
+    /// Channel of the scan still in flight, `None` once it has finished.
+    scan_rx: Option<mpsc::Receiver<ScanMsg>>,
     scan_truncated: bool,
+    /// Whether the last filter result was cut at [`FILTER_RESULT_LIMIT`].
+    results_capped: bool,
 }
 
 impl Tree {
@@ -378,8 +589,11 @@ impl Tree {
             visible: Vec::new(),
             filter: None,
             filter_dirs: HashMap::new(),
-            scan: None,
+            scan: Vec::new(),
+            scan_started: false,
+            scan_rx: None,
             scan_truncated: false,
+            results_capped: false,
         };
         let root = tree.root.clone();
         tree.expand(&root, params)?;
@@ -443,6 +657,17 @@ impl Tree {
     /// missing matches.
     pub fn filter_truncated(&self) -> bool {
         self.filter.is_some() && self.scan_truncated
+    }
+
+    /// Whether the filter has more matches than it shows
+    /// ([`FILTER_RESULT_LIMIT`]); a narrower query reveals the rest.
+    pub fn filter_capped(&self) -> bool {
+        self.filter.is_some() && self.results_capped
+    }
+
+    /// Whether the background scan feeding the filter is still running.
+    pub fn scanning(&self) -> bool {
+        self.filter.is_some() && self.scan_rx.is_some()
     }
 
     fn load_children(&self, dir: &Path, params: TreeParams) -> io::Result<Vec<Child>> {
@@ -589,7 +814,8 @@ impl Tree {
         }
         if self.filter.is_some() {
             // The listing the filter searches is stale now; search anew.
-            self.scan = None;
+            self.reset_scan();
+            self.start_scan(params);
             self.apply_filter(params);
         }
         self.rebuild_visible();
@@ -610,115 +836,141 @@ impl Tree {
             None => {
                 self.filter = None;
                 self.filter_dirs.clear();
-                self.scan = None;
-                self.scan_truncated = false;
+                self.reset_scan();
             }
             Some(filter) => {
                 self.filter = Some(filter);
+                self.start_scan(params);
                 self.apply_filter(params);
             }
         }
         self.rebuild_visible();
     }
 
-    /// Lists the whole tree below the root (skipping `.git` and, unless
-    /// `show_hidden`, dotfiles). Symlinked directories are listed but not
-    /// descended into, which keeps the walk finite.
-    fn scan_all(&self, params: TreeParams) -> (Vec<ScanEntry>, bool) {
-        let mut entries = Vec::new();
-        let mut stack = vec![self.root.clone()];
-        while let Some(dir) = stack.pop() {
-            let Ok(read_dir) = fs::read_dir(&dir) else {
-                continue;
-            };
-            for entry in read_dir.flatten() {
-                if entries.len() >= FILTER_SCAN_LIMIT {
-                    return (entries, true);
-                }
-                let path = entry.path();
-                let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else {
-                    continue;
-                };
-                if (!params.show_hidden && name.starts_with('.')) || name == ".git" {
-                    continue;
-                }
-                let file_type = entry.file_type().ok();
-                let real_dir = file_type.is_some_and(|ft| ft.is_dir());
-                let is_dir = real_dir
-                    || file_type.is_some_and(|ft| ft.is_symlink())
-                        && fs::metadata(&path).is_ok_and(|m| m.is_dir());
-                let relative = path
-                    .strip_prefix(&self.root)
-                    .unwrap_or(&path)
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                if real_dir {
-                    stack.push(path.clone());
-                }
-                entries.push(ScanEntry {
-                    path,
-                    name,
-                    relative,
-                    is_dir,
-                });
-            }
-        }
-        (entries, false)
+    /// Forgets the recursive listing and stops the thread producing it.
+    fn reset_scan(&mut self) {
+        self.scan.clear();
+        self.scan_started = false;
+        self.scan_rx = None;
+        self.scan_truncated = false;
+        self.results_capped = false;
     }
 
-    /// Rebuilds `filter_dirs` for the active filter: every matching entry plus
-    /// all of its ancestors, grouped under their parents and sorted like a
-    /// regular listing. Directories collapsed in the previous filtered view
-    /// stay collapsed.
+    /// Starts the background scan the filter searches, unless one already ran
+    /// for this filter. It skips `.git`, honors the ignore files selected in
+    /// `params.scan` and, unless `show_hidden`, skips dotfiles. Symlinked
+    /// directories are listed but not descended into.
+    fn start_scan(&mut self, params: TreeParams) {
+        if self.scan_started {
+            return;
+        }
+        self.scan_started = true;
+        self.scan_rx = Some(spawn_scan(
+            self.root.clone(),
+            params.show_hidden,
+            params.scan,
+        ));
+    }
+
+    fn absorb_scan(&mut self, msg: ScanMsg) {
+        match msg {
+            ScanMsg::Chunk(entries) => self.scan.extend(entries),
+            ScanMsg::Done { truncated } => {
+                self.scan_truncated = truncated;
+                self.scan_rx = None;
+            }
+        }
+    }
+
+    /// Takes in whatever the scan thread produced since the last call and
+    /// refreshes the filtered view. Returns `true` when the rows changed.
+    /// Cheap when nothing arrived, so it can run on every frame.
+    pub fn poll_scan(&mut self, params: TreeParams) -> bool {
+        let mut changed = false;
+        while let Some(rx) = &self.scan_rx {
+            match rx.try_recv() {
+                Ok(msg) => {
+                    self.absorb_scan(msg);
+                    changed = true;
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.scan_rx = None;
+                    changed = true;
+                }
+            }
+        }
+        if changed && self.filter.is_some() {
+            self.apply_filter(params);
+            self.rebuild_visible();
+        }
+        changed
+    }
+
+    /// Blocks until the scan has finished. For tests; the editor never waits.
+    pub fn wait_for_scan(&mut self, params: TreeParams) {
+        while let Some(rx) = &self.scan_rx {
+            match rx.recv_timeout(std::time::Duration::from_secs(30)) {
+                Ok(msg) => self.absorb_scan(msg),
+                Err(_) => self.scan_rx = None,
+            }
+        }
+        if self.filter.is_some() {
+            self.apply_filter(params);
+            self.rebuild_visible();
+        }
+    }
+
+    /// Rebuilds `filter_dirs` for the active filter from the entries scanned
+    /// so far: every matching entry (up to [`FILTER_RESULT_LIMIT`]) plus all of
+    /// its ancestors, grouped under their parents and sorted like a regular
+    /// listing. Directories collapsed in the previous filtered view stay
+    /// collapsed.
     fn apply_filter(&mut self, params: TreeParams) {
         let Some(filter) = self.filter.clone() else {
             return;
         };
-        if self.scan.is_none() {
-            let (entries, truncated) = self.scan_all(params);
-            self.scan = Some(entries);
-            self.scan_truncated = truncated;
-        }
-        let scan = self.scan.as_ref().expect("scan was just filled");
+        let scan = &self.scan;
 
-        let index: HashMap<&Path, usize> = scan
-            .iter()
-            .enumerate()
-            .map(|(i, entry)| (entry.path.as_path(), i))
-            .collect();
-        let mut shown: HashSet<usize> = HashSet::new();
+        let mut shown = vec![false; scan.len()];
+        let mut scratch = Vec::new();
+        let mut matched = 0usize;
+        let mut capped = false;
         for (i, entry) in scan.iter().enumerate() {
-            if !filter.matches(&entry.name, &entry.relative) {
+            if !filter.matches_lowered(&entry.name_lower, &entry.relative_lower, &mut scratch) {
                 continue;
             }
+            if matched >= FILTER_RESULT_LIMIT {
+                capped = true;
+                break;
+            }
+            matched += 1;
             // Mark the entry and every ancestor; stop at the first one that is
             // already marked since its own ancestors are then marked too.
             let mut cur = Some(i);
             while let Some(c) = cur {
-                if !shown.insert(c) {
+                if shown[c] {
                     break;
                 }
-                cur = scan[c]
-                    .path
-                    .parent()
-                    .and_then(|parent| index.get(parent).copied());
+                shown[c] = true;
+                cur = scan[c].parent.map(|p| p as usize);
             }
         }
+        self.results_capped = capped;
 
         let mut grouped: HashMap<PathBuf, Vec<Child>> = HashMap::new();
-        for &i in &shown {
+        for (i, _) in shown.iter().enumerate().filter(|(_, &shown)| shown) {
             let entry = &scan[i];
-            if let Some(parent) = entry.path.parent() {
-                grouped
-                    .entry(parent.to_path_buf())
-                    .or_default()
-                    .push(Child {
-                        path: entry.path.clone(),
-                        name: entry.name.clone(),
-                        sort_key: entry.name.to_lowercase(),
-                        is_dir: entry.is_dir,
-                    });
-            }
+            let parent = match entry.parent {
+                Some(p) => scan[p as usize].path.clone(),
+                None => self.root.clone(),
+            };
+            grouped.entry(parent).or_default().push(Child {
+                path: entry.path.clone(),
+                name: entry.name.clone(),
+                sort_key: entry.name_lower.clone(),
+                is_dir: entry.is_dir,
+            });
         }
         // The root row exists even when nothing matched.
         grouped.entry(self.root.clone()).or_default();
@@ -908,6 +1160,7 @@ mod tests {
         TreeParams {
             show_hidden,
             directories_first,
+            ..TreeParams::default()
         }
     }
 
@@ -1023,6 +1276,7 @@ mod tests {
         std::fs::remove_dir(root.join("gone")).unwrap();
 
         assert_eq!(tree.refresh(p), 0);
+        tree.wait_for_scan(p);
         let n = names(&tree);
         assert!(n.iter().any(|n| n == "new.txt"));
         assert!(!n.iter().any(|n| n == "z.txt"));
@@ -1191,6 +1445,7 @@ mod tests {
         let root = tmp.path().to_path_buf();
         // Nothing is expanded yet, yet the filter reaches into directories.
         tree.set_filter("*.rs", p);
+        tree.wait_for_scan(p);
         let shown: Vec<String> = names(&tree).into_iter().skip(1).collect();
         assert_eq!(shown, vec!["src", "deep", "inner.rs", "main.rs"]);
 
@@ -1216,6 +1471,7 @@ mod tests {
     fn filter_with_no_matches_leaves_the_root_row() {
         let (tmp, mut tree, p) = filter_fixture();
         tree.set_filter("*.nothing", p);
+        tree.wait_for_scan(p);
         assert_eq!(tree.visible().len(), 1);
         assert_eq!(tree.visible()[0].path, tmp.path());
     }
@@ -1228,6 +1484,8 @@ mod tests {
         let before = names(&tree);
 
         tree.set_filter("inner", p);
+
+        tree.wait_for_scan(p);
         assert_ne!(names(&tree), before);
         tree.set_filter("", p);
         assert!(tree.filter().is_none());
@@ -1242,6 +1500,7 @@ mod tests {
         let (tmp, mut tree, p) = filter_fixture();
         let root = tmp.path().to_path_buf();
         tree.set_filter("*.rs", p);
+        tree.wait_for_scan(p);
         assert!(tree.is_expanded(&root.join("src")));
 
         tree.collapse(&root.join("src"));
@@ -1252,6 +1511,7 @@ mod tests {
         // A directory that matched by name only can still be browsed: its
         // children are listed unfiltered.
         tree.set_filter("docs", p);
+        tree.wait_for_scan(p);
         assert_eq!(names(&tree).len(), 2);
         tree.toggle(&root.join("docs"), p).unwrap();
         assert!(names(&tree).iter().any(|n| n == "guide.md"));
@@ -1262,9 +1522,11 @@ mod tests {
         let (tmp, mut tree, p) = filter_fixture();
         let root = tmp.path().to_path_buf();
         tree.set_filter("*.rs", p);
+        tree.wait_for_scan(p);
         std::fs::write(root.join("src/extra.rs"), "").unwrap();
         std::fs::remove_file(root.join("src/main.rs")).unwrap();
         assert_eq!(tree.refresh(p), 0);
+        tree.wait_for_scan(p);
         let shown = names(&tree);
         assert!(shown.iter().any(|n| n == "extra.rs"));
         assert!(!shown.iter().any(|n| n == "main.rs"));
@@ -1276,6 +1538,7 @@ mod tests {
         let (tmp, mut tree, p) = filter_fixture();
         let root = tmp.path().to_path_buf();
         tree.set_filter("*.rs", p);
+        tree.wait_for_scan(p);
         assert!(tree.reveal(&root.join("docs/guide.md"), p));
         assert!(tree.filter().is_none());
         assert!(tree.visible().iter().any(|e| e.name == "guide.md"));
@@ -1287,8 +1550,67 @@ mod tests {
         let p = params(true, true);
         tree.refresh(p);
         tree.set_filter("*.rs", p);
+        tree.wait_for_scan(p);
         assert!(names(&tree).iter().any(|n| n == ".hidden.rs"));
         drop(tmp);
+    }
+
+    #[test]
+    fn filter_honors_ignore_files() {
+        let (tmp, mut tree, p) = filter_fixture();
+        let root = tmp.path();
+        std::fs::create_dir(root.join("target")).unwrap();
+        std::fs::write(root.join("target/built.rs"), "").unwrap();
+        std::fs::write(root.join(".ignore"), "target/\n").unwrap();
+
+        tree.set_filter("*.rs", p);
+        tree.wait_for_scan(p);
+        let shown = names(&tree);
+        assert!(shown.iter().any(|n| n == "main.rs"));
+        assert!(!shown.iter().any(|n| n == "built.rs"), "{shown:?}");
+
+        // With the ignore files switched off the entry comes back.
+        let mut open = p;
+        open.scan = ScanOptions {
+            parents: false,
+            ignore: false,
+            git_ignore: false,
+            git_global: false,
+            git_exclude: false,
+        };
+        tree.set_filter("", open);
+        tree.set_filter("*.rs", open);
+        tree.wait_for_scan(open);
+        assert!(names(&tree).iter().any(|n| n == "built.rs"));
+    }
+
+    #[test]
+    fn broad_filters_are_capped() {
+        let tmp = tempfile::tempdir().unwrap();
+        for i in 0..FILTER_RESULT_LIMIT + 50 {
+            std::fs::write(tmp.path().join(format!("file{i}.txt")), "").unwrap();
+        }
+        let p = params(false, true);
+        let mut tree = Tree::new(tmp.path().to_path_buf(), p).unwrap();
+        tree.set_filter("file", p);
+        tree.wait_for_scan(p);
+        assert!(tree.filter_capped());
+        assert_eq!(tree.visible().len(), FILTER_RESULT_LIMIT + 1);
+
+        // Narrowing the query lifts the cap.
+        tree.set_filter("file1", p);
+        tree.wait_for_scan(p);
+        assert!(!tree.filter_capped());
+    }
+
+    #[test]
+    fn plain_and_path_queries_match_case_insensitively() {
+        let filter = Filter::new("SRC/main").unwrap();
+        assert!(filter.matches("main.rs", "src/main.rs"));
+        assert!(!filter.matches("main.rs", "lib/main.rs"));
+        let filter = Filter::new("Main").unwrap();
+        assert!(filter.matches("main.rs", "src/main.rs"));
+        assert!(!filter.matches("lib.rs", "src/lib.rs"));
     }
 
     #[test]

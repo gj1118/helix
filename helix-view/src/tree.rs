@@ -74,6 +74,9 @@ pub struct SplitDivider {
     container: ViewId,
     /// The divider sits between children `index` and `index + 1`.
     index: usize,
+    /// Whether it is a vertical line between side by side splits (dragged
+    /// horizontally) rather than a horizontal boundary between stacked ones.
+    pub vertical: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -946,6 +949,7 @@ impl Tree {
                     return Some(SplitDivider {
                         container: id,
                         index,
+                        vertical: container.layout == Layout::Vertical,
                     });
                 }
             }
@@ -963,7 +967,9 @@ impl Tree {
     /// neighbours are adjusted. Any "focus mode" expansion in the container
     /// ends, as the weights now describe the real sizes.
     pub fn drag_divider(&mut self, divider: SplitDivider, row: u16, column: u16) -> bool {
-        let SplitDivider { container, index } = divider;
+        let SplitDivider {
+            container, index, ..
+        } = divider;
         let Some(Content::Container(node)) = self.nodes.get(container).map(|n| &n.content) else {
             return false;
         };
