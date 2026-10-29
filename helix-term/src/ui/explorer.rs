@@ -485,10 +485,25 @@ impl Explorer {
         let plain = key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT;
 
         match key.code {
-            // Done editing, the filter stays applied.
-            KeyCode::Enter | KeyCode::Down | KeyCode::Tab
-                if key.modifiers == KeyModifiers::NONE =>
-            {
+            // Enter accepts the filter and opens its first file match, so one
+            // keypress does what typing the query asked for.
+            KeyCode::Enter if key.modifiers == KeyModifiers::NONE => {
+                self.filter_editing = false;
+                let first_file = self
+                    .tree
+                    .visible()
+                    .iter()
+                    .position(|entry| !entry.is_dir && !entry.is_parent);
+                if self.tree.filter().is_some() {
+                    if let Some(i) = first_file {
+                        self.cursor = i;
+                        return self.on_primary_open(cx);
+                    }
+                }
+            }
+            // Down/Tab stop editing and keep the filter applied, to browse
+            // the results.
+            KeyCode::Down | KeyCode::Tab if key.modifiers == KeyModifiers::NONE => {
                 self.filter_editing = false;
             }
             // Escape drops the filter altogether.
@@ -1430,11 +1445,18 @@ impl Component for Explorer {
     }
 
     fn cursor(&self, _area: Rect, editor: &Editor) -> (Option<Position>, CursorKind) {
-        if !(self.filter_editing
-            && editor.explorer_panel.visible
-            && editor.explorer_panel.focused
-            && self.input_area.width > 0)
-        {
+        let focused = editor.explorer_panel.visible && editor.explorer_panel.focused;
+        if focused && !self.filter_editing {
+            // The tree has the keyboard: hide the terminal cursor instead of
+            // letting the editor underneath show its own, which reads as
+            // focus having moved there.
+            let row = self.area.y as usize + self.cursor.saturating_sub(self.scroll);
+            return (
+                Some(Position::new(row, self.area.x as usize)),
+                CursorKind::Hidden,
+            );
+        }
+        if !(self.filter_editing && focused && self.input_area.width > 0) {
             return (None, CursorKind::Hidden);
         }
         let prefix = FILTER_PREFIX.width();

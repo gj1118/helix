@@ -379,8 +379,8 @@ a plain word matches names containing it (case-insensitive); patterns with
 `test_?.py`, `*.{toml,md}`). A pattern containing `/` is matched against the
 path relative to the root (`src/**/mod.rs`-style). While a filter is active the
 tree shows only matching entries and the directories leading to them, searching
-the whole tree (capped at 100,000 entries, `.git` skipped). Enter, Down or Tab
-keep the filter and return to the tree; Esc (or clearing the box) restores the
+the whole tree (capped at 100,000 entries, `.git` skipped). Enter accepts the filter and opens the first matching file; Down or Tab
+keep the filter and return to the tree to browse the results; Esc (or clearing the box) restores the
 full tree and reveals the selected entry.
 
 ### Floating explorer
