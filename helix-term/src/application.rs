@@ -159,6 +159,9 @@ impl Application {
             old_file_locs,
         );
 
+        // The floating explorer reopens where it was left last time.
+        editor.explorer_panel.floating_geometry = helix_view::explorer::load_floating_geometry();
+
         // Load cross-session history into registers when enabled.
         if persistence_config.commands {
             editor

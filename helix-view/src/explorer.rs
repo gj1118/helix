@@ -14,6 +14,8 @@ use std::sync::mpsc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::graphics::Rect;
+
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
@@ -42,6 +44,10 @@ pub struct ExplorerConfig {
     pub floating_width: u16,
     /// Height of the floating window in lines. Defaults to `20`.
     pub floating_height: u16,
+    /// Column of the floating window's left edge. Centered when unset.
+    pub floating_x: Option<u16>,
+    /// Row of the floating window's top edge. Centered when unset.
+    pub floating_y: Option<u16>,
     /// Draw file type icons (honoring the global `[editor.icons]` settings).
     /// Defaults to `true`.
     pub icons: bool,
@@ -61,6 +67,8 @@ impl Default for ExplorerConfig {
             width: 30,
             floating_width: 40,
             floating_height: 20,
+            floating_x: None,
+            floating_y: None,
             icons: true,
             auto_reveal: false,
             show_hidden: false,
@@ -99,6 +107,10 @@ pub struct ExplorerState {
     /// (`:explorer-float-toggle`); closing the window clears it, so the pinned
     /// panel's toggle never reopens a float.
     pub floating: bool,
+    /// Position and size of the floating window as last set with the mouse.
+    /// Takes precedence over `floating-*` in the config and is kept across
+    /// sessions (see [`load_floating_geometry`]).
+    pub floating_geometry: Option<FloatGeometry>,
     /// Runtime width override (`:explorer-width`).
     pub width: Option<u16>,
     /// Runtime show-hidden override (`h`/'H' inside the panel).
@@ -129,12 +141,38 @@ impl ExplorerState {
 
     /// Effective width of the floating window.
     pub fn floating_width(&self, config: &ExplorerConfig) -> u16 {
-        config.floating_width
+        self.floating_geometry
+            .map_or(config.floating_width, |g| g.width)
     }
 
     /// Effective height of the floating window.
     pub fn floating_height(&self, config: &ExplorerConfig) -> u16 {
-        config.floating_height
+        self.floating_geometry
+            .map_or(config.floating_height, |g| g.height)
+    }
+
+    /// The floating window's frame (border included) inside `area`: the mouse
+    /// set geometry if there is one, else the `floating-*` config, centered
+    /// where no position is given. Always fits inside `area`.
+    pub fn floating_frame(&self, config: &ExplorerConfig, area: Rect) -> Rect {
+        let width = self
+            .floating_width(config)
+            .min(area.width.saturating_sub(2));
+        let height = self
+            .floating_height(config)
+            .min(area.height.saturating_sub(2));
+        let (x, y) = match self.floating_geometry {
+            Some(g) => (Some(g.x), Some(g.y)),
+            None => (config.floating_x, config.floating_y),
+        };
+        let x = x.unwrap_or(area.width.saturating_sub(width) / 2);
+        let y = y.unwrap_or(area.height.saturating_sub(height) / 2);
+        Rect::new(
+            area.x + x.min(area.width.saturating_sub(width)),
+            area.y + y.min(area.height.saturating_sub(height)),
+            width,
+            height,
+        )
     }
 
     /// Whether hidden (dotfile) entries are shown.
@@ -238,6 +276,152 @@ struct Child {
 struct Dir {
     expanded: bool,
     children: Vec<Child>,
+}
+
+// ---------------------------------------------------------------------------
+// Floating window geometry
+// ---------------------------------------------------------------------------
+
+/// Smallest the floating window can be dragged to.
+pub const MIN_FLOAT_WIDTH: u16 = 16;
+pub const MIN_FLOAT_HEIGHT: u16 = 6;
+
+/// Position and size of the floating window, in cells relative to the area it
+/// floats in. Saved between sessions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FloatGeometry {
+    pub x: u16,
+    pub y: u16,
+    pub width: u16,
+    pub height: u16,
+}
+
+/// What a mouse drag on the floating window's border does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FloatDrag {
+    /// Move the whole window (top border).
+    Move,
+    /// Pull the marked edges (two for a corner).
+    Resize {
+        left: bool,
+        right: bool,
+        top: bool,
+        bottom: bool,
+    },
+}
+
+impl FloatDrag {
+    /// The drag started by pressing at (`column`, `row`) on `frame`, if that
+    /// cell is on the border. The top border moves the window, except at its
+    /// corners; every other border cell resizes.
+    pub fn at(frame: Rect, column: u16, row: u16) -> Option<Self> {
+        if frame.width < 3 || frame.height < 3 {
+            return None;
+        }
+        if column < frame.x || column >= frame.right() || row < frame.y || row >= frame.bottom() {
+            return None;
+        }
+        let left = column == frame.x;
+        let right = column == frame.right() - 1;
+        let top = row == frame.y;
+        let bottom = row == frame.bottom() - 1;
+        if !(left || right || top || bottom) {
+            return None;
+        }
+        if top && !left && !right {
+            return Some(Self::Move);
+        }
+        Some(Self::Resize {
+            left,
+            right,
+            top,
+            bottom,
+        })
+    }
+
+    /// The geometry after dragging from `start` by (`dx`, `dy`) cells, kept
+    /// inside a `bounds_width` x `bounds_height` area and above the minimum
+    /// size.
+    pub fn apply(
+        self,
+        start: FloatGeometry,
+        dx: i32,
+        dy: i32,
+        bounds_width: u16,
+        bounds_height: u16,
+    ) -> FloatGeometry {
+        let (bw, bh) = (bounds_width as i32, bounds_height as i32);
+        let (mut x, mut y) = (start.x as i32, start.y as i32);
+        let (mut w, mut h) = (start.width as i32, start.height as i32);
+        match self {
+            Self::Move => {
+                x = (x + dx).clamp(0, (bw - w).max(0));
+                y = (y + dy).clamp(0, (bh - h).max(0));
+            }
+            Self::Resize {
+                left,
+                right,
+                top,
+                bottom,
+            } => {
+                let (min_w, min_h) = (MIN_FLOAT_WIDTH as i32, MIN_FLOAT_HEIGHT as i32);
+                if right {
+                    w = (w + dx).clamp(min_w, (bw - x).max(min_w));
+                }
+                if bottom {
+                    h = (h + dy).clamp(min_h, (bh - y).max(min_h));
+                }
+                if left {
+                    // The right edge stays put while the left one moves.
+                    let right_edge = x + w;
+                    x = (x + dx).clamp(0, (right_edge - min_w).max(0));
+                    w = right_edge - x;
+                }
+                if top {
+                    let bottom_edge = y + h;
+                    y = (y + dy).clamp(0, (bottom_edge - min_h).max(0));
+                    h = bottom_edge - y;
+                }
+            }
+        }
+        FloatGeometry {
+            x: x.max(0) as u16,
+            y: y.max(0) as u16,
+            width: w.max(1) as u16,
+            height: h.max(1) as u16,
+        }
+    }
+}
+
+fn floating_geometry_path() -> PathBuf {
+    helix_loader::state_dir().join("explorer-float.toml")
+}
+
+/// The floating window geometry saved by an earlier session, if any.
+pub fn load_floating_geometry() -> Option<FloatGeometry> {
+    let text = fs::read_to_string(floating_geometry_path()).ok()?;
+    toml::from_str(&text).ok()
+}
+
+/// Saves (or, for `None`, forgets) the floating window geometry. It lives in
+/// the state directory rather than in `config.toml`, so the config file is
+/// never rewritten behind the user's back; `floating-width` and friends in the
+/// config remain the defaults until a window is moved or resized.
+pub fn save_floating_geometry(geometry: Option<FloatGeometry>) -> io::Result<()> {
+    let path = floating_geometry_path();
+    match geometry {
+        Some(geometry) => {
+            if let Some(dir) = path.parent() {
+                fs::create_dir_all(dir)?;
+            }
+            let text = toml::to_string(&geometry).map_err(io::Error::other)?;
+            fs::write(path, text)
+        }
+        None => match fs::remove_file(path) {
+            Err(err) if err.kind() != io::ErrorKind::NotFound => Err(err),
+            _ => Ok(()),
+        },
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1611,6 +1795,104 @@ mod tests {
         let filter = Filter::new("Main").unwrap();
         assert!(filter.matches("main.rs", "src/main.rs"));
         assert!(!filter.matches("lib.rs", "src/lib.rs"));
+    }
+
+    #[test]
+    fn floating_frame_uses_geometry_config_or_center() {
+        let area = Rect::new(0, 0, 100, 40);
+        let mut config = ExplorerConfig::default();
+        let mut state = ExplorerState::default();
+        // Centered by default.
+        assert_eq!(
+            state.floating_frame(&config, area),
+            Rect::new(30, 10, 40, 20)
+        );
+        // Config position.
+        config.floating_x = Some(5);
+        config.floating_y = Some(2);
+        assert_eq!(state.floating_frame(&config, area), Rect::new(5, 2, 40, 20));
+        // Mouse set geometry wins, and always fits inside the area.
+        state.floating_geometry = Some(FloatGeometry {
+            x: 90,
+            y: 30,
+            width: 50,
+            height: 12,
+        });
+        assert_eq!(
+            state.floating_frame(&config, area),
+            Rect::new(50, 28, 50, 12)
+        );
+    }
+
+    #[test]
+    fn float_drag_hit_testing() {
+        let frame = Rect::new(10, 5, 20, 10);
+        assert_eq!(FloatDrag::at(frame, 15, 5), Some(FloatDrag::Move));
+        assert_eq!(
+            FloatDrag::at(frame, 29, 14),
+            Some(FloatDrag::Resize {
+                left: false,
+                right: true,
+                top: false,
+                bottom: true
+            })
+        );
+        assert_eq!(
+            FloatDrag::at(frame, 10, 5),
+            Some(FloatDrag::Resize {
+                left: true,
+                right: false,
+                top: true,
+                bottom: false
+            })
+        );
+        assert_eq!(FloatDrag::at(frame, 15, 8), None);
+        assert_eq!(FloatDrag::at(frame, 40, 8), None);
+    }
+
+    #[test]
+    fn float_drag_moves_and_resizes_within_bounds() {
+        let start = FloatGeometry {
+            x: 10,
+            y: 5,
+            width: 20,
+            height: 10,
+        };
+        let (bw, bh) = (100, 40);
+        let moved = FloatDrag::Move.apply(start, 500, -500, bw, bh);
+        assert_eq!(
+            (moved.x, moved.y, moved.width, moved.height),
+            (80, 0, 20, 10)
+        );
+
+        let right = FloatDrag::Resize {
+            left: false,
+            right: true,
+            top: false,
+            bottom: true,
+        };
+        let grown = right.apply(start, 10, 5, bw, bh);
+        assert_eq!((grown.width, grown.height), (30, 15));
+        let tiny = right.apply(start, -100, -100, bw, bh);
+        assert_eq!(
+            (tiny.width, tiny.height),
+            (MIN_FLOAT_WIDTH, MIN_FLOAT_HEIGHT)
+        );
+
+        // Pulling the left edge keeps the right edge in place.
+        let left = FloatDrag::Resize {
+            left: true,
+            right: false,
+            top: true,
+            bottom: false,
+        };
+        let pulled = left.apply(start, -4, -2, bw, bh);
+        assert_eq!(
+            (pulled.x, pulled.y, pulled.width, pulled.height),
+            (6, 3, 24, 12)
+        );
+        let far = left.apply(start, -100, -100, bw, bh);
+        assert_eq!((far.x, far.y, far.width, far.height), (0, 0, 30, 15));
     }
 
     #[test]

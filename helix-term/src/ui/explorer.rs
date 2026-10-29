@@ -31,8 +31,9 @@ use helix_view::{
     document::Mode,
     editor::{Action, BufferLineRenderMode, CmdlineStyle, PointerShape},
     explorer::{
-        copy_recursively, Entry, ExplorerClipboard, ExplorerSide, ScanOptions, Tree, TreeParams,
-        FILTER_RESULT_LIMIT, FILTER_SCAN_LIMIT,
+        copy_recursively, save_floating_geometry, Entry, ExplorerClipboard, ExplorerSide,
+        FloatDrag, FloatGeometry, ScanOptions, Tree, TreeParams, FILTER_RESULT_LIMIT,
+        FILTER_SCAN_LIMIT,
     },
     graphics::{Color, Rect, Style},
     Editor,
@@ -205,6 +206,13 @@ pub struct Explorer {
     screen_width: u16,
     /// A drag of the separator is in progress.
     resizing: bool,
+    /// Frame (border included) of the floating window, `None` when pinned.
+    frame: Option<Rect>,
+    /// Area the floating window moves in.
+    float_bounds: Rect,
+    /// A move/resize of the floating window in progress: what is dragged,
+    /// where the pointer was grabbed and the geometry at that moment.
+    float_drag: Option<(FloatDrag, (u16, u16), FloatGeometry)>,
     /// Text of the filter box.
     filter: String,
     /// Byte offset of the filter box's cursor.
@@ -228,6 +236,9 @@ impl Explorer {
             separator: None,
             screen_width: 0,
             resizing: false,
+            frame: None,
+            float_bounds: Rect::default(),
+            float_drag: None,
             filter: String::new(),
             filter_cursor: 0,
             filter_editing: false,
@@ -693,6 +704,50 @@ impl Explorer {
         EventResult::Consumed(None)
     }
 
+    /// Moving and resizing the floating window by its border. Returns `None`
+    /// when the event is not for the border.
+    fn handle_float_mouse(&mut self, mouse: &MouseEvent, cx: &mut Context) -> Option<EventResult> {
+        if let Some((drag, origin, start)) = self.float_drag {
+            cx.editor.pointer_shape = float_pointer(drag);
+            match mouse.kind {
+                MouseEventKind::Drag(MouseButton::Left) => {
+                    let dx = mouse.column as i32 - origin.0 as i32;
+                    let dy = mouse.row as i32 - origin.1 as i32;
+                    let bounds = self.float_bounds;
+                    cx.editor.explorer_panel.floating_geometry =
+                        Some(drag.apply(start, dx, dy, bounds.width, bounds.height));
+                }
+                MouseEventKind::Up(_) => {
+                    self.float_drag = None;
+                    // Keep the window where the user left it next session.
+                    if let Err(err) =
+                        save_floating_geometry(cx.editor.explorer_panel.floating_geometry)
+                    {
+                        cx.editor
+                            .set_error(format!("Failed to save the explorer window: {err}"));
+                    }
+                }
+                _ => {}
+            }
+            return Some(EventResult::Consumed(None));
+        }
+
+        let frame = self.frame?;
+        let drag = FloatDrag::at(frame, mouse.column, mouse.row)?;
+        cx.editor.pointer_shape = float_pointer(drag);
+        if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+            let bounds = self.float_bounds;
+            let start = FloatGeometry {
+                x: frame.x - bounds.x,
+                y: frame.y - bounds.y,
+                width: frame.width,
+                height: frame.height,
+            };
+            self.float_drag = Some((drag, (mouse.column, mouse.row), start));
+        }
+        Some(EventResult::Consumed(None))
+    }
+
     /// Resizes the pinned panel so its separator follows the pointer.
     fn resize_to(&self, column: u16, cx: &mut Context) {
         let width = match cx.editor.explorer_side() {
@@ -723,6 +778,10 @@ impl Explorer {
                 _ => {}
             }
             return EventResult::Consumed(None);
+        }
+
+        if let Some(result) = self.handle_float_mouse(&mouse, cx) {
+            return result;
         }
 
         let panel = self.panel;
@@ -1307,21 +1366,10 @@ impl Component for Explorer {
         let bottom = if cmdline_popup_full_height { 0 } else { 1 };
 
         let (rect, frame) = if floating {
-            let config = cx.editor.config();
-            let frame_width = config
-                .explorer
-                .floating_width
-                .min(area.width.saturating_sub(2));
-            let frame_height = config
-                .explorer
-                .floating_height
-                .min(area.height.saturating_sub(2));
-            let frame = Rect::new(
-                area.x + (area.width.saturating_sub(frame_width)) / 2,
-                area.y + (area.height.saturating_sub(frame_height)) / 2,
-                frame_width,
-                frame_height,
-            );
+            let frame = cx
+                .editor
+                .explorer_panel
+                .floating_frame(&cx.editor.config().explorer, area);
             let rect = if frame.width < 3 || frame.height < 3 {
                 frame
             } else {
@@ -1369,6 +1417,8 @@ impl Component for Explorer {
         };
         self.screen_width = area.width;
         self.separator = None;
+        self.frame = frame;
+        self.float_bounds = area;
 
         let theme = &cx.editor.theme;
         let text_style = theme.get("ui.text");
@@ -1556,6 +1606,24 @@ impl Component for Explorer {
                 inactive_style,
             );
         }
+    }
+}
+
+/// The pointer shown over a part of the floating window's border.
+fn float_pointer(drag: FloatDrag) -> PointerShape {
+    match drag {
+        FloatDrag::Move => PointerShape::Move,
+        FloatDrag::Resize {
+            left,
+            right,
+            top,
+            bottom,
+        } => match (left, right, top, bottom) {
+            (true, _, true, _) | (_, true, _, true) => PointerShape::NwseResize,
+            (true, _, _, true) | (_, true, true, _) => PointerShape::NeswResize,
+            (true, ..) | (_, true, ..) => PointerShape::ColResize,
+            _ => PointerShape::RowResize,
+        },
     }
 }
 

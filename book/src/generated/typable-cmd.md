@@ -112,6 +112,7 @@
 | `:explorer-right` | Show the explorer panel pinned to the editor's right edge |
 | `:explorer-float` | Show the explorer panel as a floating window over the editor |
 | `:explorer-float-toggle` | Toggle the explorer panel as a floating window, independently of the pinned panel |
+| `:explorer-float-reset` | Forget the floating explorer window's mouse-set position and size, going back to the config |
 | `:explorer-refresh` | Reload expanded directories in the explorer panel from disk |
 | `:explorer-reveal` | Reveal and select the current file in the explorer panel |
 | `:explorer-width` | Set the width of the pinned explorer panel in columns |

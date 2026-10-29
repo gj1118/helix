@@ -232,6 +232,12 @@ pub enum PointerShape {
     ColResize,
     /// Over a horizontal resize handle (dragged up and down).
     RowResize,
+    /// Over a corner handle running from top left to bottom right.
+    NwseResize,
+    /// Over a corner handle running from top right to bottom left.
+    NeswResize,
+    /// Over a handle that moves a window.
+    Move,
 }
 
 impl PointerShape {
@@ -242,6 +248,9 @@ impl PointerShape {
             PointerShape::Default => "",
             PointerShape::ColResize => "col-resize",
             PointerShape::RowResize => "row-resize",
+            PointerShape::NwseResize => "nwse-resize",
+            PointerShape::NeswResize => "nesw-resize",
+            PointerShape::Move => "move",
         }
     }
 }

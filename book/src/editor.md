@@ -302,6 +302,8 @@ children are read from disk on first expansion only.
 |`width` | Width of the pinned panel in columns | `30` |
 |`floating-width` | Width of the floating window in columns | `40` |
 |`floating-height` | Height of the floating window in lines | `20` |
+|`floating-x` | Column of the floating window's left edge (centered when unset) | unset |
+|`floating-y` | Row of the floating window's top edge (centered when unset) | unset |
 |`icons` | Show per-file-type icons (honors the global `[icons.mime]` settings) | `true` |
 |`auto-reveal` | Select the current buffer's file when the panel opens | `false` |
 |`show-hidden` | Show dotfiles (hidden files) | `false` |
@@ -388,6 +390,13 @@ panel; if the float is showing it switches to the pinned panel instead of
 re-opening the float.
 
 ### Mouse
+
+The floating window can be moved and resized with the mouse: drag the top
+border to move it, any other border (or a corner) to resize it. The geometry
+is remembered across sessions in `explorer-float.toml` in Helix's state
+directory (the config file itself is never rewritten), and takes precedence
+over `floating-width`, `floating-height`, `floating-x` and `floating-y` until
+you run `:explorer-float-reset`.
 
 The separator between a pinned panel and the editor can be dragged to resize
 the panel. Dividers between editor splits can be dragged too. Notifications
