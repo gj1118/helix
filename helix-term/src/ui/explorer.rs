@@ -29,7 +29,7 @@ use helix_view::icons::ICONS;
 use helix_view::input::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use helix_view::{
     document::Mode,
-    editor::{Action, BufferLineRenderMode, CmdlineStyle, PointerShape},
+    editor::{Action, BufferLineRenderMode, CmdlineStyle, GradientBorderConfig, PointerShape},
     explorer::{
         copy_recursively, save_floating_geometry, Entry, ExplorerClipboard, ExplorerSide,
         FloatDrag, FloatGeometry, ScanOptions, Tree, TreeParams, FILTER_RESULT_LIMIT,
@@ -45,7 +45,7 @@ use tui::widgets::{Block, Widget};
 use crate::{
     compositor::{Component, Compositor, Context, Event, EventResult},
     job::Callback,
-    ui::{completers, CmdlinePopup, ConfirmBox, PromptEvent},
+    ui::{completers, gradient_border::GradientBorder, CmdlinePopup, ConfirmBox, PromptEvent},
 };
 
 pub const EXPLORER_ID: &str = "explorer";
@@ -206,6 +206,8 @@ pub struct Explorer {
     screen_width: u16,
     /// A drag of the separator is in progress.
     resizing: bool,
+    /// The floating window's gradient border and the config it was built from.
+    gradient_border: Option<(GradientBorderConfig, GradientBorder)>,
     /// Frame (border included) of the floating window, `None` when pinned.
     frame: Option<Rect>,
     /// Area the floating window moves in.
@@ -236,6 +238,7 @@ impl Explorer {
             separator: None,
             screen_width: 0,
             resizing: false,
+            gradient_border: None,
             frame: None,
             float_bounds: Rect::default(),
             float_drag: None,
@@ -1440,10 +1443,22 @@ impl Component for Explorer {
                 .editor
                 .explorer_panel
                 .floating_frame(&cx.editor.config().explorer, area);
-            let rect = if frame.width < 3 || frame.height < 3 {
+            // Gradient borders, when configured, set the border's thickness.
+            let gradient = &cx.editor.config().gradient_borders;
+            let t = if gradient.enable {
+                u16::from(gradient.thickness.clamp(1, 5))
+            } else {
+                1
+            };
+            let rect = if frame.width <= 2 * t || frame.height <= 2 * t {
                 frame
             } else {
-                Rect::new(frame.x + 1, frame.y + 1, frame.width - 2, frame.height - 2)
+                Rect::new(
+                    frame.x + t,
+                    frame.y + t,
+                    frame.width - 2 * t,
+                    frame.height - 2 * t,
+                )
             };
             (rect, Some(frame))
         } else {
@@ -1506,8 +1521,27 @@ impl Component for Explorer {
                 // Clear, not just restyle: the editor's text underneath would
                 // otherwise show through every cell this panel does not write.
                 surface.clear_with(frame, background_style);
-                let block = Block::bordered();
-                Widget::render(block, frame, surface);
+                let config = cx.editor.config();
+                if config.gradient_borders.enable {
+                    // `[editor.gradient-borders]` wins whenever it is enabled.
+                    let stale = self
+                        .gradient_border
+                        .as_ref()
+                        .is_none_or(|(cached, _)| *cached != config.gradient_borders);
+                    if stale {
+                        self.gradient_border = Some((
+                            config.gradient_borders.clone(),
+                            GradientBorder::from_theme(theme, &config.gradient_borders),
+                        ));
+                    }
+                    if let Some((_, border)) = self.gradient_border.as_mut() {
+                        border.render(frame, surface, theme, config.rounded_corners);
+                    }
+                } else {
+                    // Plain solid border otherwise.
+                    self.gradient_border = None;
+                    Widget::render(Block::bordered(), frame, surface);
+                }
             }
             None => {
                 // Pinned: paint the panel background and a separator line

@@ -391,6 +391,10 @@ re-opening the float.
 
 ### Mouse
 
+The floating window's border is a plain solid line by default. When
+`[editor.gradient-borders]` is enabled it is drawn as a gradient border instead
+(using its colors, direction and thickness), exactly like the pickers.
+
 The floating window can be moved and resized with the mouse: drag the top
 border to move it, any other border (or a corner) to resize it. The geometry
 is remembered across sessions in `explorer-float.toml` in Helix's state
