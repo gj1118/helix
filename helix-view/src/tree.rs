@@ -1017,7 +1017,7 @@ impl Tree {
             } else if i == index + 1 {
                 new_second
             } else {
-                sizes[i]
+                sizes.get(i).copied().unwrap_or(1)
             };
             let weight = size.max(1) as usize;
             match layout {

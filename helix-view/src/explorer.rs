@@ -10,7 +10,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
 
 use serde::{Deserialize, Serialize};
 
@@ -657,15 +658,48 @@ enum ScanMsg {
 /// Walks `root` on its own thread, honoring the ignore files selected in
 /// `options`, and streams the entries back in chunks. The thread ends when
 /// the walk does, or as soon as the receiver is dropped.
-fn spawn_scan(root: PathBuf, show_hidden: bool, options: ScanOptions) -> mpsc::Receiver<ScanMsg> {
+fn spawn_scan(root: PathBuf, show_hidden: bool, options: ScanOptions) -> ScanHandle {
     let (tx, rx) = mpsc::channel();
-    let _ = std::thread::Builder::new()
+    let cancel = Arc::new(AtomicBool::new(false));
+    let thread_cancel = Arc::clone(&cancel);
+    if let Err(err) = std::thread::Builder::new()
         .name("explorer-scan".into())
-        .spawn(move || run_scan(&root, show_hidden, options, &tx));
-    rx
+        .spawn(move || run_scan(&root, show_hidden, options, &tx, &thread_cancel))
+    {
+        // The receiver sees the channel close and the filter simply has no
+        // results; say why in the log.
+        log::error!("failed to start the explorer scan thread: {err}");
+    }
+    ScanHandle { rx, cancel }
 }
 
-fn run_scan(root: &Path, show_hidden: bool, options: ScanOptions, tx: &mpsc::Sender<ScanMsg>) {
+/// The receiving end of a running scan. Dropping it (filter cleared, tree
+/// refreshed) tells the thread to stop, so abandoned walks of a huge tree do
+/// not pile up.
+struct ScanHandle {
+    rx: mpsc::Receiver<ScanMsg>,
+    cancel: Arc<AtomicBool>,
+}
+
+impl std::fmt::Debug for ScanHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ScanHandle")
+    }
+}
+
+impl Drop for ScanHandle {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
+fn run_scan(
+    root: &Path,
+    show_hidden: bool,
+    options: ScanOptions,
+    tx: &mpsc::Sender<ScanMsg>,
+    cancel: &AtomicBool,
+) {
     let mut walker = ignore::WalkBuilder::new(root);
     walker
         .hidden(!show_hidden)
@@ -687,6 +721,9 @@ fn run_scan(root: &Path, show_hidden: bool, options: ScanOptions, tx: &mpsc::Sen
     let mut truncated = false;
 
     for result in walker.build() {
+        if cancel.load(Ordering::Relaxed) {
+            return;
+        }
         let Ok(entry) = result else {
             continue;
         };
@@ -758,7 +795,7 @@ pub struct Tree {
     /// Whether a scan was started for the current filter.
     scan_started: bool,
     /// Channel of the scan still in flight, `None` once it has finished.
-    scan_rx: Option<mpsc::Receiver<ScanMsg>>,
+    scan_rx: Option<ScanHandle>,
     scan_truncated: bool,
     /// Whether the last filter result was cut at [`FILTER_RESULT_LIMIT`].
     results_capped: bool,
@@ -1071,8 +1108,8 @@ impl Tree {
     /// Cheap when nothing arrived, so it can run on every frame.
     pub fn poll_scan(&mut self, params: TreeParams) -> bool {
         let mut changed = false;
-        while let Some(rx) = &self.scan_rx {
-            match rx.try_recv() {
+        while let Some(handle) = &self.scan_rx {
+            match handle.rx.try_recv() {
                 Ok(msg) => {
                     self.absorb_scan(msg);
                     changed = true;
@@ -1093,8 +1130,8 @@ impl Tree {
 
     /// Blocks until the scan has finished. For tests; the editor never waits.
     pub fn wait_for_scan(&mut self, params: TreeParams) {
-        while let Some(rx) = &self.scan_rx {
-            match rx.recv_timeout(std::time::Duration::from_secs(30)) {
+        while let Some(handle) = &self.scan_rx {
+            match handle.rx.recv_timeout(std::time::Duration::from_secs(30)) {
                 Ok(msg) => self.absorb_scan(msg),
                 Err(_) => self.scan_rx = None,
             }
@@ -1318,21 +1355,45 @@ fn root_display_name(path: &Path) -> String {
 /// Recursively copies `from` (file or directory) onto `to` (entries are
 /// replaced as they are copied). Used for paste.
 pub fn copy_recursively(from: &Path, to: &Path) -> io::Result<()> {
-    if from.is_dir() {
+    let file_type = fs::symlink_metadata(from)?.file_type();
+
+    if file_type.is_dir() {
+        // Copying a directory into itself would never terminate.
+        if to.starts_with(from) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "cannot copy a directory into itself",
+            ));
+        }
         fs::create_dir_all(to)?;
         for entry in fs::read_dir(from)? {
             let entry = entry?;
-            let dest = to.join(entry.file_name());
-            copy_recursively(&entry.path(), &dest)?;
+            copy_recursively(&entry.path(), &to.join(entry.file_name()))?;
         }
-        Ok(())
-    } else {
-        if let Some(parent) = to.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::copy(from, to)?;
-        Ok(())
+        return Ok(());
     }
+
+    if let Some(parent) = to.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    if file_type.is_symlink() {
+        // Links are copied as links, never followed: a link pointing at one
+        // of its own ancestors would otherwise recurse forever.
+        #[cfg(unix)]
+        {
+            let target = fs::read_link(from)?;
+            if fs::symlink_metadata(to).is_ok_and(|meta| !meta.is_dir()) {
+                fs::remove_file(to)?;
+            }
+            return std::os::unix::fs::symlink(target, to);
+        }
+        #[cfg(not(unix))]
+        if fs::metadata(from).is_ok_and(|meta| meta.is_dir()) {
+            return Ok(());
+        }
+    }
+    fs::copy(from, to)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1893,6 +1954,36 @@ mod tests {
         );
         let far = left.apply(start, -100, -100, bw, bh);
         assert_eq!((far.x, far.y, far.width, far.height), (0, 0, 30, 15));
+    }
+
+    #[test]
+    fn copy_refuses_to_copy_a_directory_into_itself() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("dir");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), "a").unwrap();
+        let err = copy_recursively(&dir, &dir.join("copy")).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(!dir.join("copy").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_keeps_symlinks_as_links_instead_of_following_them() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir(&src).unwrap();
+        std::fs::write(src.join("a.txt"), "a").unwrap();
+        // A link back to the directory that contains it.
+        std::os::unix::fs::symlink(&src, src.join("loop")).unwrap();
+
+        let dest = tmp.path().join("dest");
+        copy_recursively(&src, &dest).unwrap();
+        assert_eq!(std::fs::read_to_string(dest.join("a.txt")).unwrap(), "a");
+        assert!(std::fs::symlink_metadata(dest.join("loop"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
     }
 
     #[test]

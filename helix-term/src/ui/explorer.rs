@@ -43,7 +43,7 @@ use tui::text::Span;
 use tui::widgets::{Block, Widget};
 
 use crate::{
-    compositor::{Component, Context, Event, EventResult},
+    compositor::{Component, Compositor, Context, Event, EventResult},
     job::Callback,
     ui::{completers, CmdlinePopup, ConfirmBox, PromptEvent},
 };
@@ -738,8 +738,8 @@ impl Explorer {
         if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
             let bounds = self.float_bounds;
             let start = FloatGeometry {
-                x: frame.x - bounds.x,
-                y: frame.y - bounds.y,
+                x: frame.x.saturating_sub(bounds.x),
+                y: frame.y.saturating_sub(bounds.y),
                 width: frame.width,
                 height: frame.height,
             };
@@ -1027,11 +1027,16 @@ impl Explorer {
                     return;
                 }
                 match std::fs::rename(&from, &dest) {
-                    Ok(()) => cx.editor.set_status(format!(
-                        "Renamed {} to {}",
-                        from.display(),
-                        dest.display()
-                    )),
+                    Ok(()) => {
+                        // Open buffers follow their file, or saving them
+                        // would recreate it under the old name.
+                        retarget_buffers(cx.editor, &from, &dest);
+                        cx.editor.set_status(format!(
+                            "Renamed {} to {}",
+                            from.display(),
+                            dest.display()
+                        ));
+                    }
                     Err(err) => cx.editor.set_error(format!(
                         "Failed to rename {} to {}: {err}",
                         from.display(),
@@ -1076,16 +1081,25 @@ impl Explorer {
             format!("Delete {kind}"),
             message,
             "Delete",
-            move |compositor, cx| {
-                match remove_path(&path) {
-                    Ok(()) => cx.editor.set_status(format!("Deleted {}", path.display())),
-                    Err(err) => cx
-                        .editor
-                        .set_error(format!("Failed to delete {}: {err}", path.display())),
-                }
-                if let Some(explorer) = compositor.find_id::<Explorer>(EXPLORER_ID) {
-                    explorer.refresh_keep(cx.editor, Some(keep));
-                }
+            move |_compositor, cx| {
+                cx.editor
+                    .set_status(format!("Deleting {}…", path.display()));
+                let target = path.clone();
+                // A big tree can take a while to remove: keep the UI alive.
+                run_blocking(
+                    cx,
+                    move || remove_path(&target),
+                    move |editor, compositor, result| {
+                        match result {
+                            Ok(()) => editor.set_status(format!("Deleted {}", path.display())),
+                            Err(err) => editor
+                                .set_error(format!("Failed to delete {}: {err}", path.display())),
+                        }
+                        if let Some(explorer) = compositor.find_id::<Explorer>(EXPLORER_ID) {
+                            explorer.refresh_keep(editor, Some(keep));
+                        }
+                    },
+                );
             },
         ))
     }
@@ -1199,47 +1213,103 @@ impl Explorer {
     }
 }
 
-/// Paste implementation shared by plain paste and overwrite confirmation.
+/// Runs a slow file operation on a blocking thread, then `done` on the UI
+/// thread with its result.
+fn run_blocking<T: Send + 'static>(
+    cx: &mut Context,
+    work: impl FnOnce() -> io::Result<T> + Send + 'static,
+    done: impl FnOnce(&mut Editor, &mut Compositor, io::Result<T>) + Send + 'static,
+) {
+    cx.jobs.callback(async move {
+        let result = tokio::task::spawn_blocking(work)
+            .await
+            .unwrap_or_else(|err| Err(io::Error::other(err.to_string())));
+        let call: Callback = Callback::EditorCompositor(Box::new(move |editor, compositor| {
+            done(editor, compositor, result)
+        }));
+        Ok(call)
+    });
+}
+
+/// Points every open buffer under `from` at the same place under `to`, after
+/// a rename or move on disk.
+fn retarget_buffers(editor: &mut Editor, from: &Path, to: &Path) {
+    let moved: Vec<_> = editor
+        .documents
+        .values()
+        .filter_map(|doc| {
+            let relative = doc.path()?.strip_prefix(from).ok()?;
+            let new_path = if relative.as_os_str().is_empty() {
+                to.to_path_buf()
+            } else {
+                to.join(relative)
+            };
+            Some((doc.id(), new_path))
+        })
+        .collect();
+    for (id, path) in moved {
+        editor.set_doc_path(id, &path);
+    }
+}
+
+/// Moves or copies `from` to `to`. A move is a plain rename when it can be
+/// (instant, even for huge trees) and a copy followed by removing the original
+/// otherwise. `Ok(Some(err))` means the copy worked but the original could not
+/// be removed.
+fn transfer(from: &Path, to: &Path, cut: bool) -> io::Result<Option<io::Error>> {
+    if cut && !to.exists() && std::fs::rename(from, to).is_ok() {
+        return Ok(None);
+    }
+    copy_recursively(from, to)?;
+    Ok(if cut { remove_path(from).err() } else { None })
+}
+
+/// Paste implementation shared by plain paste and overwrite confirmation. The
+/// work happens off the UI thread.
 fn paste_now(cx: &mut Context, clip: &ExplorerClipboard, dest: &Path) {
-    if let Err(err) = copy_recursively(&clip.path, dest) {
-        cx.editor.set_error(format!(
-            "Failed to paste {} to {}: {err}",
-            clip.path.display(),
-            dest.display()
-        ));
-        return;
-    }
-
-    if !clip.cut {
-        cx.editor.set_status(format!(
-            "Copied {} to {}",
-            clip.path.display(),
-            dest.display()
-        ));
-        refresh_after(cx, dest.to_path_buf());
-        return;
-    }
-
-    match remove_path(&clip.path) {
-        Ok(()) => {
-            cx.editor.explorer_clipboard = None;
-            cx.editor.set_status(format!(
-                "Moved {} to {}",
-                clip.path.display(),
-                dest.display()
-            ));
-        }
-        Err(err) => {
-            // The copy succeeded, removing the original did not: keep the
-            // clipboard entry so the user can retry the cut.
-            cx.editor.set_error(format!(
-                "Copied {} to {} but failed to remove the original: {err}",
-                clip.path.display(),
-                dest.display()
-            ));
-        }
-    }
-    refresh_after(cx, dest.to_path_buf());
+    let (from, to, cut) = (clip.path.clone(), dest.to_path_buf(), clip.cut);
+    cx.editor.set_status(format!(
+        "{} {}…",
+        if cut { "Moving" } else { "Copying" },
+        from.display()
+    ));
+    let (work_from, work_to) = (from.clone(), to.clone());
+    run_blocking(
+        cx,
+        move || transfer(&work_from, &work_to, cut),
+        move |editor, compositor, result| {
+            match result {
+                Err(err) => {
+                    editor.set_error(format!(
+                        "Failed to paste {} to {}: {err}",
+                        from.display(),
+                        to.display()
+                    ));
+                    return;
+                }
+                Ok(None) if !cut => {
+                    editor.set_status(format!("Copied {} to {}", from.display(), to.display()))
+                }
+                Ok(None) => {
+                    editor.explorer_clipboard = None;
+                    retarget_buffers(editor, &from, &to);
+                    editor.set_status(format!("Moved {} to {}", from.display(), to.display()));
+                }
+                Ok(Some(err)) => {
+                    // The copy succeeded, removing the original did not: keep
+                    // the clipboard entry so the cut can be retried.
+                    editor.set_error(format!(
+                        "Copied {} to {} but failed to remove the original: {err}",
+                        from.display(),
+                        to.display()
+                    ));
+                }
+            }
+            if let Some(explorer) = compositor.find_id::<Explorer>(EXPLORER_ID) {
+                explorer.refresh_reveal(editor, to);
+            }
+        },
+    );
 }
 
 /// Runs a tree refresh after a mutation prompt's file operation finished,
