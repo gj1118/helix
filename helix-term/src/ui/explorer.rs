@@ -221,6 +221,8 @@ pub struct Explorer {
     filter_cursor: usize,
     /// Keys edit the filter text instead of driving the tree.
     filter_editing: bool,
+    /// The arrows moved the selection since the filter text last changed.
+    filter_navigated: bool,
 }
 
 impl Explorer {
@@ -248,6 +250,7 @@ impl Explorer {
             filter: String::new(),
             filter_cursor: 0,
             filter_editing: false,
+            filter_navigated: false,
         })
     }
 
@@ -396,6 +399,7 @@ impl Explorer {
         let keep = self.entry().map(|entry| entry.path.clone());
         self.tree.set_filter(&self.filter, params);
         self.report_filter_limits(editor);
+        self.filter_navigated = false;
 
         if self.tree.filter().is_none() {
             // Back to the full tree: keep the selected entry on screen, even
@@ -489,21 +493,42 @@ impl Explorer {
             // keypress does what typing the query asked for.
             KeyCode::Enter if key.modifiers == KeyModifiers::NONE => {
                 self.filter_editing = false;
-                let first_file = self
-                    .tree
-                    .visible()
-                    .iter()
-                    .position(|entry| !entry.is_dir && !entry.is_parent);
                 if self.tree.filter().is_some() {
-                    if let Some(i) = first_file {
-                        self.cursor = i;
+                    // Once the user picked a row with the arrows, Enter acts
+                    // on that row; otherwise on the first file match.
+                    if !self.filter_navigated {
+                        let first_file = self
+                            .tree
+                            .visible()
+                            .iter()
+                            .position(|entry| !entry.is_dir && !entry.is_parent);
+                        if let Some(i) = first_file {
+                            self.cursor = i;
+                        }
+                    }
+                    if self.entry().is_some_and(|entry| !entry.is_dir) {
+                        return self.on_primary_open(cx);
+                    }
+                    if self.filter_navigated {
                         return self.on_primary_open(cx);
                     }
                 }
             }
-            // Down/Tab stop editing and keep the filter applied, to browse
-            // the results.
-            KeyCode::Down | KeyCode::Tab if key.modifiers == KeyModifiers::NONE => {
+            // The arrows move through the results without leaving the box, so
+            // the query can still be edited afterwards.
+            KeyCode::Down if key.modifiers == KeyModifiers::NONE => {
+                if self.cursor + 1 < self.len() {
+                    self.cursor += 1;
+                }
+                self.filter_navigated = true;
+            }
+            KeyCode::Up if key.modifiers == KeyModifiers::NONE => {
+                self.cursor = self.cursor.saturating_sub(1);
+                self.filter_navigated = true;
+            }
+            // Tab leaves the box and keeps the filter applied, to browse the
+            // results with the tree keys.
+            KeyCode::Tab if key.modifiers == KeyModifiers::NONE => {
                 self.filter_editing = false;
             }
             // Escape drops the filter altogether.
