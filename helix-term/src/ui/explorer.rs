@@ -226,11 +226,14 @@ pub struct Explorer {
 impl Explorer {
     /// Creates the panel rooted at `root`, loading the root's children only.
     pub fn new(root: &Path, editor: &Editor) -> io::Result<Self> {
-        let tree = Tree::new(root.to_path_buf(), tree_params(editor))?;
+        let mut tree = Tree::new(root.to_path_buf(), tree_params(editor))?;
+        tree.set_show_parent(true);
+        // Start on the root row, below the `...` row.
+        let cursor = usize::from(tree.visible().first().is_some_and(|e| e.is_parent));
         Ok(Self {
             root: root.to_path_buf(),
             tree,
-            cursor: 0,
+            cursor,
             scroll: 0,
             area: Rect::default(),
             input_area: Rect::default(),
@@ -258,7 +261,42 @@ impl Explorer {
 
     /// The row under the cursor (if the tree is non-empty).
     fn entry(&self) -> Option<&Entry> {
-        self.tree.visible().get(self.cursor)
+        self.tree
+            .visible()
+            .get(self.cursor)
+            .filter(|entry| !entry.is_parent)
+    }
+
+    /// Whether the cursor is on the `...` row.
+    fn on_parent_row(&self) -> bool {
+        self.tree
+            .visible()
+            .get(self.cursor)
+            .is_some_and(|entry| entry.is_parent)
+    }
+
+    /// Makes the parent of the current root the new root, selecting the
+    /// directory we came from. Does nothing at the filesystem root.
+    fn go_up(&mut self, cx: &mut Context) -> EventResult {
+        let Some(parent) = self.root.parent().map(Path::to_path_buf) else {
+            return EventResult::Consumed(None);
+        };
+        match Tree::new(parent.clone(), tree_params(cx.editor)) {
+            Ok(mut tree) => {
+                tree.set_show_parent(true);
+                let previous = std::mem::replace(&mut self.root, parent);
+                self.tree = tree;
+                self.scroll = 0;
+                self.cursor = 0;
+                self.select_path(&previous);
+                cx.editor
+                    .set_status(format!("Explorer root: {}", self.root.display()));
+            }
+            Err(err) => cx
+                .editor
+                .set_error(format!("Failed to open {}: {err}", parent.display())),
+        }
+        EventResult::Consumed(None)
     }
 
     /// Reveals and selects the focused document's file. Used by
@@ -293,7 +331,7 @@ impl Explorer {
     }
 
     fn entry_cloned(&self) -> Option<Entry> {
-        self.tree.visible().get(self.cursor).cloned()
+        self.entry().cloned()
     }
 
     fn clamp_cursor(&mut self) {
@@ -624,6 +662,9 @@ impl Explorer {
 
     /// `l`/`right`/Enter: expand/collapse a directory, or open the file.
     fn on_primary_open(&mut self, cx: &mut Context) -> EventResult {
+        if self.on_parent_row() {
+            return self.go_up(cx);
+        }
         let Some(entry) = self.entry_cloned() else {
             return EventResult::Consumed(None);
         };
@@ -838,6 +879,9 @@ impl Explorer {
                 self.cursor = i;
                 if mouse.modifiers != KeyModifiers::NONE {
                     return EventResult::Consumed(None);
+                }
+                if self.on_parent_row() {
+                    return self.go_up(cx);
                 }
                 let Some(entry) = self.entry_cloned() else {
                     return EventResult::Consumed(None);

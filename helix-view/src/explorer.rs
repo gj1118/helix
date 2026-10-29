@@ -262,6 +262,9 @@ pub struct Entry {
     pub expanded: bool,
     /// Positionally the last child of its parent (drives `└─` vs `├─`).
     pub is_last: bool,
+    /// The `...` row above the root, which goes up to the parent directory
+    /// ([`Tree::set_show_parent`]). Its `path` is that parent directory.
+    pub is_parent: bool,
 }
 
 #[derive(Debug)]
@@ -799,6 +802,8 @@ pub struct Tree {
     scan_truncated: bool,
     /// Whether the last filter result was cut at [`FILTER_RESULT_LIMIT`].
     results_capped: bool,
+    /// Whether to list a `...` row above the root.
+    show_parent: bool,
 }
 
 impl Tree {
@@ -815,6 +820,7 @@ impl Tree {
             scan_rx: None,
             scan_truncated: false,
             results_capped: false,
+            show_parent: false,
         };
         let root = tree.root.clone();
         tree.expand(&root, params)?;
@@ -1275,18 +1281,39 @@ impl Tree {
         } else {
             &self.dirs
         };
-        self.visible = build_visible(&self.root, dirs);
+        // While filtering, the rows are search results: no way up.
+        let with_parent = self.show_parent && self.filter.is_none();
+        self.visible = build_visible(&self.root, dirs, with_parent);
+    }
+
+    /// Adds (or removes) a `...` row above the root that stands for its
+    /// parent directory, when the root has one. Off by default.
+    pub fn set_show_parent(&mut self, show: bool) {
+        self.show_parent = show;
+        self.rebuild_visible();
     }
 }
 
 /// Builds the flattened visible rows: root row first, then a depth-first
 /// pre-order walk over expanded directories. Pure over `dirs`, so borrows
 /// end when it returns.
-fn build_visible(root: &Path, dirs: &HashMap<PathBuf, Dir>) -> Vec<Entry> {
+fn build_visible(root: &Path, dirs: &HashMap<PathBuf, Dir>, with_parent: bool) -> Vec<Entry> {
     let mut visible = Vec::new();
     let Some(root_dir) = dirs.get(root) else {
         return visible;
     };
+
+    if let Some(parent) = root.parent().filter(|_| with_parent) {
+        visible.push(Entry {
+            path: parent.to_path_buf(),
+            name: "...".to_string(),
+            depth: 0,
+            is_dir: true,
+            expanded: false,
+            is_last: false,
+            is_parent: true,
+        });
+    }
 
     visible.push(Entry {
         path: root.to_path_buf(),
@@ -1295,6 +1322,7 @@ fn build_visible(root: &Path, dirs: &HashMap<PathBuf, Dir>) -> Vec<Entry> {
         is_dir: true,
         expanded: root_dir.expanded,
         is_last: true,
+        is_parent: false,
     });
     if !root_dir.expanded {
         return visible;
@@ -1316,6 +1344,7 @@ fn build_visible(root: &Path, dirs: &HashMap<PathBuf, Dir>) -> Vec<Entry> {
                     is_dir: child.is_dir,
                     expanded: dirs.get(&child.path).is_some_and(|d| d.expanded),
                     is_last: false,
+                    is_parent: false,
                 });
                 if child.is_dir {
                     if let Some(dir) = dirs.get(&child.path) {
@@ -1984,6 +2013,23 @@ mod tests {
             .unwrap()
             .file_type()
             .is_symlink());
+    }
+
+    #[test]
+    fn parent_row_comes_first_and_only_outside_filters() {
+        let (tmp, mut tree, p) = filter_fixture();
+        assert_eq!(tree.visible()[0].path, tmp.path());
+        tree.set_show_parent(true);
+        let first = &tree.visible()[0];
+        assert!(first.is_parent && first.name == "...");
+        assert_eq!(Some(first.path.as_path()), tmp.path().parent());
+        assert_eq!(tree.visible()[1].path, tmp.path());
+
+        tree.set_filter("*.rs", p);
+        tree.wait_for_scan(p);
+        assert!(!tree.visible().iter().any(|e| e.is_parent));
+        tree.set_filter("", p);
+        assert!(tree.visible()[0].is_parent);
     }
 
     #[test]

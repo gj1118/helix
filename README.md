@@ -157,6 +157,7 @@ Inside the panel (while it is focused):
 |`.` | Reveal and select the current buffer's file |
 |`R` | Reload expanded directories from disk |
 |`H` | Toggle showing hidden files |
+|`l`/Enter on `...` | Go up: the parent directory becomes the explorer's root (the `...` row is the first row, hidden while filtering) |
 |`/` | Focus the filter box at the top of the panel (see below) |
 |`a` | Create a file (or a directory when the name ends in `/`) in the selected directory, or beside the selected file; at the root when nothing is selected |
 |`A` | Create a directory in the same place |
