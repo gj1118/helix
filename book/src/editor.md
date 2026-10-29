@@ -339,6 +339,7 @@ extension (`rs`) — not by language name:
 [icons.mime]
 enabled = true
 directory = "📁"
+directory-open = "📂"
 rs = "🦀"
 ```
 
@@ -356,14 +357,41 @@ Inside the panel (while it is focused):
 |`.` | Reveal and select the current buffer's file |
 |`R` | Reload expanded directories from disk |
 |`H` | Toggle showing hidden files |
-|`a` | Create a file (or directory when the name ends in `/`) |
-|`r` | Rename the entry under the cursor |
-|`d` | Delete the entry under the cursor (after confirmation) |
+|`/` | Focus the filter box at the top of the panel (see below) |
+|`a` | Create a file (or a directory when the name ends in `/`) in the selected directory, or beside the selected file; at the root when nothing is selected |
+|`A` | Create a directory in the same place |
+|`r` | Rename the entry under the cursor (the popup is titled `Rename file <name>` / `Rename folder <name>` and prefilled) |
+|`d` | Delete the entry under the cursor; a confirmation box opens first and defaults to Cancel |
 |`x` | Cut the entry under the cursor |
 |`c` | Copy the entry under the cursor |
 |`p` | Paste from the explorer clipboard into the directory under the cursor |
 |`q` | Close the panel |
-|`Esc` | Hand keyboard focus back to the editor (panel keeps its tree; a floating panel closes instead) |
+|`Esc` | Clear an active filter first; otherwise hand keyboard focus back to the editor (panel keeps its tree; a floating panel closes instead) |
+
+### Filtering
+
+The first row of the panel is a filter box. Press `/` (or click it) and type:
+a plain word matches names containing it (case-insensitive); patterns with
+`*`, `?`, `[abc]`, `[a-z]`, `[!x]` or `{a,b}` are matched as wildcards (`*.rs`,
+`test_?.py`, `*.{toml,md}`). A pattern containing `/` is matched against the
+path relative to the root (`src/**/mod.rs`-style). While a filter is active the
+tree shows only matching entries and the directories leading to them, searching
+the whole tree (capped at 100,000 entries, `.git` skipped). Enter, Down or Tab
+keep the filter and return to the tree; Esc (or clearing the box) restores the
+full tree and reveals the selected entry.
+
+### Floating explorer
+
+The floating window has its own toggle, independent of the pinned panel:
+`<space>X` / `:explorer-float-toggle`. `<space>x` keeps toggling the pinned
+panel; if the float is showing it switches to the pinned panel instead of
+re-opening the float.
+
+### Mouse
+
+The separator between a pinned panel and the editor can be dragged to resize
+the panel. Dividers between editor splits can be dragged too. Notifications
+are drawn in the area not covered by the pinned panel.
 
 With mouse support enabled (`[editor]` `mouse = true`, the default), left click
 selects and acts on the row under the pointer — a folder expands/collapses, a

@@ -116,6 +116,7 @@
 | `explorer_left` | Show the explorer panel pinned to the left |  |
 | `explorer_right` | Show the explorer panel pinned to the right |  |
 | `explorer_float` | Show the explorer panel as a floating window |  |
+| `explorer_float_toggle` | Toggle the explorer panel as a floating window | normal: `` <space>X ``, select: `` <space>X `` |
 | `explorer_refresh` | Refresh the explorer panel from disk |  |
 | `explorer_reveal` | Reveal the current file in the explorer panel |  |
 | `code_action` | Perform code action | normal: `` <space>a ``, select: `` <space>a `` |

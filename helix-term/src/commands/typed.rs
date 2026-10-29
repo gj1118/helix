@@ -4907,6 +4907,14 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         signature: Signature { positionals: (0, Some(0)), ..Signature::DEFAULT },
     },
     TypableCommand {
+        name: "explorer-float-toggle",
+        aliases: &[],
+        doc: "Toggle the explorer panel as a floating window, independently of the pinned panel",
+        fun: explorer_float_toggle,
+        completer: CommandCompleter::none(),
+        signature: Signature { positionals: (0, Some(0)), ..Signature::DEFAULT },
+    },
+    TypableCommand {
         name: "explorer-refresh",
         aliases: &[],
         doc: "Reload expanded directories in the explorer panel from disk",
@@ -5629,6 +5637,17 @@ fn explorer_float(
         return Ok(());
     }
     explorer_typable(cx, crate::commands::explorer_float)
+}
+
+fn explorer_float_toggle(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    explorer_typable(cx, crate::commands::explorer_float_toggle)
 }
 
 fn explorer_refresh(

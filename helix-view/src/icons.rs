@@ -713,6 +713,11 @@ impl Vcs {
 pub struct Mime {
     enabled: bool,
     directory: Option<String>,
+    /// Glyph for an expanded directory (e.g. in the explorer tree). Falls back
+    /// to `directory` when only that is configured, else to a built-in open
+    /// folder glyph.
+    #[serde(alias = "directory-open")]
+    directory_open: Option<String>,
     #[serde(flatten)]
     mime: HashMap<String, Icon>,
 }
@@ -848,6 +853,25 @@ impl Mime {
         }
 
         let dir = self.directory.as_ref().map_or("󰉋", |dir| dir.as_str());
+
+        Some(dir)
+    }
+
+    /// The glyph for an expanded directory. An explicit `directory_open` wins;
+    /// otherwise a custom `directory` glyph is reused (so configs that predate
+    /// this option render as before), and with neither set a built-in open
+    /// folder glyph is used.
+    #[inline]
+    pub fn directory_open(&self) -> Option<&str> {
+        if !self.enabled {
+            return None;
+        }
+
+        let dir = match (&self.directory_open, &self.directory) {
+            (Some(open), _) => open.as_str(),
+            (None, Some(closed)) => closed.as_str(),
+            (None, None) => "󰝰",
+        };
 
         Some(dir)
     }
@@ -1043,5 +1067,68 @@ impl<'de> serde::de::Visitor<'de> for IconVisitor {
         };
 
         Ok(Icon { glyph, color })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const CLOSED: &str = "\u{f024b}";
+    const OPEN: &str = "\u{f0770}";
+
+    #[test]
+    fn built_in_folder_glyphs_differ_when_open() {
+        let mime = Mime {
+            enabled: true,
+            ..Mime::default()
+        };
+        assert_eq!(mime.directory(), Some(CLOSED));
+        assert_eq!(mime.directory_open(), Some(OPEN));
+    }
+
+    #[test]
+    fn open_glyph_follows_a_custom_closed_glyph_until_set() {
+        let mut mime = Mime {
+            enabled: true,
+            directory: Some("📁".into()),
+            ..Mime::default()
+        };
+        // Configs that predate `directory-open` look the same as before.
+        assert_eq!(mime.directory(), Some("📁"));
+        assert_eq!(mime.directory_open(), Some("📁"));
+
+        mime.directory_open = Some("📂".into());
+        assert_eq!(mime.directory(), Some("📁"));
+        assert_eq!(mime.directory_open(), Some("📂"));
+    }
+
+    #[test]
+    fn disabled_icons_have_no_folder_glyphs() {
+        let mime = Mime::default();
+        assert_eq!(mime.directory(), None);
+        assert_eq!(mime.directory_open(), None);
+    }
+
+    #[test]
+    fn open_glyph_is_configurable() {
+        let icons: Icons = toml::from_str(
+            r#"
+            [mime]
+            enabled = true
+            directory = "C"
+            directory-open = "O"
+            rs = "R"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(icons.mime().directory(), Some("C"));
+        assert_eq!(icons.mime().directory_open(), Some("O"));
+        // The flattened per-extension icons still deserialize alongside.
+        assert!(icons.mime().get(None, Some("rs")).is_some());
+
+        let snake: Icons =
+            toml::from_str("[mime]\nenabled = true\ndirectory_open = \"S\"").unwrap();
+        assert_eq!(snake.mime().directory_open(), Some("S"));
     }
 }

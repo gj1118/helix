@@ -6,7 +6,7 @@
 //! state, so opening the explorer is O(1) in project size and every frame
 //! renders straight out of cached rows.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -90,9 +90,14 @@ pub struct ExplorerState {
     /// Whether the panel has keyboard focus (tree navigation and file
     /// mutations only respond to keys while this is set).
     pub focused: bool,
-    /// Runtime side override (`:explorer-left` / `:explorer-right` /
-    /// `:explorer-float`).
+    /// Runtime side override (`:explorer-left` / `:explorer-right`). Only ever
+    /// holds a pinned side; the floating window is tracked by `floating`.
     pub side: Option<ExplorerSide>,
+    /// Whether the panel is currently shown as a floating window. This is a
+    /// transient presentation of the one tree, owned by the floating toggle
+    /// (`:explorer-float-toggle`); closing the window clears it, so the pinned
+    /// panel's toggle never reopens a float.
+    pub floating: bool,
     /// Runtime width override (`:explorer-width`).
     pub width: Option<u16>,
     /// Runtime show-hidden override (`h`/'H' inside the panel).
@@ -102,7 +107,18 @@ pub struct ExplorerState {
 impl ExplorerState {
     /// Effective side of the panel.
     pub fn side(&self, config: &ExplorerConfig) -> ExplorerSide {
-        self.side.unwrap_or(config.side)
+        if self.floating {
+            ExplorerSide::Floating
+        } else {
+            self.side.unwrap_or(config.side)
+        }
+    }
+
+    /// Hides the panel (pinned or floating) and drops its keyboard focus.
+    pub fn hide(&mut self) {
+        self.visible = false;
+        self.focused = false;
+        self.floating = false;
     }
 
     /// Effective width of the pinned panel.
@@ -178,12 +194,179 @@ struct Dir {
     children: Vec<Child>,
 }
 
+// ---------------------------------------------------------------------------
+// Filtering
+// ---------------------------------------------------------------------------
+
+/// Upper bound on the entries a filter scan collects. Past this the scan stops
+/// and the result is flagged as truncated (see [`Tree::filter_truncated`]).
+pub const FILTER_SCAN_LIMIT: usize = 100_000;
+
+/// Case-insensitive glob match: `*` matches any run of characters, `?` one
+/// character, and `[abc]` / `[a-z]` / `[!abc]` a character class.
+pub fn glob_match(pattern: &str, text: &str) -> bool {
+    let pat: Vec<char> = pattern.chars().flat_map(char::to_lowercase).collect();
+    let txt: Vec<char> = text.chars().flat_map(char::to_lowercase).collect();
+    glob_match_chars(&pat, &txt)
+}
+
+/// Matches one `[...]` class at the start of `pat` (which begins with `[`)
+/// against `c`. Returns `(matched, pattern length consumed)`, or `None` when the
+/// class is not closed (the `[` is then an ordinary character).
+fn match_class(pat: &[char], c: char) -> Option<(bool, usize)> {
+    let mut i = 1;
+    let negate = matches!(pat.get(i), Some('!') | Some('^'));
+    if negate {
+        i += 1;
+    }
+    let mut matched = false;
+    let mut first = true;
+    while i < pat.len() {
+        // A `]` right after the opening (or negation) is a literal member.
+        if pat[i] == ']' && !first {
+            return Some((matched != negate, i + 1));
+        }
+        first = false;
+        if i + 2 < pat.len() && pat[i + 1] == '-' && pat[i + 2] != ']' {
+            if pat[i] <= c && c <= pat[i + 2] {
+                matched = true;
+            }
+            i += 3;
+        } else {
+            if pat[i] == c {
+                matched = true;
+            }
+            i += 1;
+        }
+    }
+    None
+}
+
+fn glob_match_chars(pat: &[char], txt: &[char]) -> bool {
+    let (mut p, mut t) = (0usize, 0usize);
+    // Position to resume from after the most recent `*`: (pattern index after
+    // the star, text index the star currently swallows up to).
+    let mut star: Option<(usize, usize)> = None;
+
+    while t < txt.len() {
+        let step = match pat.get(p) {
+            Some('*') => {
+                star = Some((p + 1, t));
+                p += 1;
+                continue;
+            }
+            Some('?') => Some(1),
+            Some('[') => match match_class(&pat[p..], txt[t]) {
+                Some((true, len)) => Some(len),
+                Some((false, _)) => None,
+                // Unclosed class: `[` is a literal.
+                None => (txt[t] == '[').then_some(1),
+            },
+            Some(&c) => (c == txt[t]).then_some(1),
+            None => None,
+        };
+        match step {
+            Some(len) => {
+                p += len;
+                t += 1;
+            }
+            None => match star {
+                Some((sp, st)) => {
+                    // Let the star swallow one more character and retry.
+                    star = Some((sp, st + 1));
+                    p = sp;
+                    t = st + 1;
+                }
+                None => return false,
+            },
+        }
+    }
+    while pat.get(p) == Some(&'*') {
+        p += 1;
+    }
+    p == pat.len()
+}
+
+/// Expands `{a,b}` alternations (not nested) into plain patterns, so
+/// `*.{rs,toml}` becomes `*.rs` and `*.toml`.
+fn expand_braces(pattern: &str) -> Vec<String> {
+    if let Some(open) = pattern.find('{') {
+        if let Some(len) = pattern[open..].find('}') {
+            let close = open + len;
+            let (head, tail) = (&pattern[..open], &pattern[close + 1..]);
+            return pattern[open + 1..close]
+                .split(',')
+                .flat_map(|alt| expand_braces(&format!("{head}{alt}{tail}")))
+                .collect();
+        }
+    }
+    vec![pattern.to_string()]
+}
+
+/// A parsed filter query for the explorer's input box.
+///
+/// Matching is case-insensitive. A query with no wildcard characters
+/// (`* ? [ {`) matches as a substring, so typing `main` finds `main.rs`.
+/// Wildcard queries must match the whole name, e.g. `*.rs` or `test_*`. A
+/// pattern containing `/` is matched against the path relative to the tree
+/// root, any other pattern against the entry's own name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Filter {
+    patterns: Vec<String>,
+}
+
+impl Filter {
+    /// Parses `raw`; blank input means "no filter".
+    pub fn new(raw: &str) -> Option<Self> {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            return None;
+        }
+        let patterns = if raw.contains(['*', '?', '[', '{']) {
+            expand_braces(raw)
+        } else {
+            vec![format!("*{raw}*")]
+        };
+        Some(Self { patterns })
+    }
+
+    /// Whether an entry called `name`, at `relative` (a `/`-separated path
+    /// below the tree root), passes the filter.
+    pub fn matches(&self, name: &str, relative: &str) -> bool {
+        self.patterns.iter().any(|pattern| {
+            if pattern.contains('/') {
+                glob_match(pattern, relative)
+            } else {
+                glob_match(pattern, name)
+            }
+        })
+    }
+}
+
+/// One entry of the recursive listing a filter searches.
+#[derive(Debug)]
+struct ScanEntry {
+    path: PathBuf,
+    name: String,
+    /// `/`-separated path below the tree root.
+    relative: String,
+    is_dir: bool,
+}
+
 /// Lazily loaded directory tree.
 #[derive(Debug)]
 pub struct Tree {
     root: PathBuf,
     dirs: HashMap<PathBuf, Dir>,
     visible: Vec<Entry>,
+    /// Active filter. While set, `visible` is built from `filter_dirs` (only
+    /// matching entries and the directories leading to them) instead of `dirs`.
+    filter: Option<Filter>,
+    filter_dirs: HashMap<PathBuf, Dir>,
+    /// Recursive listing of the whole tree, taken once when a filter starts
+    /// and reused while the query is edited (cleared on filter reset/refresh).
+    scan: Option<Vec<ScanEntry>>,
+    scan_truncated: bool,
 }
 
 impl Tree {
@@ -193,6 +376,10 @@ impl Tree {
             root,
             dirs: HashMap::new(),
             visible: Vec::new(),
+            filter: None,
+            filter_dirs: HashMap::new(),
+            scan: None,
+            scan_truncated: false,
         };
         let root = tree.root.clone();
         tree.expand(&root, params)?;
@@ -216,17 +403,46 @@ impl Tree {
         path == self.root
     }
 
+    /// The directory map the visible rows are built from: the filtered view
+    /// while a filter is active, otherwise the full lazily loaded tree.
+    fn active_dirs(&self) -> &HashMap<PathBuf, Dir> {
+        if self.filter.is_some() {
+            &self.filter_dirs
+        } else {
+            &self.dirs
+        }
+    }
+
+    fn active_dirs_mut(&mut self) -> &mut HashMap<PathBuf, Dir> {
+        if self.filter.is_some() {
+            &mut self.filter_dirs
+        } else {
+            &mut self.dirs
+        }
+    }
+
     /// Whether the directory at `path` is expanded.
     pub fn is_expanded(&self, path: &Path) -> bool {
-        self.dirs.get(path).is_some_and(|dir| dir.expanded)
+        self.active_dirs().get(path).is_some_and(|dir| dir.expanded)
     }
 
     /// Whether `path` is the trailing entry among its parent directory's
     /// cached children. Drives the `│` vs blank guide lines in the renderer.
     pub fn is_last_child(&self, path: &Path) -> bool {
         path.parent()
-            .and_then(|parent| self.dirs.get(parent))
+            .and_then(|parent| self.active_dirs().get(parent))
             .is_some_and(|dir| dir.children.last().is_some_and(|child| child.path == path))
+    }
+
+    /// The active filter, if any.
+    pub fn filter(&self) -> Option<&Filter> {
+        self.filter.as_ref()
+    }
+
+    /// Whether the last filter scan hit [`FILTER_SCAN_LIMIT`] and so may be
+    /// missing matches.
+    pub fn filter_truncated(&self) -> bool {
+        self.filter.is_some() && self.scan_truncated
     }
 
     fn load_children(&self, dir: &Path, params: TreeParams) -> io::Result<Vec<Child>> {
@@ -278,7 +494,26 @@ impl Tree {
     }
 
     fn expand(&mut self, path: &Path, params: TreeParams) -> io::Result<()> {
-        if self.dirs.get(path).is_some_and(|dir| dir.expanded) {
+        if self.is_expanded(path) {
+            return Ok(());
+        }
+        if self.filter.is_some() {
+            // Inside a filtered view a directory with matches below it just
+            // re-opens; a directory that matched by name alone has nothing
+            // cached, so its children are listed unfiltered to browse into.
+            if let Some(dir) = self.filter_dirs.get_mut(path) {
+                dir.expanded = true;
+            } else {
+                let children = self.load_children(path, params)?;
+                self.filter_dirs.insert(
+                    path.to_path_buf(),
+                    Dir {
+                        expanded: true,
+                        children,
+                    },
+                );
+            }
+            self.rebuild_visible();
             return Ok(());
         }
         let children = self.load_children(path, params)?;
@@ -308,7 +543,7 @@ impl Tree {
 
     /// Collapses the directory at `path` (no-op for files).
     pub fn collapse(&mut self, path: &Path) {
-        if let Some(dir) = self.dirs.get_mut(path) {
+        if let Some(dir) = self.active_dirs_mut().get_mut(path) {
             dir.expanded = false;
         }
         self.rebuild_visible();
@@ -352,8 +587,156 @@ impl Tree {
                 }
             }
         }
+        if self.filter.is_some() {
+            // The listing the filter searches is stale now; search anew.
+            self.scan = None;
+            self.apply_filter(params);
+        }
         self.rebuild_visible();
         errors
+    }
+
+    /// Sets the filter from the input box text (blank clears it). Matching
+    /// entries stay visible together with the directories leading to them, so
+    /// the result is a pruned tree of the whole workspace, not just of the
+    /// directories that happen to be expanded. Clearing the filter restores
+    /// the regular tree, with its expansion state, exactly as it was.
+    pub fn set_filter(&mut self, raw: &str, params: TreeParams) {
+        let filter = Filter::new(raw);
+        if filter == self.filter {
+            return;
+        }
+        match filter {
+            None => {
+                self.filter = None;
+                self.filter_dirs.clear();
+                self.scan = None;
+                self.scan_truncated = false;
+            }
+            Some(filter) => {
+                self.filter = Some(filter);
+                self.apply_filter(params);
+            }
+        }
+        self.rebuild_visible();
+    }
+
+    /// Lists the whole tree below the root (skipping `.git` and, unless
+    /// `show_hidden`, dotfiles). Symlinked directories are listed but not
+    /// descended into, which keeps the walk finite.
+    fn scan_all(&self, params: TreeParams) -> (Vec<ScanEntry>, bool) {
+        let mut entries = Vec::new();
+        let mut stack = vec![self.root.clone()];
+        while let Some(dir) = stack.pop() {
+            let Ok(read_dir) = fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in read_dir.flatten() {
+                if entries.len() >= FILTER_SCAN_LIMIT {
+                    return (entries, true);
+                }
+                let path = entry.path();
+                let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+                    continue;
+                };
+                if (!params.show_hidden && name.starts_with('.')) || name == ".git" {
+                    continue;
+                }
+                let file_type = entry.file_type().ok();
+                let real_dir = file_type.is_some_and(|ft| ft.is_dir());
+                let is_dir = real_dir
+                    || file_type.is_some_and(|ft| ft.is_symlink())
+                        && fs::metadata(&path).is_ok_and(|m| m.is_dir());
+                let relative = path
+                    .strip_prefix(&self.root)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if real_dir {
+                    stack.push(path.clone());
+                }
+                entries.push(ScanEntry {
+                    path,
+                    name,
+                    relative,
+                    is_dir,
+                });
+            }
+        }
+        (entries, false)
+    }
+
+    /// Rebuilds `filter_dirs` for the active filter: every matching entry plus
+    /// all of its ancestors, grouped under their parents and sorted like a
+    /// regular listing. Directories collapsed in the previous filtered view
+    /// stay collapsed.
+    fn apply_filter(&mut self, params: TreeParams) {
+        let Some(filter) = self.filter.clone() else {
+            return;
+        };
+        if self.scan.is_none() {
+            let (entries, truncated) = self.scan_all(params);
+            self.scan = Some(entries);
+            self.scan_truncated = truncated;
+        }
+        let scan = self.scan.as_ref().expect("scan was just filled");
+
+        let index: HashMap<&Path, usize> = scan
+            .iter()
+            .enumerate()
+            .map(|(i, entry)| (entry.path.as_path(), i))
+            .collect();
+        let mut shown: HashSet<usize> = HashSet::new();
+        for (i, entry) in scan.iter().enumerate() {
+            if !filter.matches(&entry.name, &entry.relative) {
+                continue;
+            }
+            // Mark the entry and every ancestor; stop at the first one that is
+            // already marked since its own ancestors are then marked too.
+            let mut cur = Some(i);
+            while let Some(c) = cur {
+                if !shown.insert(c) {
+                    break;
+                }
+                cur = scan[c]
+                    .path
+                    .parent()
+                    .and_then(|parent| index.get(parent).copied());
+            }
+        }
+
+        let mut grouped: HashMap<PathBuf, Vec<Child>> = HashMap::new();
+        for &i in &shown {
+            let entry = &scan[i];
+            if let Some(parent) = entry.path.parent() {
+                grouped
+                    .entry(parent.to_path_buf())
+                    .or_default()
+                    .push(Child {
+                        path: entry.path.clone(),
+                        name: entry.name.clone(),
+                        sort_key: entry.name.to_lowercase(),
+                        is_dir: entry.is_dir,
+                    });
+            }
+        }
+        // The root row exists even when nothing matched.
+        grouped.entry(self.root.clone()).or_default();
+
+        let previous = std::mem::take(&mut self.filter_dirs);
+        for (path, mut children) in grouped {
+            if params.directories_first {
+                children.sort_by(|a, b| {
+                    b.is_dir
+                        .cmp(&a.is_dir)
+                        .then_with(|| a.sort_key.cmp(&b.sort_key))
+                });
+            } else {
+                children.sort_by(|a, b| a.sort_key.cmp(&b.sort_key));
+            }
+            let expanded = previous.get(&path).is_none_or(|dir| dir.expanded);
+            self.filter_dirs.insert(path, Dir { expanded, children });
+        }
     }
 
     /// Expands every ancestor of `path` so it becomes visible. Returns `true`
@@ -366,6 +749,12 @@ impl Tree {
     pub fn reveal(&mut self, path: &Path, params: TreeParams) -> bool {
         if !path.starts_with(&self.root) {
             return false;
+        }
+
+        // A filtered view may not contain the target; reveal works on the
+        // whole tree.
+        if self.filter.is_some() {
+            self.set_filter("", params);
         }
 
         // The root anchors every other expansion; make sure it is expanded.
@@ -408,7 +797,12 @@ impl Tree {
 
     /// Rebuilds `visible` from the expanded directories.
     fn rebuild_visible(&mut self) {
-        self.visible = build_visible(&self.root, &self.dirs);
+        let dirs = if self.filter.is_some() {
+            &self.filter_dirs
+        } else {
+            &self.dirs
+        };
+        self.visible = build_visible(&self.root, dirs);
     }
 }
 
@@ -727,5 +1121,193 @@ mod tests {
             .visible()
             .iter()
             .any(|e| e.name == "file.txt" && e.depth == 2));
+    }
+
+    #[test]
+    fn glob_matching() {
+        assert!(glob_match("*.rs", "main.rs"));
+        assert!(glob_match("*.RS", "main.rs"), "case-insensitive");
+        assert!(!glob_match("*.rs", "main.rs.bak"));
+        assert!(glob_match("test_*", "test_foo"));
+        assert!(!glob_match("test_*", "a_test_foo"));
+        assert!(glob_match("a?c", "abc"));
+        assert!(!glob_match("a?c", "ac"));
+        assert!(glob_match("*", ""));
+        assert!(glob_match("a*b*c", "aXXbYYc"));
+        assert!(!glob_match("a*b*c", "aXXbYY"));
+        // Character classes.
+        assert!(glob_match("[abc].txt", "b.txt"));
+        assert!(!glob_match("[abc].txt", "d.txt"));
+        assert!(glob_match("file[0-9]", "file7"));
+        assert!(!glob_match("file[0-9]", "filex"));
+        assert!(glob_match("[!a]x", "bx"));
+        assert!(!glob_match("[!a]x", "ax"));
+        // An unclosed class is literal.
+        assert!(glob_match("a[b", "a[b"));
+    }
+
+    #[test]
+    fn filter_patterns() {
+        assert!(Filter::new("").is_none());
+        assert!(Filter::new("   ").is_none());
+
+        // No wildcards: substring.
+        let f = Filter::new("main").unwrap();
+        assert!(f.matches("main.rs", "src/main.rs"));
+        assert!(f.matches("domain.txt", "domain.txt"));
+        assert!(!f.matches("lib.rs", "src/lib.rs"));
+
+        // Wildcards: whole-name match, with brace alternatives.
+        let f = Filter::new("*.{rs,toml}").unwrap();
+        assert!(f.matches("a.rs", "a.rs"));
+        assert!(f.matches("Cargo.toml", "Cargo.toml"));
+        assert!(!f.matches("a.md", "a.md"));
+
+        // A slash matches against the path below the root.
+        let f = Filter::new("src/*.rs").unwrap();
+        assert!(f.matches("main.rs", "src/main.rs"));
+        assert!(!f.matches("main.rs", "tests/main.rs"));
+    }
+
+    fn filter_fixture() -> (TempDir, Tree, TreeParams) {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("src/deep")).unwrap();
+        std::fs::create_dir_all(root.join("docs")).unwrap();
+        std::fs::write(root.join("src/main.rs"), "").unwrap();
+        std::fs::write(root.join("src/deep/inner.rs"), "").unwrap();
+        std::fs::write(root.join("src/notes.md"), "").unwrap();
+        std::fs::write(root.join("docs/guide.md"), "").unwrap();
+        std::fs::write(root.join("Cargo.toml"), "").unwrap();
+        std::fs::write(root.join(".hidden.rs"), "").unwrap();
+        let p = params(false, true);
+        let tree = Tree::new(root.to_path_buf(), p).unwrap();
+        (tmp, tree, p)
+    }
+
+    #[test]
+    fn filter_shows_matches_anywhere_with_their_ancestors() {
+        let (tmp, mut tree, p) = filter_fixture();
+        let root = tmp.path().to_path_buf();
+        // Nothing is expanded yet, yet the filter reaches into directories.
+        tree.set_filter("*.rs", p);
+        let shown: Vec<String> = names(&tree).into_iter().skip(1).collect();
+        assert_eq!(shown, vec!["src", "deep", "inner.rs", "main.rs"]);
+
+        let inner = tree
+            .visible()
+            .iter()
+            .find(|e| e.name == "inner.rs")
+            .unwrap();
+        assert_eq!(inner.depth, 3);
+        assert!(inner.is_last, "last among the matches of deep/");
+        let main = tree.visible().iter().find(|e| e.name == "main.rs").unwrap();
+        assert!(
+            main.is_last,
+            "notes.md is filtered out, so main.rs is last in src/"
+        );
+        assert!(tree.is_last_child(&root.join("src/main.rs")));
+
+        // Hidden files stay hidden, like in the regular tree.
+        assert!(!names(&tree).iter().any(|n| n == ".hidden.rs"));
+    }
+
+    #[test]
+    fn filter_with_no_matches_leaves_the_root_row() {
+        let (tmp, mut tree, p) = filter_fixture();
+        tree.set_filter("*.nothing", p);
+        assert_eq!(tree.visible().len(), 1);
+        assert_eq!(tree.visible()[0].path, tmp.path());
+    }
+
+    #[test]
+    fn clearing_the_filter_restores_the_full_tree() {
+        let (tmp, mut tree, p) = filter_fixture();
+        let root = tmp.path().to_path_buf();
+        tree.expand_at(&root.join("docs"), p).unwrap();
+        let before = names(&tree);
+
+        tree.set_filter("inner", p);
+        assert_ne!(names(&tree), before);
+        tree.set_filter("", p);
+        assert!(tree.filter().is_none());
+        // Same rows, same expansion state as before filtering.
+        assert_eq!(names(&tree), before);
+        assert!(tree.is_expanded(&root.join("docs")));
+        assert!(!tree.is_expanded(&root.join("src")));
+    }
+
+    #[test]
+    fn filtered_directories_collapse_and_expand() {
+        let (tmp, mut tree, p) = filter_fixture();
+        let root = tmp.path().to_path_buf();
+        tree.set_filter("*.rs", p);
+        assert!(tree.is_expanded(&root.join("src")));
+
+        tree.collapse(&root.join("src"));
+        assert_eq!(names(&tree).len(), 2); // root + collapsed src
+        tree.toggle(&root.join("src"), p).unwrap();
+        assert_eq!(names(&tree).len(), 5);
+
+        // A directory that matched by name only can still be browsed: its
+        // children are listed unfiltered.
+        tree.set_filter("docs", p);
+        assert_eq!(names(&tree).len(), 2);
+        tree.toggle(&root.join("docs"), p).unwrap();
+        assert!(names(&tree).iter().any(|n| n == "guide.md"));
+    }
+
+    #[test]
+    fn refresh_keeps_the_filter_and_sees_new_files() {
+        let (tmp, mut tree, p) = filter_fixture();
+        let root = tmp.path().to_path_buf();
+        tree.set_filter("*.rs", p);
+        std::fs::write(root.join("src/extra.rs"), "").unwrap();
+        std::fs::remove_file(root.join("src/main.rs")).unwrap();
+        assert_eq!(tree.refresh(p), 0);
+        let shown = names(&tree);
+        assert!(shown.iter().any(|n| n == "extra.rs"));
+        assert!(!shown.iter().any(|n| n == "main.rs"));
+        assert!(tree.filter().is_some());
+    }
+
+    #[test]
+    fn reveal_drops_a_filter_that_hides_the_target() {
+        let (tmp, mut tree, p) = filter_fixture();
+        let root = tmp.path().to_path_buf();
+        tree.set_filter("*.rs", p);
+        assert!(tree.reveal(&root.join("docs/guide.md"), p));
+        assert!(tree.filter().is_none());
+        assert!(tree.visible().iter().any(|e| e.name == "guide.md"));
+    }
+
+    #[test]
+    fn hidden_files_can_be_filtered_when_shown() {
+        let (tmp, mut tree, _) = filter_fixture();
+        let p = params(true, true);
+        tree.refresh(p);
+        tree.set_filter("*.rs", p);
+        assert!(names(&tree).iter().any(|n| n == ".hidden.rs"));
+        drop(tmp);
+    }
+
+    #[test]
+    fn floating_is_independent_of_the_pinned_side() {
+        let config = ExplorerConfig::default();
+        let mut state = ExplorerState {
+            side: Some(ExplorerSide::Right),
+            ..ExplorerState::default()
+        };
+        assert_eq!(state.side(&config), ExplorerSide::Right);
+
+        state.visible = true;
+        state.focused = true;
+        state.floating = true;
+        assert_eq!(state.side(&config), ExplorerSide::Floating);
+
+        // Closing the float leaves the pinned side as it was.
+        state.hide();
+        assert!(!state.visible && !state.focused && !state.floating);
+        assert_eq!(state.side(&config), ExplorerSide::Right);
     }
 }

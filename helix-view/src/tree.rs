@@ -62,6 +62,20 @@ pub enum Layout {
     // could explore stacked/tabbed
 }
 
+/// Narrowest a split may be dragged down to, in columns.
+const MIN_SPLIT_WIDTH: u16 = 4;
+/// Shortest a split may be dragged down to, in rows (content and statusline).
+const MIN_SPLIT_HEIGHT: u16 = 3;
+
+/// The boundary between two neighbouring splits, as grabbed with the mouse.
+/// Obtained from [`Tree::divider_at`] and moved with [`Tree::drag_divider`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SplitDivider {
+    container: ViewId,
+    /// The divider sits between children `index` and `index + 1`.
+    index: usize,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum Direction {
     Up,
@@ -903,6 +917,113 @@ impl Tree {
         }
     }
 
+    fn node_area(&self, id: ViewId) -> Rect {
+        match &self.nodes[id].content {
+            Content::View(view) => view.area,
+            Content::Container(container) => container.area,
+        }
+    }
+
+    /// The divider under the screen position, if there is one: the one-column
+    /// gap between two side by side splits, or the statusline row of a split
+    /// that has another one stacked below it.
+    pub fn divider_at(&self, row: u16, column: u16) -> Option<SplitDivider> {
+        for (id, node) in self.nodes.iter() {
+            let Content::Container(container) = &node.content else {
+                continue;
+            };
+            let area = container.area;
+            if column < area.x || column >= area.right() || row < area.y || row >= area.bottom() {
+                continue;
+            }
+            for (index, pair) in container.children.windows(2).enumerate() {
+                let first = self.node_area(pair[0]);
+                let hit = match container.layout {
+                    Layout::Vertical => column == first.right(),
+                    Layout::Horizontal => row == first.bottom().saturating_sub(1),
+                };
+                if hit {
+                    return Some(SplitDivider {
+                        container: id,
+                        index,
+                    });
+                }
+            }
+        }
+        None
+    }
+
+    /// Moves `divider` so that it follows the pointer at (`row`, `column`),
+    /// growing one neighbouring split and shrinking the other by the same
+    /// amount. Sizes are clamped so neither neighbour vanishes. Returns whether
+    /// the layout changed.
+    ///
+    /// The container's weights are rewritten to the splits' current sizes
+    /// (which keeps all the others exactly where they are) before the two
+    /// neighbours are adjusted. Any "focus mode" expansion in the container
+    /// ends, as the weights now describe the real sizes.
+    pub fn drag_divider(&mut self, divider: SplitDivider, row: u16, column: u16) -> bool {
+        let SplitDivider { container, index } = divider;
+        let Some(Content::Container(node)) = self.nodes.get(container).map(|n| &n.content) else {
+            return false;
+        };
+        let layout = node.layout;
+        let (Some(&first), Some(_)) = (node.children.get(index), node.children.get(index + 1))
+        else {
+            return false;
+        };
+        let sizes: Vec<u16> = node
+            .children
+            .iter()
+            .map(|&child| {
+                let area = self.node_area(child);
+                match layout {
+                    Layout::Vertical => area.width,
+                    Layout::Horizontal => area.height,
+                }
+            })
+            .collect();
+
+        let first_area = self.node_area(first);
+        let (wanted, min) = match layout {
+            // The gap column sits right after the first split.
+            Layout::Vertical => (column.saturating_sub(first_area.x), MIN_SPLIT_WIDTH),
+            // The statusline row is the first split's last row.
+            Layout::Horizontal => ((row + 1).saturating_sub(first_area.y), MIN_SPLIT_HEIGHT),
+        };
+        let total = sizes[index] + sizes[index + 1];
+        if total < min * 2 {
+            return false;
+        }
+        let new_first = wanted.clamp(min, total - min);
+        if new_first == sizes[index] {
+            return false;
+        }
+        let new_second = total - new_first;
+
+        let Some(Content::Container(node)) = self.nodes.get_mut(container).map(|n| &mut n.content)
+        else {
+            return false;
+        };
+        for (i, bounds) in node.node_bounds.iter_mut().enumerate() {
+            let size = if i == index {
+                new_first
+            } else if i == index + 1 {
+                new_second
+            } else {
+                sizes[i]
+            };
+            let weight = size.max(1) as usize;
+            match layout {
+                Layout::Vertical => bounds.width = weight,
+                Layout::Horizontal => bounds.height = weight,
+            }
+            bounds.expand = false;
+        }
+        self.recalculate();
+        true
+    }
+
     pub fn toggle_focus_window(&mut self) {
         if let Some(bounds) = self.get_active_node_bounds_mut(Layout::Horizontal) {
             bounds.expand = !bounds.expand;
@@ -1595,5 +1716,103 @@ mod test {
         // Tree should be empty; focus reset to root.
         assert!(tree.is_empty());
         assert_eq!(tree.focus, tree.root);
+    }
+
+    fn new_tree(width: u16, height: u16) -> (Tree, ViewId) {
+        let mut tree = Tree::new(Rect::new(0, 0, width, height));
+        let first = tree.insert(View::new(DocumentId::default(), GutterConfig::default()));
+        (tree, first)
+    }
+
+    #[test]
+    fn dragging_a_vertical_divider_resizes_both_neighbours() {
+        let (mut tree, left) = new_tree(101, 40);
+        let right = tree.split(
+            View::new(DocumentId::default(), GutterConfig::default()),
+            Layout::Vertical,
+        );
+        // 101 columns minus the 1-column gap, shared out evenly.
+        let (lw, rw) = (tree.get(left).area.width, tree.get(right).area.width);
+        assert_eq!(lw + rw, 100);
+
+        // The gap column right after the left split is the handle.
+        let gap = tree.get(left).area.right();
+        let divider = tree.divider_at(10, gap).expect("divider on the gap");
+        assert_eq!(tree.divider_at(10, gap + 5), None);
+
+        assert!(tree.drag_divider(divider, 10, 30));
+        assert_eq!(tree.get(left).area.width, 30);
+        assert_eq!(tree.get(right).area.width, 70);
+        // The right split still starts one gap column after the left one.
+        assert_eq!(tree.get(right).area.x, 31);
+
+        // The divider follows the pointer back too.
+        assert!(tree.drag_divider(divider, 10, 60));
+        assert_eq!(tree.get(left).area.width, 60);
+        assert_eq!(tree.get(right).area.width, 40);
+
+        // Neither neighbour can be squeezed out.
+        assert!(tree.drag_divider(divider, 10, 0));
+        assert_eq!(tree.get(left).area.width, MIN_SPLIT_WIDTH);
+        assert!(tree.drag_divider(divider, 10, 500));
+        assert_eq!(tree.get(right).area.width, MIN_SPLIT_WIDTH);
+        assert_eq!(tree.get(left).area.width + tree.get(right).area.width, 100);
+    }
+
+    #[test]
+    fn dragging_a_divider_leaves_other_splits_alone() {
+        let (mut tree, a) = new_tree(122, 40);
+        let b = tree.split(
+            View::new(DocumentId::default(), GutterConfig::default()),
+            Layout::Vertical,
+        );
+        tree.focus = b;
+        let c = tree.split(
+            View::new(DocumentId::default(), GutterConfig::default()),
+            Layout::Vertical,
+        );
+        let c_width = tree.get(c).area.width;
+
+        let divider = tree
+            .divider_at(5, tree.get(a).area.right())
+            .expect("divider between a and b");
+        let a_width = tree.get(a).area.width;
+        assert!(tree.drag_divider(divider, 5, a_width.saturating_sub(10)));
+        assert_eq!(tree.get(a).area.width, a_width - 10);
+        assert_eq!(tree.get(c).area.width, c_width);
+    }
+
+    #[test]
+    fn dragging_a_horizontal_divider_resizes_stacked_splits() {
+        let (mut tree, top) = new_tree(80, 41);
+        let bottom = tree.split(
+            View::new(DocumentId::default(), GutterConfig::default()),
+            Layout::Horizontal,
+        );
+        let total = tree.get(top).area.height + tree.get(bottom).area.height;
+        assert_eq!(total, 41);
+
+        // The statusline row of the upper split is the handle.
+        let status_row = tree.get(top).area.bottom() - 1;
+        let divider = tree
+            .divider_at(status_row, 10)
+            .expect("divider on statusline");
+        assert_eq!(tree.divider_at(status_row - 1, 10), None);
+
+        assert!(tree.drag_divider(divider, 10, 10));
+        assert_eq!(tree.get(top).area.height, 11);
+        assert_eq!(tree.get(bottom).area.height, total - 11);
+        assert_eq!(tree.get(bottom).area.y, 11);
+
+        assert!(tree.drag_divider(divider, 0, 10));
+        assert_eq!(tree.get(top).area.height, MIN_SPLIT_HEIGHT);
+    }
+
+    #[test]
+    fn a_single_split_has_no_divider() {
+        let (tree, view) = new_tree(80, 40);
+        let area = tree.get(view).area;
+        assert_eq!(tree.divider_at(area.bottom() - 1, area.right()), None);
+        assert_eq!(tree.divider_at(area.bottom() - 1, 10), None);
     }
 }

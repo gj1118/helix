@@ -74,6 +74,8 @@ pub struct EditorView {
     notification_popup: NotificationPopup,
     /// Cache for bufferline display names to avoid O(n³) recomputation per frame
     bufferline_cache: BufferlineCache,
+    /// The split divider being dragged with the mouse, if any.
+    split_drag: Option<helix_view::tree::SplitDivider>,
 }
 
 /// Cached data for bufferline rendering.
@@ -118,6 +120,7 @@ impl EditorView {
             prompt_active: false,
             notification_popup: NotificationPopup::new(),
             bufferline_cache: BufferlineCache::default(),
+            split_drag: None,
         }
     }
 
@@ -2044,6 +2047,22 @@ impl EditorView {
             })
         };
 
+        // A divider being dragged owns the pointer until the button is
+        // released: the splits on either side follow it.
+        if let Some(divider) = self.split_drag {
+            match kind {
+                MouseEventKind::Drag(MouseButton::Left) => {
+                    cxt.editor.tree.drag_divider(divider, row, column);
+                    return EventResult::Consumed(None);
+                }
+                MouseEventKind::Up(MouseButton::Left) => {
+                    self.split_drag = None;
+                    return EventResult::Consumed(None);
+                }
+                _ => {}
+            }
+        }
+
         match kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 let editor = &mut cxt.editor;
@@ -2061,6 +2080,12 @@ impl EditorView {
                         editor.switch(buffer_info.document_id, helix_view::editor::Action::Replace);
                     }
 
+                    return EventResult::Consumed(None);
+                }
+
+                // Grabbing the line between two splits starts resizing them.
+                if let Some(divider) = editor.tree.divider_at(row, column) {
+                    self.split_drag = Some(divider);
                     return EventResult::Consumed(None);
                 }
 
@@ -2580,8 +2605,12 @@ impl Component for EditorView {
         // Cleanup expired notifications before rendering
         cx.editor.cleanup_notifications();
 
-        // Render notification popup
-        self.notification_popup.render(area, surface, cx);
+        // Render notification popup. A pinned explorer panel is drawn above
+        // this view, so notifications are laid out in the area the panel
+        // leaves free instead of being painted underneath it.
+        let notification_area = crate::ui::explorer::layout(cx.editor, area);
+        self.notification_popup
+            .render(notification_area, surface, cx);
     }
 
     fn cursor(&self, _area: Rect, editor: &Editor) -> (Option<Position>, CursorKind) {

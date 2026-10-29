@@ -433,6 +433,7 @@ impl MappableCommand {
         explorer_left, "Show the explorer panel pinned to the left",
         explorer_right, "Show the explorer panel pinned to the right",
         explorer_float, "Show the explorer panel as a floating window",
+        explorer_float_toggle, "Toggle the explorer panel as a floating window",
         explorer_refresh, "Refresh the explorer panel from disk",
         explorer_reveal, "Reveal the current file in the explorer panel",
         code_action, "Perform code action",
@@ -3813,20 +3814,43 @@ fn file_picker_in_current_directory(cx: &mut Context) {
     )));
 }
 
+/// Toggles the pinned explorer panel. The floating window has its own toggle
+/// (`explorer_float_toggle`) and is never opened from here: an open float is
+/// swapped for the pinned panel instead.
 pub fn explorer_toggle(cx: &mut Context) {
-    if !cx.editor.explorer_panel.visible {
+    let panel = &mut cx.editor.explorer_panel;
+    if !panel.visible {
         // Hidden: show the panel and take focus.
-        cx.editor.explorer_panel.visible = true;
-        cx.editor.explorer_panel.focused = true;
+        panel.visible = true;
+        panel.focused = true;
         explorer_install_layer(cx);
-    } else if cx.editor.explorer_panel.focused {
+    } else if panel.floating {
+        // A float is up: this key belongs to the pinned panel, so show that
+        // one in its place.
+        panel.floating = false;
+        panel.focused = true;
+    } else if panel.focused {
         // Focused: hide (the plain "toggle" case).
-        cx.editor.explorer_panel.visible = false;
-        cx.editor.explorer_panel.focused = false;
+        panel.hide();
     } else {
         // Visible but the editor has the keyboard (e.g. after opening a
         // file from the tree or Esc): refocus the tree.
-        cx.editor.explorer_panel.focused = true;
+        panel.focused = true;
+    }
+}
+
+/// Toggles the explorer as a floating window, independently of the pinned
+/// panel's toggle and of its side: closing the window leaves no trace that
+/// makes `explorer_toggle` reopen it.
+pub fn explorer_float_toggle(cx: &mut Context) {
+    let panel = &mut cx.editor.explorer_panel;
+    if panel.visible && panel.floating {
+        panel.hide();
+    } else {
+        panel.visible = true;
+        panel.focused = true;
+        panel.floating = true;
+        explorer_install_layer(cx);
     }
 }
 
@@ -3846,7 +3870,13 @@ pub fn explorer_right(cx: &mut Context) {
 }
 
 pub fn explorer_float(cx: &mut Context) {
-    explorer_show_side(cx, helix_view::explorer::ExplorerSide::Floating);
+    // Show the floating window (without touching the pinned side), and take
+    // focus.
+    let panel = &mut cx.editor.explorer_panel;
+    panel.visible = true;
+    panel.focused = true;
+    panel.floating = true;
+    explorer_install_layer(cx);
 }
 
 pub fn explorer_refresh(cx: &mut Context) {
@@ -3900,9 +3930,11 @@ fn explorer_refresh_job(cx: &mut Context, keep: Option<std::path::PathBuf>) {
     }));
 }
 
-/// Shows the panel pinned on `side` (and records the override).
+/// Shows the panel pinned on `side` (and records the override). Any floating
+/// window is replaced by the pinned panel.
 fn explorer_show_side(cx: &mut Context, side: helix_view::explorer::ExplorerSide) {
     cx.editor.explorer_panel.side = Some(side);
+    cx.editor.explorer_panel.floating = false;
     cx.editor.explorer_panel.visible = true;
     cx.editor.explorer_panel.focused = true;
     explorer_install_layer(cx);
@@ -3927,8 +3959,7 @@ fn explorer_install_layer(cx: &mut Context) {
             let root = find_workspace().0;
             if !root.exists() {
                 editor.set_error("Workspace directory does not exist");
-                editor.explorer_panel.visible = false;
-                editor.explorer_panel.focused = false;
+                editor.explorer_panel.hide();
                 return;
             }
 
@@ -3936,8 +3967,7 @@ fn explorer_install_layer(cx: &mut Context) {
                 Ok(explorer) => compositor.push(Box::new(explorer)),
                 Err(err) => {
                     editor.set_error(format!("Failed to open explorer: {err}"));
-                    editor.explorer_panel.visible = false;
-                    editor.explorer_panel.focused = false;
+                    editor.explorer_panel.hide();
                     return;
                 }
             }
