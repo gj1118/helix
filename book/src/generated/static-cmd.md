@@ -72,6 +72,8 @@
 | `page_cursor_half_down` | Move page and cursor half down | normal: `` <C-d> ``, `` Z<C-d> ``, `` z<C-d> ``, `` Z<space> ``, `` z<space> ``, select: `` <C-d> ``, `` Z<C-d> ``, `` z<C-d> ``, `` Z<space> ``, `` z<space> `` |
 | `select_all` | Select whole document | normal: `` % ``, select: `` % `` |
 | `select_regex` | Select all regex matches inside selections | normal: `` s ``, select: `` s `` |
+| `select_all_textobjects_around` | Select all textobjects around selections | normal: `` mA ``, select: `` mA `` |
+| `select_all_textobjects_inner` | Select all textobjects inside selections | normal: `` mI ``, select: `` mI `` |
 | `split_selection` | Split selections on regex matches | normal: `` S ``, select: `` S `` |
 | `split_selection_on_newline` | Split selection on newlines | normal: `` <A-s> ``, select: `` <A-s> `` |
 | `merge_selections` | Merge selections | normal: `` <A-minus> ``, select: `` <A-minus> `` |
@@ -226,6 +228,7 @@
 | `yank_joined_to_primary_clipboard` | Join and yank selections to primary clipboard |  |
 | `yank_main_selection_to_primary_clipboard` | Yank main selection to primary clipboard |  |
 | `replace_with_yanked` | Replace with yanked text | normal: `` R ``, select: `` R `` |
+| `replace_selections_with_text` | Replace selections with typed text (repeat with .) | normal: `` <A-r> ``, select: `` <A-r> `` |
 | `replace_selections_with_clipboard` | Replace selections by clipboard content | normal: `` <space>R ``, select: `` <space>R `` |
 | `replace_selections_with_primary_clipboard` | Replace selections by primary clipboard |  |
 | `paste_after` | Paste after selection | normal: `` p ``, select: `` p `` |
@@ -334,7 +337,7 @@
 | `goto_prev_paragraph` | Goto previous paragraph | normal: `` [p ``, select: `` [p `` |
 | `dap_launch` | Launch debug target | normal: `` <space>Gl ``, select: `` <space>Gl `` |
 | `dap_restart` | Restart debugging session | normal: `` <space>Gr ``, select: `` <space>Gr `` |
-| `dap_toggle_breakpoint` | Toggle breakpoint | normal: `` <space>Gb ``, select: `` <space>Gb `` |
+| `dap_toggle_breakpoints` | Toggle breakpoints | normal: `` <space>Gb ``, select: `` <space>Gb `` |
 | `dap_continue` | Continue program execution | normal: `` <space>Gc ``, select: `` <space>Gc `` |
 | `dap_pause` | Pause program execution | normal: `` <space>Gh ``, select: `` <space>Gh `` |
 | `dap_step_in` | Step in | normal: `` <space>Gi ``, select: `` <space>Gi `` |

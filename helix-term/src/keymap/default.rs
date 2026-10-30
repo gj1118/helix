@@ -17,6 +17,7 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
         "F" => find_prev_char,
         "r" => replace,
         "R" => replace_with_yanked,
+        "A-r" => replace_selections_with_text,
         "A-." =>  repeat_last_motion,
 
         "~" => switch_to_alternate_case,
@@ -156,6 +157,8 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
                 "m" => select_textobject_around_closest_surrounding_pair,
                 "g" => select_textobject_around_change,
             },
+            "A" => select_all_textobjects_around,
+            "I" => select_all_textobjects_inner,
         },
         "[" => { "Left bracket" fallback=select_textobject_inside_prev_pair
             "d" => goto_prev_diag,
@@ -299,7 +302,7 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "G" => { "Debug (experimental)" sticky=true
                 "l" => dap_launch,
                 "r" => dap_restart,
-                "b" => dap_toggle_breakpoint,
+                "b" => dap_toggle_breakpoints,
                 "c" => dap_continue,
                 "h" => dap_pause,
                 "i" => dap_step_in,

@@ -71,6 +71,7 @@ Normal mode is the default mode when you launch helix. You can return to it from
 | -----       | -----------                                                          | -------                   |
 | `r`         | Replace with a character                                             | `replace`                 |
 | `R`         | Replace with yanked text                                             | `replace_with_yanked`     |
+| `Alt-r`     | Replace every selection with typed text (repeat with `.`)            | `replace_selections_with_text` |
 | `~`         | Switch case of the selected text                                     | `switch_case`             |
 | `` ` ``     | Set the selected text to lower case                                  | `switch_to_lowercase`     |
 | `` Alt-` `` | Set the selected text to upper case                                  | `switch_to_uppercase`     |
@@ -256,6 +257,8 @@ Please refer to the relevant sections for detailed explanations about [surround]
 | `d` `<char>`     | Delete surround character `<char>`              | `surround_delete`          |
 | `a` `<object>`   | Select around textobject                        | `select_textobject_around` |
 | `i` `<object>`   | Select inside textobject                        | `select_textobject_inner`  |
+| `A` `<object>`   | Select all textobjects around selections        | `select_all_textobjects_around` |
+| `I` `<object>`   | Select all textobjects inside selections        | `select_all_textobjects_inner`  |
 
 TODO: Mappings for selecting syntax nodes (a superset of `[`).
 

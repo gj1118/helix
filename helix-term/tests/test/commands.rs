@@ -10,6 +10,120 @@ mod text_folding;
 mod write;
 
 #[tokio::test(flavor = "multi_thread")]
+async fn select_all_diagnostics_inside_selection() -> anyhow::Result<()> {
+    use helix_core::diagnostic::{
+        Diagnostic, DiagnosticProvider, DiagnosticTag, LanguageServerId, Severity,
+    };
+    use helix_stdx::range::Range as DiagnosticRange;
+
+    let mut app = AppBuilder::new()
+        .with_input_text(indoc! {"\
+            #[|]#aaa
+            bbb
+            ccc
+        "})
+        .build()?;
+
+    let provider = DiagnosticProvider::Lsp {
+        server_id: LanguageServerId::default(),
+        identifier: None,
+    };
+
+    {
+        let (_view, doc) = helix_view::current!(app.editor);
+        doc.replace_diagnostics(
+            [
+                Diagnostic {
+                    range: DiagnosticRange { start: 0, end: 3 },
+                    ends_at_word: true,
+                    starts_at_word: true,
+                    zero_width: false,
+                    line: 0,
+                    message: "first".into(),
+                    severity: Some(Severity::Error),
+                    code: None,
+                    provider: provider.clone(),
+                    tags: Vec::<DiagnosticTag>::new(),
+                    source: None,
+                    data: None,
+                },
+                Diagnostic {
+                    range: DiagnosticRange { start: 8, end: 11 },
+                    ends_at_word: true,
+                    starts_at_word: true,
+                    zero_width: false,
+                    line: 2,
+                    message: "second".into(),
+                    severity: Some(Severity::Warning),
+                    code: None,
+                    provider,
+                    tags: Vec::<DiagnosticTag>::new(),
+                    source: None,
+                    data: None,
+                },
+            ],
+            &[],
+            None,
+        );
+    }
+
+    test_key_sequence(
+        &mut app,
+        Some("%mId"),
+        Some(&|app| {
+            let (view, doc) = helix_view::current_ref!(app.editor);
+            assert_eq!(
+                indoc! {"\
+                    #[aaa|]#
+                    bbb
+                    #(ccc|)#
+                "},
+                helix_core::test::plain(doc.text().slice(..), doc.selection(view.id))
+            );
+        }),
+        false,
+    )
+    .await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn select_all_tree_sitter_textobjects_inside_selection() -> anyhow::Result<()> {
+    test_with_config(
+        AppBuilder::new().with_file("foo.rs", None),
+        (
+            indoc! {"\
+                #[|]#fn foo(first: i32, second: bool) {}
+            "},
+            "%mIa",
+            indoc! {"\
+                fn foo(#[first: i32|]#, #(second: bool|)#) {}
+            "},
+        ),
+    )
+    .await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn select_all_word_textobjects_inside_selection() -> anyhow::Result<()> {
+    test((
+        indoc! {"\
+            #[|]#one two three
+        "},
+        "%mIw",
+        indoc! {"\
+            #[one|]# #(two|)# #(three|)#
+        "},
+    ))
+    .await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn search_selection_detect_word_boundaries_at_eof() -> anyhow::Result<()> {
     // <https://github.com/helix-editor/helix/issues/12609>
     test((
@@ -713,6 +827,18 @@ async fn test_join_selections_comment() -> anyhow::Result<()> {
     ))
     .await?;
 
+    test((
+        indoc! {"\
+            #[|// Join comments
+            // through injected comment syntax]#
+        "},
+        ":lang go<ret>J",
+        indoc! {"\
+            #[|// Join comments through injected comment syntax]#
+        "},
+    ))
+    .await?;
+
     Ok(())
 }
 
@@ -1082,4 +1208,66 @@ async fn align_selections_with_varying_columns() -> anyhow::Result<()> {
     .await?;
 
     Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn alt_r_replaces_every_selection_with_the_typed_text() -> anyhow::Result<()> {
+    test((
+        indoc! {"\
+            #[foo|]# bar #(foo|)#
+            "},
+        "<A-r>baz<ret>",
+        indoc! {"\
+            #[baz|]# bar #(baz|)#
+            "},
+    ))
+    .await?;
+
+    // an empty answer changes nothing, and it is a single undo step
+    test((
+        indoc! {"\
+            #[foo|]# bar #(foo|)#
+            "},
+        "<A-r>x<ret>u",
+        indoc! {"\
+            #[foo|]# bar #(foo|)#
+            "},
+    ))
+    .await?;
+    test((
+        indoc! {"\
+            #[foo|]# bar
+            "},
+        "<A-r><ret>",
+        indoc! {"\
+            #[foo|]# bar
+            "},
+    ))
+    .await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dot_repeats_alt_r_on_the_new_selections() -> anyhow::Result<()> {
+    let mut app = AppBuilder::new()
+        .with_input_text("#[aaa|]# bbb ccc\n")
+        .build()?;
+
+    // The repeat state is stored by a job callback, so each step lets the event loop run.
+    test_key_sequences(
+        &mut app,
+        vec![
+            (Some("<A-r>X<ret><esc>"), None),
+            (Some("/bbb<ret>"), None),
+            (
+                Some("."),
+                Some(&|app| {
+                    let doc = helix_view::doc!(app.editor);
+                    assert_eq!("X X ccc\n", doc.text().to_string());
+                }),
+            ),
+        ],
+        false,
+    )
+    .await
 }

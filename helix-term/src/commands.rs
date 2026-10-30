@@ -95,6 +95,7 @@ use helix_stdx::Url;
 use serde::de::{self, Deserialize, Deserializer};
 use std::sync::LazyLock;
 
+use grep_matcher::Matcher;
 use grep_regex::RegexMatcherBuilder;
 use grep_searcher::{sinks, BinaryDetection, SearcherBuilder};
 use ignore::{DirEntry, WalkBuilder, WalkState};
@@ -413,6 +414,8 @@ impl MappableCommand {
         page_cursor_half_down, "Move page and cursor half down",
         select_all, "Select whole document",
         select_regex, "Select all regex matches inside selections",
+        select_all_textobjects_around, "Select all textobjects around selections",
+        select_all_textobjects_inner, "Select all textobjects inside selections",
         split_selection, "Split selections on regex matches",
         split_selection_on_newline, "Split selection on newlines",
         merge_selections, "Merge selections",
@@ -567,6 +570,7 @@ impl MappableCommand {
         yank_joined_to_primary_clipboard, "Join and yank selections to primary clipboard",
         yank_main_selection_to_primary_clipboard, "Yank main selection to primary clipboard",
         replace_with_yanked, "Replace with yanked text",
+        replace_selections_with_text, "Replace selections with typed text (repeat with .)",
         replace_selections_with_clipboard, "Replace selections by clipboard content",
         replace_selections_with_primary_clipboard, "Replace selections by primary clipboard",
         paste_after, "Paste after selection",
@@ -675,7 +679,7 @@ impl MappableCommand {
         goto_prev_paragraph, "Goto previous paragraph",
         dap_launch, "Launch debug target",
         dap_restart, "Restart debugging session",
-        dap_toggle_breakpoint, "Toggle breakpoint",
+        dap_toggle_breakpoints, "Toggle breakpoints",
         dap_continue, "Continue program execution",
         dap_pause, "Pause program execution",
         dap_step_in, "Step in",
@@ -2778,13 +2782,24 @@ fn global_search(cx: &mut Context) {
         path: PathBuf,
         /// 0 indexed lines
         line_num: usize,
+        /// Start of the match, in bytes from the start of the line
+        match_start_byte: usize,
+        /// End of the match, in bytes from the start of the line
+        match_end_byte: usize,
     }
 
     impl FileResult {
-        fn new(path: &Path, line_num: usize) -> Self {
+        fn new(
+            path: &Path,
+            line_num: usize,
+            match_start_byte: usize,
+            match_end_byte: usize,
+        ) -> Self {
             Self {
                 path: path.to_path_buf(),
                 line_num,
+                match_start_byte,
+                match_end_byte,
             }
         }
     }
@@ -2887,9 +2902,20 @@ fn global_search(cx: &mut Context) {
                         }
 
                         let mut stop = false;
-                        let sink = sinks::Lossy(|line_num, _line_content| {
+                        let sink = sinks::Lossy(|line_num, line_content| {
+                            let Some(match_range) = matcher
+                                .find(line_content.as_bytes())
+                                .map_err(|err| std::io::Error::other(err.to_string()))?
+                            else {
+                                return Ok(true);
+                            };
                             stop = injector
-                                .push(FileResult::new(entry.path(), line_num as usize - 1))
+                                .push(FileResult::new(
+                                    entry.path(),
+                                    line_num as usize - 1,
+                                    match_range.start(),
+                                    match_range.end(),
+                                ))
                                 .is_err();
 
                             Ok(!stop)
@@ -2943,7 +2969,14 @@ fn global_search(cx: &mut Context) {
         1, // contents
         [],
         config,
-        move |cx, FileResult { path, line_num, .. }, action| {
+        move |cx,
+              FileResult {
+                  path,
+                  line_num,
+                  match_start_byte,
+                  match_end_byte,
+              },
+              action| {
             let doc = match cx.editor.open(path, action) {
                 Ok(id) => doc_mut!(cx.editor, &id),
                 Err(e) => {
@@ -2962,10 +2995,18 @@ fn global_search(cx: &mut Context) {
                 );
                 return;
             }
-            let start = text.line_to_char(line_num);
-            let end = text.line_to_char((line_num + 1).min(text.len_lines()));
+            let Some(selection) = selection_for_global_search_match(
+                text.slice(..),
+                line_num,
+                *match_start_byte,
+                *match_end_byte,
+            ) else {
+                cx.editor
+                    .set_error("The match you jumped to does not exist anymore.");
+                return;
+            };
 
-            doc.set_selection(view.id, Selection::single(start, end));
+            doc.set_selection(view.id, selection);
             if action.align_view(view, doc.id()) {
                 align_view(doc, view, Align::Center);
             }
@@ -3169,6 +3210,31 @@ fn global_replace(
             if changed_files == 1 { "" } else { "s" },
         ));
     }
+}
+
+/// The selection of the match a global search result stands for: the matched text rather than
+/// the whole line, so the match can be changed right after the file is opened.
+fn selection_for_global_search_match(
+    text: RopeSlice,
+    line_start: usize,
+    match_start_byte: usize,
+    match_end_byte: usize,
+) -> Option<Selection> {
+    if line_start >= text.len_lines() || match_start_byte > match_end_byte {
+        return None;
+    }
+
+    let line_start_byte = text.line_to_byte(line_start);
+    let start_byte = line_start_byte + match_start_byte;
+    let end_byte = line_start_byte + match_end_byte;
+    if end_byte > text.len_bytes() {
+        return None;
+    }
+
+    Some(Selection::single(
+        text.byte_to_char(start_byte),
+        text.byte_to_char(end_byte),
+    ))
 }
 
 /// Local grep search in buffer
@@ -6310,6 +6376,58 @@ fn paste_primary_clipboard_before(cx: &mut Context) {
     exit_select_mode(cx);
 }
 
+/// `Alt-r`: asks for a text and replaces every selection with it. `.` replaces the selections
+/// that exist then with the same text.
+fn replace_selections_with_text(cx: &mut Context) {
+    let prompt = ui::Prompt::new(
+        "replace:".into(),
+        None,
+        ui::completers::none,
+        |cx, input: &str, event: PromptEvent| {
+            if event != PromptEvent::Validate || input.is_empty() {
+                return;
+            }
+            replace_selections_with(cx.editor, input);
+
+            // `.` repeats "change the selections, type the text": the same thing, seen from
+            // the insert mode the editor view replays.
+            let keys: Vec<_> = input
+                .chars()
+                .map(|c| {
+                    ui::editor::InsertEvent::Key(KeyEvent {
+                        code: KeyCode::Char(c),
+                        modifiers: helix_view::keyboard::KeyModifiers::NONE,
+                    })
+                })
+                .collect();
+            cx.jobs.callback(async move {
+                let callback = crate::job::Callback::EditorCompositor(Box::new(
+                    move |_editor: &mut Editor, compositor: &mut Compositor| {
+                        if let Some(view) = compositor.find::<ui::EditorView>() {
+                            view.last_insert = (MappableCommand::change_selection_noyank, keys);
+                        }
+                    },
+                ));
+                Ok(callback)
+            });
+        },
+    );
+    cx.push_layer(Box::new(prompt));
+}
+
+fn replace_selections_with(editor: &mut Editor, text: &str) {
+    let scrolloff = editor.config().scrolloff;
+    let (view, doc) = current!(editor);
+    let text = Tendril::from(text);
+    let selection = doc.selection(view.id);
+    let transaction = Transaction::change_by_selection(doc.text(), selection, |range| {
+        (range.from(), range.to(), Some(text.clone()))
+    });
+    doc.apply(&transaction, view.id);
+    doc.append_changes_to_history(view);
+    view.ensure_cursor_in_view(doc, scrolloff);
+}
+
 fn replace_with_yanked(cx: &mut Context) {
     replace_with_yanked_impl(
         cx.editor,
@@ -6585,32 +6703,23 @@ fn join_selections_impl(cx: &mut Context, select_space: bool) {
 
         changes.reserve(lines.len());
 
-        // Strip the comment leader of joined lines using the comment tokens of the layer at this selection.
-        let byte = slice.char_to_byte(slice.line_to_char(start));
-        let comment_tokens = doc
-            .language_config_at(&loader, byte)
-            .and_then(|config| config.comment_tokens.as_deref())
-            .unwrap_or(&[]);
-        // Sort by length to handle Rust's /// vs //
-        let mut comment_tokens: Vec<&str> = comment_tokens.iter().map(|x| x.as_str()).collect();
-        comment_tokens.sort_unstable_by_key(|x| std::cmp::Reverse(x.len()));
-
         let first_line_idx = slice.line_to_char(start);
         let first_line_idx = skip_while(slice, first_line_idx, |ch| matches!(ch, ' ' | '\t'))
             .unwrap_or(first_line_idx);
-        let first_line = slice.slice(first_line_idx..);
-        let mut current_comment_token = comment_tokens
-            .iter()
-            .find(|token| first_line.starts_with(token));
+        let mut current_comment_token = continued_line_comment_token(
+            doc,
+            &loader,
+            slice,
+            start,
+            slice.char_to_byte(first_line_idx),
+        );
 
         for line in lines {
             let start = line_end_char_index(&slice, line);
             let mut end = text.line_to_char(line + 1);
             end = skip_while(slice, end, |ch| matches!(ch, ' ' | '\t')).unwrap_or(end);
-            let slice_from_end = slice.slice(end..);
-            if let Some(token) = comment_tokens
-                .iter()
-                .find(|token| slice_from_end.starts_with(token))
+            if let Some(token) =
+                continued_line_comment_token(doc, &loader, slice, line + 1, slice.char_to_byte(end))
             {
                 if Some(token) == current_comment_token {
                     end += token.chars().count();
@@ -7627,6 +7736,249 @@ fn select_textobject_inside_entry(cx: &mut Context) {
 
 fn select_textobject_around_entry(cx: &mut Context) {
     textobject_treesitter(cx, textobject::TextObject::Around, "entry");
+}
+
+fn range_contains_range(range: Range, other: Range) -> bool {
+    range.from() <= other.from() && other.to() <= range.to()
+}
+
+fn select_all_treesitter_textobject_ranges(
+    text: RopeSlice,
+    range: Range,
+    objtype: textobject::TextObject,
+    obj_name: &str,
+    syntax: Option<&Syntax>,
+    loader: &helix_core::syntax::Loader,
+) -> SmallVec<[Range; 1]> {
+    let Some(syntax) = syntax else {
+        return SmallVec::new();
+    };
+
+    let from = text.char_to_byte(range.from()) as u32;
+    let to = text.char_to_byte(range.to()) as u32;
+    let end = if to > from { to - 1 } else { to };
+    let layer = syntax.layer_for_byte_range(from, end);
+    let root = syntax.tree_for_byte_range(from, end).root_node();
+    let Some(textobject_query) = loader.textobject_query(syntax.layer(layer).language) else {
+        return SmallVec::new();
+    };
+
+    let capture_name = format!("{}.{}", obj_name, objtype);
+    let Some(nodes) = textobject_query.capture_nodes(&capture_name, &root, text) else {
+        return SmallVec::new();
+    };
+
+    nodes
+        .filter_map(|node| {
+            let start_byte = node.start_byte();
+            let end_byte = node.end_byte();
+            if start_byte > text.len_bytes() || end_byte > text.len_bytes() {
+                return None;
+            }
+
+            let object_range =
+                Range::new(text.byte_to_char(start_byte), text.byte_to_char(end_byte))
+                    .with_direction(range.direction());
+
+            range_contains_range(range, object_range).then_some(object_range)
+        })
+        .collect()
+}
+
+fn select_all_word_textobject_ranges(
+    text: RopeSlice,
+    range: Range,
+    objtype: textobject::TextObject,
+    long: bool,
+) -> SmallVec<[Range; 1]> {
+    let mut ranges = SmallVec::new();
+    let mut pos = range.from();
+
+    while pos < range.to() {
+        let object_range = textobject::textobject_word(text, Range::point(pos), objtype, 1, long)
+            .with_direction(range.direction());
+
+        if !object_range.is_empty() && range_contains_range(range, object_range) {
+            ranges.push(object_range);
+            pos = object_range.to();
+        } else {
+            pos = next_grapheme_boundary(text, pos);
+        }
+    }
+
+    ranges
+}
+
+fn select_all_paragraph_textobject_ranges(
+    text: RopeSlice,
+    range: Range,
+    objtype: textobject::TextObject,
+) -> SmallVec<[Range; 1]> {
+    let mut ranges = SmallVec::new();
+    let mut pos = range.from();
+
+    while pos < range.to() {
+        let object_range = textobject::textobject_paragraph(text, Range::point(pos), objtype, 1)
+            .with_direction(range.direction());
+
+        if !object_range.is_empty() && range_contains_range(range, object_range) {
+            ranges.push(object_range);
+            pos = object_range.to();
+        } else {
+            pos = next_grapheme_boundary(text, pos);
+        }
+    }
+
+    ranges
+}
+
+fn select_all_textobjects_ranges(
+    editor: &mut Editor,
+    objtype: textobject::TextObject,
+    ch: char,
+) -> Result<Option<Selection>, ()> {
+    let (view, doc) = current!(editor);
+    let loader: &helix_core::syntax::Loader = &editor.syn_loader.load();
+    let text = doc.text().slice(..);
+    let selection = doc.selection(view.id).clone();
+    let mut ranges = SmallVec::new();
+
+    for range in selection {
+        match ch {
+            'w' => ranges.extend(select_all_word_textobject_ranges(
+                text, range, objtype, false,
+            )),
+            'W' => ranges.extend(select_all_word_textobject_ranges(
+                text, range, objtype, true,
+            )),
+            'p' => ranges.extend(select_all_paragraph_textobject_ranges(text, range, objtype)),
+            't' => ranges.extend(select_all_treesitter_textobject_ranges(
+                text,
+                range,
+                objtype,
+                "class",
+                doc.syntax(),
+                loader,
+            )),
+            'f' => ranges.extend(select_all_treesitter_textobject_ranges(
+                text,
+                range,
+                objtype,
+                "function",
+                doc.syntax(),
+                loader,
+            )),
+            'a' => ranges.extend(select_all_treesitter_textobject_ranges(
+                text,
+                range,
+                objtype,
+                "parameter",
+                doc.syntax(),
+                loader,
+            )),
+            'c' => ranges.extend(select_all_treesitter_textobject_ranges(
+                text,
+                range,
+                objtype,
+                "comment",
+                doc.syntax(),
+                loader,
+            )),
+            'T' => ranges.extend(select_all_treesitter_textobject_ranges(
+                text,
+                range,
+                objtype,
+                "test",
+                doc.syntax(),
+                loader,
+            )),
+            'e' => ranges.extend(select_all_treesitter_textobject_ranges(
+                text,
+                range,
+                objtype,
+                "entry",
+                doc.syntax(),
+                loader,
+            )),
+            'x' => ranges.extend(select_all_treesitter_textobject_ranges(
+                text,
+                range,
+                objtype,
+                "xml-element",
+                doc.syntax(),
+                loader,
+            )),
+            'g' => {
+                let Some(diff_handle) = doc.diff_handle() else {
+                    editor.set_status("Diff is not available in current buffer");
+                    return Err(());
+                };
+                let diff = diff_handle.load();
+                ranges.extend((0..diff.len()).filter_map(|idx| {
+                    let hunk_range =
+                        hunk_range(diff.nth_hunk(idx), text).with_direction(range.direction());
+                    range_contains_range(range, hunk_range).then_some(hunk_range)
+                }));
+            }
+            'd' => {
+                ranges.extend(doc.diagnostics().iter().filter_map(|diagnostic| {
+                    let diagnostic_range = Range::new(diagnostic.range.start, diagnostic.range.end)
+                        .with_direction(range.direction());
+                    range_contains_range(range, diagnostic_range).then_some(diagnostic_range)
+                }));
+            }
+            _ => {}
+        }
+    }
+
+    Ok((!ranges.is_empty()).then(|| Selection::new(ranges, 0)))
+}
+
+fn select_all_textobjects(cx: &mut Context, objtype: textobject::TextObject) {
+    cx.on_next_key(move |cx, event| {
+        cx.editor.autoinfo = None;
+        let Some(ch) = event.char() else {
+            return;
+        };
+
+        match select_all_textobjects_ranges(cx.editor, objtype, ch) {
+            Ok(Some(selection)) => {
+                let (view, doc) = current!(cx.editor);
+                doc.set_selection(view.id, selection);
+            }
+            Ok(None) => cx.editor.set_error("nothing selected"),
+            Err(()) => {}
+        }
+    });
+
+    let title = match objtype {
+        textobject::TextObject::Inside => "Select all inside",
+        textobject::TextObject::Around => "Select all around",
+        _ => return,
+    };
+    let help_text = [
+        ("w", "Word"),
+        ("W", "WORD"),
+        ("p", "Paragraph"),
+        ("t", "Type definition (tree-sitter)"),
+        ("f", "Function (tree-sitter)"),
+        ("a", "Argument/parameter (tree-sitter)"),
+        ("c", "Comment (tree-sitter)"),
+        ("T", "Test (tree-sitter)"),
+        ("e", "Data structure entry (tree-sitter)"),
+        ("g", "Change"),
+        ("d", "Diagnostic"),
+        ("x", "(X)HTML element (tree-sitter)"),
+    ];
+    cx.editor.autoinfo = Some(Info::new(title, &help_text));
+}
+
+fn select_all_textobjects_around(cx: &mut Context) {
+    select_all_textobjects(cx, textobject::TextObject::Around);
+}
+
+fn select_all_textobjects_inner(cx: &mut Context) {
+    select_all_textobjects(cx, textobject::TextObject::Inside);
 }
 
 fn textobject_treesitter(
@@ -9201,5 +9553,43 @@ mod global_replace_tests {
     fn no_match_is_none() {
         let m = matcher("zzz", false);
         assert_eq!(replace_in_line(&m, "foo", "x"), None);
+    }
+}
+
+#[cfg(test)]
+mod global_search_selection_tests {
+    use super::selection_for_global_search_match;
+    use helix_core::Rope;
+
+    #[test]
+    fn selects_the_match_not_the_line() {
+        let text = Rope::from("hello search term world\n");
+        let line = text.line(0).to_string();
+        let start = line.find("search").unwrap();
+        let end = line.find(" term").unwrap();
+
+        let selection = selection_for_global_search_match(text.slice(..), 0, start, end).unwrap();
+        assert_eq!(selection.primary().fragment(text.slice(..)), "search");
+    }
+
+    #[test]
+    fn counts_bytes_not_chars() {
+        let text = Rope::from("日本語 match\nsecond\n");
+        let start = "日本語 ".len();
+        let selection =
+            selection_for_global_search_match(text.slice(..), 0, start, start + "match".len())
+                .unwrap();
+        assert_eq!(selection.primary().fragment(text.slice(..)), "match");
+        let selection =
+            selection_for_global_search_match(text.slice(..), 1, 0, "second".len()).unwrap();
+        assert_eq!(selection.primary().fragment(text.slice(..)), "second");
+    }
+
+    #[test]
+    fn a_match_that_is_gone_is_not_a_selection() {
+        let text = Rope::from("short\n");
+        assert!(selection_for_global_search_match(text.slice(..), 5, 0, 1).is_none());
+        assert!(selection_for_global_search_match(text.slice(..), 0, 0, 99).is_none());
+        assert!(selection_for_global_search_match(text.slice(..), 0, 3, 1).is_none());
     }
 }
