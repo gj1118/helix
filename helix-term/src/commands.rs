@@ -1,4 +1,5 @@
 pub(crate) mod dap;
+pub(crate) mod git;
 pub(crate) mod lsp;
 pub(crate) mod notification;
 pub(crate) mod syntax;
@@ -11,7 +12,7 @@ use helix_stdx::{
     path::{self, find_paths},
     rope::{self, RopeSliceExt},
 };
-use helix_vcs::{FileChange, Hunk};
+use helix_vcs::Hunk;
 use helix_view::document::LineBlameError;
 pub use lsp::*;
 pub use notification::*;
@@ -79,10 +80,7 @@ use crate::{
 };
 
 use crate::job::{self, Jobs};
-use std::{
-    cmp::Ordering, collections::HashSet, error::Error, fmt, future::Future, io::Read,
-    num::NonZeroUsize,
-};
+use std::{cmp::Ordering, collections::HashSet, fmt, future::Future, io::Read, num::NonZeroUsize};
 
 use std::{
     borrow::Cow,
@@ -444,6 +442,7 @@ impl MappableCommand {
         syntax_symbol_picker, "Open symbol picker from syntax information",
         lsp_or_syntax_symbol_picker, "Open symbol picker from LSP or syntax information",
         changed_file_picker, "Open changed file picker",
+        git_stash_picker, "Open git stash picker",
         select_references_to_symbol_under_cursor, "Select symbol references",
         workspace_symbol_picker, "Open workspace symbol picker",
         syntax_workspace_symbol_picker, "Open workspace symbol picker from syntax information",
@@ -4548,141 +4547,11 @@ fn jumplist_picker(cx: &mut Context) {
 }
 
 fn changed_file_picker(cx: &mut Context) {
-    pub struct FileChangeData {
-        cwd: PathBuf,
-        style_untracked: Style,
-        style_modified: Style,
-        style_conflict: Style,
-        style_deleted: Style,
-        style_renamed: Style,
-    }
+    git::changed_file_picker(cx)
+}
 
-    let cwd = helix_stdx::env::current_working_dir();
-    if !cwd.exists() {
-        cx.editor
-            .set_error("Current working directory does not exist");
-        return;
-    }
-
-    let added = cx.editor.theme.get("diff.plus");
-    let modified = cx.editor.theme.get("diff.delta");
-    let conflict = cx.editor.theme.get("diff.delta.conflict");
-    let deleted = cx.editor.theme.get("diff.minus");
-    let renamed = cx.editor.theme.get("diff.delta.moved");
-
-    let columns = [
-        PickerColumn::new("change", |change: &FileChange, data: &FileChangeData| {
-            let icons = ICONS.load();
-            match change {
-                FileChange::Untracked { .. } => Span::styled(
-                    format!("{}  untracked", icons.vcs().added()),
-                    data.style_untracked,
-                ),
-                FileChange::Modified { .. } => Span::styled(
-                    format!("{}  modified", icons.vcs().modified()),
-                    data.style_modified,
-                ),
-                FileChange::Conflict { .. } => Span::styled(
-                    format!("{}  conflict", icons.vcs().conflict()),
-                    data.style_conflict,
-                ),
-                FileChange::Deleted { .. } => Span::styled(
-                    format!("{}  deleted", icons.vcs().removed()),
-                    data.style_deleted,
-                ),
-                FileChange::Renamed { .. } => Span::styled(
-                    format!("{}  renamed", icons.vcs().renamed()),
-                    data.style_renamed,
-                ),
-            }
-            .into()
-        }),
-        PickerColumn::new("path", |change: &FileChange, data: &FileChangeData| {
-            let display_path = |path: &PathBuf| {
-                path.strip_prefix(&data.cwd)
-                    .unwrap_or(path)
-                    .display()
-                    .to_string()
-            };
-            match change {
-                FileChange::Untracked { path } => display_path(path),
-                FileChange::Modified { path } => display_path(path),
-                FileChange::Conflict { path } => display_path(path),
-                FileChange::Deleted { path } => display_path(path),
-                FileChange::Renamed { from_path, to_path } => {
-                    format!("{} -> {}", display_path(from_path), display_path(to_path))
-                }
-            }
-            .into()
-        }),
-    ];
-
-    let picker = Picker::new(
-        columns,
-        1, // path
-        [],
-        FileChangeData {
-            cwd: cwd.clone(),
-            style_untracked: added,
-            style_modified: modified,
-            style_conflict: conflict,
-            style_deleted: deleted,
-            style_renamed: renamed,
-        },
-        |cx, meta: &FileChange, action| {
-            let path_to_open = meta.path();
-            if let Err(e) = cx.editor.open(path_to_open, action) {
-                let err = if let Some(err) = e.source() {
-                    format!("{}", err)
-                } else {
-                    format!("unable to open \"{}\"", path_to_open.display())
-                };
-                cx.editor.set_error(err);
-            }
-        },
-    )
-    .with_preview(|_editor, meta| Some((meta.path().into(), None)))
-    .with_title("Changed Files");
-
-    fn feed_changes(
-        editor: &Editor,
-        cwd: PathBuf,
-        injector: ui::picker::Injector<FileChange, FileChangeData>,
-    ) {
-        let trust_full = editor
-            .workspace_trust
-            .query(
-                &helix_loader::find_workspace_in(&cwd).0,
-                helix_loader::workspace_trust::TrustQuery::Git,
-            )
-            .is_trusted();
-        editor
-            .diff_providers
-            .clone()
-            .for_each_changed_file(cwd, trust_full, move |change| match change {
-                Ok(change) => injector.push(change).is_ok(),
-                Err(err) => {
-                    status::report_blocking(err);
-                    true
-                }
-            });
-    }
-
-    feed_changes(cx.editor, cwd.clone(), picker.injector());
-
-    // Follow edits, staging and commits made while the picker is open.
-    let watch = crate::fs_watch::FsWatch::workspace(&cwd);
-    let picker = picker.with_live_refresh(
-        move |_editor| watch.as_ref().map_or(0, |watch| watch.generation()),
-        Some(Box::new(move |editor, injector| {
-            feed_changes(editor, cwd.clone(), injector.clone())
-        })),
-        |change| change.path().display().to_string(),
-    );
-    cx.push_layer(Box::new(overlaid(
-        picker,
-        cx.editor.config().fullscreen_overlay,
-    )));
+fn git_stash_picker(cx: &mut Context) {
+    git::git_stash_picker(cx)
 }
 
 pub fn command_palette(cx: &mut Context) {

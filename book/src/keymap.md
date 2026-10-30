@@ -491,6 +491,26 @@ See the documentation page on [pickers](./pickers.md) for more info.
 | `Alt-j`, `Shift-Down`        | Scroll the preview down a line                            |
 | `Escape`, `Ctrl-c`           | Close picker                                               |
 
+### Changed Files
+
+The changed file picker (`Space-g`) shows one row per changed file with separate
+`staged` and `unstaged` columns, and follows changes made while it is open.
+The staged column and the actions below run the `git` executable, so they
+need a [trusted workspace](./workspace-trust.md); otherwise the picker falls
+back to the built-in listing, which only has the unstaged column.
+
+| Key                          | Description                                                |
+| -----                        | -------------                                              |
+| `Alt-s`                      | Stage the selected file (both sides of a rename)           |
+| `Alt-u`                      | Unstage the selected file                                  |
+| `Alt-z`                      | Stash all changes, untracked files included (asks first)   |
+| `Alt-l`                      | Browse the stashes                                         |
+
+The stash picker is also available as the `git_stash_picker` command, which can
+be bound to a key. In it, `Enter` and `Alt-s` apply the selected stash and
+`Alt-i` applies it restoring the index as well. Applying asks for confirmation,
+needs all buffers to be saved, and keeps the stash.
+
 ### File Explorer
 
 There are additional keys accessible when using the File Explorer (`Space-e` and `Space-E`).
