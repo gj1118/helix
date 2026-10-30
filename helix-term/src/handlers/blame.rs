@@ -16,6 +16,7 @@ pub struct BlameHandler {
     pending_path: Option<std::path::PathBuf>,
     doc_id: DocumentId,
     show_blame_for_line_in_statusline: Option<u32>,
+    popup: bool,
 }
 
 impl helix_event::AsyncHook for BlameHandler {
@@ -28,6 +29,7 @@ impl helix_event::AsyncHook for BlameHandler {
     ) -> Option<tokio::time::Instant> {
         self.doc_id = event.doc_id;
         self.show_blame_for_line_in_statusline = event.line;
+        self.popup = event.popup;
         self.pending_path = Some(event.path);
         Some(Instant::now() + Duration::from_millis(50))
     }
@@ -35,6 +37,7 @@ impl helix_event::AsyncHook for BlameHandler {
     fn finish_debounce(&mut self) {
         let doc_id = self.doc_id;
         let line_blame = self.show_blame_for_line_in_statusline;
+        let popup = self.popup;
         let path = mem::take(&mut self.pending_path);
         if let Some(path) = path {
             job::dispatch_blocking(move |editor, _| {
@@ -45,7 +48,7 @@ impl helix_event::AsyncHook for BlameHandler {
                 doc.file_blame = Some(result);
                 if !editor.config().inline_blame.auto_fetch {
                     if let Some(line) = line_blame {
-                        crate::commands::blame_line_impl(editor, doc_id, line);
+                        crate::commands::blame_line_impl(editor, doc_id, line, popup);
                     } else {
                         editor.set_status("Blame for this file is now available")
                     }
@@ -65,6 +68,7 @@ pub(super) fn register_hooks(handlers: &Handlers) {
                     path: event.path.to_path_buf(),
                     doc_id: event.doc,
                     line: None,
+                    popup: false,
                 },
             );
         }
@@ -86,6 +90,7 @@ pub(super) fn register_hooks(handlers: &Handlers) {
                             path: path.to_path_buf(),
                             doc_id: doc.id(),
                             line: None,
+                            popup: false,
                         },
                     );
                 }

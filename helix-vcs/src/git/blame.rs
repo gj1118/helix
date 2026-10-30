@@ -68,6 +68,7 @@ impl FileBlame {
             commit_hash: commit
                 .as_ref()
                 .and_then(|c| c.short_id().map(|id| id.to_string()).ok()),
+            full_commit_hash: commit.as_ref().map(|c| c.id().to_string()),
             author_name: author.map(|a| a.name.to_string()),
             author_email: author.map(|a| a.email.to_string()),
             commit_date: time.and_then(|time| time.format(gix::date::time::format::SHORT).ok()),
@@ -130,7 +131,10 @@ impl FileBlame {
 
 #[derive(Clone, PartialEq, PartialOrd, Ord, Eq, Debug)]
 pub struct LineBlame {
+    /// The abbreviated hash shown in the inline blame.
     commit_hash: Option<String>,
+    /// The full hash, for the details popup.
+    full_commit_hash: Option<String>,
     author_name: Option<String>,
     author_email: Option<String>,
     commit_date: Option<String>,
@@ -146,7 +150,47 @@ pub struct LineBlame {
     time_ago: Option<String>,
 }
 
+/// The full details of the commit that last changed a line.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct BlameDetails {
+    pub commit: Option<String>,
+    pub author: Option<String>,
+    pub email: Option<String>,
+    pub date: Option<String>,
+    pub time_ago: Option<String>,
+    pub title: Option<String>,
+    pub body: Option<String>,
+}
+
+impl BlameDetails {
+    /// The whole commit message: title, a blank line, then the body.
+    pub fn message(&self) -> String {
+        match (self.title.as_deref(), self.body.as_deref()) {
+            (Some(title), Some(body)) if !body.trim().is_empty() => {
+                format!("{}\n\n{}", title.trim_end(), body.trim())
+            }
+            (Some(title), _) => title.trim_end().to_owned(),
+            (None, Some(body)) => body.trim().to_owned(),
+            (None, None) => String::new(),
+        }
+    }
+}
+
 impl LineBlame {
+    pub fn details(&self) -> BlameDetails {
+        BlameDetails {
+            commit: self.full_commit_hash.clone(),
+            author: self.author_name.clone(),
+            email: self.author_email.clone(),
+            date: self.commit_date.clone(),
+            time_ago: self.time_stamp.map(|(utc_seconds, timezone_offset)| {
+                helix_stdx::time::format_relative_time(utc_seconds, timezone_offset)
+            }),
+            title: self.commit_title.clone(),
+            body: self.commit_body.clone(),
+        }
+    }
+
     /// Longest variable is: `time-ago` (and `message`)
     // this is just to reduce allocation by a little bit by specifying the max size we would expect a
     // variable to be up-front. This function is called every render.
@@ -250,6 +294,31 @@ impl LineBlame {
         }
 
         line_blame
+    }
+}
+
+#[cfg(test)]
+mod details_test {
+    use super::BlameDetails;
+
+    fn details(title: Option<&str>, body: Option<&str>) -> BlameDetails {
+        BlameDetails {
+            title: title.map(str::to_owned),
+            body: body.map(str::to_owned),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn message_joins_title_and_body() {
+        assert_eq!(
+            details(Some("Fix it"), Some("Because.\n")).message(),
+            "Fix it\n\nBecause."
+        );
+        assert_eq!(details(Some("Fix it"), None).message(), "Fix it");
+        assert_eq!(details(Some("Fix it"), Some("  \n")).message(), "Fix it");
+        assert_eq!(details(None, Some("Body")).message(), "Body");
+        assert_eq!(details(None, None).message(), "");
     }
 }
 
@@ -557,6 +626,7 @@ mod test {
     fn bob() -> LineBlame {
         LineBlame {
             commit_hash: Some("f14ab1cf".to_owned()),
+            full_commit_hash: None,
             author_name: Some("Bob TheBuilder".to_owned()),
             author_email: Some("bob@bob.com".to_owned()),
             commit_date: Some("2028-01-10".to_owned()),
@@ -603,6 +673,7 @@ mod test {
         assert_eq!(
             LineBlame {
                 commit_hash: None,
+                full_commit_hash: None,
                 ..bob()
             }
             .parse_format(format),

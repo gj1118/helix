@@ -1967,6 +1967,14 @@ impl Document {
 
     /// Get the line blame for this view
     pub fn line_blame(&self, cursor_line: u32, format: &str) -> Result<String, LineBlameError<'_>> {
+        Ok(self.line_blame_data(cursor_line)?.parse_format(format))
+    }
+
+    /// The commit that last changed `cursor_line`, with all its details.
+    pub fn line_blame_data(
+        &self,
+        cursor_line: u32,
+    ) -> Result<helix_vcs::LineBlame, LineBlameError<'_>> {
         // how many lines were inserted and deleted before the cursor line
         let (inserted_lines, deleted_lines) = self
             .diff_handle()
@@ -2012,11 +2020,7 @@ impl Document {
             },
         };
 
-        let line_blame = file_blame
-            .blame_for_line(cursor_line, inserted_lines, deleted_lines)
-            .parse_format(format);
-
-        Ok(line_blame)
+        Ok(file_blame.blame_for_line(cursor_line, inserted_lines, deleted_lines))
     }
 
     /// Apply a [`Transaction`] to the [`Document`] to change its text
