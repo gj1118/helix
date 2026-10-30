@@ -100,6 +100,7 @@ Normal mode is the default mode when you launch helix. You can return to it from
 | `Ctrl-x`    | Decrement object (number) under cursor                               | `decrement`               |
 | `Q`         | Start/stop macro recording to the selected register (experimental)   | `record_macro`            |
 | `q`         | Play back a recorded macro from the selected register (experimental) | `replay_macro`            |
+| `Alt-q`     | Add the current location to the [quicklist](./quicklist.md)          | `add_to_quicklist`        |
 | `Ctrl-z`    | Suspend Helix and return to the shell (resume with `fg`)             | `suspend`                 |
 
 #### Shell
@@ -326,6 +327,7 @@ This layer is a kludge of mappings, mostly pickers.
 | `?`     | Open command palette                                                    | `command_palette`                          |
 | `B`     | Show blame for the current line                                         | `blame_line`                             |
 | `i`     | Open the snippet picker (see [Snippets](./snippets.md))                 | `snippet_picker`                         |
+| `q`     | Open the quicklist picker (see [Quicklist](./quicklist.md))             | `quicklist_picker`                       |
 
 For the full commit behind a line, run `:blame` (or bind `blame_details`): a popup
 shows the full commit ID, author name and email, date and commit message. `y` copies
@@ -397,6 +399,10 @@ These mappings are in the style of [vim-unimpaired](https://github.com/tpope/vim
 | `]x`     | Go to previous (X)HTML element               | `goto_prev_xml_element` |
 | `]Space` | Add newline below                            | `add_newline_below`     |
 | `[Space` | Add newline above                            | `add_newline_above`     |
+| `]q`     | Go to the next quicklist entry               | `quicklist_next`        |
+| `[q`     | Go to the previous quicklist entry           | `quicklist_prev`        |
+| `]l`     | Go to the next quicklist entry in this file  | `quicklist_next_in_file` |
+| `[l`     | Go to the previous quicklist entry in this file | `quicklist_prev_in_file` |
 
 ## Insert mode
 
@@ -491,6 +497,7 @@ See the documentation page on [pickers](./pickers.md) for more info.
 | `Ctrl-s`                     | Open horizontally                                          |
 | `Ctrl-v`                     | Open vertically                                            |
 | `Ctrl-t`                     | Toggle preview                                             |
+| `Ctrl-q`                     | Copy the matched locations into the [quicklist](./quicklist.md) |
 | `PageUp`                     | Scroll the preview up a page (page up the list when no preview is shown)   |
 | `PageDown`                   | Scroll the preview down a page (page down the list when no preview is shown) |
 | `Alt-k`, `Shift-Up`          | Scroll the preview up a line                              |

@@ -3,6 +3,7 @@ pub(crate) mod git;
 pub(crate) mod git_history;
 pub(crate) mod lsp;
 pub(crate) mod notification;
+pub(crate) mod quicklist;
 pub(crate) mod snippets;
 pub(crate) mod syntax;
 pub(crate) mod typed;
@@ -706,6 +707,12 @@ impl MappableCommand {
         blame_line, "Show blame for the current line",
         blame_details, "Show commit details for the current line in a popup",
         snippet_picker, "Open the snippet picker",
+        add_to_quicklist, "Add the current location to the quicklist",
+        quicklist_next, "Go to the next quicklist entry",
+        quicklist_prev, "Go to the previous quicklist entry",
+        quicklist_next_in_file, "Go to the next quicklist entry in this file",
+        quicklist_prev_in_file, "Go to the previous quicklist entry in this file",
+        quicklist_picker, "Open the quicklist picker",
         restore_change, "Restore the changes touched by the selections from the diff base (HEAD)",
         rotate_selections_first, "Make the first selection your primary one",
         rotate_selections_last, "Make the last selection your primary one",
@@ -4651,6 +4658,30 @@ fn git_file_history(cx: &mut Context) {
 
 fn git_history(cx: &mut Context) {
     git_history::git_history(cx.editor, cx.jobs)
+}
+
+fn add_to_quicklist(cx: &mut Context) {
+    quicklist::add_to_quicklist(cx)
+}
+
+fn quicklist_next(cx: &mut Context) {
+    quicklist::quicklist_next(cx)
+}
+
+fn quicklist_prev(cx: &mut Context) {
+    quicklist::quicklist_prev(cx)
+}
+
+fn quicklist_next_in_file(cx: &mut Context) {
+    quicklist::quicklist_next_in_file(cx)
+}
+
+fn quicklist_prev_in_file(cx: &mut Context) {
+    quicklist::quicklist_prev_in_file(cx)
+}
+
+fn quicklist_picker(cx: &mut Context) {
+    quicklist::quicklist_picker(cx)
 }
 
 fn snippet_picker(cx: &mut Context) {
