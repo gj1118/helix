@@ -255,7 +255,29 @@ impl MappableCommand {
     pub fn execute(&self, cx: &mut Context) {
         match &self {
             Self::Typable { name, args, doc: _ } => {
-                if let Some(command) = typed::TYPABLE_COMMAND_MAP.get(name.as_str()) {
+                // a custom command (which may shadow a built-in one)
+                let custom = cx.editor.config().commands.get(name.as_str()).cloned();
+                if let Some(custom) = custom {
+                    let mut compositor_cx = compositor::Context {
+                        editor: cx.editor,
+                        jobs: cx.jobs,
+                        scroll: None,
+                        plugin_manager: cx.plugin_manager.clone(),
+                    };
+                    if let Err(e) = typed::run_custom_command(
+                        &mut compositor_cx,
+                        name,
+                        &custom,
+                        args,
+                        PromptEvent::Validate,
+                    ) {
+                        compositor_cx.editor.set_error(format!("{}", e));
+                    }
+                    // what the commands asked of the compositor
+                    for callback in std::mem::take(&mut cx.callback) {
+                        compositor::defer(callback);
+                    }
+                } else if let Some(command) = typed::TYPABLE_COMMAND_MAP.get(name.as_str()) {
                     let mut cx = compositor::Context {
                         editor: cx.editor,
                         jobs: cx.jobs,

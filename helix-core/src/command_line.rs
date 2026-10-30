@@ -257,11 +257,20 @@ pub enum ExpansionKind {
     ///
     /// For example `%reg{a}`.
     Register,
+    /// A positional argument of the custom command being run (zero-based).
+    ///
+    /// For example `%arg{0}`.
+    Arg,
 }
 
 impl ExpansionKind {
-    pub const VARIANTS: &'static [Self] =
-        &[Self::Variable, Self::Unicode, Self::Shell, Self::Register];
+    pub const VARIANTS: &'static [Self] = &[
+        Self::Variable,
+        Self::Unicode,
+        Self::Shell,
+        Self::Register,
+        Self::Arg,
+    ];
 
     pub const fn as_str(&self) -> &'static str {
         match self {
@@ -269,6 +278,7 @@ impl ExpansionKind {
             Self::Unicode => "u",
             Self::Shell => "sh",
             Self::Register => "reg",
+            Self::Arg => "arg",
         }
     }
 
@@ -278,6 +288,7 @@ impl ExpansionKind {
             "u" => Some(Self::Unicode),
             "sh" => Some(Self::Shell),
             "reg" => Some(Self::Register),
+            "arg" => Some(Self::Arg),
             _ => None,
         }
     }

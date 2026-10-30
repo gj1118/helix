@@ -28,6 +28,8 @@ pub struct ConfigRaw {
     pub keys: Option<HashMap<Mode, KeyTrie>>,
     pub editor: Option<toml::Value>,
     pub icons: Option<toml::Value>,
+    /// User-defined command-mode commands.
+    pub commands: Option<toml::Value>,
 }
 
 impl Default for Config {
@@ -59,6 +61,29 @@ impl Display for ConfigLoadError {
             ConfigLoadError::Error(err) => err.fmt(f),
         }
     }
+}
+
+/// Parses and checks the `[commands]` tables. A workspace command replaces a
+/// global one of the same name.
+fn load_commands(
+    global: Option<toml::Value>,
+    local: Option<toml::Value>,
+) -> Result<
+    std::collections::BTreeMap<String, helix_view::custom_commands::CustomCommand>,
+    ConfigLoadError,
+> {
+    let bad = |message: String| {
+        ConfigLoadError::BadConfig(<TomlError as serde::de::Error>::custom(message))
+    };
+    let mut commands = std::collections::BTreeMap::new();
+    for table in [global, local].into_iter().flatten() {
+        commands.extend(helix_view::custom_commands::parse(table).map_err(bad)?);
+    }
+    for (name, command) in &commands {
+        crate::commands::validate_custom_command(command)
+            .map_err(|err| bad(format!("custom command `{name}`: {err}")))?;
+    }
+    Ok(commands)
 }
 
 impl Config {
@@ -103,6 +128,9 @@ impl Config {
 
                 ICONS.store(Arc::new(icons));
 
+                let mut editor = editor;
+                editor.commands = load_commands(global.commands, local.commands)?;
+
                 Config {
                     theme: local.theme.or(global.theme),
                     keys,
@@ -127,13 +155,16 @@ impl Config {
 
                 ICONS.store(Arc::new(icons));
 
+                let mut editor: helix_view::editor::Config = config.editor.map_or_else(
+                    || Ok(helix_view::editor::Config::default()),
+                    |val| val.try_into().map_err(ConfigLoadError::BadConfig),
+                )?;
+                editor.commands = load_commands(config.commands, None)?;
+
                 Config {
                     theme: config.theme,
                     keys,
-                    editor: config.editor.map_or_else(
-                        || Ok(helix_view::editor::Config::default()),
-                        |val| val.try_into().map_err(ConfigLoadError::BadConfig),
-                    )?,
+                    editor,
                 }
             }
 
@@ -235,5 +266,59 @@ mod tests {
         // From the Default trait
         let default_keys = Config::default().keys;
         assert_eq!(default_keys, keymap::default());
+    }
+
+    #[test]
+    fn custom_commands_are_loaded_and_validated() {
+        let config = Config::load_test(
+            r#"
+            [commands]
+            ":wq" = [":write", ":quit"]
+            ":nextline" = "move_line_down"
+            ":hints" = ":toggle lsp.display-inlay-hints"
+            "0" = ":goto 1"
+            [commands.":save-as"]
+            commands = [':write "%arg{0}"']
+            completer = ":write"
+            "#,
+        );
+        let commands = &config.editor.commands;
+        assert_eq!(commands.len(), 5);
+        assert_eq!(commands["wq"].commands, [":write", ":quit"]);
+        assert!(commands["0"].hidden && !commands["nextline"].hidden);
+    }
+
+    fn load_error(config: &str) -> String {
+        match Config::load(Ok(&config.to_owned()), Err(ConfigLoadError::default())) {
+            Err(err) => err.to_string(),
+            Ok(_) => panic!("expected an error for {config}"),
+        }
+    }
+
+    #[test]
+    fn custom_commands_must_name_real_commands() {
+        let err = load_error("[commands]\n\":x\" = \":nonsense\"");
+        assert!(
+            err.contains("`:nonsense` is not a built-in typable command"),
+            "{err}"
+        );
+        let err = load_error("[commands]\n\":x\" = \"not_a_command\"");
+        assert!(err.contains("not_a_command"), "{err}");
+        let err = load_error("[commands]\n\":x\" = [\"@ihi\", \":write\"]");
+        assert!(err.contains("macro must be the only"), "{err}");
+        // custom commands cannot call each other
+        let err = load_error("[commands]\n\":a\" = \":write\"\n\":b\" = \":a\"");
+        assert!(err.contains("`:a` is not a built-in"), "{err}");
+        let err = load_error("[commands.\":x\"]\ncommands = [\":write\"]\ncompleter = \":nope\"");
+        assert!(err.contains("completer"), "{err}");
+    }
+
+    #[test]
+    fn workspace_commands_override_global_ones_by_name() {
+        let global = "[commands]\n\":a\" = \":write\"\n\":b\" = \":quit\"".to_owned();
+        let local = "[commands]\n\":b\" = \":goto 1\"".to_owned();
+        let config = Config::load(Ok(&global), Ok(local)).unwrap();
+        assert_eq!(config.editor.commands["a"].commands, [":write"]);
+        assert_eq!(config.editor.commands["b"].commands, [":goto 1"]);
     }
 }

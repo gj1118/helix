@@ -552,6 +552,10 @@ pub struct Config {
     pub rounded_corners: bool,
     /// The glyphs of panel, popup and menu borders and of separators.
     pub border_style: Option<BorderStyle>,
+    /// User-defined command-mode commands. Filled from the top-level
+    /// `[commands]` table when the configuration is loaded, not from `[editor]`.
+    #[serde(skip)]
+    pub commands: std::collections::BTreeMap<String, crate::custom_commands::CustomCommand>,
     /// Which indent heuristic to use when a new line is inserted
     #[serde(default)]
     pub indent_heuristic: IndentationHeuristic,
@@ -1960,6 +1964,7 @@ impl Default for Config {
             popup_border: PopupBorderConfig::None,
             rounded_corners: false,
             border_style: None,
+            commands: Default::default(),
             indent_heuristic: IndentationHeuristic::default(),
             jump_label_alphabet: ('a'..='z').collect(),
             inline_diagnostics: InlineDiagnosticsConfig::default(),
@@ -2168,6 +2173,8 @@ pub struct Editor {
     pub write_count: usize,
     /// A quit that waits for the saves in flight to finish, see [`PendingQuit`].
     pub pending_quit: Option<PendingQuit>,
+    /// The arguments of the custom command being run, for `%arg{..}`.
+    pub command_args: Option<Vec<String>>,
 
     pub count: Option<std::num::NonZeroUsize>,
     pub selected_register: Option<char>,
@@ -2338,6 +2345,7 @@ impl Editor {
             save_queue: SelectAll::new(),
             write_count: 0,
             pending_quit: None,
+            command_args: None,
             count: None,
             selected_register: None,
             macro_recording: None,
