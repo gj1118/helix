@@ -5,6 +5,7 @@ use crate::{
         DocumentOpenError, DocumentSavedEventFuture, DocumentSavedEventResult, Mode, SavePoint,
     },
     events::{DocumentDidClose, DocumentDidOpen, DocumentFocusLost},
+    explorer::{ExplorerClipboard, ExplorerConfig},
     graphics::{CursorKind, Rect},
     handlers::Handlers,
     info::Info,
@@ -217,6 +218,39 @@ impl Default for InlineBlameConfig {
             show: InlineBlameShow::Never,
             format: "{author}, {time-ago} • {title} • {commit}".to_owned(),
             auto_fetch: false,
+        }
+    }
+}
+
+/// The mouse pointer shape requested from the terminal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PointerShape {
+    /// The terminal's own pointer.
+    #[default]
+    Default,
+    /// Over a vertical resize handle (dragged left and right).
+    ColResize,
+    /// Over a horizontal resize handle (dragged up and down).
+    RowResize,
+    /// Over a corner handle running from top left to bottom right.
+    NwseResize,
+    /// Over a corner handle running from top right to bottom left.
+    NeswResize,
+    /// Over a handle that moves a window.
+    Move,
+}
+
+impl PointerShape {
+    /// The CSS cursor name used by the terminal's pointer shape escape
+    /// sequence; empty means "restore the terminal's pointer".
+    pub fn name(self) -> &'static str {
+        match self {
+            PointerShape::Default => "",
+            PointerShape::ColResize => "col-resize",
+            PointerShape::RowResize => "row-resize",
+            PointerShape::NwseResize => "nwse-resize",
+            PointerShape::NeswResize => "nesw-resize",
+            PointerShape::Move => "move",
         }
     }
 }
@@ -465,6 +499,8 @@ pub struct Config {
     pub breadcrumb: BreadcrumbConfig,
     /// Configuration of the file explorer
     pub file_explorer: FileExplorerConfig,
+    /// Configuration of the file tree explorer panel.
+    pub explorer: ExplorerConfig,
     /// Configuration of the statusline elements
     pub statusline: StatusLineConfig,
     /// Shape for cursor in each mode
@@ -1829,6 +1865,7 @@ impl Default for Config {
             bufferline: BufferLineConfig::default(),
             breadcrumb: BreadcrumbConfig::default(),
             file_explorer: FileExplorerConfig::default(),
+            explorer: ExplorerConfig::default(),
             statusline: StatusLineConfig::default(),
             cursor_shape: CursorShapeConfig::default(),
             true_color: false,
@@ -2093,6 +2130,17 @@ pub struct Editor {
     pub last_cwd: Option<PathBuf>,
     pub dir_stack: VecDeque<PathBuf>,
 
+    /// Pending key sequence (the keys typed so far of a multi-key
+    /// mapping, e.g. `[<space>]` after pressing space in normal mode).
+    /// Published by the editor view's keymap handling so components can
+    /// defer to in-progress sequences.
+    pub keymap_pending: Vec<KeyEvent>,
+
+    /// State of the file tree explorer panel.
+    pub explorer_panel: crate::explorer::ExplorerState,
+    /// Explorer internal clipboard for cut/copy-paste entries.
+    pub explorer_clipboard: Option<ExplorerClipboard>,
+
     pub exit_code: i32,
 
     pub config_events: (UnboundedSender<ConfigEvent>, UnboundedReceiver<ConfigEvent>),
@@ -2113,6 +2161,9 @@ pub struct Editor {
 
     pub mouse_down_range: Option<Range>,
     pub cursor_cache: CursorCache,
+    /// Mouse pointer shape the terminal should show, set while handling mouse
+    /// events (resize handles) and applied by the application.
+    pub pointer_shape: PointerShape,
     pub workspace_trust: WorkspaceTrust,
     /// File positions restored from / written to persistent state.
     pub old_file_locs: HashMap<PathBuf, (ViewPosition, Selection)>,
@@ -2233,6 +2284,9 @@ impl Editor {
             last_motion: None,
             last_completion: None,
             last_cwd: None,
+            keymap_pending: Vec::new(),
+            explorer_panel: crate::explorer::ExplorerState::default(),
+            explorer_clipboard: None,
             config,
             auto_pairs,
             exit_code: 0,
@@ -2241,6 +2295,7 @@ impl Editor {
             handlers,
             mouse_down_range: None,
             cursor_cache: CursorCache::default(),
+            pointer_shape: PointerShape::default(),
             dir_stack: VecDeque::with_capacity(DIR_STACK_CAP),
             workspace_trust,
             old_file_locs,
@@ -2277,6 +2332,25 @@ impl Editor {
 
     pub fn config(&self) -> DynGuard<Config> {
         self.config.load()
+    }
+
+    /// The active explorer side, honoring the runtime override.
+    pub fn explorer_side(&self) -> crate::explorer::ExplorerSide {
+        let config = self.config.load();
+        self.explorer_panel.side(&config.explorer)
+    }
+
+    /// The active explorer width, honoring the runtime override.
+    pub fn explorer_width(&self) -> u16 {
+        let config = self.config.load();
+        self.explorer_panel.width(&config.explorer)
+    }
+
+    /// Whether hidden files are shown in the explorer, honoring the runtime
+    /// override.
+    pub fn explorer_show_hidden(&self) -> bool {
+        let config = self.config.load();
+        self.explorer_panel.show_hidden(&config.explorer)
     }
 
     /// Call if the config has changed to let the editor update all

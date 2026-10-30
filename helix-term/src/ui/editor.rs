@@ -74,6 +74,8 @@ pub struct EditorView {
     notification_popup: NotificationPopup,
     /// Cache for bufferline display names to avoid O(n³) recomputation per frame
     bufferline_cache: BufferlineCache,
+    /// The split divider being dragged with the mouse, if any.
+    split_drag: Option<helix_view::tree::SplitDivider>,
 }
 
 /// Cached data for bufferline rendering.
@@ -103,6 +105,16 @@ pub enum InsertEvent {
     RequestCompletion,
 }
 
+/// The pointer shown over a split divider.
+fn split_pointer(divider: helix_view::tree::SplitDivider) -> helix_view::editor::PointerShape {
+    use helix_view::editor::PointerShape;
+    if divider.vertical {
+        PointerShape::ColResize
+    } else {
+        PointerShape::RowResize
+    }
+}
+
 impl EditorView {
     pub fn new(keymaps: Keymaps) -> Self {
         Self {
@@ -118,6 +130,7 @@ impl EditorView {
             prompt_active: false,
             notification_popup: NotificationPopup::new(),
             bufferline_cache: BufferlineCache::default(),
+            split_drag: None,
         }
     }
 
@@ -1741,6 +1754,10 @@ impl EditorView {
         self.pseudo_pending.extend(self.keymaps.pending());
         let key_result = self.keymaps.get(mode, event);
         cxt.editor.autoinfo = self.keymaps.sticky().map(|node| node.infobox());
+        // Publish the pending key sequence so sibling components (e.g. the
+        // explorer panel) can tell partial multi-key sequences like
+        // `<space>x` apart from bare keys.
+        cxt.editor.keymap_pending = self.keymaps.pending().to_vec();
 
         let mut execute_command = |command: &commands::MappableCommand| {
             command.execute(cxt);
@@ -2040,6 +2057,30 @@ impl EditorView {
             })
         };
 
+        // A divider being dragged owns the pointer until the button is
+        // released: the splits on either side follow it.
+        if let Some(divider) = self.split_drag {
+            match kind {
+                MouseEventKind::Drag(MouseButton::Left) => {
+                    cxt.editor.tree.drag_divider(divider, row, column);
+                    cxt.editor.pointer_shape = split_pointer(divider);
+                    return EventResult::Consumed(None);
+                }
+                MouseEventKind::Up(MouseButton::Left) => {
+                    self.split_drag = None;
+                    return EventResult::Consumed(None);
+                }
+                _ => {}
+            }
+        }
+
+        // Hovering a split divider offers the resize pointer.
+        if kind == MouseEventKind::Moved {
+            if let Some(divider) = cxt.editor.tree.divider_at(row, column) {
+                cxt.editor.pointer_shape = split_pointer(divider);
+            }
+        }
+
         match kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 let editor = &mut cxt.editor;
@@ -2057,6 +2098,13 @@ impl EditorView {
                         editor.switch(buffer_info.document_id, helix_view::editor::Action::Replace);
                     }
 
+                    return EventResult::Consumed(None);
+                }
+
+                // Grabbing the line between two splits starts resizing them.
+                if let Some(divider) = editor.tree.divider_at(row, column) {
+                    editor.pointer_shape = split_pointer(divider);
+                    self.split_drag = Some(divider);
                     return EventResult::Consumed(None);
                 }
 
@@ -2469,6 +2517,11 @@ impl Component for EditorView {
             editor_area = editor_area.clip_top(1);
         }
 
+        // Reserve the pinned explorer column from the editor framing so the
+        // views never allocate columns under the panel (no-op when the panel
+        // is hidden or floating).
+        let editor_area = crate::ui::explorer::layout(cx.editor, editor_area);
+
         // if the terminal size suddenly changed, we need to trigger a resize
         cx.editor.resize(editor_area);
 
@@ -2571,8 +2624,12 @@ impl Component for EditorView {
         // Cleanup expired notifications before rendering
         cx.editor.cleanup_notifications();
 
-        // Render notification popup
-        self.notification_popup.render(area, surface, cx);
+        // Render notification popup. A pinned explorer panel is drawn above
+        // this view, so notifications are laid out in the area the panel
+        // leaves free instead of being painted underneath it.
+        let notification_area = crate::ui::explorer::layout(cx.editor, area);
+        self.notification_popup
+            .render(notification_area, surface, cx);
     }
 
     fn cursor(&self, _area: Rect, editor: &Editor) -> (Option<Position>, CursorKind) {

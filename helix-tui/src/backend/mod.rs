@@ -55,4 +55,11 @@ pub trait Backend {
     fn supports_true_color(&self) -> bool;
     fn get_theme_mode(&self) -> Option<helix_view::theme::Mode>;
     fn set_background_color(&mut self, color: Option<Color>) -> io::Result<()>;
+    /// Changes the mouse pointer shape (a CSS cursor name such as
+    /// `col-resize`; empty restores the terminal's own pointer). Only
+    /// terminals implementing the OSC 22 pointer shape sequence react to it;
+    /// the default does nothing.
+    fn set_pointer_shape(&mut self, _name: &str) -> io::Result<()> {
+        Ok(())
+    }
 }

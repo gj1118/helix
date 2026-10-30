@@ -258,6 +258,7 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "J" | "S-down" => swap_view_down,
             "K" | "S-up" => swap_view_up,
             "L" | "S-right" => swap_view_right,
+            "x" => explorer_focus,
             "n" => { "New split scratch buffer"
                 "C-s" | "s" => hsplit_new,
                 "C-v" | "v" => vsplit_new,
@@ -278,6 +279,8 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "F" => file_picker_in_current_directory,
             "e" => file_explorer,
             "." => file_explorer_in_current_buffer_directory,
+            "x" => explorer_toggle,
+            "X" => explorer_float_toggle,
             "b" => buffer_picker,
             "j" => jumplist_picker,
             "s" => lsp_or_syntax_symbol_picker,
@@ -325,6 +328,7 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
                 "J" | "S-down" => swap_view_down,
                 "K" | "S-up" => swap_view_up,
                 "L" | "S-right" => swap_view_right,
+                "x" => explorer_focus,
                 "n" => { "New split scratch buffer"
                     "C-s" | "s" => hsplit_new,
                     "C-v" | "v" => vsplit_new,
