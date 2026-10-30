@@ -14,6 +14,12 @@ pub enum BorderType {
     Rounded,
     Double,
     Thick,
+    /// Quadrant blocks, filled on the side facing the content.
+    QuadrantInside,
+    /// Quadrant blocks, filled on the outer side.
+    QuadrantOutside,
+    /// Blank: keeps the space of a border but draws nothing.
+    Hidden,
 }
 
 impl BorderType {
@@ -31,6 +37,9 @@ impl BorderType {
             Self::Rounded => line::ROUNDED,
             Self::Double => line::DOUBLE,
             Self::Thick => line::THICK,
+            Self::QuadrantInside => line::QUADRANT_INSIDE,
+            Self::QuadrantOutside => line::QUADRANT_OUTSIDE,
+            Self::Hidden => line::HIDDEN,
         }
     }
 }
@@ -158,7 +167,7 @@ impl Widget for Block<'_> {
             let x = area.right() - 1;
             for y in area.top()..area.bottom() {
                 buf[(x, y)]
-                    .set_symbol(symbols.vertical)
+                    .set_symbol(symbols.right)
                     .set_style(self.border_style);
             }
         }
@@ -166,7 +175,7 @@ impl Widget for Block<'_> {
             let y = area.bottom() - 1;
             for x in area.left()..area.right() {
                 buf[(x, y)]
-                    .set_symbol(symbols.horizontal)
+                    .set_symbol(symbols.bottom)
                     .set_style(self.border_style);
             }
         }
@@ -205,6 +214,37 @@ impl Widget for Block<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The characters of the four corners and the middle of each edge.
+    fn frame(border_type: BorderType) -> [String; 3] {
+        let area = Rect::new(0, 0, 3, 3);
+        let mut buf = Buffer::empty(area);
+        Block::bordered()
+            .border_type(border_type)
+            .render(area, &mut buf);
+        let row = |y: u16| {
+            (0..3)
+                .map(|x| buf[(x, y)].symbol.to_string())
+                .collect::<String>()
+        };
+        [row(0), row(1), row(2)]
+    }
+
+    #[test]
+    fn every_border_type_draws_its_frame() {
+        assert_eq!(frame(BorderType::Plain), ["┌─┐", "│ │", "└─┘"]);
+        assert_eq!(frame(BorderType::Rounded), ["╭─╮", "│ │", "╰─╯"]);
+        assert_eq!(frame(BorderType::Double), ["╔═╗", "║ ║", "╚═╝"]);
+        assert_eq!(frame(BorderType::Thick), ["┏━┓", "┃ ┃", "┗━┛"]);
+        assert_eq!(frame(BorderType::Hidden), ["   ", "   ", "   "]);
+    }
+
+    #[test]
+    fn quadrant_frames_are_filled_on_the_right_side() {
+        // inside: the block faces the content; outside: it faces away
+        assert_eq!(frame(BorderType::QuadrantInside), ["▗▄▖", "▐ ▌", "▝▀▘"]);
+        assert_eq!(frame(BorderType::QuadrantOutside), ["▛▀▜", "▌ ▐", "▙▄▟"]);
+    }
 
     #[test]
     fn inner_takes_into_account_the_borders() {

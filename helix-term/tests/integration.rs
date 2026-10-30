@@ -17,6 +17,7 @@ mod test {
 
     mod auto_pairs;
     mod blame;
+    mod borders;
     mod breadcrumbs;
     mod command_line;
     mod commands;

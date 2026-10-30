@@ -653,7 +653,7 @@ animation-speed = 0
 - **5**: Full block characters
 
 **Rounded Corners Support:**
-Gradient borders automatically respect your existing `rounded_corners` setting:
+Gradient borders automatically respect your existing `rounded_corners` setting (and `border-style`: `"rounded"` rounds them, `"none"` hides them):
 
 ```toml
 [editor]

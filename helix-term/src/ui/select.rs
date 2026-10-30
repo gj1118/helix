@@ -57,7 +57,7 @@ impl<T: Item> Component for Select<T> {
     }
 
     fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
-        const BLOCK: Block<'_> = Block::bordered();
+        let block = Block::bordered().border_type(crate::ui::border_type(&cx.editor.config()));
 
         // +---------------------+
         // | message             |
@@ -90,9 +90,9 @@ impl<T: Item> Component for Select<T> {
         let text = cx.editor.theme.get("ui.text");
         let message_box = area.with_height(message_height + 2);
         surface.clear_with(message_box, background.patch(text));
-        BLOCK.render(message_box, surface);
+        block.clone().render(message_box, surface);
         // Add horizontal padding so the message isn't too close to the border.
-        let message_area = BLOCK.inner(message_box).clip_left(1).clip_right(1);
+        let message_area = block.inner(message_box).clip_left(1).clip_right(1);
         self.message.render(message_area, surface, cx);
 
         // Options menu

@@ -1643,12 +1643,18 @@ impl Component for Explorer {
                         ));
                     }
                     if let Some((_, border)) = self.gradient_border.as_mut() {
-                        border.render(frame, surface, theme, config.rounded_corners);
+                        if !config.borders_hidden() {
+                            border.render(frame, surface, theme, config.border_rounded());
+                        }
                     }
                 } else {
                     // Plain solid border otherwise.
                     self.gradient_border = None;
-                    Widget::render(Block::bordered(), frame, surface);
+                    Widget::render(
+                        Block::bordered().border_type(crate::ui::border_type(&config)),
+                        frame,
+                        surface,
+                    );
                 }
             }
             None => {

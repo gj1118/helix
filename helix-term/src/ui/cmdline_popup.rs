@@ -10,7 +10,7 @@ use helix_view::{
 use std::borrow::Cow;
 use tui::{
     buffer::Buffer as Surface,
-    widgets::{Block, BorderType, Widget},
+    widgets::{Block, Widget},
 };
 
 pub struct CmdlinePopup {
@@ -112,14 +112,16 @@ impl CmdlinePopup {
 
             // Render gradient border with title
             if let Some(ref mut gradient_border) = self.gradient_border {
-                let rounded = cx.editor.config().rounded_corners;
-                gradient_border.render_with_title(
-                    popup_area,
-                    surface,
-                    theme,
-                    Some(self.prompt.prompt()),
-                    rounded,
-                );
+                let rounded = cx.editor.config().border_rounded();
+                if !cx.editor.config().borders_hidden() {
+                    gradient_border.render_with_title(
+                        popup_area,
+                        surface,
+                        theme,
+                        Some(self.prompt.prompt()),
+                        rounded,
+                    );
+                }
             }
 
             // Calculate inner area manually using configured gradient thickness
@@ -137,7 +139,7 @@ impl CmdlinePopup {
             let border_style = theme.get("ui.popup.border");
             let background_style = theme.get("ui.popup");
 
-            let border_type = BorderType::new(cx.editor.config().rounded_corners);
+            let border_type = crate::ui::border_type(&cx.editor.config());
             let block = Block::default()
                 .borders(tui::widgets::Borders::ALL)
                 .border_type(border_type)
@@ -242,8 +244,10 @@ impl CmdlinePopup {
         let inner_area = if config.enable && self.style == CmdlineStyle::Popup {
             // Reuse the gradient border for completion popup
             if let Some(ref mut gradient_border) = self.gradient_border {
-                let rounded = cx.editor.config().rounded_corners;
-                gradient_border.render(comp_area, surface, &cx.editor.theme, rounded);
+                let rounded = cx.editor.config().border_rounded();
+                if !cx.editor.config().borders_hidden() {
+                    gradient_border.render(comp_area, surface, &cx.editor.theme, rounded);
+                }
             }
 
             // Calculate inner area manually using configured gradient thickness
@@ -258,7 +262,7 @@ impl CmdlinePopup {
             }
         } else {
             // Use traditional border, matching popup card styling
-            let border_type = BorderType::new(cx.editor.config().rounded_corners);
+            let border_type = crate::ui::border_type(&cx.editor.config());
             let block = Block::default()
                 .borders(tui::widgets::Borders::ALL)
                 .border_type(border_type)

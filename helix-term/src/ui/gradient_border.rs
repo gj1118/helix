@@ -6,7 +6,7 @@ use helix_view::{
 };
 use tui::{
     buffer::Buffer as Surface,
-    widgets::{Block, BorderType, Widget},
+    widgets::{Block, Widget},
 };
 
 type Rgb = (u8, u8, u8);
@@ -26,6 +26,10 @@ impl PanelBorder {
             return;
         }
         let config = editor.config();
+        if config.borders_hidden() {
+            self.gradient = None;
+            return;
+        }
         if config.gradient_borders.enable {
             let stale = self
                 .gradient
@@ -38,12 +42,12 @@ impl PanelBorder {
                 ));
             }
             if let Some((_, border)) = self.gradient.as_mut() {
-                border.render(area, surface, &editor.theme, config.rounded_corners);
+                border.render(area, surface, &editor.theme, config.border_rounded());
             }
         } else {
             self.gradient = None;
             Widget::render(
-                Block::bordered().border_type(BorderType::new(config.rounded_corners)),
+                Block::bordered().border_type(crate::ui::border_type(&config)),
                 area,
                 surface,
             );

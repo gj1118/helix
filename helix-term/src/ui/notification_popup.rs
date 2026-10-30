@@ -380,15 +380,19 @@ impl NotificationPopup {
         area: Rect,
         surface: &mut Surface,
         style: Style,
-        rounded: bool,
+        border_type: tui::widgets::BorderType,
         width: u8,
     ) {
         // Choose border glyphs
-        let (h, v, tl, tr, bl, br) = if rounded {
-            ("─", "│", "╭", "╮", "╰", "╯")
-        } else {
-            ("─", "│", "┌", "┐", "└", "┘")
-        };
+        let symbols = tui::widgets::BorderType::line_symbols(border_type);
+        let (h, v, tl, tr, bl, br) = (
+            symbols.horizontal,
+            symbols.vertical,
+            symbols.top_left,
+            symbols.top_right,
+            symbols.bottom_left,
+            symbols.bottom_right,
+        );
 
         let w = width.max(1) as u16;
         for s in 0..w {
@@ -415,7 +419,7 @@ impl NotificationPopup {
                 } else if x == x1 {
                     br
                 } else {
-                    h
+                    symbols.bottom
                 };
                 if let Some(cell) = surface.get_mut(x, y0) {
                     cell.set_symbol(ch_top).set_style(style);
@@ -430,7 +434,7 @@ impl NotificationPopup {
                     cell.set_symbol(v).set_style(style);
                 }
                 if let Some(cell) = surface.get_mut(x1, y) {
-                    cell.set_symbol(v).set_style(style);
+                    cell.set_symbol(symbols.right).set_style(style);
                 }
             }
         }
@@ -492,8 +496,10 @@ impl NotificationPopup {
                 if let Some(ref mut gradient_border) = self.gradient_border {
                     // Disable animation as requested
                     gradient_border.disable_animation();
-                    let rounded = cx.editor.config().rounded_corners || corner_radius > 0;
-                    gradient_border.render(item.area, surface, theme, rounded);
+                    let rounded = cx.editor.config().border_rounded() || corner_radius > 0;
+                    if !cx.editor.config().borders_hidden() {
+                        gradient_border.render(item.area, surface, theme, rounded);
+                    }
                 }
 
                 // Calculate inner area manually using configured gradient thickness
@@ -508,12 +514,16 @@ impl NotificationPopup {
                 }
             } else {
                 // Render simple border without filling background
-                let rounded = cx.editor.config().rounded_corners || corner_radius > 0;
+                let mut border_type = crate::ui::border_type(&cx.editor.config());
+                // a corner radius asks for rounded corners on an otherwise plain border
+                if corner_radius > 0 && border_type == tui::widgets::BorderType::Plain {
+                    border_type = tui::widgets::BorderType::Rounded;
+                }
                 self.render_simple_border(
                     item.area,
                     surface,
                     border_style,
-                    rounded,
+                    border_type,
                     config.border.width,
                 );
 
@@ -636,7 +646,7 @@ impl Component for NotificationPopup {
         } else {
             cx.editor.config().notifications.border.width as u16
         };
-        self.layout_rounded = cx.editor.config().rounded_corners
+        self.layout_rounded = cx.editor.config().border_rounded()
             || cx.editor.config().notifications.border.radius > 0;
         self.layout_padding = cx.editor.config().notifications.padding;
 

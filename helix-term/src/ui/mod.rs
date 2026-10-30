@@ -60,6 +60,30 @@ impl AsRef<str> for Utf8PathBuf {
     }
 }
 
+/// The border type for panels, popups and menus, from `border-style`.
+pub fn border_type(config: &helix_view::editor::Config) -> tui::widgets::BorderType {
+    use helix_view::editor::BorderStyle;
+    use tui::widgets::BorderType;
+    match config.effective_border_style() {
+        BorderStyle::None => BorderType::Hidden,
+        BorderStyle::Plain => BorderType::Plain,
+        BorderStyle::Rounded => BorderType::Rounded,
+        BorderStyle::Double => BorderType::Double,
+        BorderStyle::Thick => BorderType::Thick,
+        BorderStyle::QuadrantInside => BorderType::QuadrantInside,
+        BorderStyle::QuadrantOutside => BorderType::QuadrantOutside,
+    }
+}
+
+/// The border type of the separator lines inside a panel. Hidden borders keep
+/// their separators, which would otherwise merge the sections they divide.
+pub fn separator_type(config: &helix_view::editor::Config) -> tui::widgets::BorderType {
+    match border_type(config) {
+        tui::widgets::BorderType::Hidden => tui::widgets::BorderType::Plain,
+        other => other,
+    }
+}
+
 pub fn prompt(
     cx: &mut crate::commands::Context,
     prompt: std::borrow::Cow<'static, str>,
