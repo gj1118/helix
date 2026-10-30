@@ -196,7 +196,12 @@ impl Transport {
                 self.id, res.message, res.body, res.request_seq, res.command
             );
 
-            Err(Error::Other(anyhow::format_err!("{:?}", res.body)))
+            // Adapters put the reason in `message`; the body may carry more detail.
+            Err(Error::Other(match (&res.message, &res.body) {
+                (Some(message), _) => anyhow::format_err!("{message}"),
+                (None, Some(body)) => anyhow::format_err!("{body:?}"),
+                (None, None) => anyhow::format_err!("DAP request failed"),
+            }))
         }
     }
 

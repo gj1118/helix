@@ -39,6 +39,15 @@ pub struct Client {
     pub caps: Option<DebuggerCapabilities>,
     // thread_id -> frames
     pub stack_frames: HashMap<ThreadId, Vec<StackFrame>>,
+    /// thread_id -> number of frames the adapter reported for the whole stack, when it did.
+    pub total_frames: HashMap<ThreadId, usize>,
+    /// What the session is called in the editor (the name of the debug template, say).
+    pub name: Option<String>,
+    /// The session that started this one (`startDebugging`).
+    pub parent: Option<DebugAdapterId>,
+    /// Sources this session generated (`sourceReference`s), by the path of their buffer in the
+    /// editor, see [`adapter_source_path`].
+    pub adapter_sources: HashMap<PathBuf, Source>,
     pub thread_states: ThreadStates,
     pub progress: ProgressMap,
     pub thread_id: Option<ThreadId>,
@@ -89,6 +98,10 @@ impl Client {
             starting_request_args: None,
             socket: None,
             stack_frames: HashMap::new(),
+            total_frames: HashMap::new(),
+            name: None,
+            parent: None,
+            adapter_sources: HashMap::new(),
             thread_states: HashMap::new(),
             progress: HashMap::new(),
             thread_id: None,
@@ -228,6 +241,25 @@ impl Client {
         self.id
     }
 
+    /// The name of the session shown in the editor.
+    pub fn display_name(&self) -> &str {
+        self.name
+            .as_deref()
+            .or_else(|| self.config.as_ref().map(|config| config.name.as_str()))
+            .unwrap_or("debugger")
+    }
+
+    /// Whether the active thread of the session is stopped: `"stopped"` or `"running"`.
+    pub fn state_label(&self) -> &'static str {
+        match self.thread_id {
+            Some(thread) => match self.thread_states.get(&thread) {
+                Some(state) if state == "running" => "running",
+                _ => "stopped",
+            },
+            None => "running",
+        }
+    }
+
     pub fn connection_type(&self) -> Option<ConnectionType> {
         self.connection_type
     }
@@ -245,6 +277,7 @@ impl Client {
         if let Some(thread_id) = self.thread_id {
             self.thread_states.insert(thread_id, "running".to_string());
             self.stack_frames.remove(&thread_id);
+            self.total_frames.remove(&thread_id);
         }
         self.active_frame = None;
         self.thread_id = None;
@@ -433,17 +466,19 @@ impl Client {
         file: PathBuf,
         breakpoints: Vec<SourceBreakpoint>,
     ) -> Result<Option<Vec<Breakpoint>>> {
+        // A buffer of a source the adapter generated is identified by its reference.
+        let source = self.adapter_sources.get(&file).cloned().unwrap_or(Source {
+            path: Some(file),
+            name: None,
+            source_reference: None,
+            presentation_hint: None,
+            origin: None,
+            sources: None,
+            adapter_data: None,
+            checksums: None,
+        });
         let args = requests::SetBreakpointsArguments {
-            source: Source {
-                path: Some(file),
-                name: None,
-                source_reference: None,
-                presentation_hint: None,
-                origin: None,
-                sources: None,
-                adapter_data: None,
-                checksums: None,
-            },
+            source,
             breakpoints: Some(breakpoints),
             source_modified: Some(false),
         };
@@ -451,6 +486,25 @@ impl Client {
         let response = self.request::<requests::SetBreakpoints>(args).await?;
 
         Ok(response.breakpoints)
+    }
+
+    /// The text of a source the adapter generated. The returned future doesn't borrow the client.
+    pub fn source_content(&self, source: Source) -> impl Future<Output = Result<String>> {
+        let call = self.call::<requests::LoadSource>(requests::LoadSourceArguments {
+            source_reference: source.source_reference.unwrap_or_default(),
+            source: Some(source),
+        });
+        async move {
+            let response: requests::LoadSourceResponse = serde_json::from_value(call.await?)?;
+            Ok(response.content)
+        }
+    }
+
+    /// Remembers a source the adapter generated and returns the path its buffer gets.
+    pub fn register_adapter_source(&mut self, source: &Source) -> PathBuf {
+        let path = adapter_source_path(self.id, source);
+        self.adapter_sources.insert(path.clone(), source.clone());
+        path
     }
 
     pub async fn configuration_done(&self) -> Result<()> {
@@ -490,6 +544,26 @@ impl Client {
         Ok((response.stack_frames, response.total_frames))
     }
 
+    /// Fetches `levels` frames of the stack of `thread_id` starting at frame `start`. The
+    /// returned future doesn't borrow the client.
+    pub fn stack_trace_page(
+        &self,
+        thread_id: ThreadId,
+        start: usize,
+        levels: usize,
+    ) -> impl Future<Output = Result<(Vec<StackFrame>, Option<usize>)>> {
+        let call = self.call::<requests::StackTrace>(requests::StackTraceArguments {
+            thread_id,
+            start_frame: Some(start),
+            levels: Some(levels),
+            format: None,
+        });
+        async move {
+            let response: requests::StackTraceResponse = serde_json::from_value(call.await?)?;
+            Ok((response.stack_frames, response.total_frames))
+        }
+    }
+
     pub fn threads(&self) -> impl Future<Output = Result<Value>> {
         self.call::<requests::Threads>(Some(requests::ThreadsArguments {}))
     }
@@ -512,6 +586,53 @@ impl Client {
 
         let response = self.request::<requests::Variables>(args).await?;
         Ok(response.variables)
+    }
+
+    /// Like [`Self::scopes`] but the returned future doesn't borrow the client.
+    pub fn scopes_future(&self, frame_id: usize) -> impl Future<Output = Result<Vec<Scope>>> {
+        let call = self.call::<requests::Scopes>(requests::ScopesArguments { frame_id });
+        async move {
+            let response: requests::ScopesResponse = serde_json::from_value(call.await?)?;
+            Ok(response.scopes)
+        }
+    }
+
+    /// Fetches (a page of) the variables of `variables_reference`. `filter` is `"indexed"` or
+    /// `"named"` for variables with many children, `start` and `count` page through them. The
+    /// returned future doesn't borrow the client.
+    pub fn variables_page(
+        &self,
+        variables_reference: usize,
+        filter: Option<&str>,
+        start: Option<usize>,
+        count: Option<usize>,
+    ) -> impl Future<Output = Result<Vec<Variable>>> {
+        let call = self.call::<requests::Variables>(requests::VariablesArguments {
+            variables_reference,
+            filter: filter.map(str::to_owned),
+            start,
+            count,
+            format: None,
+        });
+        async move {
+            let response: requests::VariablesResponse = serde_json::from_value(call.await?)?;
+            Ok(response.variables)
+        }
+    }
+
+    /// Evaluate an expression in a frame. The returned future doesn't borrow the client.
+    pub fn eval_future(
+        &self,
+        expression: String,
+        frame_id: Option<usize>,
+    ) -> impl Future<Output = Result<requests::EvaluateResponse>> {
+        let call = self.call::<requests::Evaluate>(requests::EvaluateArguments {
+            expression,
+            frame_id,
+            context: Some("repl".to_owned()),
+            format: None,
+        });
+        async move { Ok(serde_json::from_value(call.await?)?) }
     }
 
     pub fn step_in(&self, thread_id: ThreadId) -> impl Future<Output = Result<Value>> {
@@ -577,4 +698,40 @@ impl Client {
             .get(&self.thread_id?)?
             .get(self.active_frame?)
     }
+}
+
+/// The directory the directories of all sessions' generated sources are in.
+pub fn adapter_source_dir_root() -> PathBuf {
+    std::env::temp_dir().join("helix-dap-sources")
+}
+
+/// The directory buffers of the sources a session generated live in. Nothing is ever written
+/// there: the paths only identify the buffers.
+pub fn adapter_source_dir(session: DebugAdapterId) -> PathBuf {
+    adapter_source_dir_root().join(session.to_string())
+}
+
+/// The path of the buffer for a source an adapter generated.
+pub fn adapter_source_path(session: DebugAdapterId, source: &Source) -> PathBuf {
+    let name = source
+        .name
+        .clone()
+        .unwrap_or_else(|| format!("source-{}", source.source_reference.unwrap_or_default()));
+    // `name` comes from the adapter: keep it a single path component.
+    let name: String = name
+        .chars()
+        .map(|c| {
+            if matches!(c, '/' | '\\' | ':') {
+                '_'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let name = if name.is_empty() || name == "." || name == ".." {
+        format!("source-{}", source.source_reference.unwrap_or_default())
+    } else {
+        name
+    };
+    adapter_source_dir(session).join(name)
 }

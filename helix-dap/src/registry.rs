@@ -58,8 +58,60 @@ impl Registry {
         })
     }
 
+    /// Removes a session. When it was the selected one, another session is selected: one that
+    /// is stopped if there is one.
     pub fn remove_client(&mut self, id: DebugAdapterId) {
         self.inner.remove(id);
+        if self.current_client_id == Some(id) || self.get_active_client().is_none() {
+            self.current_client_id = self
+                .inner
+                .iter()
+                .find(|(_, client)| client.state_label() == "stopped")
+                .or_else(|| self.inner.iter().next())
+                .map(|(id, _)| id);
+        }
+    }
+
+    /// All sessions, parents before their children.
+    pub fn sessions(&self) -> Vec<(DebugAdapterId, &Client)> {
+        let mut sessions: Vec<_> = self.inner.iter().collect();
+        // A child sorts right after its parent; sessions are otherwise kept in the order of the
+        // (stable) slot map.
+        let mut ordered = Vec::with_capacity(sessions.len());
+        let mut roots: Vec<_> = sessions
+            .iter()
+            .filter(|(_, client)| {
+                client
+                    .parent
+                    .is_none_or(|parent| !self.inner.contains_key(parent))
+            })
+            .cloned()
+            .collect();
+        sessions.retain(|entry| !roots.iter().any(|root| root.0 == entry.0));
+        roots.reverse();
+        while let Some(next) = roots.pop() {
+            ordered.push(next);
+            let (children, rest): (Vec<_>, Vec<_>) = sessions
+                .drain(..)
+                .partition(|(_, client)| client.parent == Some(next.0));
+            sessions = rest;
+            roots.extend(children.into_iter().rev());
+        }
+        ordered.extend(sessions);
+        ordered
+    }
+
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
+    pub fn active_id(&self) -> Option<DebugAdapterId> {
+        self.current_client_id
+            .filter(|id| self.inner.contains_key(*id))
     }
 
     pub fn get_client(&self, id: DebugAdapterId) -> Option<&Client> {

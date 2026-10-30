@@ -543,6 +543,18 @@ impl View {
             }
         }
 
+        if config.debugger.inline_values
+            && !doc.dap_inline_values.is_empty()
+            // The values belong to the saved file.
+            && !doc.is_modified()
+        {
+            let style = theme.and_then(|t| {
+                t.find_highlight("ui.virtual.inline-value")
+                    .or_else(|| t.find_highlight("ui.virtual.inlay-hint"))
+            });
+            text_annotations.add_inline_annotations(&doc.dap_inline_values, style);
+        }
+
         let width = self.inner_width(doc);
         let enable_cursor_line = self
             .diagnostics_handler

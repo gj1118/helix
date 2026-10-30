@@ -1,4 +1,5 @@
 pub(crate) mod dap;
+pub(crate) mod dap_variables;
 pub(crate) mod git;
 pub(crate) mod git_history;
 pub(crate) mod lsp;
@@ -686,6 +687,7 @@ impl MappableCommand {
         dap_edit_log, "Edit breakpoint log message on current line",
         dap_switch_thread, "Switch current thread",
         dap_switch_stack_frame, "Switch stack frame",
+        dap_switch_session, "Switch debug session",
         dap_enable_exceptions, "Enable exception breakpoints",
         dap_disable_exceptions, "Disable exception breakpoints",
         shell_pipe, "Pipe selections through shell command",
