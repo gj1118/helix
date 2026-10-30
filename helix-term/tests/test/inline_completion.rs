@@ -35,10 +35,11 @@ fn config() -> Config {
         "#,
     )
     .unwrap();
-    let mut config = Config::default();
-    config.keys = raw.keys.unwrap().modes;
-    config.editor = raw.editor.unwrap().try_into().unwrap();
-    config
+    Config {
+        keys: raw.keys.unwrap().modes,
+        editor: raw.editor.unwrap().try_into().unwrap(),
+        ..Default::default()
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
