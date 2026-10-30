@@ -177,7 +177,7 @@ a plain word matches names containing it (case-insensitive); patterns with
 `test_?.py`, `*.{toml,md}`). A pattern containing `/` is matched against the
 path relative to the root (`src/**/mod.rs`-style). While a filter is active the
 tree shows only matching entries and the directories leading to them, searching
-the whole tree (capped at 100,000 entries, `.git` skipped). Up/Down move through the results while you keep typing; Enter opens
+the whole tree (capped at 100,000 entries, `.git` skipped). Up/Down move through the results while you keep typing (then Right expands and Left collapses the selected folder, until you type again); Enter opens
 the selected row (the first matching file if you haven't moved); Tab leaves the box and
 keeps the filter to browse the results with the tree keys; Esc (or clearing the box) restores the
 full tree and reveals the selected entry.

@@ -270,6 +270,12 @@ impl Explorer {
             .filter(|entry| !entry.is_parent)
     }
 
+    /// Whether the cursor is on a directory that is not expanded.
+    fn on_collapsed_dir(&self) -> bool {
+        self.entry()
+            .is_some_and(|entry| entry.is_dir && !self.tree.is_expanded(&entry.path))
+    }
+
     /// Whether the cursor is on the `...` row.
     fn on_parent_row(&self) -> bool {
         self.tree
@@ -548,10 +554,26 @@ impl Explorer {
                     self.filter_changed(cx.editor);
                 }
             }
+            // After picking a row with the up/down arrows, left and right
+            // work on that row like in the tree: expand and collapse folders,
+            // or step up to the parent. Typing (or Home/End) gives the arrows
+            // back to the text cursor.
+            KeyCode::Right if plain && self.filter_navigated && self.on_collapsed_dir() => {
+                return self.on_primary_open(cx);
+            }
+            KeyCode::Left if plain && self.filter_navigated => {
+                return self.on_collapse_or_ascend();
+            }
             KeyCode::Left if plain => self.filter_cursor = self.filter_prev_boundary(),
             KeyCode::Right if plain => self.filter_cursor = self.filter_next_boundary(),
-            KeyCode::Home if plain => self.filter_cursor = 0,
-            KeyCode::End if plain => self.filter_cursor = self.filter.len(),
+            KeyCode::Home if plain => {
+                self.filter_cursor = 0;
+                self.filter_navigated = false;
+            }
+            KeyCode::End if plain => {
+                self.filter_cursor = self.filter.len();
+                self.filter_navigated = false;
+            }
             KeyCode::Char('u') if ctrl => {
                 self.filter.replace_range(..self.filter_cursor, "");
                 self.filter_cursor = 0;
