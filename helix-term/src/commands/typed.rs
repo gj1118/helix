@@ -5116,12 +5116,137 @@ pub static TYPABLE_COMMAND_MAP: LazyLock<HashMap<&'static str, &'static TypableC
             .collect()
     });
 
+/// Checks that a custom command only names things that exist.
+///
+/// Custom commands run built-in commands, so they cannot call each other.
+pub fn validate_custom_command(
+    custom: &helix_view::custom_commands::CustomCommand,
+) -> Result<(), String> {
+    let is_macro = |item: &String| item.starts_with('@');
+    if custom.commands.iter().any(is_macro) && custom.commands.len() > 1 {
+        return Err("a key macro must be the only command".into());
+    }
+    for item in &custom.commands {
+        if let Some(line) = item.strip_prefix(':') {
+            let (name, _, _) = command_line::split(line.trim_start());
+            if !TYPABLE_COMMAND_MAP.contains_key(name) {
+                return Err(format!(
+                    "`{item}`: `:{name}` is not a built-in typable command (custom commands cannot run other custom commands)"
+                ));
+            }
+        } else {
+            item.parse::<super::MappableCommand>()
+                .map_err(|err| format!("`{item}`: {err}"))?;
+        }
+    }
+    if let Some(completer) = &custom.completer {
+        let name = completer.strip_prefix(':').unwrap_or(completer);
+        if !TYPABLE_COMMAND_MAP.contains_key(name) {
+            return Err(format!(
+                "completer `{completer}` is not a built-in typable command"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Runs a custom command with the arguments in `args_line`.
+pub(super) fn run_custom_command(
+    cx: &mut compositor::Context,
+    name: &str,
+    custom: &helix_view::custom_commands::CustomCommand,
+    args_line: &str,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let signature = Signature {
+        positionals: (0, None),
+        ..Signature::DEFAULT
+    };
+    let args: Vec<String> = Args::parse(args_line, signature, true, |token| {
+        expansion::expand(cx.editor, token).map_err(|err| err.into())
+    })
+    .map_err(|err| anyhow!("'{name}': {err}"))?
+    .iter()
+    .map(|arg| arg.to_string())
+    .collect();
+
+    let previous = cx.editor.command_args.replace(args);
+    let result = run_custom_items(cx, custom);
+    cx.editor.command_args = previous;
+    result.map_err(|err| anyhow!("'{name}': {err}"))
+}
+
+fn run_custom_items(
+    cx: &mut compositor::Context,
+    custom: &helix_view::custom_commands::CustomCommand,
+) -> anyhow::Result<()> {
+    for item in &custom.commands {
+        if let Some(line) = item.strip_prefix(':') {
+            let (name, rest, _) = command_line::split(line.trim_start());
+            let command = TYPABLE_COMMAND_MAP
+                .get(name)
+                .ok_or_else(|| anyhow!("no such command: '{name}'"))?;
+            execute_command(cx, command, rest, PromptEvent::Validate)?;
+        } else {
+            let command: super::MappableCommand = item.parse()?;
+            run_static(cx, &command)?;
+        }
+    }
+    Ok(())
+}
+
+/// Runs a static command or key macro from a context without a compositor:
+/// whatever it asks of the compositor happens after the current event.
+fn run_static(
+    cx: &mut compositor::Context,
+    command: &super::MappableCommand,
+) -> anyhow::Result<()> {
+    let mut command_cx = super::Context {
+        register: None,
+        count: None,
+        editor: cx.editor,
+        callback: Vec::new(),
+        on_next_key_callback: None,
+        jobs: cx.jobs,
+        plugin_manager: cx.plugin_manager.clone(),
+    };
+    command.execute(&mut command_cx);
+    if command_cx.on_next_key_callback.is_some() {
+        bail!(
+            "'{}' waits for another key; use a key macro such as `@...` instead",
+            command.name()
+        );
+    }
+    for callback in command_cx.callback {
+        compositor::defer(callback);
+    }
+    Ok(())
+}
+
 fn execute_command_line(
     cx: &mut compositor::Context,
     input: &str,
     event: PromptEvent,
 ) -> anyhow::Result<()> {
     let (command, rest, _) = command_line::split(input);
+    if command.is_empty() {
+        return Ok(());
+    }
+
+    // Custom commands shadow the built-in ones; `:^name` reaches the built-in.
+    let command = match command.strip_prefix('^') {
+        Some(builtin) => builtin,
+        None => {
+            let custom = cx.editor.config().commands.get(command).cloned();
+            if let Some(custom) = custom {
+                return run_custom_command(cx, command, &custom, rest, event);
+            }
+            command
+        }
+    };
     if command.is_empty() {
         return Ok(());
     }
@@ -5222,13 +5347,33 @@ pub(super) fn command_mode(cx: &mut Context) {
                     }
                 },
             );
-            prompt.doc_fn = Box::new(command_line_doc);
+            let custom = cx.editor.config().commands.clone();
+            prompt.doc_fn = Box::new(move |input| {
+                custom_command_doc(&custom, input).or_else(|| command_line_doc(input))
+            });
 
             // Calculate initial completion
             prompt.recalculate_completion(cx.editor);
             cx.push_layer(Box::new(prompt));
         }
     }
+}
+
+/// Help for a custom command: its description (Markdown) or what it runs.
+fn custom_command_doc<'a>(
+    commands: &std::collections::BTreeMap<String, helix_view::custom_commands::CustomCommand>,
+    input: &str,
+) -> Option<Cow<'a, str>> {
+    let (name, _, _) = command_line::split(input);
+    let command = commands.get(name)?;
+    let mut doc = match &command.desc {
+        Some(desc) => desc.clone(),
+        None => format!("Runs: {}", command.commands.join(", ")),
+    };
+    if let Some(accepts) = &command.accepts {
+        write!(doc, "\nArguments: {accepts}").unwrap();
+    }
+    Some(Cow::Owned(doc))
 }
 
 fn command_line_doc(input: &str) -> Option<Cow<'_, str>> {
@@ -5320,6 +5465,19 @@ fn complete_command_line(
         .map(|(name, _)| (0.., name.into()))
         .collect();
 
+        // custom commands that are not hidden
+        let config = editor.config();
+        let custom_names = config
+            .commands
+            .iter()
+            .filter(|(_, command)| !command.hidden)
+            .map(|(name, _)| name.as_str());
+        completions.extend(
+            fuzzy_match(input, custom_names, false)
+                .into_iter()
+                .map(|(name, _)| (0.., name.to_string().into())),
+        );
+
         if let Some(pm) = plugin_manager {
             let commands = pm.get_commands();
             let plugin_completions =
@@ -5330,10 +5488,19 @@ fn complete_command_line(
         }
         completions
     } else {
-        TYPABLE_COMMAND_MAP
-            .get(command)
+        let args_offset = command.len() + 1;
+        // A custom command borrows the completion of a built-in one.
+        let custom = editor.config().commands.get(command).cloned();
+        let builtin = match &custom {
+            Some(custom) => custom
+                .completer
+                .as_deref()
+                .map(|name| name.strip_prefix(':').unwrap_or(name)),
+            None => Some(command.strip_prefix('^').unwrap_or(command)),
+        };
+        builtin
+            .and_then(|name| TYPABLE_COMMAND_MAP.get(name))
             .map_or_else(Vec::new, |cmd| {
-                let args_offset = command.len() + 1;
                 complete_command_args(editor, cmd.signature, &cmd.completer, rest, args_offset)
             })
     }
@@ -5439,7 +5606,7 @@ pub fn complete_command_args(
         TokenKind::Expansion(ExpansionKind::Variable) => {
             complete_variable_expansion(&token.content, offset + token.content_start)
         }
-        TokenKind::Expansion(ExpansionKind::Unicode) => Vec::new(),
+        TokenKind::Expansion(ExpansionKind::Unicode | ExpansionKind::Arg) => Vec::new(),
         TokenKind::Expansion(ExpansionKind::Register) => {
             complete_register_expansion(editor, &token.content, offset + token.content_start)
         }

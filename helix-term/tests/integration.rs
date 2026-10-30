@@ -21,6 +21,7 @@ mod test {
     mod breadcrumbs;
     mod command_line;
     mod commands;
+    mod custom_commands;
     mod history;
     mod inline_completion;
     mod movement;

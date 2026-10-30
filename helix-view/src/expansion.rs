@@ -129,6 +129,7 @@ pub fn expand<'a>(editor: &Editor, token: Token<'a>) -> Result<Cow<'a, str>> {
         TokenKind::Expand => expand_inner(editor, token.content),
         TokenKind::Expansion(ExpansionKind::Shell) => expand_shell(editor, token.content),
         TokenKind::Expansion(ExpansionKind::Register) => expand_register(editor, token.content),
+        TokenKind::Expansion(ExpansionKind::Arg) => expand_arg(editor, token.content),
         // Note: see the docs for this variant.
         TokenKind::ExpansionKind => unreachable!(
             "expansion name tokens cannot be emitted when command line validation is enabled"
@@ -184,6 +185,19 @@ pub fn expand_shell<'a>(editor: &Editor, content: Cow<'a, str>) -> Result<Cow<'a
     Ok(Cow::Owned(text))
 }
 
+/// Expand a positional argument of the custom command being run.
+pub fn expand_arg<'a>(editor: &Editor, content: Cow<'a, str>) -> Result<Cow<'a, str>> {
+    let Some(args) = &editor.command_args else {
+        bail!("`%arg{{..}}` can only be used in custom commands");
+    };
+    let index: usize = content
+        .trim()
+        .parse()
+        .map_err(|_| anyhow!("Invalid argument index `{content}`: expected a number"))?;
+    // A missing argument expands to nothing.
+    Ok(Cow::Owned(args.get(index).cloned().unwrap_or_default()))
+}
+
 /// Expand a register's contents
 pub fn expand_register<'a>(editor: &Editor, content: Cow<'a, str>) -> Result<Cow<'a, str>> {
     let mut chars = content.chars();
@@ -203,6 +217,9 @@ pub fn expand_register<'a>(editor: &Editor, content: Cow<'a, str>) -> Result<Cow
 /// Expand a token's contents recursively.
 fn expand_inner<'a>(editor: &Editor, content: Cow<'a, str>) -> Result<Cow<'a, str>> {
     let mut escaped = String::new();
+    // Whether anything was expanded or unescaped. An expansion may be empty, so
+    // `escaped.is_empty()` alone cannot tell.
+    let mut changed = false;
     let mut start = 0;
 
     while let Some(offset) = content[start..].find('%') {
@@ -210,6 +227,7 @@ fn expand_inner<'a>(editor: &Editor, content: Cow<'a, str>) -> Result<Cow<'a, st
         if content.as_bytes().get(idx + '%'.len_utf8()).copied() == Some(b'%') {
             // Treat two percents in a row as an escaped percent.
             escaped.push_str(&content[start..=idx]);
+            changed = true;
             // Skip over both percents.
             start = idx + ('%'.len_utf8() * 2);
         } else {
@@ -225,16 +243,17 @@ fn expand_inner<'a>(editor: &Editor, content: Cow<'a, str>) -> Result<Cow<'a, st
             // expand it (this is the recursive part),
             let expanded = expand(editor, token)?;
             escaped.push_str(expanded.as_ref());
+            changed = true;
             // and move forward to the end of the expansion.
             start = idx + tokenizer.pos();
         }
     }
 
-    if escaped.is_empty() {
-        Ok(content)
-    } else {
+    if changed {
         escaped.push_str(&content[start..]);
         Ok(Cow::Owned(escaped))
+    } else {
+        Ok(content)
     }
 }
 

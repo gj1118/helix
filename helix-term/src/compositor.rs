@@ -7,6 +7,23 @@ use helix_view::graphics::{CursorKind, Rect};
 use tui::buffer::Buffer as Surface;
 
 pub type Callback = Box<dyn FnOnce(&mut Compositor, &mut Context)>;
+
+thread_local! {
+    /// Callbacks queued by code that only has a [`Context`], such as the
+    /// callback of a prompt running a static command. They run, in order,
+    /// once the event that queued them has been handled completely (and so
+    /// the prompt that ran them has closed).
+    static DEFERRED: std::cell::RefCell<Vec<Callback>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Queues `callback` to run with the compositor after the current event.
+pub fn defer(callback: Callback) {
+    DEFERRED.with(|deferred| deferred.borrow_mut().push(callback));
+}
+
+fn take_deferred() -> Vec<Callback> {
+    DEFERRED.with(|deferred| std::mem::take(&mut *deferred.borrow_mut()))
+}
 pub type SyncCallback = Box<dyn FnOnce(&mut Compositor, &mut Context) + Sync>;
 
 // Cursive-inspired
@@ -179,6 +196,17 @@ impl Compositor {
 
         for callback in callbacks {
             callback(self, cx)
+        }
+
+        // callbacks queued while handling the event, which may queue more
+        loop {
+            let deferred = take_deferred();
+            if deferred.is_empty() {
+                break;
+            }
+            for callback in deferred {
+                callback(self, cx)
+            }
         }
 
         consumed
