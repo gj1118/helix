@@ -953,3 +953,18 @@ pub mod completers {
             .collect()
     }
 }
+
+/// Applies the user's `[keys.<component>]` table to a key: the key the component handles, or
+/// `None` when the key was bound to `no_op`.
+pub(crate) fn component_key(
+    editor: &helix_view::Editor,
+    component: helix_view::component_keys::Component,
+    key: helix_view::input::KeyEvent,
+) -> Option<helix_view::input::KeyEvent> {
+    use helix_view::component_keys::Translated;
+    match editor.config().component_keys.translate(component, key) {
+        Translated::Unchanged => Some(key),
+        Translated::Key(key) => Some(key),
+        Translated::Disabled => None,
+    }
+}

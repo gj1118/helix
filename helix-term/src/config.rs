@@ -2,6 +2,7 @@ use crate::keymap;
 use crate::keymap::{merge_keys, KeyTrie};
 use helix_loader::merge_toml_values;
 use helix_view::{
+    component_keys::{Component, ComponentKeys},
     document::Mode,
     icons::{Icons, ICONS},
     theme,
@@ -25,11 +26,81 @@ pub struct Config {
 #[serde(deny_unknown_fields)]
 pub struct ConfigRaw {
     pub theme: Option<theme::Config>,
-    pub keys: Option<HashMap<Mode, KeyTrie>>,
+    pub keys: Option<KeysRaw>,
     pub editor: Option<toml::Value>,
     pub icons: Option<toml::Value>,
     /// User-defined command-mode commands.
     pub commands: Option<toml::Value>,
+}
+
+/// The `[keys]` section: a key trie per mode (`normal`, `select`, `insert`) and the action
+/// tables of the UI components (`picker`, `menu`, `popup`, `prompt`), see
+/// [`helix_view::component_keys`].
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct KeysRaw {
+    pub modes: HashMap<Mode, KeyTrie>,
+    pub components: HashMap<Component, HashMap<String, String>>,
+}
+
+impl<'de> Deserialize<'de> for KeysRaw {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct Visitor;
+
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = KeysRaw;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                write!(
+                    f,
+                    "a table with the keymaps of the modes and of the picker, menu, popup and prompt"
+                )
+            }
+
+            fn visit_map<M>(self, mut map: M) -> Result<KeysRaw, M::Error>
+            where
+                M: serde::de::MapAccess<'de>,
+            {
+                let mut keys = KeysRaw::default();
+                while let Some(name) = map.next_key::<String>()? {
+                    if let Some(component) = Component::from_name(&name) {
+                        keys.components.insert(component, map.next_value()?);
+                    } else {
+                        let mode: Mode = name.parse().map_err(|_| {
+                            serde::de::Error::custom(format!(
+                                "unknown key map `{name}`: expected `normal`, `select`, `insert`, `picker`, `menu`, `popup` or `prompt`"
+                            ))
+                        })?;
+                        keys.modes.insert(mode, map.next_value()?);
+                    }
+                }
+                Ok(keys)
+            }
+        }
+
+        deserializer.deserialize_map(Visitor)
+    }
+}
+
+/// Merges the keys of a config file into the keys so far: the mode keymaps are merged
+/// recursively, a component key replaces the binding of that key.
+fn merge_raw_keys(
+    keys: &mut HashMap<Mode, KeyTrie>,
+    components: &mut ComponentKeys,
+    raw: Option<KeysRaw>,
+) -> Result<(), ConfigLoadError> {
+    let Some(raw) = raw else {
+        return Ok(());
+    };
+    merge_keys(keys, raw.modes);
+    for (component, table) in &raw.components {
+        components.extend(*component, table).map_err(|message| {
+            ConfigLoadError::BadConfig(<TomlError as serde::de::Error>::custom(message))
+        })?;
+    }
+    Ok(())
 }
 
 impl Default for Config {
@@ -99,12 +170,9 @@ impl Config {
         let res = match (global_config, local_config) {
             (Ok(global), Ok(local)) => {
                 let mut keys = keymap::default();
-                if let Some(global_keys) = global.keys {
-                    merge_keys(&mut keys, global_keys)
-                }
-                if let Some(local_keys) = local.keys {
-                    merge_keys(&mut keys, local_keys)
-                }
+                let mut component_keys = ComponentKeys::default();
+                merge_raw_keys(&mut keys, &mut component_keys, global.keys)?;
+                merge_raw_keys(&mut keys, &mut component_keys, local.keys)?;
 
                 let editor = match (global.editor, local.editor) {
                     (None, None) => helix_view::editor::Config::default(),
@@ -130,6 +198,7 @@ impl Config {
 
                 let mut editor = editor;
                 editor.commands = load_commands(global.commands, local.commands)?;
+                editor.component_keys = component_keys;
 
                 Config {
                     theme: local.theme.or(global.theme),
@@ -144,9 +213,8 @@ impl Config {
             }
             (Ok(config), Err(_)) | (Err(_), Ok(config)) => {
                 let mut keys = keymap::default();
-                if let Some(keymap) = config.keys {
-                    merge_keys(&mut keys, keymap);
-                }
+                let mut component_keys = ComponentKeys::default();
+                merge_raw_keys(&mut keys, &mut component_keys, config.keys)?;
 
                 let icons = config.icons.map_or_else(
                     || Ok(Icons::default()),
@@ -160,6 +228,7 @@ impl Config {
                     |val| val.try_into().map_err(ConfigLoadError::BadConfig),
                 )?;
                 editor.commands = load_commands(config.commands, None)?;
+                editor.component_keys = component_keys;
 
                 Config {
                     theme: config.theme,
@@ -255,6 +324,90 @@ mod tests {
                 ..Default::default()
             }
         );
+    }
+
+    fn load_err(global: &str, local: &str) -> String {
+        match Config::load(Ok(&global.to_owned()), Ok(local.to_owned())) {
+            Err(err) => err.to_string(),
+            Ok(_) => panic!("the config should be rejected"),
+        }
+    }
+
+    #[test]
+    fn component_keys_are_read_from_the_keys_section() {
+        use helix_view::component_keys::Translated;
+        use helix_view::input::KeyEvent;
+
+        let key = |s: &str| s.parse::<KeyEvent>().unwrap();
+        let config = Config::load_test(
+            r#"
+            [keys.normal]
+            y = "move_line_down"
+
+            [keys.picker]
+            C-j = "move_down"
+            C-k = "move_up"
+            C-o = "no_op"
+
+            [keys.prompt]
+            C-o = "delete_word_back"
+            "#,
+        );
+        let keys = &config.editor.component_keys;
+        assert_eq!(
+            keys.translate(Component::Picker, key("C-j")),
+            Translated::Key(key("down"))
+        );
+        assert_eq!(
+            keys.translate(Component::Picker, key("C-o")),
+            Translated::Disabled
+        );
+        assert_eq!(
+            keys.translate(Component::Prompt, key("C-o")),
+            Translated::Key(key("C-w"))
+        );
+        assert_eq!(
+            keys.translate(Component::Menu, key("C-j")),
+            Translated::Unchanged
+        );
+        // the mode keymaps beside them are still read
+        assert_ne!(config.keys, keymap::default());
+    }
+
+    #[test]
+    fn workspace_component_keys_override_the_global_ones() {
+        use helix_view::component_keys::Translated;
+        use helix_view::input::KeyEvent;
+
+        let key = |s: &str| s.parse::<KeyEvent>().unwrap();
+        let config = Config::load(
+            Ok(
+                &"[keys.popup]\nC-j = \"scroll_half_page_down\"\nC-n = \"scroll_half_page_down\""
+                    .to_owned(),
+            ),
+            Ok("[keys.popup]\nC-j = \"close\"".to_owned()),
+        )
+        .unwrap();
+        let keys = &config.editor.component_keys;
+        assert_eq!(
+            keys.translate(Component::Popup, key("C-j")),
+            Translated::Key(key("esc"))
+        );
+        assert_eq!(
+            keys.translate(Component::Popup, key("C-n")),
+            Translated::Key(key("pagedown"))
+        );
+    }
+
+    #[test]
+    fn bad_component_keys_are_rejected_with_a_message_that_helps() {
+        let err = load_err("[keys.picker]\nC-j = \"move_sideways\"", "");
+        assert!(err.contains("unknown action `move_sideways`"), "{err}");
+        assert!(err.contains("move_down"), "{err}");
+        let err = load_err("[keys.menu]\n\"C-wat-\" = \"move_down\"", "");
+        assert!(err.contains("invalid key"), "{err}");
+        let err = load_err("[keys.dropdown]\nC-j = \"move_down\"", "");
+        assert!(err.contains("unknown key map `dropdown`"), "{err}");
     }
 
     #[test]

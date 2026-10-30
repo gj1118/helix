@@ -36,7 +36,7 @@ fn config() -> Config {
     )
     .unwrap();
     let mut config = Config::default();
-    config.keys = raw.keys.unwrap();
+    config.keys = raw.keys.unwrap().modes;
     config.editor = raw.editor.unwrap().try_into().unwrap();
     config
 }

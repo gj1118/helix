@@ -250,6 +250,13 @@ impl<T: Item + 'static> Component for Menu<T> {
             Event::Mouse(_) => return EventResult::Consumed(None),
             _ => return EventResult::Ignored(None),
         };
+        let Some(event) = super::component_key(
+            cx.editor,
+            helix_view::component_keys::Component::Menu,
+            event,
+        ) else {
+            return EventResult::Consumed(None);
+        };
 
         let close_fn: Option<Callback> = Some(Box::new(|compositor: &mut Compositor, _| {
             // remove the layer

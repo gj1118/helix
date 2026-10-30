@@ -70,6 +70,42 @@ c = ":run-shell-command cargo build"
 t = ":run-shell-command cargo test"
 ```
 
+## Keys of pickers, menus, popups and prompts
+
+The pickers (`Space f`, `Space /`, ...), the completion menu, popups (hover, signature help, ...)
+and the prompts (the `:` command line, the search prompt, ...) handle their keys themselves.
+Their keys are configured in the tables `[keys.picker]`, `[keys.menu]`, `[keys.popup]` and
+`[keys.prompt]`. A table maps a key to the name of an *action* of that component:
+
+```toml
+[keys.picker]
+C-j = "move_down"
+C-k = "move_up"
+C-o = "select_horizontal"
+# take a key away from the picker
+C-t = "no_op"
+
+[keys.prompt]
+C-o = "delete_word_back"
+```
+
+The keys of the default bindings stay bound unless you bind them to another action or to
+`no_op`. The tables of a workspace's `.helix/config.toml` are merged with the global ones; for
+the same key the workspace wins. An unknown action or key is an error in the config, and the
+message lists the actions that exist.
+
+A table only changes keys of its own component: a key bound in `[keys.prompt]` also applies to
+the prompt at the top of a picker, but not to the picker's own keys.
+
+| Component | Action (default key) |
+| --------- | -------------------- |
+| `picker`  | `move_up` (`Up`), `move_down` (`Down`), `half_page_up` (`C-u`), `half_page_down` (`C-d`), `page_up` (`PageUp`), `page_down` (`PageDown`), `to_start` (`Home`), `to_end` (`End`), `select` (`Enter`), `select_in_background` (`A-Enter`), `select_horizontal` (`C-s`), `select_vertical` (`C-v`), `toggle_preview` (`C-t`), `copy_to_quicklist` (`C-q`), `scroll_preview_up` (`A-k`), `scroll_preview_down` (`A-j`), `close` (`Esc`) |
+| `menu`    | `move_up` (`Up`), `move_down` (`Down`), `half_page_up` (`C-u`), `half_page_down` (`C-d`), `select` (`Enter`), `abort` (`Esc`) |
+| `popup`   | `scroll_half_page_up` (`PageUp`), `scroll_half_page_down` (`PageDown`), `close` (`Esc`) |
+| `prompt`  | `abort` (`Esc`), `submit` (`Enter`), `move_char_back` (`Left`), `move_char_forward` (`Right`), `move_word_back` (`A-b`), `move_word_forward` (`A-f`), `move_start` (`Home`), `move_end` (`End`), `delete_char_back` (`Backspace`), `delete_char_forward` (`Delete`), `delete_word_back` (`C-w`), `delete_word_forward` (`A-d`), `kill_to_start` (`C-u`), `kill_to_end` (`C-k`), `history_prev` (`Up`), `history_next` (`Down`), `complete_next` (`Tab`), `complete_prev` (`S-Tab`), `insert_word_under_cursor` (`C-s`), `insert_register` (`C-r`), `exit_selection` (`C-q`) |
+
+In all four, `no_op` is also an action. Keys are written as described [below](#special-keys-and-modifiers).
+
 ## Special keys and modifiers
 
 Ctrl, Shift and Alt modifiers are encoded respectively with the prefixes `C-`, `S-` and `A-`.

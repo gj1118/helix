@@ -21,6 +21,7 @@ mod test {
     mod breadcrumbs;
     mod command_line;
     mod commands;
+    mod component_keys;
     mod custom_commands;
     mod dap;
     mod history;

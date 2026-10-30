@@ -180,7 +180,11 @@ impl ComponentKeys {
     }
 
     pub fn translate(&self, component: Component, key: KeyEvent) -> Translated {
-        match self.tables.get(&component).and_then(|table| table.get(&key)) {
+        match self
+            .tables
+            .get(&component)
+            .and_then(|table| table.get(&key))
+        {
             None => Translated::Unchanged,
             Some(Binding::Key(key)) => Translated::Key(*key),
             Some(Binding::Disabled) => Translated::Disabled,
@@ -215,8 +219,11 @@ mod tests {
     #[test]
     fn a_bound_key_becomes_the_key_of_its_action() {
         let mut keys = ComponentKeys::default();
-        keys.extend(Component::Picker, &table(&[("C-j", "move_down"), ("C-o", "no_op")]))
-            .unwrap();
+        keys.extend(
+            Component::Picker,
+            &table(&[("C-j", "move_down"), ("C-o", "no_op")]),
+        )
+        .unwrap();
         assert_eq!(
             keys.translate(Component::Picker, key("C-j")),
             Translated::Key(key("down"))
@@ -226,8 +233,14 @@ mod tests {
             Translated::Disabled
         );
         // other keys and other components are not affected
-        assert_eq!(keys.translate(Component::Picker, key("C-n")), Translated::Unchanged);
-        assert_eq!(keys.translate(Component::Prompt, key("C-j")), Translated::Unchanged);
+        assert_eq!(
+            keys.translate(Component::Picker, key("C-n")),
+            Translated::Unchanged
+        );
+        assert_eq!(
+            keys.translate(Component::Prompt, key("C-j")),
+            Translated::Unchanged
+        );
     }
 
     #[test]
@@ -248,9 +261,13 @@ mod tests {
     #[test]
     fn later_tables_override_earlier_ones() {
         let mut keys = ComponentKeys::default();
-        keys.extend(Component::Popup, &table(&[("C-j", "scroll_half_page_down")]))
+        keys.extend(
+            Component::Popup,
+            &table(&[("C-j", "scroll_half_page_down")]),
+        )
+        .unwrap();
+        keys.extend(Component::Popup, &table(&[("C-j", "close")]))
             .unwrap();
-        keys.extend(Component::Popup, &table(&[("C-j", "close")])).unwrap();
         assert_eq!(
             keys.translate(Component::Popup, key("C-j")),
             Translated::Key(key("esc"))
