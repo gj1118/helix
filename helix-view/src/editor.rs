@@ -1,3 +1,4 @@
+use crate::terminal_launcher::Launcher;
 use crate::{
     annotations::diagnostics::{DiagnosticFilter, InlineDiagnosticsConfig},
     clipboard::ClipboardProvider,
@@ -1086,10 +1087,25 @@ impl Default for SmartTabConfig {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
 pub struct TerminalConfig {
+    /// Open the debuggee's terminal with this terminal or multiplexer. Takes precedence over
+    /// `command` and `args`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub launcher: Option<Launcher>,
+    /// The terminal to run the debuggee in (`command args... <debuggee>`), for a terminal that
+    /// has no launcher.
     pub command: String,
     #[serde(default)]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
+}
+
+impl TerminalConfig {
+    pub fn with_launcher(launcher: Launcher) -> Self {
+        Self {
+            launcher: Some(launcher),
+            ..Self::default()
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -1098,6 +1114,7 @@ pub fn get_terminal_provider() -> Option<TerminalConfig> {
 
     if binary_exists("wt") {
         return Some(TerminalConfig {
+            launcher: None,
             command: "wt".to_string(),
             args: vec![
                 "new-tab".to_string(),
@@ -1110,6 +1127,7 @@ pub fn get_terminal_provider() -> Option<TerminalConfig> {
     }
 
     Some(TerminalConfig {
+        launcher: None,
         command: "conhost".to_string(),
         args: vec!["cmd".to_string(), "/C".to_string()],
     })
@@ -1119,21 +1137,8 @@ pub fn get_terminal_provider() -> Option<TerminalConfig> {
 pub fn get_terminal_provider() -> Option<TerminalConfig> {
     use helix_stdx::env::{binary_exists, env_var_is_set};
 
-    if env_var_is_set("TMUX") && binary_exists("tmux") {
-        return Some(TerminalConfig {
-            command: "tmux".to_string(),
-            args: vec!["split-window".to_string()],
-        });
-    }
-
-    if env_var_is_set("WEZTERM_UNIX_SOCKET") && binary_exists("wezterm") {
-        return Some(TerminalConfig {
-            command: "wezterm".to_string(),
-            args: vec!["cli".to_string(), "split-pane".to_string()],
-        });
-    }
-
-    None
+    Launcher::detect(env_var_is_set, |program| binary_exists(program))
+        .map(TerminalConfig::with_launcher)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
