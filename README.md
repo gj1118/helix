@@ -9,6 +9,14 @@ You can also change the explorer to be present on the right hand side
 Or even a floating one - like so
    <img width="1283" height="1179" alt="image" src="https://github.com/user-attachments/assets/f8b8de0e-f5d6-45a1-9598-7450b597496e" />
 Mouse events are supported too !
+Add these icons for customized folder icons
+```
+[icons.mime]
+enabled = true
+directory = " "
+directory-open = " "  # expanded folder icon (default: open-folder glyph, or `directory` if that is customised)
+
+```
 3. Noice Cmdline
    
    <img width="580" height="424" alt="image" src="https://github.com/user-attachments/assets/a91ef59a-0923-47ab-b35a-2d9cb22a6462" />
