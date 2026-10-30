@@ -26,6 +26,8 @@ pub struct BlameEvent {
     /// If this field is set, when we obtain the blame for the file we will
     /// show blame for this line in the status line
     pub line: Option<u32>,
+    /// Show the commit details of `line` in a popup rather than the status line.
+    pub popup: bool,
 }
 
 #[derive(Debug)]

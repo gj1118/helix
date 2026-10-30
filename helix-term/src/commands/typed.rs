@@ -1559,6 +1559,16 @@ fn get_character_info(
 }
 
 /// Reload the [`Document`] from its source file.
+fn blame(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let (view, doc) = current_ref!(cx.editor);
+    let (id, line) = (doc.id(), doc.cursor_line(view.id) as u32);
+    super::blame_line_impl(cx.editor, id, line, true);
+    Ok(())
+}
+
 fn reload(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
@@ -1588,6 +1598,7 @@ fn reload(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyh
                     path: path.to_path_buf(),
                     doc_id,
                     line: None,
+                    popup: false,
                 },
             );
         }
@@ -1681,6 +1692,7 @@ pub fn reload_all(
                         path: path.to_path_buf(),
                         doc_id,
                         line: None,
+                        popup: false,
                     },
                 );
             }
@@ -4257,6 +4269,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &["char"],
         doc: "Get info about the character under the primary cursor.",
         fun: get_character_info,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "blame",
+        aliases: &[],
+        doc: "Show the commit that last changed the current line, with copy actions.",
+        fun: blame,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

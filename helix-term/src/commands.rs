@@ -678,6 +678,7 @@ impl MappableCommand {
         goto_next_tabstop, "Goto next snippet placeholder",
         goto_prev_tabstop, "Goto next snippet placeholder",
         blame_line, "Show blame for the current line",
+        blame_details, "Show commit details for the current line in a popup",
         rotate_selections_first, "Make the first selection your primary one",
         rotate_selections_last, "Make the last selection your primary one",
         fold, "Fold text objects",
@@ -4673,12 +4674,17 @@ fn insert_at_line_start(cx: &mut Context) {
     insert_with_indent(cx, IndentFallbackPos::LineStart);
 }
 
-pub(crate) fn blame_line_impl(editor: &mut Editor, doc_id: DocumentId, cursor_line: u32) {
+pub(crate) fn blame_line_impl(
+    editor: &mut Editor,
+    doc_id: DocumentId,
+    cursor_line: u32,
+    popup: bool,
+) {
     let inline_blame_config = &editor.config().inline_blame;
     let Some(doc) = editor.document(doc_id) else {
         return;
     };
-    let line_blame = match doc.line_blame(cursor_line, &inline_blame_config.format) {
+    let line_blame = match doc.line_blame_data(cursor_line) {
         result
             if (result.is_ok() && doc.is_blame_potentially_out_of_date)
                 || matches!(result, Err(LineBlameError::NotReadyYet) if !inline_blame_config.auto_fetch) =>
@@ -4691,6 +4697,7 @@ pub(crate) fn blame_line_impl(editor: &mut Editor, doc_id: DocumentId, cursor_li
                         path: path.to_path_buf(),
                         doc_id: doc.id(),
                         line: Some(cursor_line),
+                        popup,
                     },
                 );
                 editor.set_status(format!("Requested blame for {}...", path.display()));
@@ -4714,12 +4721,28 @@ pub(crate) fn blame_line_impl(editor: &mut Editor, doc_id: DocumentId, cursor_li
         }
     };
 
-    editor.set_status(line_blame);
+    if popup {
+        let details = line_blame.details();
+        job::dispatch_blocking(move |_editor, compositor| {
+            git::show_blame_popup(compositor, details);
+        });
+    } else {
+        let mut line_blame = line_blame;
+        let text = line_blame.parse_format(&editor.config().inline_blame.format);
+        editor.set_status(text);
+    }
 }
 
 fn blame_line(cx: &mut Context) {
     let (view, doc) = current_ref!(cx.editor);
-    blame_line_impl(cx.editor, doc.id(), doc.cursor_line(view.id) as u32);
+    blame_line_impl(cx.editor, doc.id(), doc.cursor_line(view.id) as u32, false);
+}
+
+/// Commit details of the current line in a popup; `y` copies the commit id,
+/// `Y` the commit message.
+fn blame_details(cx: &mut Context) {
+    let (view, doc) = current_ref!(cx.editor);
+    blame_line_impl(cx.editor, doc.id(), doc.cursor_line(view.id) as u32, true);
 }
 
 // `A` inserts at the end of each line with a selection.

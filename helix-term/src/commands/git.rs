@@ -16,7 +16,10 @@ use helix_core::hashmap;
 use helix_event::status;
 use helix_vcs::FileChange;
 use helix_view::{icons::ICONS, theme::Style};
-use tui::{text::Span, widgets::Cell};
+use tui::{
+    text::{Span, Spans},
+    widgets::Cell,
+};
 
 use super::Context;
 use crate::{
@@ -530,6 +533,129 @@ pub fn changed_file_picker(cx: &mut Context) {
         picker,
         cx.editor.config().fullscreen_overlay,
     )));
+}
+
+// --- blame popup -----------------------------------------------------------
+
+/// The contents of the blame popup. Handles the copy keys; scrolling and
+/// closing are the popup's.
+pub struct BlameDetailsView {
+    text: ui::Text,
+    commit: Option<String>,
+    message: String,
+}
+
+impl BlameDetailsView {
+    fn new(details: &helix_vcs::BlameDetails) -> Self {
+        let dim = Style::default().add_modifier(helix_view::graphics::Modifier::DIM);
+        let bold = Style::default().add_modifier(helix_view::graphics::Modifier::BOLD);
+        let field = |label: &'static str, value: String| {
+            Spans::from(vec![
+                Span::styled(format!("{label:<8}"), dim),
+                Span::raw(value),
+            ])
+        };
+
+        let mut lines = vec![field(
+            "commit",
+            details.commit.clone().unwrap_or_else(|| "unknown".into()),
+        )];
+        let author = match (&details.author, &details.email) {
+            (Some(name), Some(email)) => format!("{name} <{email}>"),
+            (Some(name), None) => name.clone(),
+            (None, Some(email)) => format!("<{email}>"),
+            (None, None) => "unknown".into(),
+        };
+        lines.push(field("author", author));
+        let date = match (&details.date, &details.time_ago) {
+            (Some(date), Some(ago)) => format!("{date} ({ago})"),
+            (Some(date), None) => date.clone(),
+            (None, Some(ago)) => ago.clone(),
+            (None, None) => "unknown".into(),
+        };
+        lines.push(field("date", date));
+        lines.push(Spans::default());
+        let message = details.message();
+        let mut message_lines = message.lines();
+        if let Some(title) = message_lines.next() {
+            lines.push(Spans::from(Span::styled(title.to_owned(), bold)));
+        }
+        lines.extend(message_lines.map(|line| Spans::from(line.to_owned())));
+        lines.push(Spans::default());
+        lines.push(Spans::from(Span::styled(
+            "y copy commit id · Y copy message · Esc close",
+            dim,
+        )));
+
+        Self {
+            text: tui::text::Text::from(lines).into(),
+            commit: details.commit.clone(),
+            message,
+        }
+    }
+
+    fn copy(&self, editor: &mut helix_view::Editor, what: &str, value: String) {
+        if value.is_empty() {
+            editor.set_error(format!("No {what} to copy"));
+            return;
+        }
+        match editor.registers.write('+', vec![value]) {
+            Ok(()) => editor.set_status(format!("Copied the {what} to the clipboard")),
+            Err(err) => editor.set_error(err.to_string()),
+        }
+    }
+}
+
+impl compositor::Component for BlameDetailsView {
+    fn handle_event(
+        &mut self,
+        event: &helix_view::input::Event,
+        cx: &mut compositor::Context,
+    ) -> compositor::EventResult {
+        use compositor::EventResult;
+        let helix_view::input::Event::Key(key) = event else {
+            return EventResult::Ignored(None);
+        };
+        // Both keys close the popup once copied.
+        let close: compositor::Callback = Box::new(|compositor, _| {
+            compositor.remove(BLAME_POPUP_ID);
+        });
+        match *key {
+            crate::key!('y') => {
+                let commit = self.commit.clone().unwrap_or_default();
+                self.copy(cx.editor, "commit id", commit);
+                EventResult::Consumed(Some(close))
+            }
+            crate::key!('Y') => {
+                let message = self.message.clone();
+                self.copy(cx.editor, "commit message", message);
+                EventResult::Consumed(Some(close))
+            }
+            _ => EventResult::Ignored(None),
+        }
+    }
+
+    fn render(
+        &mut self,
+        area: helix_view::graphics::Rect,
+        surface: &mut tui::buffer::Buffer,
+        cx: &mut compositor::Context,
+    ) {
+        self.text.render(area, surface, cx)
+    }
+
+    fn required_size(&mut self, viewport: (u16, u16)) -> Option<(u16, u16)> {
+        self.text.required_size(viewport)
+    }
+}
+
+const BLAME_POPUP_ID: &str = "blame-details";
+
+pub fn show_blame_popup(compositor: &mut Compositor, details: helix_vcs::BlameDetails) {
+    let popup = ui::Popup::new(BLAME_POPUP_ID, BlameDetailsView::new(&details))
+        .auto_close(false)
+        .panel_border(true);
+    compositor.replace_or_push(BLAME_POPUP_ID, popup);
 }
 
 // --- stash picker ----------------------------------------------------------

@@ -326,6 +326,11 @@ This layer is a kludge of mappings, mostly pickers.
 | `?`     | Open command palette                                                    | `command_palette`                          |
 | `B`     | Show blame for the current line                                         | `blame_line`                             |
 
+For the full commit behind a line, run `:blame` (or bind `blame_details`): a popup
+shows the full commit ID, author name and email, date and commit message. `y` copies
+the commit ID, `Y` the commit message, `Ctrl-d`/`Ctrl-u` scroll and `Esc` closes it.
+Lines with uncommitted changes report "Not committed yet".
+
 > 💡 Global search displays results in a fuzzy picker, use `Space + '` to bring it back up after opening a file.
 
 ##### Popup
