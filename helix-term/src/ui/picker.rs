@@ -268,7 +268,7 @@ struct LiveRefresh<T: 'static + Send + Sync, D: 'static> {
     /// Cheap summary of the data the results come from. A change triggers a refresh.
     fingerprint: Box<dyn Fn(&Editor) -> u64>,
     /// Pushes the up to date items. `None` re-runs the picker's dynamic query.
-    rebuild: Option<Box<dyn Fn(&Editor, &Injector<T, D>)>>,
+    rebuild: Option<RebuildFn<T, D>>,
     /// Identifies an item so the selection can be restored after a refresh.
     key: Box<dyn Fn(&T) -> String>,
     last: Option<u64>,
@@ -283,6 +283,18 @@ const LIVE_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_mil
 /// How long a refreshed picker waits for its previously selected item to show up again.
 const RESELECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// The query and selected row of a picker, as they were before the latest key was handled.
+/// A callback that runs on `Enter` can read the state the user left the picker in, to restore
+/// it when it reopens a picker (see [`Picker::with_state_tracker`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PickerState {
+    pub query: String,
+    pub cursor: u32,
+}
+
+/// Pushes the fresh items of a live picker into its injector.
+type RebuildFn<T, D> = Box<dyn Fn(&Editor, &Injector<T, D>)>;
+
 pub struct Picker<T: 'static + Send + Sync, D: 'static> {
     columns: Arc<[Column<T, D>]>,
     primary_column: usize,
@@ -296,6 +308,8 @@ pub struct Picker<T: 'static + Send + Sync, D: 'static> {
     cursor: u32,
     prompt: Prompt,
     query: PickerQuery,
+    /// Where the query and cursor are published before every key, see [`PickerState`].
+    state_tracker: Option<Arc<std::sync::Mutex<PickerState>>>,
 
     /// Whether to show the preview panel (default true)
     show_preview: bool,
@@ -464,6 +478,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             replace_fn: None,
             replace: None,
             live: None,
+            state_tracker: None,
         }
     }
 
@@ -478,7 +493,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
     pub fn with_live_refresh(
         mut self,
         fingerprint: impl Fn(&Editor) -> u64 + 'static,
-        rebuild: Option<Box<dyn Fn(&Editor, &Injector<T, D>)>>,
+        rebuild: Option<RebuildFn<T, D>>,
         key: impl Fn(&T) -> String + 'static,
     ) -> Self {
         self.live = Some(LiveRefresh {
@@ -768,6 +783,21 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             .snapshot()
             .matched_item_count()
             .saturating_sub(1);
+    }
+
+    /// Starts the picker with `query` typed into the prompt. Call [`Self::with_cursor`]
+    /// afterwards to select a row, a changed query resets the selection.
+    pub fn with_query(mut self, query: &str, editor: &Editor) -> Self {
+        self.prompt.set_line(query.to_owned(), editor);
+        self.handle_prompt_change(false);
+        self
+    }
+
+    /// Publishes the query and the selected row into `tracker` before every key is handled,
+    /// so the state before an `Enter` can be read by the picker's callback.
+    pub fn with_state_tracker(mut self, tracker: Arc<std::sync::Mutex<PickerState>>) -> Self {
+        self.state_tracker = Some(tracker);
+        self
     }
 
     pub fn with_cursor(mut self, cursor: u32) -> Self {
@@ -1600,6 +1630,12 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
     }
 
     fn handle_event(&mut self, event: &Event, ctx: &mut Context) -> EventResult {
+        if let Some(tracker) = &self.state_tracker {
+            if let Ok(mut state) = tracker.lock() {
+                state.query = self.prompt.line().clone();
+                state.cursor = self.cursor;
+            }
+        }
         let key_event = match event {
             Event::Key(event) => *event,
             Event::Paste(..) => return self.prompt_handle_event(event, ctx),

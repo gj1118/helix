@@ -33,7 +33,23 @@ pub fn dap_pos_to_pos(doc: &helix_core::Rope, line: usize, column: usize) -> Opt
 }
 
 pub async fn select_thread_id(editor: &mut Editor, thread_id: ThreadId, force: bool) {
-    let debugger = debugger!(editor);
+    let Some(id) = editor.debug_adapters.active_id() else {
+        return;
+    };
+    select_thread_id_of(editor, id, thread_id, force).await
+}
+
+/// Makes `thread_id` the current thread of the session `id` and, when that session is the
+/// selected one, shows where it stopped.
+pub async fn select_thread_id_of(
+    editor: &mut Editor,
+    id: DebugAdapterId,
+    thread_id: ThreadId,
+    force: bool,
+) {
+    let Some(debugger) = editor.debug_adapters.get_client_mut(id) else {
+        return;
+    };
 
     if !force && debugger.thread_id.is_some() {
         return;
@@ -43,29 +59,325 @@ pub async fn select_thread_id(editor: &mut Editor, thread_id: ThreadId, force: b
     debugger.active_frame = Some(0);
     fetch_stack_trace(debugger, thread_id).await;
 
-    let frame = debugger.stack_frames[&thread_id].first().cloned();
+    // A session that stops while the selected one is running takes over: that is where the
+    // attention is needed.
+    let selected_is_stopped = editor
+        .debug_adapters
+        .get_active_client()
+        .is_some_and(|selected| selected.state_label() == "stopped");
+    if editor.debug_adapters.active_id() != Some(id) && !selected_is_stopped {
+        editor.debug_adapters.set_active_client(id);
+    }
+    if editor.debug_adapters.active_id() != Some(id) {
+        return;
+    }
+
+    show_current_frame(editor).await;
+}
+
+/// Jumps to the selected frame of the selected session and shows its inline values.
+pub async fn show_current_frame(editor: &mut Editor) {
+    let frame = editor
+        .debug_adapters
+        .get_active_client()
+        .and_then(|debugger| debugger.current_stack_frame().cloned());
     if let Some(frame) = &frame {
         jump_to_stack_frame(editor, frame);
     }
+    refresh_inline_values(editor).await;
 }
 
+/// How many lines above the current line of the stack frame get inline values.
+const INLINE_VALUES_LINES: usize = 40;
+/// How many values are shown at the end of one line.
+const INLINE_VALUES_PER_LINE: usize = 4;
+/// Values longer than this many characters are cut.
+const INLINE_VALUE_WIDTH: usize = 24;
+/// Asking the adapter for variables must not freeze the editor for long.
+const INLINE_VALUES_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Shows the values of the variables the lines around the selected stack frame use at the end
+/// of those lines. Best effort: any problem leaves the lines without values.
+pub async fn refresh_inline_values(editor: &mut Editor) {
+    editor.clear_dap_inline_values();
+    if !editor.config().debugger.inline_values {
+        return;
+    }
+    let Some(debugger) = editor.debug_adapters.get_active_client() else {
+        return;
+    };
+    let Some(frame) = debugger.current_stack_frame().cloned() else {
+        return;
+    };
+    let Some(path) = frame.source.as_ref().and_then(|source| source.path.clone()) else {
+        return;
+    };
+
+    let fetch = async {
+        let mut variables = Vec::new();
+        for scope in debugger.scopes(frame.id).await? {
+            // Expensive scopes (globals, registers) are only loaded on request.
+            if scope.expensive {
+                continue;
+            }
+            variables.extend(debugger.variables(scope.variables_reference).await?);
+        }
+        Ok::<_, helix_dap::Error>(variables)
+    };
+    let Ok(Ok(variables)) = tokio::time::timeout(INLINE_VALUES_TIMEOUT, fetch).await else {
+        return;
+    };
+    let variables: Vec<(String, String)> = variables
+        .into_iter()
+        .map(|variable| (variable.name, variable.value))
+        .collect();
+
+    if let Some(doc) = editor.document_by_path_mut(&path) {
+        let line = frame.line.saturating_sub(1);
+        doc.dap_inline_values = inline_value_annotations(doc.text(), line, &variables);
+    }
+}
+
+/// The text shown at the end of the lines up to `line` (zero based): `name = value` for the
+/// variables the line mentions, the innermost scope's value when a name is in several. This
+/// matches names as words, without parsing the language, so a name in a comment or a string
+/// counts too.
+pub fn inline_value_annotations(
+    text: &helix_core::Rope,
+    line: usize,
+    variables: &[(String, String)],
+) -> Vec<helix_core::text_annotations::InlineAnnotation> {
+    use helix_core::text_annotations::InlineAnnotation;
+
+    let mut values: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+    for (name, value) in variables {
+        // "Special variables", "Function variables" and the like are not names in the source.
+        if name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            values.entry(name.as_str()).or_insert(value.as_str());
+        }
+    }
+    if values.is_empty() || text.len_lines() == 0 {
+        return Vec::new();
+    }
+
+    let last = line.min(text.len_lines() - 1);
+    let first = last.saturating_sub(INLINE_VALUES_LINES);
+    let mut annotations = Vec::new();
+    for index in first..=last {
+        let content = text.line(index);
+        let line_text: String = content.chars().collect();
+        let line_text = line_text.trim_end_matches(['\n', '\r']);
+
+        let mut shown: Vec<&str> = Vec::new();
+        for word in line_text.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
+            if values.contains_key(word) && !shown.contains(&word) {
+                shown.push(word);
+            }
+        }
+        if shown.is_empty() {
+            continue;
+        }
+        let rendered = shown
+            .iter()
+            .take(INLINE_VALUES_PER_LINE)
+            .map(|name| format!("{name} = {}", short_value(values[name])))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let end = text.line_to_char(index) + line_text.chars().count();
+        annotations.push(InlineAnnotation::new(end, format!("  {rendered}")));
+    }
+    annotations
+}
+
+fn short_value(value: &str) -> String {
+    let value = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if value.chars().count() > INLINE_VALUE_WIDTH {
+        let cut: String = value.chars().take(INLINE_VALUE_WIDTH - 1).collect();
+        format!("{cut}…")
+    } else {
+        value
+    }
+}
+
+#[cfg(test)]
+mod inline_value_tests {
+    use super::*;
+
+    fn vars(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .collect()
+    }
+
+    fn rendered(text: &str, line: usize, variables: &[(&str, &str)]) -> Vec<(usize, String)> {
+        let text = helix_core::Rope::from_str(text);
+        inline_value_annotations(&text, line, &vars(variables))
+            .into_iter()
+            .map(|a| (a.char_idx, a.text.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn values_go_to_the_end_of_the_lines_that_use_them() {
+        let out = rendered(
+            "a = 1\nb = a + c\nprint(b)\n",
+            2,
+            &[("a", "1"), ("b", "3"), ("c", "2")],
+        );
+        assert_eq!(
+            out,
+            [
+                (5, "  a = 1".to_string()),
+                (15, "  b = 3, a = 1, c = 2".to_string()),
+                (24, "  b = 3".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn names_match_as_whole_words_only() {
+        assert!(rendered("answers = 1\n", 0, &[("answer", "42")]).is_empty());
+        assert_eq!(rendered("x.answer\n", 0, &[("answer", "42")]).len(), 1);
+    }
+
+    #[test]
+    fn lines_after_the_current_one_and_special_scopes_are_skipped() {
+        let out = rendered("a\na\na\n", 1, &[("a", "1"), ("Special variables", "x")]);
+        assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn the_innermost_value_wins_and_long_values_are_cut() {
+        let out = rendered("a\n", 0, &[("a", "inner"), ("a", "outer")]);
+        assert_eq!(out[0].1, "  a = inner");
+        let long = "x".repeat(100);
+        let out = rendered("a\n", 0, &[("a", &long)]);
+        assert_eq!(
+            out[0].1.chars().count(),
+            "  a = ".len() + INLINE_VALUE_WIDTH
+        );
+        assert!(out[0].1.ends_with('…'));
+    }
+}
+
+/// How many stack frames are requested at a time. Deep stacks are paged in with "Load more…"
+/// in the stack frame picker.
+pub const STACK_FRAMES_PAGE: usize = 20;
+
 pub async fn fetch_stack_trace(debugger: &mut Client, thread_id: ThreadId) {
-    let (frames, _) = match debugger.stack_trace(thread_id).await {
-        Ok(frames) => frames,
+    let (frames, total) = match debugger
+        .stack_trace_page(thread_id, 0, STACK_FRAMES_PAGE)
+        .await
+    {
+        Ok(page) => page,
         Err(_) => return,
+    };
+    match total {
+        Some(total) => debugger.total_frames.insert(thread_id, total),
+        None => debugger.total_frames.remove(&thread_id),
     };
     debugger.stack_frames.insert(thread_id, frames);
 }
 
-pub fn jump_to_stack_frame(editor: &mut Editor, frame: &helix_dap::StackFrame) {
-    let path = if let Some(helix_dap::Source {
-        path: Some(ref path),
-        ..
-    }) = frame.source
-    {
-        path.clone()
-    } else {
+/// Makes sure there is a read-only buffer with the text of a source the adapter generated
+/// (it has a `sourceReference` and no path) and returns its path. The text is requested once;
+/// the buffer is kept until the adapter reports that the source changed or the session ends.
+pub fn open_adapter_source(editor: &mut Editor, source: &helix_dap::Source) -> Option<PathBuf> {
+    let id = editor.debug_adapters.active_id()?;
+    let path = editor
+        .debug_adapters
+        .get_client_mut(id)?
+        .register_adapter_source(source);
+    if editor.document_by_path(&path).is_some() {
+        return Some(path);
+    }
+
+    let content = editor
+        .debug_adapters
+        .get_client(id)?
+        .source_content(source.clone());
+    let content = match block_on(tokio::time::timeout(ADAPTER_SOURCE_TIMEOUT, content)) {
+        Ok(Ok(content)) => content,
+        Ok(Err(err)) => {
+            editor.set_error(format!("Unable to load the source from the adapter: {err}"));
+            return None;
+        }
+        Err(_) => {
+            editor.set_error("The adapter did not send the source in time");
+            return None;
+        }
+    };
+
+    let mut doc = crate::Document::from(
+        helix_core::Rope::from(content),
+        None,
+        editor.config.clone(),
+        editor.syn_loader.clone(),
+    );
+    doc.set_path(Some(&path));
+    // Nothing of it can be saved: it only exists in the adapter.
+    doc.readonly = true;
+    let loader = editor.syn_loader.load();
+    doc.detect_language(&loader);
+    editor.new_file_from_document(Action::Replace, doc);
+    Some(path)
+}
+
+/// Forgets the buffer of a source the adapter generated and the breakpoints set in it, so the
+/// next stop in it loads it again.
+pub fn forget_adapter_source(
+    editor: &mut Editor,
+    session: DebugAdapterId,
+    source: &helix_dap::Source,
+) {
+    let Some(debugger) = editor.debug_adapters.get_client_mut(session) else {
         return;
+    };
+    let gone: Vec<PathBuf> = debugger
+        .adapter_sources
+        .iter()
+        .filter(|(_, known)| {
+            known.source_reference.is_some() && known.source_reference == source.source_reference
+        })
+        .map(|(path, _)| path.clone())
+        .collect();
+    for path in gone {
+        if let Some(debugger) = editor.debug_adapters.get_client_mut(session) {
+            debugger.adapter_sources.remove(&path);
+        }
+        editor.breakpoints.remove(&path);
+        if let Some(id) = editor.document_id_by_path(&path) {
+            let _ = editor.close_document(id, true);
+        }
+    }
+}
+
+/// A session is over: its generated sources and the breakpoints in them are gone with it.
+pub fn forget_session_sources(editor: &mut Editor, session: DebugAdapterId) {
+    let dir = helix_dap::adapter_source_dir(session);
+    editor.breakpoints.retain(|path, _| !path.starts_with(&dir));
+}
+
+/// Waiting for a generated source blocks the editor: don't wait long.
+const ADAPTER_SOURCE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+pub fn jump_to_stack_frame(editor: &mut Editor, frame: &helix_dap::StackFrame) {
+    let path = match &frame.source {
+        Some(helix_dap::Source {
+            path: Some(path), ..
+        }) => path.clone(),
+        Some(source)
+            if source
+                .source_reference
+                .is_some_and(|reference| reference > 0) =>
+        {
+            match open_adapter_source(editor, source) {
+                Some(path) => path,
+                None => return,
+            }
+        }
+        _ => return,
     };
 
     if let Err(e) = editor.open(&path, Action::Replace) {
@@ -188,14 +500,15 @@ impl Editor {
                                 for thread in response.threads {
                                     fetch_stack_trace(debugger, thread.id).await;
                                 }
-                                select_thread_id(self, thread_id.unwrap_or_default(), false).await;
+                                select_thread_id_of(self, id, thread_id.unwrap_or_default(), false)
+                                    .await;
                             }
                         } else if let Some(thread_id) = thread_id {
                             debugger.thread_states.insert(thread_id, reason.clone()); // TODO: dap uses "type" || "reason" here
 
                             fetch_stack_trace(debugger, thread_id).await;
                             // whichever thread stops is made "current" (if no previously selected thread).
-                            select_thread_id(self, thread_id, false).await;
+                            select_thread_id_of(self, id, thread_id, false).await;
                         }
 
                         let scope = match thread_id {
@@ -227,6 +540,7 @@ impl Editor {
                             .insert(thread_id, "running".to_owned());
                         if debugger.thread_id == Some(thread_id) {
                             debugger.resume_application();
+                            self.clear_dap_inline_values();
                         }
                     }
                     Event::Thread(thread) => {
@@ -374,6 +688,12 @@ impl Editor {
 
                         // send existing breakpoints
                         for (path, breakpoints) in &mut self.breakpoints {
+                            // Sources generated by another session mean nothing to this one.
+                            if path.starts_with(helix_dap::adapter_source_dir_root())
+                                && !debugger.adapter_sources.contains_key(path)
+                            {
+                                continue;
+                            }
                             // TODO: call futures in parallel, await all
                             let _ = breakpoints_changed(debugger, path.clone(), breakpoints);
                         }
@@ -419,8 +739,14 @@ impl Editor {
 
                         match restart_arg {
                             Some(Value::Bool(false)) | None => {
+                                let was_selected = self.debug_adapters.active_id() == Some(id);
                                 self.debug_adapters.remove_client(id);
-                                self.debug_adapters.unset_active_client();
+                                forget_session_sources(self, id);
+                                self.clear_dap_inline_values();
+                                if was_selected && self.debug_adapters.active_id().is_some() {
+                                    // Another session takes the place of the one that ended.
+                                    show_current_frame(self).await;
+                                }
                                 self.set_status(
                                     "Terminated debugging session and disconnected debugger.",
                                 );
@@ -457,6 +783,13 @@ impl Editor {
                                     ));
                                 }
                             }
+                        }
+                    }
+                    Event::LoadedSource(events::LoadedSourceBody { reason, source }) => {
+                        // A generated source that changed or went away is not what its buffer
+                        // shows (and what the breakpoints in it refer to) any more.
+                        if reason == "changed" || reason == "removed" {
+                            forget_adapter_source(self, id, &source);
                         }
                     }
                     Event::Exited(resp) => {
@@ -541,6 +874,11 @@ impl Editor {
                             }
                         };
 
+                        let child_name = arguments
+                            .configuration
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned);
                         let client = match self.debug_adapters.get_client_mut(client_id) {
                             Some(child) => child,
                             None => {
@@ -548,6 +886,8 @@ impl Editor {
                                 return true;
                             }
                         };
+                        client.parent = Some(id);
+                        client.name = Some(child_name.unwrap_or_else(|| "child".to_owned()));
 
                         let relaunch_resp = if let ConnectionType::Launch = arguments.request {
                             client.launch(arguments.configuration).await

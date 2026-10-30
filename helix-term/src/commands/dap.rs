@@ -2,7 +2,7 @@ use super::{Context, Editor};
 use crate::{
     compositor::{self, Compositor},
     job::{Callback, Jobs},
-    ui::{self, overlay::overlaid, Picker, Popup, Prompt, PromptEvent, Text},
+    ui::{self, overlay::overlaid, Picker, Prompt, PromptEvent},
 };
 use dap::{StackFrame, Thread, ThreadStates};
 use helix_core::syntax::config::{DebugConfigCompletion, DebugTemplate};
@@ -11,7 +11,6 @@ use helix_lsp::block_on;
 use helix_view::editor::Breakpoint;
 
 use serde_json::{to_value, Value};
-use tui::text::Spans;
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -19,7 +18,9 @@ use std::path::PathBuf;
 
 use anyhow::{anyhow, bail};
 
-use helix_view::handlers::dap::{breakpoints_changed, jump_to_stack_frame, select_thread_id};
+use helix_view::handlers::dap::{
+    breakpoints_changed, jump_to_stack_frame, refresh_inline_values, select_thread_id,
+};
 
 fn thread_picker(
     cx: &mut Context,
@@ -175,14 +176,17 @@ pub fn dap_start_impl(
         // }
     };
 
+    let template_name = template.name.clone();
+    let request = template.request.clone();
     let debugger = match cx.editor.debug_adapters.get_client_mut(id) {
         Some(child) => child,
         None => {
             bail!("Failed to get child debugger.");
         }
     };
+    debugger.name = Some(template_name);
 
-    match &template.request[..] {
+    match &request[..] {
         "launch" => {
             let call = debugger.launch(args);
             dap_callback(cx.jobs, call, callback);
@@ -437,17 +441,28 @@ pub fn dap_toggle_breakpoint_impl(cx: &mut Context, path: PathBuf, line: usize) 
     }
 }
 
+/// The session `id` is running again: forget where it was stopped.
+fn resumed(editor: &mut Editor, id: dap::registry::DebugAdapterId) {
+    if let Some(debugger) = editor.debug_adapters.get_client_mut(id) {
+        debugger.resume_application();
+    }
+    if editor.debug_adapters.active_id() == Some(id) {
+        editor.clear_dap_inline_values();
+    }
+}
+
 pub fn dap_continue(cx: &mut Context) {
     let debugger = debugger!(cx.editor);
 
     if let Some(thread_id) = debugger.thread_id {
+        let session = debugger.id();
         let request = debugger.continue_thread(thread_id);
 
         dap_callback(
             cx.jobs,
             request,
-            |editor, _compositor, _response: dap::requests::ContinueResponse| {
-                debugger!(editor).resume_application();
+            move |editor, _compositor, _response: dap::requests::ContinueResponse| {
+                resumed(editor, session);
             },
         );
     } else {
@@ -471,11 +486,16 @@ pub fn dap_step_in(cx: &mut Context) {
     let debugger = debugger!(cx.editor);
 
     if let Some(thread_id) = debugger.thread_id {
+        let session = debugger.id();
         let request = debugger.step_in(thread_id);
 
-        dap_callback(cx.jobs, request, |editor, _compositor, _response: ()| {
-            debugger!(editor).resume_application();
-        });
+        dap_callback(
+            cx.jobs,
+            request,
+            move |editor, _compositor, _response: ()| {
+                resumed(editor, session);
+            },
+        );
     } else {
         cx.editor
             .set_error("Currently active thread is not stopped. Switch the thread.");
@@ -486,10 +506,15 @@ pub fn dap_step_out(cx: &mut Context) {
     let debugger = debugger!(cx.editor);
 
     if let Some(thread_id) = debugger.thread_id {
+        let session = debugger.id();
         let request = debugger.step_out(thread_id);
-        dap_callback(cx.jobs, request, |editor, _compositor, _response: ()| {
-            debugger!(editor).resume_application();
-        });
+        dap_callback(
+            cx.jobs,
+            request,
+            move |editor, _compositor, _response: ()| {
+                resumed(editor, session);
+            },
+        );
     } else {
         cx.editor
             .set_error("Currently active thread is not stopped. Switch the thread.");
@@ -500,10 +525,15 @@ pub fn dap_next(cx: &mut Context) {
     let debugger = debugger!(cx.editor);
 
     if let Some(thread_id) = debugger.thread_id {
+        let session = debugger.id();
         let request = debugger.next(thread_id);
-        dap_callback(cx.jobs, request, |editor, _compositor, _response: ()| {
-            debugger!(editor).resume_application();
-        });
+        dap_callback(
+            cx.jobs,
+            request,
+            move |editor, _compositor, _response: ()| {
+                resumed(editor, session);
+            },
+        );
     } else {
         cx.editor
             .set_error("Currently active thread is not stopped. Switch the thread.");
@@ -511,92 +541,13 @@ pub fn dap_next(cx: &mut Context) {
 }
 
 pub fn dap_variables(cx: &mut Context) {
-    let debugger = debugger!(cx.editor);
-
-    if debugger.thread_id.is_none() {
-        cx.editor
-            .set_status("Cannot access variables while target is running.");
-        return;
-    }
-    let (frame, thread_id) = match (debugger.active_frame, debugger.thread_id) {
-        (Some(frame), Some(thread_id)) => (frame, thread_id),
-        _ => {
-            cx.editor
-                .set_status("Cannot find current stack frame to access variables.");
-            return;
-        }
-    };
-
-    let thread_frame = match debugger.stack_frames.get(&thread_id) {
-        Some(thread_frame) => thread_frame,
-        None => {
-            cx.editor
-                .set_error(format!("Failed to get stack frame for thread: {thread_id}"));
-            return;
-        }
-    };
-    let stack_frame = match thread_frame.get(frame) {
-        Some(stack_frame) => stack_frame,
-        None => {
-            cx.editor.set_error(format!(
-                "Failed to get stack frame for thread {thread_id} and frame {frame}."
-            ));
-            return;
-        }
-    };
-
-    let frame_id = stack_frame.id;
-    let scopes = match block_on(debugger.scopes(frame_id)) {
-        Ok(s) => s,
-        Err(e) => {
-            cx.editor.set_error(format!("Failed to get scopes: {}", e));
-            return;
-        }
-    };
-
-    // TODO: allow expanding variables into sub-fields
-    let mut variables = Vec::new();
-
-    let theme = &cx.editor.theme;
-    let scope_style = theme.get("ui.linenr.selected");
-    let type_style = theme.get("ui.text");
-    let text_style = theme.get("ui.text.focus");
-
-    for scope in scopes.iter() {
-        // use helix_view::graphics::Style;
-        use tui::text::Span;
-        let response = block_on(debugger.variables(scope.variables_reference));
-
-        variables.push(Spans::from(Span::styled(
-            format!("▸ {}", scope.name),
-            scope_style,
-        )));
-
-        if let Ok(vars) = response {
-            variables.reserve(vars.len());
-            for var in vars {
-                let mut spans = Vec::with_capacity(5);
-
-                spans.push(Span::styled(var.name.to_owned(), text_style));
-                if let Some(ty) = var.ty {
-                    spans.push(Span::raw(": "));
-                    spans.push(Span::styled(ty.to_owned(), type_style));
-                }
-                spans.push(Span::raw(" = "));
-                spans.push(Span::styled(var.value.to_owned(), text_style));
-                variables.push(Spans::from(spans));
-            }
-        }
-    }
-
-    let contents = Text::from(tui::text::Text::from(variables));
-    let popup = Popup::new("dap-variables", contents);
-    cx.replace_or_push_layer("dap-variables", popup);
+    super::dap_variables::open_frame(cx.editor, cx.jobs);
 }
 
 pub fn dap_terminate(cx: &mut Context) {
     cx.editor.set_status("Terminating debug session...");
     let debugger = debugger!(cx.editor);
+    let session = debugger.id();
 
     if debugger
         .caps
@@ -608,13 +559,99 @@ pub fn dap_terminate(cx: &mut Context) {
         });
 
         let request = debugger.terminate(terminate_arguments);
-        dap_callback(cx.jobs, request, |editor, _compositor, _response: ()| {
-            // editor.set_error(format!("Failed to disconnect: {}", e));
-            editor.debug_adapters.unset_active_client();
-        });
+        dap_callback(
+            cx.jobs,
+            request,
+            move |editor, _compositor, _response: ()| {
+                // editor.set_error(format!("Failed to disconnect: {}", e));
+                end_session(editor, session);
+            },
+        );
     } else {
-        cx.editor.debug_adapters.unset_active_client();
+        end_session(cx.editor, session);
     }
+}
+
+/// Drop a session; another one (stopped, if possible) is selected in its place.
+fn end_session(editor: &mut Editor, id: dap::registry::DebugAdapterId) {
+    let was_selected = editor.debug_adapters.active_id() == Some(id);
+    editor.debug_adapters.remove_client(id);
+    if was_selected {
+        editor.clear_dap_inline_values();
+        if editor.debug_adapters.active_id().is_some() {
+            block_on(helix_view::handlers::dap::show_current_frame(editor));
+        }
+    }
+}
+
+/// One row of the session picker.
+#[derive(Clone)]
+struct SessionRow {
+    id: dap::registry::DebugAdapterId,
+    name: String,
+    /// How far down the tree of child sessions the row is.
+    depth: usize,
+    state: &'static str,
+    adapter: String,
+}
+
+pub fn dap_switch_session(cx: &mut Context) {
+    let active = cx.editor.debug_adapters.active_id();
+    let sessions = cx.editor.debug_adapters.sessions();
+    if sessions.is_empty() {
+        cx.editor.set_error("No debug session");
+        return;
+    }
+    let depth_of = |client: &dap::Client| {
+        let mut depth = 0;
+        let mut parent = client.parent;
+        while let Some(id) = parent {
+            depth += 1;
+            parent = cx
+                .editor
+                .debug_adapters
+                .get_client(id)
+                .and_then(|c| c.parent);
+        }
+        depth
+    };
+    let rows: Vec<SessionRow> = sessions
+        .iter()
+        .map(|(id, client)| SessionRow {
+            id: *id,
+            name: client.display_name().to_owned(),
+            depth: depth_of(client),
+            state: client.state_label(),
+            adapter: client
+                .config
+                .as_ref()
+                .map(|config| config.name.clone())
+                .unwrap_or_default(),
+        })
+        .collect();
+
+    let columns = [
+        ui::PickerColumn::new(
+            "",
+            move |row: &SessionRow, active: &Option<dap::registry::DebugAdapterId>| {
+                if *active == Some(row.id) { "*" } else { " " }.into()
+            },
+        ),
+        ui::PickerColumn::new("session", |row: &SessionRow, _: &Option<_>| {
+            format!("{}{}", "  ".repeat(row.depth), row.name).into()
+        }),
+        ui::PickerColumn::new("state", |row: &SessionRow, _: &Option<_>| row.state.into()),
+        ui::PickerColumn::new("adapter", |row: &SessionRow, _: &Option<_>| {
+            row.adapter.as_str().into()
+        }),
+    ];
+    let picker = Picker::new(columns, 1, rows, active, |cx, row, _action| {
+        cx.editor.debug_adapters.set_active_client(row.id);
+        cx.editor.clear_dap_inline_values();
+        block_on(helix_view::handlers::dap::show_current_frame(cx.editor));
+    })
+    .with_title("Debug Sessions");
+    cx.push_layer(Box::new(picker))
 }
 
 pub fn dap_enable_exceptions(cx: &mut Context) {
@@ -737,22 +774,42 @@ pub fn dap_switch_thread(cx: &mut Context) {
         block_on(select_thread_id(editor, thread.id, true));
     })
 }
-pub fn dap_switch_stack_frame(cx: &mut Context) {
-    let debugger = debugger!(cx.editor);
+/// A row of the stack frame picker.
+#[derive(Clone)]
+enum FrameRow {
+    Frame(usize, Box<StackFrame>),
+    /// More frames can be fetched: how many are left, when the adapter said how deep the stack is.
+    More(Option<usize>),
+}
 
-    let thread_id = match debugger.thread_id {
-        Some(thread_id) => thread_id,
-        None => {
-            cx.editor.set_error("No thread is currently active");
-            return;
-        }
+fn frame_picker(editor: &mut Editor) -> Option<Picker<FrameRow, String>> {
+    let Some(debugger) = editor.debug_adapters.get_active_client() else {
+        editor.set_error("Debugger is not running");
+        return None;
+    };
+    let Some(thread_id) = debugger.thread_id else {
+        editor.set_error("No thread is currently active");
+        return None;
     };
 
-    let frames = debugger.stack_frames[&thread_id]
-        .iter()
+    let loaded = debugger.stack_frames.get(&thread_id).map_or(0, Vec::len);
+    let mut rows: Vec<FrameRow> = debugger
+        .stack_frames
+        .get(&thread_id)
+        .into_iter()
+        .flatten()
         .cloned()
         .enumerate()
-        .collect::<Vec<_>>();
+        .map(|(index, frame)| FrameRow::Frame(index, Box::new(frame)))
+        .collect();
+    match debugger.total_frames.get(&thread_id) {
+        Some(&total) if total > loaded => rows.push(FrameRow::More(Some(total - loaded))),
+        // The adapter did not say how deep the stack is: a full page means there may be more.
+        None if loaded > 0 && loaded % helix_view::handlers::dap::STACK_FRAMES_PAGE == 0 => {
+            rows.push(FrameRow::More(None))
+        }
+        _ => {}
+    }
     let thread_state = debugger
         .thread_states
         .get(&thread_id)
@@ -761,23 +818,29 @@ pub fn dap_switch_stack_frame(cx: &mut Context) {
 
     let columns = [ui::PickerColumn::new(
         "frame",
-        |item: &(usize, StackFrame), thread_state: &String| {
-            format!("{} ({})", item.1.name, thread_state).into()
+        |row: &FrameRow, thread_state: &String| match row {
+            FrameRow::Frame(_, frame) => format!("{} ({})", frame.name, thread_state).into(),
+            FrameRow::More(Some(left)) => format!("Load more… ({left} more)").into(),
+            FrameRow::More(None) => "Load more…".into(),
         },
     )];
     let picker = Picker::new(
         columns,
         0,
-        frames,
+        rows,
         thread_state,
-        move |cx, (index, frame), _action| {
-            let debugger = debugger!(cx.editor);
-            debugger.active_frame = Some(*index);
-            jump_to_stack_frame(cx.editor, frame);
+        move |cx, row, _action| match row {
+            FrameRow::Frame(index, frame) => {
+                let debugger = debugger!(cx.editor);
+                debugger.active_frame = Some(*index);
+                jump_to_stack_frame(cx.editor, frame);
+                block_on(refresh_inline_values(cx.editor));
+            }
+            FrameRow::More(_) => load_more_frames(cx),
         },
     )
-    .with_preview(move |_editor, (_index, frame)| {
-        frame.source.as_ref().and_then(|source| {
+    .with_preview(move |_editor, row| match row {
+        FrameRow::Frame(_, frame) => frame.source.as_ref().and_then(|source| {
             source.path.as_ref().map(|path| {
                 (
                     path.as_path().into(),
@@ -787,8 +850,66 @@ pub fn dap_switch_stack_frame(cx: &mut Context) {
                     )),
                 )
             })
-        })
+        }),
+        FrameRow::More(_) => None,
     })
     .with_title("Stack Frames");
-    cx.push_layer(Box::new(picker))
+    Some(picker)
+}
+
+/// Fetch the next page of the stack and show the picker again.
+fn load_more_frames(cx: &mut compositor::Context) {
+    let debugger = debugger!(cx.editor);
+    let Some(thread_id) = debugger.thread_id else {
+        return;
+    };
+    let start = debugger.stack_frames.get(&thread_id).map_or(0, Vec::len);
+    let page = debugger.stack_trace_page(
+        thread_id,
+        start,
+        helix_view::handlers::dap::STACK_FRAMES_PAGE,
+    );
+    cx.jobs.callback(async move {
+        let (frames, total) = page.await?;
+        Ok(Callback::EditorCompositor(Box::new(
+            move |editor: &mut Editor, compositor: &mut Compositor| {
+                if let Some(debugger) = editor.debug_adapters.get_active_client_mut() {
+                    // The thread may have moved on while the request was in flight.
+                    if debugger.thread_id == Some(thread_id) {
+                        if let Some(total) = total {
+                            debugger.total_frames.insert(thread_id, total);
+                        }
+                        let all = debugger.stack_frames.entry(thread_id).or_default();
+                        if all.len() == start {
+                            // A short page means the stack is over.
+                            if frames.is_empty()
+                                || frames.len() < helix_view::handlers::dap::STACK_FRAMES_PAGE
+                            {
+                                debugger
+                                    .total_frames
+                                    .insert(thread_id, start + frames.len());
+                            }
+                            debugger
+                                .stack_frames
+                                .entry(thread_id)
+                                .or_default()
+                                .extend(frames);
+                        }
+                    }
+                }
+                if let Some(picker) = frame_picker(editor) {
+                    compositor.push(Box::new(overlaid(
+                        picker,
+                        editor.config().fullscreen_overlay,
+                    )));
+                }
+            },
+        )))
+    });
+}
+
+pub fn dap_switch_stack_frame(cx: &mut Context) {
+    if let Some(picker) = frame_picker(cx.editor) {
+        cx.push_layer(Box::new(picker))
+    }
 }

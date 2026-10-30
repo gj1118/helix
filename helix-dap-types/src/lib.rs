@@ -582,6 +582,33 @@ pub mod requests {
         const COMMAND: &'static str = "scopes";
     }
 
+    #[derive(Debug, PartialEq, Eq, Clone, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct LoadSourceArguments {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub source: Option<super::Source>,
+        pub source_reference: usize,
+    }
+
+    #[derive(Debug, PartialEq, Eq, Clone, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct LoadSourceResponse {
+        pub content: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub mime_type: Option<String>,
+    }
+
+    /// The `source` request: the content of a source the adapter generated (it has a
+    /// `sourceReference` instead of a path).
+    #[derive(Debug)]
+    pub enum LoadSource {}
+
+    impl Request for LoadSource {
+        type Arguments = LoadSourceArguments;
+        type Result = LoadSourceResponse;
+        const COMMAND: &'static str = "source";
+    }
+
     #[derive(Debug, Default, PartialEq, Eq, Clone, Deserialize, Serialize)]
     #[serde(rename_all = "camelCase")]
     pub struct VariablesArguments {

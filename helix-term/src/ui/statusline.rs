@@ -162,6 +162,7 @@ where
         helix_view::editor::StatusLineElement::CurrentWorkingDirectory => render_cwd,
         helix_view::editor::StatusLineElement::CodeActionHint => render_code_action_hint,
         helix_view::editor::StatusLineElement::FunctionName => render_function_name,
+        helix_view::editor::StatusLineElement::DebugSession => render_debug_session,
     }
 }
 
@@ -617,6 +618,22 @@ where
     };
 
     write(context, vcs.into());
+}
+
+fn render_debug_session<'a, F>(context: &mut RenderContext<'a>, write: F)
+where
+    F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
+{
+    let sessions = &context.editor.debug_adapters;
+    let Some(session) = sessions.get_active_client() else {
+        return;
+    };
+    let mut text = format!(" dbg {} {}", session.display_name(), session.state_label());
+    if sessions.len() > 1 {
+        text.push_str(&format!(" ({} sessions)", sessions.len()));
+    }
+    text.push(' ');
+    write(context, text.into())
 }
 
 fn render_register<'a, F>(context: &mut RenderContext<'a>, write: F)

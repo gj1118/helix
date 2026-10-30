@@ -22,6 +22,7 @@
   - [`[editor.gutters.diff]` Section](#editorguttersdiff-section)
   - [`[editor.gutters.spacer]` Section](#editorguttersspacer-section)
   - [`[editor.gutters.code-action-hint]` Section](#editorgutterscode-action-hint-section)
+- [`[editor.debugger]` Section](#editordebugger-section)
 - [`[editor.soft-wrap]` Section](#editorsoft-wrap-section)
 - [`[editor.smart-tab]` Section](#editorsmart-tab-section)
 - [`[editor.inline-diagnostics]` Section](#editorinline-diagnostics-section)
@@ -225,6 +226,7 @@ The following statusline elements can be configured:
 | `version-control` | The current branch name or detached commit hash of the opened workspace |
 | `register` | The current selected register |
 | `code-action-hint` | Indicator for when code actions are available |
+| `debug-session` | The selected [debug session](./debugging.md#several-sessions): its name, whether it is stopped, and the number of sessions |
 
 ### `[editor.lsp]` Section
 
@@ -643,6 +645,14 @@ Currently unused
 The `code-action-hint` gutter option displays an indicator for whether a code action is available at current selection.
 
 There are currently no options for this section.
+
+### `[editor.debugger]` Section
+
+Options for the display of debug sessions, see [debugging](./debugging.md).
+
+| Key             | Description                                                                                                              | Default |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------ | ------- |
+| `inline-values` | Show the values of the variables a line uses at the end of the line while the debuggee is stopped (hidden in modified files) | `true`  |
 
 ### `[editor.soft-wrap]` Section
 

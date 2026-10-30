@@ -250,6 +250,8 @@ pub struct Document {
 
     /// Annotations for LSP document color swatches
     pub color_swatches: Option<DocumentColorSwatches>,
+    /// Variable values of the stopped debuggee shown at the end of lines, in char order.
+    pub dap_inline_values: Vec<InlineAnnotation>,
     /// Cached LSP document links for navigation (e.g. goto_file).
     pub document_links: Vec<DocumentLink>,
     // NOTE: ideally this would live on the handler for color swatches. This is blocked on a
@@ -985,6 +987,7 @@ impl Document {
             document_highlights: HashMap::new(),
             code_action_hints: HashSet::new(),
             color_swatches: None,
+            dap_inline_values: Vec::new(),
             document_links: Vec::new(),
             color_swatch_controller: TaskController::new(),
             inline_completions: Default::default(),
@@ -1858,6 +1861,8 @@ impl Document {
                     .map(|annotation| (&mut annotation.char_idx, Assoc::After)),
             );
         };
+
+        apply_inlay_hint_changes(&mut self.dap_inline_values);
 
         self.inlay_hints_oudated = true;
         for text_annotation in self.inlay_hints.values_mut() {

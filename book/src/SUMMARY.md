@@ -17,6 +17,7 @@
   - [Command line](./command-line.md)
   - [Custom commands](./custom-commands.md)
   - [Snippets](./snippets.md)
+  - [Debugging](./debugging.md)
   - [Commands](./commands.md)
   - [Language servers](./lsp.md)
   - [Language support](./lang-support.md)

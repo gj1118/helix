@@ -22,6 +22,7 @@ mod test {
     mod command_line;
     mod commands;
     mod custom_commands;
+    mod dap;
     mod history;
     mod inline_completion;
     mod movement;

@@ -518,6 +518,9 @@ pub struct Config {
     #[serde(default)]
     pub search: SearchConfig,
     pub lsp: LspConfig,
+    /// Debugger display options.
+    #[serde(default)]
+    pub debugger: DebuggerConfig,
     pub terminal: Option<TerminalConfig>,
     /// Column numbers at which to draw the rulers. Defaults to `[]`, meaning no rulers.
     pub rulers: Vec<u16>,
@@ -1044,6 +1047,22 @@ impl Default for NotificationShadowConfig {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
+pub struct DebuggerConfig {
+    /// Show the values of the variables a line uses at the end of that line while the debuggee
+    /// is stopped. Hidden for files with unsaved changes. Defaults to `true`.
+    pub inline_values: bool,
+}
+
+impl Default for DebuggerConfig {
+    fn default() -> Self {
+        Self {
+            inline_values: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize, Eq, PartialOrd, Ord)]
 #[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
 pub struct SmartTabConfig {
@@ -1301,6 +1320,7 @@ impl Default for StatusLineConfig {
             ],
             center: vec![],
             right: vec![
+                E::DebugSession,
                 E::Diagnostics,
                 E::Selections,
                 E::Register,
@@ -1409,6 +1429,8 @@ pub enum StatusLineElement {
     FunctionName,
     /// Indicator for when code actions are available
     CodeActionHint,
+    /// The selected debug session: its name, whether it is stopped and how many sessions there are
+    DebugSession,
 }
 
 // Cursor shape is read and used on every rendered frame and so needs
@@ -1946,6 +1968,7 @@ impl Default for Config {
             undercurl: false,
             search: SearchConfig::default(),
             lsp: LspConfig::default(),
+            debugger: DebuggerConfig::default(),
             terminal: get_terminal_provider(),
             rulers: Vec::new(),
             ruler_char: "".to_string(),
@@ -3606,6 +3629,15 @@ impl Editor {
     }
 
     #[inline]
+    /// Remove the variable values shown at the end of lines (see [`DebuggerConfig`]).
+    pub fn clear_dap_inline_values(&mut self) {
+        for doc in self.documents_mut() {
+            if !doc.dap_inline_values.is_empty() {
+                doc.dap_inline_values.clear();
+            }
+        }
+    }
+
     pub fn documents_mut(&mut self) -> impl Iterator<Item = &mut Document> {
         self.documents.values_mut()
     }

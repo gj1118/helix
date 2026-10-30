@@ -2204,20 +2204,45 @@ fn debug_eval(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> a
         return Ok(());
     }
 
-    if let Some(debugger) = cx.editor.debug_adapters.get_active_client() {
-        let (frame, thread_id) = match (debugger.active_frame, debugger.thread_id) {
-            (Some(frame), Some(thread_id)) => (frame, thread_id),
-            _ => {
-                bail!("Cannot find current stack frame to access variables")
-            }
-        };
+    let Some(debugger) = cx.editor.debug_adapters.get_active_client() else {
+        bail!("No debug session")
+    };
+    let (frame, thread_id) = match (debugger.active_frame, debugger.thread_id) {
+        (Some(frame), Some(thread_id)) => (frame, thread_id),
+        _ => {
+            bail!("Cannot find current stack frame to access variables")
+        }
+    };
+    let frame_id = debugger
+        .stack_frames
+        .get(&thread_id)
+        .and_then(|frames| frames.get(frame))
+        .map(|frame| frame.id)
+        .context("Cannot find current stack frame to access variables")?;
 
-        // TODO: support no frame_id
-
-        let frame_id = debugger.stack_frames[&thread_id][frame].id;
-        let response = helix_lsp::block_on(debugger.eval(args.join(" "), Some(frame_id)))?;
-        cx.editor.set_status(response.result);
-    }
+    let expression = args.join(" ");
+    let call = debugger.eval_future(expression.clone(), Some(frame_id));
+    cx.jobs.callback(async move {
+        let response = call.await?;
+        Ok(Callback::EditorCompositor(Box::new(
+            move |editor: &mut Editor, _: &mut Compositor| {
+                let mut status = format!("{expression} = {}", response.result);
+                if let Some(ty) = &response.ty {
+                    status.push_str(&format!(" ({ty})"));
+                }
+                editor.set_status(status);
+                // A result with children opens in the variable browser.
+                if response.variables_reference > 0 {
+                    super::dap_variables::open_result(
+                        editor,
+                        response.variables_reference,
+                        response.named_variables.unwrap_or(0),
+                        response.indexed_variables.unwrap_or(0),
+                    );
+                }
+            },
+        )))
+    });
     Ok(())
 }
 
