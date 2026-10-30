@@ -6,6 +6,7 @@ pub(crate) mod editor;
 pub mod explorer;
 mod file_explorer;
 pub mod gradient_border;
+mod image_preview;
 mod info;
 pub mod lsp;
 mod markdown;

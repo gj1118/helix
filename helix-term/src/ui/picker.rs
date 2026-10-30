@@ -93,6 +93,7 @@ pub enum CachedPreview {
     Binary,
     LargeFile,
     NotFound,
+    Image(super::image_preview::ImagePreview),
 }
 
 // We don't store this enum in the cache so as to avoid lifetime constraints
@@ -107,6 +108,13 @@ impl Preview<'_, '_> {
         match self {
             Preview::EditorDocument(doc) => Some(doc),
             Preview::Cached(CachedPreview::Document(doc)) => Some(doc),
+            _ => None,
+        }
+    }
+
+    fn image(&self) -> Option<&super::image_preview::ImagePreview> {
+        match self {
+            Preview::Cached(CachedPreview::Image(image)) => Some(image),
             _ => None,
         }
     }
@@ -128,6 +136,7 @@ impl Preview<'_, '_> {
                 CachedPreview::Binary => "<Binary file>",
                 CachedPreview::LargeFile => "<File too large to preview>",
                 CachedPreview::NotFound => "<File not found>",
+                CachedPreview::Image(_) => "<Image>",
             },
         }
     }
@@ -952,13 +961,23 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                             if metadata.len() > MAX_FILE_SIZE_FOR_PREVIEW {
                                 return Ok(CachedPreview::LargeFile);
                             }
-                            let is_binary = std::fs::File::open(&path).and_then(|file| {
-                                // Read up to 1kb to detect the content type
-                                let n = file.take(1024).read_to_end(&mut self.read_buffer)?;
-                                let is_binary = crate::is_binary(&self.read_buffer[..n]);
-                                self.read_buffer.clear();
-                                Ok(is_binary)
-                            })?;
+                            let (is_binary, is_image) =
+                                std::fs::File::open(&path).and_then(|file| {
+                                    // Read up to 1kb to detect the content type
+                                    let n = file.take(1024).read_to_end(&mut self.read_buffer)?;
+                                    let start = &self.read_buffer[..n];
+                                    let kind = (
+                                        crate::is_binary(start),
+                                        helix_view::image_preview::is_image(start),
+                                    );
+                                    self.read_buffer.clear();
+                                    Ok(kind)
+                                })?;
+                            if is_image && editor.config().image_preview.enable {
+                                return Ok(CachedPreview::Image(
+                                    super::image_preview::ImagePreview::open(&path),
+                                ));
+                            }
                             if is_binary {
                                 return Ok(CachedPreview::Binary);
                             }
@@ -1341,6 +1360,20 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                     doc
                 }
                 _ => {
+                    if let Some(image) = preview.image() {
+                        use super::image_preview::Status;
+                        let message = match image.draw(surface, inner, cx.editor) {
+                            Status::Shown => return,
+                            Status::Loading => "Loading image…".to_string(),
+                            Status::Failed(err) => format!("<{err}>"),
+                        };
+                        let x = inner.x
+                            + inner.width.saturating_sub(message.chars().count() as u16) / 2;
+                        let y = inner.y + inner.height / 2;
+                        surface.set_stringn(x, y, &message, inner.width as usize, text);
+                        return;
+                    }
+
                     if let Some(dir_content) = preview.dir_content() {
                         for (i, (path, is_dir)) in
                             dir_content.iter().take(inner.height as usize).enumerate()

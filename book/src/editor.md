@@ -654,6 +654,37 @@ Options for the display of debug sessions, see [debugging](./debugging.md).
 | --------------- | ------------------------------------------------------------------------------------------------------------------------ | ------- |
 | `inline-values` | Show the values of the variables a line uses at the end of the line while the debuggee is stopped (hidden in modified files) | `true`  |
 
+### `[editor.image-preview]` Section
+
+PNG, JPEG, GIF (first frame) and WebP files are shown as images in the preview of the pickers
+(the file picker, the quicklist, ...) instead of `<Binary file>`. The image is scaled to fit the
+preview, keeping its proportions, and is not enlarged. Images of more than a million pixels are
+decoded in a thread, the preview says `Loading image…` until then. Files of more than 10 MiB
+and images of more than 100 million pixels are not previewed.
+
+| Key        | Description                                                          | Default  |
+| ---------- | -------------------------------------------------------------------- | -------- |
+| `enable`   | Show images in the preview                                           | `true`   |
+| `protocol` | How to draw them: `"auto"`, `"kitty"`, `"iterm2"`, `"sixel"` or `"halfblocks"` | `"auto"` |
+
+| Protocol     | Terminals                                  | Notes                                           |
+| ------------ | ------------------------------------------ | ----------------------------------------------- |
+| `kitty`      | Kitty, Ghostty, ...                        | the [graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/) |
+| `iterm2`     | iTerm2, WezTerm, ...                       | inline images                                   |
+| `sixel`      | foot, mlterm, ...                          | 240 fixed colours, no dithering: gradients band  |
+| `halfblocks` | any terminal with colours                  | `▀` with two colours, two pixels per cell       |
+
+`"auto"` looks at the environment variables the terminal sets (`KITTY_WINDOW_ID`, `TERM`,
+`TERM_PROGRAM`, ...) and uses half blocks for terminals it doesn't know. It does not ask the
+terminal what it supports, so a terminal with Sixel support that doesn't name itself needs
+`protocol = "sixel"`. Inside tmux, Zellij and screen the other protocols don't get through (Helix doesn't wrap the
+sequences for a multiplexer's passthrough), so `"auto"` uses half blocks there.
+
+```toml
+[editor.image-preview]
+protocol = "sixel"
+```
+
 ### `[editor.soft-wrap]` Section
 
 Options for soft wrapping lines that exceed the view width:

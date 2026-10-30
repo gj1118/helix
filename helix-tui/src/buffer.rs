@@ -165,7 +165,33 @@ pub struct Buffer {
     /// The content of the buffer. The length of this Vec should always be equal to area.width *
     /// area.height
     pub content: Vec<Cell>,
+    /// Bytes for the terminal (graphics protocols) that are shown over some cells.
+    pub overlays: Vec<Overlay>,
 }
+
+/// Bytes that the terminal draws over `area` (an image, in one of the graphics protocols). They
+/// can't be part of a [`Cell`], they have to reach the terminal as they are, at the position of
+/// the area.
+///
+/// An overlay is sent when the previous frame didn't have one with the same area and `key`, and
+/// the cells below it are drawn again when it goes away.
+#[derive(Debug, Clone)]
+pub struct Overlay {
+    pub area: Rect,
+    /// Identifies the content. The same area with another key is another overlay.
+    pub key: u64,
+    pub payload: std::sync::Arc<[u8]>,
+    /// Sent when the overlay goes away, for terminals that keep the image in their memory.
+    pub cleanup: Option<std::sync::Arc<[u8]>>,
+}
+
+impl PartialEq for Overlay {
+    fn eq(&self, other: &Self) -> bool {
+        self.area == other.area && self.key == other.key
+    }
+}
+
+impl Eq for Overlay {}
 
 impl Buffer {
     /// Returns a Buffer with all cells set to the default one
@@ -179,7 +205,11 @@ impl Buffer {
     pub fn filled(area: Rect, cell: &Cell) -> Buffer {
         let size = area.area();
         let content = vec![cell.clone(); size];
-        Buffer { area, content }
+        Buffer {
+            area,
+            content,
+            overlays: Vec::new(),
+        }
     }
 
     /// Returns a Buffer containing the given lines
@@ -684,6 +714,24 @@ impl Buffer {
         for c in &mut self.content {
             c.reset();
         }
+        self.overlays.clear();
+    }
+
+    /// Shows `overlay` over its area. The cells below should be blank.
+    pub fn add_overlay(&mut self, overlay: Overlay) {
+        self.overlays.push(overlay);
+    }
+
+    /// Marks the cells of the area as unknown, so that the next [`Buffer::diff`] against this
+    /// buffer draws them again, whatever they contain.
+    pub fn invalidate(&mut self, area: Rect) {
+        let area = self.area.intersection(area);
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                // No cell is drawn with a NUL: this never equals one.
+                self[(x, y)].set_symbol("\0");
+            }
+        }
     }
 
     /// Clear an area in the buffer
@@ -820,6 +868,28 @@ mod tests {
         let mut cell = Cell::default();
         cell.set_symbol(s);
         cell
+    }
+
+    #[test]
+    fn invalidated_cells_are_drawn_again() {
+        let mut previous = Buffer::empty(Rect::new(0, 0, 6, 3));
+        let next = Buffer::empty(Rect::new(0, 0, 6, 3));
+        assert!(previous.diff(&next).is_empty());
+
+        previous.invalidate(Rect::new(1, 1, 3, 2));
+        let redrawn: Vec<_> = previous
+            .diff(&next)
+            .iter()
+            .map(|(x, y, _)| (*x, *y))
+            .collect();
+        assert_eq!(redrawn, [(1, 1), (2, 1), (3, 1), (1, 2), (2, 2), (3, 2)]);
+
+        // an area that sticks out of the buffer is cut
+        previous.invalidate(Rect::new(5, 2, 10, 10));
+        assert!(previous
+            .diff(&next)
+            .iter()
+            .any(|(x, y, _)| (*x, *y) == (5, 2)));
     }
 
     #[test]

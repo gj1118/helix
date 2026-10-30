@@ -498,6 +498,7 @@ impl Application {
 
         // TODO: need to recalculate view tree if necessary
 
+        cx.editor.cell_size = self.terminal.backend().cell_size();
         let surface = self.terminal.current_buffer_mut();
 
         self.compositor.render(area, surface, &mut cx);
@@ -1794,6 +1795,19 @@ impl Application {
                     .to_owned()
             })
             .collect()
+    }
+
+    /// What was written to the (test) terminal with `write_raw` (graphics protocol images): the
+    /// cell and the bytes.
+    #[cfg(feature = "integration")]
+    pub fn raw_output(&self) -> &[(u16, u16, Vec<u8>)] {
+        &self.terminal.backend().raw
+    }
+
+    /// Sets the pixel size of a cell reported by the (test) terminal.
+    #[cfg(feature = "integration")]
+    pub fn set_cell_size(&mut self, size: Option<(u16, u16)>) {
+        self.terminal.backend_mut().cell_size = size;
     }
 
     pub async fn close(&mut self) -> Vec<anyhow::Error> {

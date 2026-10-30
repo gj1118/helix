@@ -522,6 +522,9 @@ pub struct Config {
     /// Debugger display options.
     #[serde(default)]
     pub debugger: DebuggerConfig,
+    /// Images in the picker preview.
+    #[serde(default)]
+    pub image_preview: crate::image_preview::ImagePreviewConfig,
     /// The `[keys.picker]`, `[keys.menu]`, `[keys.popup]` and `[keys.prompt]` tables. They are
     /// not part of `[editor]`: the application fills them in when it loads the config.
     #[serde(skip)]
@@ -1978,6 +1981,7 @@ impl Default for Config {
             search: SearchConfig::default(),
             lsp: LspConfig::default(),
             debugger: DebuggerConfig::default(),
+            image_preview: Default::default(),
             component_keys: Default::default(),
             terminal: get_terminal_provider(),
             rulers: Vec::new(),
@@ -2238,6 +2242,9 @@ pub struct Editor {
     /// The currently applied editor theme. While previewing a theme, the previewed theme
     /// is set here.
     pub theme: Theme,
+    /// The size of a cell of the terminal in pixels, when it reports one. The application
+    /// updates it before every frame.
+    pub cell_size: Option<(u16, u16)>,
 
     /// The primary Selection prior to starting a goto_line_number preview. This is
     /// restored when the preview is aborted, or added to the jumplist when it is
@@ -2395,6 +2402,7 @@ impl Editor {
             macro_recording: None,
             macro_replaying: Vec::new(),
             theme: theme_loader.default(),
+            cell_size: None,
             language_servers,
             diagnostics: Diagnostics::new(),
             diff_providers: DiffProviderRegistry::default(),

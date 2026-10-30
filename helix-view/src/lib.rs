@@ -15,6 +15,7 @@ pub mod graphics;
 pub mod gutter;
 pub mod handlers;
 pub mod icons;
+pub mod image_preview;
 pub mod info;
 pub mod inline_completion;
 pub mod input;

@@ -15,6 +15,10 @@ pub struct TestBackend {
     height: u16,
     cursor: bool,
     pos: (u16, u16),
+    /// What was written with `write_raw`: the cell and the bytes.
+    pub raw: Vec<(u16, u16, Vec<u8>)>,
+    /// What `cell_size` reports.
+    pub cell_size: Option<(u16, u16)>,
 }
 
 /// Returns a string representation of the given buffer for debugging purpose.
@@ -54,6 +58,8 @@ impl TestBackend {
             buffer: Buffer::empty(Rect::new(0, 0, width, height)),
             cursor: false,
             pos: (0, 0),
+            raw: Vec::new(),
+            cell_size: None,
         }
     }
 
@@ -107,6 +113,15 @@ impl TestBackend {
 }
 
 impl Backend for TestBackend {
+    fn write_raw(&mut self, x: u16, y: u16, bytes: &[u8]) -> Result<(), io::Error> {
+        self.raw.push((x, y, bytes.to_vec()));
+        Ok(())
+    }
+
+    fn cell_size(&self) -> Option<(u16, u16)> {
+        self.cell_size
+    }
+
     fn claim(&mut self) -> Result<(), io::Error> {
         Ok(())
     }
