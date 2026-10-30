@@ -510,6 +510,11 @@ impl MappableCommand {
         extend_to_line_end, "Extend to line end",
         extend_to_line_end_newline, "Extend to line end",
         signature_help, "Show signature help",
+        inline_completion_accept, "Accept the inline completion",
+        inline_completion_dismiss, "Dismiss the inline completion",
+        inline_completion_trigger, "Request an inline completion",
+        inline_completion_next, "Show the next inline completion",
+        inline_completion_prev, "Show the previous inline completion",
         smart_tab, "Insert tab if all cursors have all whitespace to their left; otherwise, run a separate command.",
         insert_tab, "Insert tab char",
         insert_newline, "Insert newline char",
@@ -6707,6 +6712,74 @@ pub fn completion(cx: &mut Context) {
     cx.editor
         .handlers
         .trigger_completions(cursor, doc.id(), view.id);
+}
+
+/// Inserts the visible inline completion (ghost text) at the cursor.
+pub fn inline_completion_accept(cx: &mut Context) {
+    let (view, doc) = current!(cx.editor);
+    let Some(completion) = doc.inline_completion(view.id).cloned() else {
+        return;
+    };
+    doc.inline_completions.clear();
+
+    let transaction = Transaction::change(
+        doc.text(),
+        [(
+            completion.cursor,
+            completion.cursor,
+            Some(completion.text.as_str().into()),
+        )]
+        .into_iter(),
+    )
+    .with_selection(Selection::point(
+        completion.cursor + completion.text.chars().count(),
+    ));
+    doc.apply(&transaction, view.id);
+    doc.append_changes_to_history(view);
+
+    // Servers can ask for a command to run after the insertion (e.g. telemetry).
+    if let Some(command) = completion.command {
+        let future = doc
+            .language_servers()
+            .find(|server| server.id() == completion.server)
+            .and_then(|server| server.command(command));
+        if let Some(future) = future {
+            cx.jobs.callback(async move {
+                if let Err(err) = future.await {
+                    log::debug!("inline completion command failed: {err}");
+                }
+                Ok(job::Callback::Editor(Box::new(|_| {})))
+            });
+        }
+    }
+}
+
+pub fn inline_completion_dismiss(cx: &mut Context) {
+    let doc = doc_mut!(cx.editor);
+    doc.inline_completions.clear();
+}
+
+/// Requests an inline completion now, whatever `auto-trigger` is set to.
+pub fn inline_completion_trigger(cx: &mut Context) {
+    let (view, doc) = current!(cx.editor);
+    helix_event::send_blocking(
+        &cx.editor.handlers.inline_completion,
+        helix_view::handlers::lsp::InlineCompletionEvent {
+            doc: doc.id(),
+            view: view.id,
+            manual: true,
+        },
+    );
+}
+
+pub fn inline_completion_next(cx: &mut Context) {
+    let (view, doc) = current!(cx.editor);
+    doc.inline_completions.cycle(view.id, true);
+}
+
+pub fn inline_completion_prev(cx: &mut Context) {
+    let (view, doc) = current!(cx.editor);
+    doc.inline_completions.cycle(view.id, false);
 }
 
 // comments

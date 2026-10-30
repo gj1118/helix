@@ -497,6 +497,7 @@ pub struct Config {
     pub bufferline: BufferLineConfig,
     /// Persistently display a breadcrumb navigation bar along the top of each view
     pub breadcrumb: BreadcrumbConfig,
+    pub inline_completion: InlineCompletionConfig,
     /// Configuration of the file explorer
     pub file_explorer: FileExplorerConfig,
     /// Configuration of the file tree explorer panel.
@@ -1215,6 +1216,30 @@ pub enum BreadcrumbPathOptions {
     None,
 }
 
+/// Ghost-text suggestions from language servers that support `textDocument/inlineCompletion`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct InlineCompletionConfig {
+    /// Ask for suggestions while typing in insert mode. When disabled they are
+    /// only requested by `inline_completion_trigger`.
+    pub auto_trigger: bool,
+    /// Time in milliseconds after typing before suggestions are requested.
+    #[serde(
+        serialize_with = "serialize_duration_millis",
+        deserialize_with = "deserialize_duration_millis"
+    )]
+    pub trigger_delay: Duration,
+}
+
+impl Default for InlineCompletionConfig {
+    fn default() -> Self {
+        Self {
+            auto_trigger: true,
+            trigger_delay: Duration::from_millis(150),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
 pub struct BreadcrumbConfig {
@@ -1864,6 +1889,7 @@ impl Default for Config {
             file_picker: FilePickerConfig::default(),
             bufferline: BufferLineConfig::default(),
             breadcrumb: BreadcrumbConfig::default(),
+            inline_completion: InlineCompletionConfig::default(),
             file_explorer: FileExplorerConfig::default(),
             explorer: ExplorerConfig::default(),
             statusline: StatusLineConfig::default(),

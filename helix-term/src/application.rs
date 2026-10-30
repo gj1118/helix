@@ -1772,6 +1772,21 @@ impl Application {
         Ok(self.editor.exit_code)
     }
 
+    /// The text currently shown on the (test) terminal, one string per row.
+    #[cfg(feature = "integration")]
+    pub fn rendered_rows(&self) -> Vec<String> {
+        let buffer = self.terminal.backend().buffer();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol.as_str())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            })
+            .collect()
+    }
+
     pub async fn close(&mut self) -> Vec<anyhow::Error> {
         // [NOTE] we intentionally do not return early for errors because we
         //        want to try to run as much cleanup as we can, regardless of

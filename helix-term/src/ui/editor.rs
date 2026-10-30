@@ -540,6 +540,23 @@ impl EditorView {
                 primary_cursor,
             });
         }
+        if is_focused && editor.mode() == Mode::Insert {
+            if let Some(completion) = doc.inline_completion(view.id) {
+                let text = doc.text().slice(..);
+                let line = text.char_to_line(completion.cursor);
+                let line_end = helix_core::line_ending::line_end_char_index(&text, line);
+                decorations.add_decoration(
+                    text_decorations::inline_completion::InlineCompletionDecoration::new(
+                        completion,
+                        theme
+                            .try_get_exact("ui.virtual.inline-completion")
+                            .unwrap_or_else(|| theme.get("ui.virtual.inlay-hint")),
+                        doc.text_format(inner.width, Some(theme)),
+                        line_end,
+                    ),
+                );
+            }
+        }
         let width = view.inner_width(doc);
         let config = doc.config.load();
         let enable_cursor_line = view
@@ -1927,6 +1944,11 @@ impl EditorView {
         size: Rect,
     ) -> Option<Rect> {
         let mut completion = Completion::new(editor, items, trigger_offset);
+
+        if !completion.is_empty() {
+            // Ghost text pauses while the completion menu is open.
+            doc_mut!(editor).inline_completions.clear();
+        }
 
         if completion.is_empty() {
             // skip if we got no completion results

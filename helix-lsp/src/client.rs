@@ -452,6 +452,10 @@ impl Client {
                         | CallHierarchyServerCapability::Options(_)
                 )
             ),
+            LanguageServerFeature::InlineCompletion => matches!(
+                capabilities.inline_completion_provider,
+                Some(OneOf::Left(true) | OneOf::Right(_))
+            ),
         }
     }
 
@@ -692,6 +696,9 @@ impl Client {
                     ..Default::default()
                 }),
                 text_document: Some(lsp::TextDocumentClientCapabilities {
+                    inline_completion: Some(lsp::InlineCompletionClientCapabilities {
+                        dynamic_registration: Some(false),
+                    }),
                     completion: Some(lsp::CompletionClientCapabilities {
                         completion_item: Some(lsp::CompletionItemCapability {
                             snippet_support: Some(enable_snippets),
@@ -1244,6 +1251,32 @@ impl Client {
         };
 
         Some(self.call::<lsp::request::Completion>(params))
+    }
+
+    /// `textDocument/inlineCompletion` (LSP 3.18): ghost-text suggestions at the cursor.
+    pub fn inline_completion(
+        &self,
+        text_document: lsp::TextDocumentIdentifier,
+        position: lsp::Position,
+        trigger_kind: lsp::InlineCompletionTriggerKind,
+    ) -> Option<impl Future<Output = Result<Option<lsp::InlineCompletionResponse>>>> {
+        if !self.supports_feature(LanguageServerFeature::InlineCompletion) {
+            return None;
+        }
+
+        let params = lsp::InlineCompletionParams {
+            work_done_progress_params: lsp::WorkDoneProgressParams::default(),
+            text_document_position: lsp::TextDocumentPositionParams {
+                text_document,
+                position,
+            },
+            context: lsp::InlineCompletionContext {
+                trigger_kind,
+                selected_completion_info: None,
+            },
+        };
+
+        Some(self.call::<lsp::request::InlineCompletionRequest>(params))
     }
 
     pub fn resolve_completion_item(

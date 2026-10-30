@@ -2,6 +2,7 @@
 
 - [`[editor]` Section](#editor-section)
 - [`[editor.breadcrumb]` Section](#editorbreadcrumb-section)
+- [`[editor.inline-completion]` Section](#editorinline-completion-section)
 - [`[editor.clipboard-provider]` Section](#editorclipboard-provider-section)
 - [`[editor.statusline]` Section](#editorstatusline-section)
 - [`[editor.lsp]` Section](#editorlsp-section)
@@ -75,6 +76,32 @@
 | `kitty-keyboard-protocol` | Whether to enable Kitty Keyboard Protocol. Can be `enabled`, `disabled` or `auto` | `"auto"` |
 
 [^3]: In most cases, you also need to enable the `auto-format` setting under `languages.toml`. You can find the reasoning [here](https://github.com/helix-editor/helix/discussions/9043#discussioncomment-7811497).
+
+### `[editor.inline-completion]` Section
+
+Language servers that support `textDocument/inlineCompletion` (LSP 3.18) can show suggestions as faint text after
+the cursor. The suggestion is only inserted when accepted, and disappears when you edit, move the cursor, leave insert
+mode or open the completion menu. Add the `inline-completion` feature to a language server's `only-features` /
+`except-features` to route it (see [languages](./languages.md#configuring-language-servers-for-a-language)).
+Snippet suggestions and multiple cursors are not supported.
+
+|      Setting      |                                      Description                                      | Default |
+|-------------------|---------------------------------------------------------------------------------------|---------|
+| `auto-trigger`    | Ask for suggestions while typing. When off, only `inline_completion_trigger` asks      | `true`  |
+| `trigger-delay`   | Milliseconds after typing before a suggestion is requested                            | `150`   |
+
+There are no default keys. Add these to `config.toml`:
+
+```toml
+[keys.insert]
+C-y = "inline_completion_accept"
+C-e = "inline_completion_dismiss"
+C-g = "inline_completion_trigger"
+A-n = "inline_completion_next"
+A-p = "inline_completion_prev"
+```
+
+The preview uses the `ui.virtual.inline-completion` theme scope, falling back to `ui.virtual.inlay-hint`.
 
 ### `[editor.breadcrumb]` Section
 

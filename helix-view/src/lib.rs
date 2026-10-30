@@ -14,6 +14,7 @@ pub mod gutter;
 pub mod handlers;
 pub mod icons;
 pub mod info;
+pub mod inline_completion;
 pub mod input;
 pub mod keyboard;
 pub mod persistence;

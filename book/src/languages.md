@@ -269,6 +269,7 @@ The list of supported features is:
 - `inlay-hints`
 - `document-colors`
 - `call-hierarchy`
+- `inline-completion`
 
 ## Tree-sitter grammar configuration
 

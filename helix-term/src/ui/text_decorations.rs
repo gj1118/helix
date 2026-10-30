@@ -13,6 +13,7 @@ pub use diagnostics::InlineDiagnostics;
 
 pub mod blame;
 mod diagnostics;
+pub mod inline_completion;
 mod plugins;
 
 pub use plugins::PluginDecoration;
