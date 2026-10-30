@@ -237,6 +237,27 @@ impl<T, D> Column<T, D> {
     }
 }
 
+/// What a picker's replace action applies to.
+pub enum ReplaceScope<'a, T> {
+    /// Only the selected result.
+    Selected(&'a T),
+    /// Every result currently matching the picker's filters.
+    All(Vec<&'a T>),
+}
+
+/// Applies a replacement: `(cx, query, replacement, scope)`.
+type ReplaceCallback<T> = Box<dyn Fn(&mut Context, &str, &str, ReplaceScope<'_, T>)>;
+
+/// Label drawn before the replacement input.
+const REPLACE_LABEL: &str = "replace: ";
+
+/// The replacement input row of a picker with a replace action.
+struct ReplaceInput {
+    prompt: Prompt,
+    /// Whether typed text goes here rather than into the search input.
+    focused: bool,
+}
+
 /// Returns a new list of options to replace the contents of the picker
 /// when called with the current picker query,
 type DynQueryCallback<T, D> =
@@ -287,6 +308,10 @@ pub struct Picker<T: 'static + Send + Sync, D: 'static> {
     gradient_border: Option<GradientBorder>,
     /// Title to display at the top of the picker
     title: Option<&'static str>,
+
+    /// Replace action (`Alt-r` reveals the replacement input).
+    replace_fn: Option<ReplaceCallback<T>>,
+    replace: Option<ReplaceInput>,
 }
 
 impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
@@ -414,7 +439,76 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             preview_scroll_cursor: 0,
             gradient_border: None,
             title: None,
+            replace_fn: None,
+            replace: None,
         }
+    }
+
+    /// Gives the picker a replace action. `Alt-r` reveals a replacement input
+    /// below the query (and switches focus between the two); while it is shown,
+    /// `Enter` replaces the selected result and `Ctrl-Enter` (or `Alt-a`)
+    /// replaces every matching result. The callback gets the query, the
+    /// replacement text and the scope; the picker re-runs its query afterwards.
+    pub fn with_replace(
+        mut self,
+        callback: impl Fn(&mut Context, &str, &str, ReplaceScope<'_, T>) + 'static,
+    ) -> Self {
+        self.replace_fn = Some(Box::new(callback));
+        self
+    }
+
+    /// Reveals the replacement input, or moves focus between it and the query.
+    fn toggle_replace_focus(&mut self) {
+        match &mut self.replace {
+            Some(replace) => replace.focused = !replace.focused,
+            None => {
+                self.replace = Some(ReplaceInput {
+                    prompt: Prompt::new(
+                        "".into(),
+                        None,
+                        ui::completers::none,
+                        |_cx: &mut Context, _line: &str, _event: PromptEvent| {},
+                    ),
+                    focused: true,
+                });
+            }
+        }
+    }
+
+    /// Re-runs the dynamic query, e.g. after the results were changed on disk.
+    fn refresh_results(&self) {
+        if let Some(handler) = &self.dynamic_query_handler {
+            helix_event::send_blocking(
+                handler,
+                DynamicQueryChange {
+                    query: self.primary_query(),
+                    is_paste: true,
+                    force: true,
+                },
+            );
+        }
+    }
+
+    /// Runs the replace action on the selected result, or on all results.
+    fn run_replace(&self, cx: &mut Context, all: bool) {
+        let (Some(replace_fn), Some(input)) = (&self.replace_fn, &self.replace) else {
+            return;
+        };
+        let replacement = input.prompt.line().clone();
+        let query = self.primary_query();
+        let snapshot = self.matcher.snapshot();
+        if all {
+            let items: Vec<&T> = snapshot.matched_items(..).map(|item| item.data).collect();
+            if items.is_empty() {
+                return;
+            }
+            replace_fn(cx, &query, &replacement, ReplaceScope::All(items));
+        } else if let Some(item) = self.selection() {
+            replace_fn(cx, &query, &replacement, ReplaceScope::Selected(item));
+        } else {
+            return;
+        }
+        self.refresh_results();
     }
 
     pub fn with_key_handlers(mut self, handlers: PickerKeyHandlers<T, D>) -> Self {
@@ -475,6 +569,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             query: self.primary_query(),
             // Treat the initial query as a paste.
             is_paste: true,
+            force: false,
         };
         helix_event::send_blocking(&handler, event);
         self.dynamic_query_handler = Some(handler);
@@ -584,6 +679,11 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
     }
 
     fn prompt_handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
+        if let Some(replace) = self.replace.as_mut().filter(|replace| replace.focused) {
+            // Typing goes into the replacement; it does not change the query.
+            replace.prompt.handle_event(event, cx);
+            return EventResult::Consumed(None);
+        }
         if let EventResult::Consumed(_) = self.prompt.handle_event(event, cx) {
             self.handle_prompt_change(matches!(event, Event::Paste(_)));
         }
@@ -634,6 +734,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             let event = DynamicQueryChange {
                 query: self.primary_query(),
                 is_paste,
+                force: false,
             };
             helix_event::send_blocking(handler, event);
         }
@@ -831,18 +932,42 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             text_style,
         );
 
+        // -- Replacement input (second row), when revealed
+        let replace_rows = u16::from(self.replace.is_some() && inner.height > 4);
+        if replace_rows > 0 {
+            if let Some(replace) = self.replace.as_mut() {
+                let label_width = REPLACE_LABEL.len() as u16;
+                let row = Rect::new(area.x, area.y + 1, area.width, 1);
+                surface.clear_with(row, text_style);
+                surface.set_stringn(
+                    row.x,
+                    row.y,
+                    REPLACE_LABEL,
+                    label_width as usize,
+                    cx.editor.theme.get("ui.virtual"),
+                );
+                let input_area = Rect::new(
+                    line_area.x + label_width,
+                    row.y,
+                    line_area.width.saturating_sub(label_width),
+                    1,
+                );
+                replace.prompt.render(input_area, surface, cx);
+            }
+        }
+
         // -- Separator
         let sep_style = cx.editor.theme.get("ui.background.separator");
         let borders = BorderType::line_symbols(BorderType::Plain);
         for x in inner.left()..inner.right() {
-            if let Some(cell) = surface.get_mut(x, inner.y + 1) {
+            if let Some(cell) = surface.get_mut(x, inner.y + 1 + replace_rows) {
                 cell.set_symbol(borders.horizontal).set_style(sep_style);
             }
         }
 
         // -- Render the contents:
-        // subtract area of prompt from top
-        let inner = inner.clip_top(2);
+        // subtract area of prompt (and replacement row) from top
+        let inner = inner.clip_top(2 + replace_rows);
         let rows = inner.height.saturating_sub(self.header_height()) as u32;
         let offset = self.cursor - (self.cursor % std::cmp::max(1, rows));
         let cursor = self.cursor.saturating_sub(offset);
@@ -1364,6 +1489,25 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
             return EventResult::Consumed(None);
         }
 
+        // Replace action: reveal/switch the replacement input, apply it.
+        if self.replace_fn.is_some() {
+            match key_event {
+                alt!('r') => {
+                    self.toggle_replace_focus();
+                    return EventResult::Consumed(None);
+                }
+                ctrl!(Enter) | alt!('a') if self.replace.is_some() => {
+                    self.run_replace(ctx, true);
+                    return EventResult::Consumed(None);
+                }
+                key!(Enter) if self.replace.is_some() => {
+                    self.run_replace(ctx, false);
+                    return EventResult::Consumed(None);
+                }
+                _ => {}
+            }
+        }
+
         match key_event {
             shift!(Tab) | key!(Up) | ctrl!('p') => {
                 self.move_by(1, Direction::Backward);
@@ -1501,11 +1645,23 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
         };
         let area = inner.clip_left(1).with_height(1).with_width(picker_width);
 
+        if let Some(replace) = self.replace.as_ref().filter(|replace| replace.focused) {
+            let label_width = REPLACE_LABEL.len() as u16;
+            let row = Rect::new(
+                area.x + label_width,
+                area.y + 1,
+                area.width.saturating_sub(label_width),
+                1,
+            );
+            return replace.prompt.cursor(row, editor);
+        }
+
         self.prompt.cursor(area, editor)
     }
 
     fn required_size(&mut self, (width, height): (u16, u16)) -> Option<(u16, u16)> {
-        self.completion_height = height.saturating_sub(4 + self.header_height());
+        self.completion_height =
+            height.saturating_sub(4 + self.header_height() + u16::from(self.replace.is_some()));
         self.preview_height = height.saturating_sub(2);
         Some((width, height))
     }

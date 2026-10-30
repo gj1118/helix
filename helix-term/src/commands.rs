@@ -2759,6 +2759,8 @@ fn global_search(cx: &mut Context) {
         file_picker_config: config.file_picker.clone(),
         style: PathStyleConfig::new(&cx.editor.theme),
     };
+    // Kept for the replace action; `config` moves into the picker.
+    let smart_case = config.smart_case;
 
     let columns = [
         PickerColumn::new("path", |item: &FileResult, config: &GlobalSearchConfig| {
@@ -2930,6 +2932,27 @@ fn global_search(cx: &mut Context) {
     .with_preview(|_editor, FileResult { path, line_num, .. }| {
         Some((path.as_path().into(), Some((*line_num, *line_num))))
     })
+    .with_replace(move |cx, query, replacement, scope| {
+        use std::collections::{BTreeMap, BTreeSet};
+        let mut targets: BTreeMap<PathBuf, BTreeSet<usize>> = BTreeMap::new();
+        match scope {
+            ui::picker::ReplaceScope::Selected(item) => {
+                targets
+                    .entry(item.path.clone())
+                    .or_default()
+                    .insert(item.line_num);
+            }
+            ui::picker::ReplaceScope::All(items) => {
+                for item in items {
+                    targets
+                        .entry(item.path.clone())
+                        .or_default()
+                        .insert(item.line_num);
+                }
+            }
+        }
+        global_replace(cx, smart_case, query, replacement, targets);
+    })
     .with_history_register(Some(reg))
     .with_dynamic_query(get_files, Some(275))
     .with_title("Global Search");
@@ -2938,6 +2961,164 @@ fn global_search(cx: &mut Context) {
         picker,
         cx.editor.config().fullscreen_overlay,
     )));
+}
+
+/// Replaces the matches in one line (without its line ending); `None`
+/// when nothing matches. Also returns the number of matches.
+fn replace_in_line(
+    matcher: &grep_regex::RegexMatcher,
+    line: &str,
+    replacement: &str,
+) -> Option<(String, usize)> {
+    use grep_matcher::{Captures as _, Matcher as _};
+    let haystack = line.as_bytes();
+    let mut count = 0;
+    matcher
+        .find_iter(haystack, |_| {
+            count += 1;
+            true
+        })
+        .ok()?;
+    if count == 0 {
+        return None;
+    }
+    let mut captures = matcher.new_captures().ok()?;
+    let mut dst = Vec::with_capacity(haystack.len());
+    matcher
+        .replace_with_captures(haystack, &mut captures, &mut dst, |caps, dst| {
+            caps.interpolate(
+                |name| matcher.capture_index(name),
+                haystack,
+                replacement.as_bytes(),
+                dst,
+            );
+            true
+        })
+        .ok()?;
+    String::from_utf8(dst)
+        .ok()
+        .map(|replaced| (replaced, count))
+}
+
+/// Replaces matches of the global search `query` with `replacement` (regex
+/// captures such as `$1` and `${name}` expand; `$$` is a literal dollar) on
+/// the given 0-indexed lines of each file. Open buffers, including unsaved
+/// edits, are changed in place as one undo step each; other files are
+/// rewritten on disk.
+fn global_replace(
+    cx: &mut compositor::Context,
+    smart_case: bool,
+    query: &str,
+    replacement: &str,
+    targets: std::collections::BTreeMap<PathBuf, std::collections::BTreeSet<usize>>,
+) {
+    let matcher = match RegexMatcherBuilder::new()
+        .case_smart(smart_case)
+        .build(query)
+    {
+        Ok(matcher) => matcher,
+        Err(err) => {
+            cx.editor
+                .set_error(format!("Failed to compile regex: {err}"));
+            return;
+        }
+    };
+
+    let view_id = view!(cx.editor).id;
+    let mut total = 0usize;
+    let mut changed_files = 0usize;
+    let mut failures: Vec<String> = Vec::new();
+
+    for (path, lines) in targets {
+        if let Some(doc_id) = cx.editor.document_by_path(&path).map(|doc| doc.id()) {
+            // Open buffer: edit it, so unsaved changes are kept and it is undoable.
+            let doc = doc_mut!(cx.editor, &doc_id);
+            doc.ensure_view_init(view_id);
+            let text = doc.text().clone();
+            let slice = text.slice(..);
+            let mut changes = Vec::new();
+            let mut file_matches = 0;
+            for &line in &lines {
+                if line >= text.len_lines() {
+                    continue;
+                }
+                let start = text.line_to_char(line);
+                let end = helix_core::line_ending::line_end_char_index(&slice, line);
+                let body: String = text.slice(start..end).into();
+                if let Some((replaced, n)) = replace_in_line(&matcher, &body, replacement) {
+                    file_matches += n;
+                    if replaced != body {
+                        changes.push((start, end, Some(replaced.into())));
+                    }
+                }
+            }
+            if changes.is_empty() {
+                continue;
+            }
+            let transaction = Transaction::change(doc.text(), changes.into_iter());
+            doc.apply(&transaction, view_id);
+            doc.append_changes_to_history(view_mut!(cx.editor, view_id));
+            for (view, _) in cx.editor.tree.views_mut() {
+                if view.doc == doc_id {
+                    view.sync_changes(doc);
+                }
+            }
+            total += file_matches;
+            changed_files += 1;
+        } else {
+            let content = match std::fs::read_to_string(&path) {
+                Ok(content) => content,
+                Err(err) => {
+                    failures.push(format!("{}: {err}", path.display()));
+                    continue;
+                }
+            };
+            let mut out = String::with_capacity(content.len());
+            let mut file_matches = 0;
+            for (index, raw) in content.split_inclusive('\n').enumerate() {
+                if lines.contains(&index) {
+                    let (body, eol) = match raw.strip_suffix("\r\n") {
+                        Some(body) => (body, "\r\n"),
+                        None => match raw.strip_suffix('\n') {
+                            Some(body) => (body, "\n"),
+                            None => (raw, ""),
+                        },
+                    };
+                    if let Some((replaced, n)) = replace_in_line(&matcher, body, replacement) {
+                        file_matches += n;
+                        out.push_str(&replaced);
+                        out.push_str(eol);
+                        continue;
+                    }
+                }
+                out.push_str(raw);
+            }
+            if out == content {
+                continue;
+            }
+            if let Err(err) = std::fs::write(&path, out) {
+                // Stop on the first write error; earlier files stay replaced.
+                failures.push(format!("{}: {err}", path.display()));
+                break;
+            }
+            total += file_matches;
+            changed_files += 1;
+        }
+    }
+
+    if let Some(failure) = failures.first() {
+        cx.editor.set_error(format!(
+            "Replaced {total} in {changed_files} file(s); failed: {failure}"
+        ));
+    } else if total == 0 {
+        cx.editor.set_status("Nothing to replace");
+    } else {
+        cx.editor.set_status(format!(
+            "Replaced {total} match{} in {changed_files} file{}",
+            if total == 1 { "" } else { "es" },
+            if changed_files == 1 { "" } else { "s" },
+        ));
+    }
 }
 
 /// Local grep search in buffer
@@ -8727,4 +8908,65 @@ fn toggle_fold(cx: &mut Context) {
 
     let new_fold = Fold::new_points(text, object, header, &target);
     doc.add_folds(view, vec![new_fold]);
+}
+
+#[cfg(test)]
+mod global_replace_tests {
+    use super::replace_in_line;
+    use grep_regex::RegexMatcherBuilder;
+
+    fn matcher(query: &str, smart_case: bool) -> grep_regex::RegexMatcher {
+        RegexMatcherBuilder::new()
+            .case_smart(smart_case)
+            .build(query)
+            .unwrap()
+    }
+
+    #[test]
+    fn replaces_every_match_in_the_line() {
+        let m = matcher("foo", false);
+        assert_eq!(
+            replace_in_line(&m, "foo bar foo", "baz"),
+            Some(("baz bar baz".to_string(), 2))
+        );
+    }
+
+    #[test]
+    fn expands_numbered_and_named_captures() {
+        let m = matcher(r"(?P<first>\w+)-(\w+)", false);
+        assert_eq!(
+            replace_in_line(&m, "ab-cd", "$2-${first}"),
+            Some(("cd-ab".to_string(), 1))
+        );
+    }
+
+    #[test]
+    fn dollar_dollar_is_a_literal_dollar_and_empty_deletes() {
+        let m = matcher("price", false);
+        assert_eq!(
+            replace_in_line(&m, "price", "$$5"),
+            Some(("$5".to_string(), 1))
+        );
+        assert_eq!(
+            replace_in_line(&m, "a price b", ""),
+            Some(("a  b".to_string(), 1))
+        );
+    }
+
+    #[test]
+    fn smart_case_follows_the_query() {
+        let insensitive = matcher("foo", true);
+        assert_eq!(
+            replace_in_line(&insensitive, "Foo", "x"),
+            Some(("x".to_string(), 1))
+        );
+        let sensitive = matcher("Foo", true);
+        assert_eq!(replace_in_line(&sensitive, "foo", "x"), None);
+    }
+
+    #[test]
+    fn no_match_is_none() {
+        let m = matcher("zzz", false);
+        assert_eq!(replace_in_line(&m, "foo", "x"), None);
+    }
 }
