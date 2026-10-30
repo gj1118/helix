@@ -263,6 +263,26 @@ struct ReplaceInput {
 type DynQueryCallback<T, D> =
     fn(&str, &mut Editor, Arc<D>, &Injector<T, D>) -> BoxFuture<'static, anyhow::Result<()>>;
 
+/// Keeps a picker's results in sync with the editor, see [`Picker::with_live_refresh`].
+struct LiveRefresh<T: 'static + Send + Sync, D: 'static> {
+    /// Cheap summary of the data the results come from. A change triggers a refresh.
+    fingerprint: Box<dyn Fn(&Editor) -> u64>,
+    /// Pushes the up to date items. `None` re-runs the picker's dynamic query.
+    rebuild: Option<Box<dyn Fn(&Editor, &Injector<T, D>)>>,
+    /// Identifies an item so the selection can be restored after a refresh.
+    key: Box<dyn Fn(&T) -> String>,
+    last: Option<u64>,
+    last_refresh: std::time::Instant,
+    wake_scheduled: bool,
+    /// Key of the item to select once the refreshed results are in.
+    reselect: Option<String>,
+}
+
+/// Minimum time between two refreshes of a picker.
+const LIVE_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+/// How long a refreshed picker waits for its previously selected item to show up again.
+const RESELECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 pub struct Picker<T: 'static + Send + Sync, D: 'static> {
     columns: Arc<[Column<T, D>]>,
     primary_column: usize,
@@ -312,6 +332,8 @@ pub struct Picker<T: 'static + Send + Sync, D: 'static> {
     /// Replace action (`Alt-r` reveals the replacement input).
     replace_fn: Option<ReplaceCallback<T>>,
     replace: Option<ReplaceInput>,
+
+    live: Option<LiveRefresh<T, D>>,
 }
 
 impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
@@ -441,6 +463,100 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             title: None,
             replace_fn: None,
             replace: None,
+            live: None,
+        }
+    }
+
+    /// Keeps the results up to date while the picker is open.
+    ///
+    /// `fingerprint` summarizes the data the results are built from and is
+    /// checked on every redraw (at most every 250ms); when it changes `rebuild`
+    /// pushes the fresh items into an injector. Pass `None` for `rebuild` on
+    /// pickers with a dynamic query to re-run the query instead. `key`
+    /// identifies an item, so the selection stays on the same item (when it
+    /// still exists) and the query stays as typed.
+    pub fn with_live_refresh(
+        mut self,
+        fingerprint: impl Fn(&Editor) -> u64 + 'static,
+        rebuild: Option<Box<dyn Fn(&Editor, &Injector<T, D>)>>,
+        key: impl Fn(&T) -> String + 'static,
+    ) -> Self {
+        self.live = Some(LiveRefresh {
+            fingerprint: Box::new(fingerprint),
+            rebuild,
+            key: Box::new(key),
+            last: None,
+            last_refresh: std::time::Instant::now(),
+            wake_scheduled: false,
+            reselect: None,
+        });
+        self
+    }
+
+    /// Refreshes the results when the data they come from changed.
+    fn refresh_if_stale(&mut self, editor: &Editor) {
+        let Some(mut live) = self.live.take() else {
+            return;
+        };
+        self.refresh_if_stale_with(&mut live, editor);
+        self.live = Some(live);
+    }
+
+    fn refresh_if_stale_with(&mut self, live: &mut LiveRefresh<T, D>, editor: &Editor) {
+        let current = (live.fingerprint)(editor);
+        match live.last {
+            None => {
+                live.last = Some(current);
+                return;
+            }
+            Some(last) if last == current => return,
+            Some(_) => {}
+        }
+        let since = live.last_refresh.elapsed();
+        if since < LIVE_REFRESH_INTERVAL {
+            // Too soon: come back for another redraw once the interval has passed.
+            if !live.wake_scheduled {
+                live.wake_scheduled = true;
+                let wait = LIVE_REFRESH_INTERVAL - since;
+                tokio::spawn(async move {
+                    tokio::time::sleep(wait).await;
+                    helix_event::request_redraw();
+                });
+            }
+            return;
+        }
+        live.last = Some(current);
+        live.last_refresh = std::time::Instant::now();
+        live.wake_scheduled = false;
+        // Remember what is selected, unless a refresh is still waiting to restore it.
+        if live.reselect.is_none() {
+            live.reselect = self
+                .matcher
+                .snapshot()
+                .get_matched_item(self.cursor)
+                .map(|item| (live.key)(item.data));
+        }
+        if let Some(rebuild) = &live.rebuild {
+            self.version.fetch_add(1, atomic::Ordering::Relaxed);
+            self.matcher.restart(false);
+            let injector = self.injector();
+            rebuild(editor, &injector);
+        } else {
+            self.refresh_results();
+        }
+    }
+
+    /// Moves the cursor back to the item that was selected before a refresh.
+    fn restore_selection(&mut self) {
+        let Some(live) = &mut self.live else { return };
+        let Some(key) = &live.reselect else { return };
+        let snapshot = self.matcher.snapshot();
+        if let Some(index) = snapshot
+            .matched_items(..)
+            .position(|item| &(live.key)(item.data) == key)
+        {
+            self.cursor = index as u32;
+            live.reselect = None;
         }
     }
 
@@ -845,12 +961,22 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
     }
 
     fn render_picker(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
+        self.refresh_if_stale(cx.editor);
         let status = self.matcher.tick(10);
+        if status.changed {
+            self.restore_selection();
+        }
         let snapshot = self.matcher.snapshot();
         if status.changed {
             self.cursor = self
                 .cursor
                 .min(snapshot.matched_item_count().saturating_sub(1))
+        }
+        if let Some(live) = &mut self.live {
+            // The selected item is gone (or the results never came): stop looking.
+            if !status.running && live.last_refresh.elapsed() > RESELECT_TIMEOUT {
+                live.reselect = None;
+            }
         }
 
         let text_style = cx.editor.theme.get("ui.text");
@@ -1462,6 +1588,8 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
         };
 
         let close_fn = |picker: &mut Self| {
+            // A closed picker no longer follows the editor (this also stops its file watcher).
+            picker.live = None;
             // if the picker is very large don't store it as last_picker to avoid
             // excessive memory consumption
             let callback: compositor::Callback = if picker.matcher.snapshot().item_count() > 100_000
@@ -1483,6 +1611,11 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
             };
             EventResult::Consumed(Some(callback))
         };
+
+        // Navigating cancels restoring the selection after a refresh.
+        if let Some(live) = &mut self.live {
+            live.reselect = None;
+        }
 
         // handle custom keybindings, if exist
         if let EventResult::Consumed(_) = self.custom_key_event_handler(&key_event, ctx) {

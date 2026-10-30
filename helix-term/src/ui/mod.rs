@@ -297,17 +297,12 @@ pub struct FilePickerData {
 }
 type FilePicker = Picker<PathBuf, FilePickerData>;
 
-pub fn file_picker(editor: &Editor, root: PathBuf) -> FilePicker {
+/// Lists the files below `root` that the file picker shows.
+fn picker_files(editor: &Editor, root: &Path) -> impl Iterator<Item = PathBuf> + Send + 'static {
     use ignore::{types::TypesBuilder, WalkBuilder};
-    use std::time::Instant;
 
     let config = editor.config();
-    let data = FilePickerData {
-        root: root.clone(),
-        directory_style: editor.theme.get("ui.text.directory"),
-    };
-
-    let now = Instant::now();
+    let root = root.to_path_buf();
 
     let dedup_symlinks = config.file_picker.deduplicate_links;
     let absolute_root = root.canonicalize().unwrap_or_else(|_| root.clone());
@@ -341,13 +336,26 @@ pub fn file_picker(editor: &Editor, root: PathBuf) -> FilePicker {
         .build()
         .expect("failed to build excluded_types");
     walk_builder.types(excluded_types);
-    let mut files = walk_builder.build().filter_map(|entry| {
+    walk_builder.build().filter_map(|entry| {
         let entry = entry.ok()?;
         if !entry.path().is_file() {
             return None;
         }
         Some(entry.into_path())
-    });
+    })
+}
+
+pub fn file_picker(editor: &Editor, root: PathBuf) -> FilePicker {
+    use std::time::Instant;
+
+    let config = editor.config();
+    let data = FilePickerData {
+        root: root.clone(),
+        directory_style: editor.theme.get("ui.text.directory"),
+    };
+
+    let now = Instant::now();
+    let mut files = picker_files(editor, &root);
     log::debug!("file_picker init {:?}", Instant::now().duration_since(now));
 
     let columns = [PickerColumn::new(
@@ -414,7 +422,25 @@ pub fn file_picker(editor: &Editor, root: PathBuf) -> FilePicker {
             }
         });
     }
-    picker
+
+    // Keep the list in sync with the file system.
+    let watch = crate::fs_watch::FsWatch::workspace(&root);
+    let walk_root = root;
+    picker.with_live_refresh(
+        move |_editor| watch.as_ref().map_or(0, |watch| watch.generation()),
+        Some(Box::new(move |editor, injector| {
+            let files = picker_files(editor, &walk_root);
+            let injector = injector.clone();
+            std::thread::spawn(move || {
+                for file in files {
+                    if injector.push(file).is_err() {
+                        break;
+                    }
+                }
+            });
+        })),
+        |path: &PathBuf| path.to_string_lossy().into_owned(),
+    )
 }
 
 fn get_excluded_types() -> ignore::types::Types {

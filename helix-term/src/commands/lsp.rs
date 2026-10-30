@@ -216,13 +216,10 @@ enum DiagnosticsFormat {
 
 type DiagnosticsPicker = Picker<PickerDiagnostic, DiagnosticStyles>;
 
-fn diag_picker(
+fn flatten_diagnostics(
     editor: &Editor,
     diagnostics: impl IntoIterator<Item = (Uri, Vec<(lsp::Diagnostic, DiagnosticProvider)>)>,
-    format: DiagnosticsFormat,
-) -> DiagnosticsPicker {
-    // TODO: drop current_path comparison and instead use workspace: bool flag?
-
+) -> Vec<PickerDiagnostic> {
     // flatten the map to a vec of (url, diag) pairs
     let mut flat_diag = Vec::new();
     for (uri, diags) in diagnostics {
@@ -251,6 +248,66 @@ fn diag_picker(
             .unwrap_or(lsp::DiagnosticSeverity::HINT)
             .cmp(&b.diag.severity.unwrap_or(lsp::DiagnosticSeverity::HINT))
     });
+    flat_diag
+}
+
+/// Hashes the diagnostics of `uris` (or of all documents when `None`), to notice changes.
+fn diagnostics_fingerprint(editor: &Editor, only: Option<&Uri>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for (uri, diags) in &editor.diagnostics {
+        if only.is_some_and(|only| only != uri) {
+            continue;
+        }
+        format!("{uri:?}").hash(&mut hasher);
+        for (diag, _) in diags {
+            (
+                diag.range.start.line,
+                diag.range.start.character,
+                diag.range.end.line,
+                diag.range.end.character,
+                diag.severity.map(|severity| format!("{severity:?}")),
+                &diag.message,
+            )
+                .hash(&mut hasher);
+        }
+    }
+    hasher.finish()
+}
+
+/// Makes a diagnostics picker follow `editor.diagnostics`. `only` restricts it to one document.
+fn live_diagnostics(picker: DiagnosticsPicker, only: Option<Uri>) -> DiagnosticsPicker {
+    let rebuild_only = only.clone();
+    picker.with_live_refresh(
+        move |editor| diagnostics_fingerprint(editor, only.as_ref()),
+        Some(Box::new(move |editor, injector| {
+            let diagnostics = editor
+                .diagnostics
+                .iter()
+                .filter(|(uri, _)| rebuild_only.as_ref().is_none_or(|only| only == *uri))
+                .map(|(uri, diags)| (uri.clone(), diags.clone()))
+                .collect::<Vec<_>>();
+            for item in flatten_diagnostics(editor, diagnostics) {
+                if injector.push(item).is_err() {
+                    break;
+                }
+            }
+        })),
+        |item| {
+            format!(
+                "{:?}:{:?}:{}",
+                item.location.uri, item.location.range, item.diag.message
+            )
+        },
+    )
+}
+
+fn diag_picker(
+    editor: &Editor,
+    diagnostics: impl IntoIterator<Item = (Uri, Vec<(lsp::Diagnostic, DiagnosticProvider)>)>,
+    format: DiagnosticsFormat,
+) -> DiagnosticsPicker {
+    let flat_diag = flatten_diagnostics(editor, diagnostics);
 
     let styles = DiagnosticStyles {
         hint: editor.theme.get("hint"),
@@ -633,10 +690,13 @@ pub fn diagnostics_picker(cx: &mut Context) {
     let doc = doc!(cx.editor);
     if let Some(uri) = doc.uri() {
         let diagnostics = cx.editor.diagnostics.get(&uri).cloned().unwrap_or_default();
-        let picker = diag_picker(
-            cx.editor,
-            [(uri, diagnostics)],
-            DiagnosticsFormat::HideSourcePath,
+        let picker = live_diagnostics(
+            diag_picker(
+                cx.editor,
+                [(uri.clone(), diagnostics)],
+                DiagnosticsFormat::HideSourcePath,
+            ),
+            Some(uri),
         )
         .with_title("Diagnostics");
         cx.push_layer(Box::new(overlaid(
@@ -656,8 +716,11 @@ pub fn workspace_diagnostics_picker(cx: &mut Context) {
     // No language server candidates (or a collection is already running): fall back to
     // the diagnostics that have been published so far.
     let diagnostics = cx.editor.diagnostics.clone();
-    let picker = diag_picker(cx.editor, diagnostics, DiagnosticsFormat::ShowSourcePath)
-        .with_title("Workspace Diagnostics");
+    let picker = live_diagnostics(
+        diag_picker(cx.editor, diagnostics, DiagnosticsFormat::ShowSourcePath),
+        None,
+    )
+    .with_title("Workspace Diagnostics");
     cx.push_layer(Box::new(overlaid(
         picker,
         cx.editor.config().fullscreen_overlay,
@@ -666,10 +729,13 @@ pub fn workspace_diagnostics_picker(cx: &mut Context) {
 
 fn push_workspace_diagnostics_picker(editor: &mut Editor, compositor: &mut Compositor) {
     let fullscreen = editor.config().fullscreen_overlay;
-    let picker = diag_picker(
-        editor,
-        editor.diagnostics.clone(),
-        DiagnosticsFormat::ShowSourcePath,
+    let picker = live_diagnostics(
+        diag_picker(
+            editor,
+            editor.diagnostics.clone(),
+            DiagnosticsFormat::ShowSourcePath,
+        ),
+        None,
     )
     .with_title("Workspace Diagnostics");
     compositor.push(Box::new(overlaid(picker, fullscreen)));

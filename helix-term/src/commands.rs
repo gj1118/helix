@@ -2957,6 +2957,14 @@ fn global_search(cx: &mut Context) {
     .with_dynamic_query(get_files, Some(275))
     .with_title("Global Search");
 
+    // Re-run the search when files change while the picker is open.
+    let watch = crate::fs_watch::FsWatch::workspace(&helix_stdx::env::current_working_dir());
+    let picker = picker.with_live_refresh(
+        move |_editor| watch.as_ref().map_or(0, |watch| watch.generation()),
+        None,
+        |item| format!("{}:{}", item.path.display(), item.line_num),
+    );
+
     cx.push_layer(Box::new(overlaid(
         picker,
         cx.editor.config().fullscreen_overlay,
@@ -4291,8 +4299,6 @@ impl PathStyleConfig {
 }
 
 fn buffer_picker(cx: &mut Context) {
-    let current = view!(cx.editor).doc;
-
     struct BufferMeta<'a> {
         id: DocumentId,
         path: Option<Cow<'a, Path>>,
@@ -4301,26 +4307,32 @@ fn buffer_picker(cx: &mut Context) {
         focused_at: std::time::Instant,
     }
 
-    let new_meta = |doc: &Document| BufferMeta {
-        id: doc.id(),
-        path: doc
-            .path()
-            .map(ToOwned::to_owned)
-            .map(helix_stdx::path::get_relative_path),
-        is_modified: doc.is_modified(),
-        is_current: doc.id() == current,
-        focused_at: doc.focused_at,
-    };
+    fn new_meta(doc: &Document, current: DocumentId) -> BufferMeta<'static> {
+        BufferMeta {
+            id: doc.id(),
+            path: doc
+                .path()
+                .map(ToOwned::to_owned)
+                .map(helix_stdx::path::get_relative_path),
+            is_modified: doc.is_modified(),
+            is_current: doc.id() == current,
+            focused_at: doc.focused_at,
+        }
+    }
 
-    let mut items = cx
-        .editor
-        .documents
-        .values()
-        .map(new_meta)
-        .collect::<Vec<BufferMeta>>();
+    // Most recently used buffers first.
+    fn buffer_items(editor: &Editor) -> Vec<BufferMeta<'static>> {
+        let current = view!(editor).doc;
+        let mut items = editor
+            .documents
+            .values()
+            .map(|doc| new_meta(doc, current))
+            .collect::<Vec<_>>();
+        items.sort_unstable_by_key(|item| std::cmp::Reverse(item.focused_at));
+        items
+    }
 
-    // mru
-    items.sort_unstable_by_key(|item| std::cmp::Reverse(item.focused_at));
+    let items = buffer_items(cx.editor);
 
     let columns = [
         PickerColumn::new("id", |meta: &BufferMeta, _| meta.id.to_string().into()),
@@ -4390,7 +4402,26 @@ fn buffer_picker(cx: &mut Context) {
         });
         Some((meta.id.into(), lines))
     })
-    .with_title("Buffers");
+    .with_title("Buffers")
+    .with_live_refresh(
+        |editor| {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            for doc in editor.documents.values() {
+                (doc.id(), doc.path(), doc.is_modified()).hash(&mut hasher);
+            }
+            view!(editor).doc.hash(&mut hasher);
+            hasher.finish()
+        },
+        Some(Box::new(|editor, injector| {
+            for item in buffer_items(editor) {
+                if injector.push(item).is_err() {
+                    break;
+                }
+            }
+        })),
+        |meta| meta.id.to_string(),
+    );
     cx.push_layer(Box::new(overlaid(
         picker,
         cx.editor.config().fullscreen_overlay,
@@ -4607,26 +4638,42 @@ fn changed_file_picker(cx: &mut Context) {
     )
     .with_preview(|_editor, meta| Some((meta.path().into(), None)))
     .with_title("Changed Files");
-    let injector = picker.injector();
 
-    let trust_full = cx
-        .editor
-        .workspace_trust
-        .query(
-            &helix_loader::find_workspace_in(&cwd).0,
-            helix_loader::workspace_trust::TrustQuery::Git,
-        )
-        .is_trusted();
-    cx.editor
-        .diff_providers
-        .clone()
-        .for_each_changed_file(cwd, trust_full, move |change| match change {
-            Ok(change) => injector.push(change).is_ok(),
-            Err(err) => {
-                status::report_blocking(err);
-                true
-            }
-        });
+    fn feed_changes(
+        editor: &Editor,
+        cwd: PathBuf,
+        injector: ui::picker::Injector<FileChange, FileChangeData>,
+    ) {
+        let trust_full = editor
+            .workspace_trust
+            .query(
+                &helix_loader::find_workspace_in(&cwd).0,
+                helix_loader::workspace_trust::TrustQuery::Git,
+            )
+            .is_trusted();
+        editor
+            .diff_providers
+            .clone()
+            .for_each_changed_file(cwd, trust_full, move |change| match change {
+                Ok(change) => injector.push(change).is_ok(),
+                Err(err) => {
+                    status::report_blocking(err);
+                    true
+                }
+            });
+    }
+
+    feed_changes(cx.editor, cwd.clone(), picker.injector());
+
+    // Follow edits, staging and commits made while the picker is open.
+    let watch = crate::fs_watch::FsWatch::workspace(&cwd);
+    let picker = picker.with_live_refresh(
+        move |_editor| watch.as_ref().map_or(0, |watch| watch.generation()),
+        Some(Box::new(move |editor, injector| {
+            feed_changes(editor, cwd.clone(), injector.clone())
+        })),
+        |change| change.path().display().to_string(),
+    );
     cx.push_layer(Box::new(overlaid(
         picker,
         cx.editor.config().fullscreen_overlay,
