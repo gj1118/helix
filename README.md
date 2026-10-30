@@ -2,13 +2,20 @@ This is a just a fork of Helix. All claims rest with Helix maintainers and its c
 For more information please see Helix's readme file. 
 
 New Features
-1. Noice Cmdline
+1. Explorer (in built)
+   <img width="1287" height="1182" alt="image" src="https://github.com/user-attachments/assets/20904c9c-0119-44a1-96da-36c1cade1988" />
+You can also change the explorer to be present on the right hand side
+   <img width="1280" height="1190" alt="image" src="https://github.com/user-attachments/assets/fe5513d3-ac2a-467e-98c7-a36e245ec1c7" />
+Or even a floating one - like so
+   <img width="1283" height="1179" alt="image" src="https://github.com/user-attachments/assets/f8b8de0e-f5d6-45a1-9598-7450b597496e" />
+Mouse events are supported too !
+3. Noice Cmdline
    
    <img width="580" height="424" alt="image" src="https://github.com/user-attachments/assets/a91ef59a-0923-47ab-b35a-2d9cb22a6462" />
    <img width="1395" height="624" alt="image" src="https://github.com/user-attachments/assets/42c01975-b4a0-4d80-ab0e-8171dbf4df72" />
 
 
-3. Noice Notifications
+4. Noice Notifications
    
    <img width="713" height="760" alt="image" src="https://github.com/user-attachments/assets/cf78a977-1fd1-421f-acb2-fe359791b3d9" />
 
