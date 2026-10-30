@@ -428,6 +428,14 @@ impl MappableCommand {
         file_explorer, "Open file explorer in workspace root",
         file_explorer_in_current_buffer_directory, "Open file explorer at current buffer's directory",
         file_explorer_in_current_directory, "Open file explorer at current working directory",
+        explorer_toggle, "Toggle the explorer file tree panel",
+        explorer_focus, "Focus the explorer file tree panel (opening it if hidden)",
+        explorer_left, "Show the explorer panel pinned to the left",
+        explorer_right, "Show the explorer panel pinned to the right",
+        explorer_float, "Show the explorer panel as a floating window",
+        explorer_float_toggle, "Toggle the explorer panel as a floating window",
+        explorer_refresh, "Refresh the explorer panel from disk",
+        explorer_reveal, "Reveal the current file in the explorer panel",
         code_action, "Perform code action",
         code_action_picker, "Perform code action in a picker",
         buffer_picker, "Open buffer picker",
@@ -3806,6 +3814,177 @@ fn file_picker_in_current_directory(cx: &mut Context) {
     )));
 }
 
+/// Toggles the pinned explorer panel. The floating window has its own toggle
+/// (`explorer_float_toggle`) and is never opened from here: an open float is
+/// swapped for the pinned panel instead.
+pub fn explorer_toggle(cx: &mut Context) {
+    let panel = &mut cx.editor.explorer_panel;
+    if !panel.visible {
+        // Hidden: show the panel and take focus.
+        panel.visible = true;
+        panel.focused = true;
+        explorer_install_layer(cx);
+    } else if panel.floating {
+        // A float is up: this key belongs to the pinned panel, so show that
+        // one in its place.
+        panel.floating = false;
+        panel.focused = true;
+    } else if panel.focused {
+        // Focused: hide (the plain "toggle" case).
+        panel.hide();
+    } else {
+        // Visible but the editor has the keyboard (e.g. after opening a
+        // file from the tree or Esc): refocus the tree.
+        panel.focused = true;
+    }
+}
+
+/// Toggles the explorer as a floating window, independently of the pinned
+/// panel's toggle and of its side: closing the window leaves no trace that
+/// makes `explorer_toggle` reopen it.
+pub fn explorer_float_toggle(cx: &mut Context) {
+    let panel = &mut cx.editor.explorer_panel;
+    if panel.visible && panel.floating {
+        panel.hide();
+    } else {
+        panel.visible = true;
+        panel.focused = true;
+        panel.floating = true;
+        explorer_install_layer(cx);
+    }
+}
+
+pub fn explorer_focus(cx: &mut Context) {
+    // Move keyboard focus to the tree, opening the panel if it was hidden.
+    cx.editor.explorer_panel.visible = true;
+    cx.editor.explorer_panel.focused = true;
+    explorer_install_layer(cx);
+}
+
+pub fn explorer_left(cx: &mut Context) {
+    explorer_show_side(cx, helix_view::explorer::ExplorerSide::Left);
+}
+
+pub fn explorer_right(cx: &mut Context) {
+    explorer_show_side(cx, helix_view::explorer::ExplorerSide::Right);
+}
+
+pub fn explorer_float(cx: &mut Context) {
+    // Show the floating window (without touching the pinned side), and take
+    // focus.
+    let panel = &mut cx.editor.explorer_panel;
+    panel.visible = true;
+    panel.focused = true;
+    panel.floating = true;
+    explorer_install_layer(cx);
+}
+
+pub fn explorer_refresh(cx: &mut Context) {
+    cx.editor.explorer_panel.visible = true;
+    explorer_install_layer(cx);
+    explorer_refresh_job(cx, None);
+}
+
+pub fn explorer_reveal(cx: &mut Context) {
+    if helix_view::doc!(cx.editor).path().is_none() {
+        cx.editor.set_error("Current buffer has no file");
+        return;
+    }
+
+    cx.editor.explorer_panel.visible = true;
+    cx.editor.explorer_panel.focused = true;
+    explorer_install_layer(cx);
+
+    cx.jobs.callback(Box::pin(async move {
+        let call: Callback = Callback::EditorCompositor(Box::new(|editor, compositor| {
+            if !editor.explorer_panel.visible {
+                return;
+            }
+            if let Some(explorer) =
+                compositor.find_id::<ui::explorer::Explorer>(ui::explorer::EXPLORER_ID)
+            {
+                if !explorer.reveal_document(editor) {
+                    editor.set_error(format!(
+                        "File is not inside the explorer root {:?}",
+                        explorer.root()
+                    ));
+                }
+            }
+        }));
+        Ok(call)
+    }));
+}
+
+/// Enqueues a full tree reload once the compositor is reachable.
+fn explorer_refresh_job(cx: &mut Context, keep: Option<std::path::PathBuf>) {
+    cx.jobs.callback(Box::pin(async move {
+        let call: Callback = Callback::EditorCompositor(Box::new(move |editor, compositor| {
+            if let Some(explorer) =
+                compositor.find_id::<ui::explorer::Explorer>(ui::explorer::EXPLORER_ID)
+            {
+                explorer.refresh_keep(editor, keep);
+                editor.set_status("Explorer refreshed");
+            }
+        }));
+        Ok(call)
+    }));
+}
+
+/// Shows the panel pinned on `side` (and records the override). Any floating
+/// window is replaced by the pinned panel.
+fn explorer_show_side(cx: &mut Context, side: helix_view::explorer::ExplorerSide) {
+    cx.editor.explorer_panel.side = Some(side);
+    cx.editor.explorer_panel.floating = false;
+    cx.editor.explorer_panel.visible = true;
+    cx.editor.explorer_panel.focused = true;
+    explorer_install_layer(cx);
+}
+
+/// Installs the explorere layer (building the tree on first use). The layer
+/// is never removed again: toggling only flips `explorer_panel.visible`, so
+/// hide/show stays cheap and stateful.
+fn explorer_install_layer(cx: &mut Context) {
+    cx.jobs.callback(Box::pin(async move {
+        let call: Callback = Callback::EditorCompositor(Box::new(|editor, compositor| {
+            if !editor.explorer_panel.visible {
+                return;
+            }
+            if compositor
+                .find_id::<ui::explorer::Explorer>(ui::explorer::EXPLORER_ID)
+                .is_some()
+            {
+                return;
+            }
+
+            let root = find_workspace().0;
+            if !root.exists() {
+                editor.set_error("Workspace directory does not exist");
+                editor.explorer_panel.hide();
+                return;
+            }
+
+            match ui::explorer::Explorer::new(&root, editor) {
+                Ok(explorer) => compositor.push(Box::new(explorer)),
+                Err(err) => {
+                    editor.set_error(format!("Failed to open explorer: {err}"));
+                    editor.explorer_panel.hide();
+                    return;
+                }
+            }
+
+            // Best-effort reveal of the current file.
+            if editor.config().explorer.auto_reveal && helix_view::doc!(editor).path().is_some() {
+                if let Some(explorer) =
+                    compositor.find_id::<ui::explorer::Explorer>(ui::explorer::EXPLORER_ID)
+                {
+                    explorer.reveal_document(editor);
+                }
+            }
+        }));
+        Ok(call)
+    }));
+}
+
 fn file_explorer(cx: &mut Context) {
     let root = find_workspace().0;
     if !root.exists() {
@@ -4714,7 +4893,7 @@ fn open(cx: &mut Context, open: Open, comment_continuation: CommentContinuation)
         // calculate new selection ranges
         let pos = offs + above_next_line_end_index + above_next_line_end_width;
         let comment_len = continue_comment_token
-            .map(|token| token.len() + 1) // `+ 1` for the extra space added
+            .map(|token| token.chars().count() + 1) // `+ 1` for the extra space added
             .unwrap_or_default();
         for i in 0..count {
             // pos                     -> beginning of reference line,

@@ -1,7 +1,9 @@
 mod cmdline_popup;
 mod completion;
+mod confirm_box;
 mod document;
 pub(crate) mod editor;
+pub mod explorer;
 mod file_explorer;
 pub mod gradient_border;
 mod info;
@@ -24,6 +26,7 @@ use crate::filter_picker_entry;
 use crate::job::{self, Callback};
 pub use cmdline_popup::CmdlinePopup;
 pub use completion::Completion;
+pub use confirm_box::ConfirmBox;
 pub use editor::EditorView;
 pub use file_explorer::file_explorer;
 use helix_stdx::rope;

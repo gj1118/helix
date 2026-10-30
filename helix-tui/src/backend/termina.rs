@@ -452,6 +452,7 @@ impl Backend for TerminaBackend {
     }
 
     fn restore(&mut self) -> io::Result<()> {
+        self.set_pointer_shape("")?;
         self.disable_extensions()?;
         self.disable_mouse_capture()?;
         write!(
@@ -614,6 +615,10 @@ impl Backend for TerminaBackend {
 
     fn get_theme_mode(&self) -> Option<theme::Mode> {
         self.capabilities.theme_mode
+    }
+
+    fn set_pointer_shape(&mut self, name: &str) -> io::Result<()> {
+        write!(self.terminal, "\x1b]22;{name}\x1b\\")
     }
 
     fn set_background_color(&mut self, color: Option<Color>) -> io::Result<()> {

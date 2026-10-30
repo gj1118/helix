@@ -20,6 +20,8 @@ New Features
    Add this following to your editor.statusline config 
    <img width="428" height="220" alt="image" src="https://github.com/user-attachments/assets/dea63278-a649-4561-a29a-b1c0eddacf9f" />
 
+5. Explorer file tree panel — toggle with `<space>x`, pinned or floating, with file operations (see [Explorer](#explorer) below)
+
 
    
 
@@ -54,6 +56,161 @@ This fork of Helix implements the following pull requests. Future pull requests 
 28. https://github.com/helix-editor/helix/pull/12043 (6 new case conversion commands: PascalCase, camelCase, snake_case, Title Case, kebab-case, Sentence case)
 29. https://github.com/helix-editor/helix/pull/15854 (scrollable file preview in picker)
 30. https://github.com/helix-editor/helix/pull/15573 (breadcrumb navigation bar - with tree-sitter fallback, depth/name truncation, debounced LSP requests and icon support)
+
+## Explorer
+
+A keyboard-driven file tree sidebar. Toggle it with `<space>x` or
+`:explorer-toggle` — when the panel is hidden it opens and takes focus,
+when it is open but the editor has focus it re-focuses the tree, and
+while the tree is focused it hides the panel. `<space>wx` (the Window
+submode) and `:explorer-focus` move focus to the open panel without
+hiding it.
+While the panel is focused (in normal mode) a bare `x` cuts the file under the
+cursor, which is why the toggle itself is a two-key sequence. Moving back to a
+buffer is symmetrical: opening a file with `l`/Enter lands focus on that buffer
+directly, `Esc` hands focus back to the editor while keeping the tree open, and
+`q` hides the panel entirely. When the panel floats, anything that hands focus
+back into an opened buffer (`l`/Enter, a split with `v`/`s`) — or plain `Esc` —
+also closes the float, since it would otherwise cover the editor.
+
+The panel is pinned to one edge of the terminal (the editor views resize around
+it), or it can float over the editor. Opening it does not scan the whole
+workspace — directory children are read from disk on first expansion only.
+
+Default settings (`[editor.explorer]` in your `config.toml`):
+
+| Key | Description | Default |
+|--|--|---------|
+|`side` | Where the panel lives: `left`, `right`, or `floating` | `left` |
+|`width` | Width of the pinned panel in columns | `30` |
+|`floating-width` | Width of the floating window in columns | `40` |
+|`floating-height` | Height of the floating window in lines | `20` |
+|`floating-x` | Column of the floating window's left edge (centered when unset) | unset |
+|`floating-y` | Row of the floating window's top edge (centered when unset) | unset |
+|`icons` | Show per-file-type icons (honors the global `[icons.mime]` settings, see below) | `true` |
+|`auto-reveal` | Select the current buffer's file when the panel opens | `false` |
+|`show-hidden` | Show dotfiles (hidden files) | `false` |
+|`directories-first` | Sort directories before files in directory listings | `true` |
+
+Example:
+
+```toml
+[editor.explorer]
+side = "left"
+width = 35
+```
+
+The side and width can also be switched at runtime with `:explorer-left`,
+`:explorer-right`, `:explorer-float`, and `:explorer-width <columns>`.
+`:explorer-reveal` selects the current buffer's file, and `:explorer-refresh`
+re-reads the expanded directories from disk. `:explorer-focus` moves focus back
+to an open panel.
+
+### Overriding the icons
+
+The tree uses the same icon configuration as the file pickers (nothing
+explorer-specific to set up). The folder glyph comes from the `directory`
+override in `[icons.mime]`; file icons are keyed by **exact file name**
+(`README.md`, `Cargo.toml`) or **file extension** (`rs`, `toml`) — language
+names like `rust` are not matched, use the extension instead:
+
+```toml
+[icons.mime]
+enabled = true
+directory = "📁"  # collapsed folder icon in the tree (default: built-in nerd-font folder)
+directory-open = "📂"
+directory-empty = "🗀"  # folder with nothing in it (default: outline folder glyph)  # expanded folder icon (default: open-folder glyph, or `directory` if that is customised)
+rs = "🦀"
+toml = "⚙"
+```
+
+Setting `[editor.explorer] icons = false` disables icons in the tree only;
+everything else keeps the global `[icons.*]` settings.
+
+### The panel background
+
+The panel background is styled by the `ui.popup.explorer` theme scope; when a
+theme does not define it, it falls back to the popup style (`ui.popup`). To
+give the floating window (or the pinned sidebar) its own background, create a
+theme that inherits from yours and override it:
+
+```toml
+# ~/.config/helix/themes/mine.toml
+inherits = "mytheme"
+"ui.popup.explorer" = { bg = "#202030" }
+```
+
+Then select it with `theme = "mine"` in `config.toml` or `:theme mine`.
+The same tweak also tints the panel's border, since the border inherits the
+backdrop color.
+
+Inside the panel (while it is focused):
+
+| Key | Description |
+|--|--|
+|`j`/`k`, up/down | Move within the tree |
+|`g`/`G` | Jump to the top/bottom of the tree |
+|`h`, left | Collapse the directory under the cursor, or ascend to its parent |
+|`-` | Move the cursor to the parent directory row |
+|`l`/Enter, right | Expand the directory under the cursor, or open the file |
+|`v` | Open the file under the cursor in a vertical split |
+|`s` | Open the file under the cursor in a horizontal split |
+|`.` | Reveal and select the current buffer's file |
+|`R` | Reload expanded directories from disk |
+|`H` | Toggle showing hidden files |
+|`l`/Enter on `...` | Go up: the parent directory becomes the explorer's root (the `...` row is the first row, hidden while filtering) |
+|`/` | Focus the filter box at the top of the panel (see below) |
+|`a` | Create a file (or a directory when the name ends in `/`) in the selected directory, or beside the selected file; at the root when nothing is selected |
+|`A` | Create a directory in the same place |
+|`r` | Rename the entry under the cursor (the popup is titled `Rename file <name>` / `Rename folder <name>` and prefilled) |
+|`d` | Delete the entry under the cursor; a confirmation box opens first and defaults to Cancel |
+|`x` | Cut the entry under the cursor |
+|`c` | Copy the entry under the cursor |
+|`p` | Paste from the explorer clipboard into the directory under the cursor |
+|`q` | Close the panel |
+|`Esc` | Clear an active filter first; otherwise hand keyboard focus back to the editor (panel keeps its tree; a floating panel closes instead) |
+
+### Filtering
+
+The first row of the panel is a filter box. Press `/` (or click it) and type:
+a plain word matches names containing it (case-insensitive); patterns with
+`*`, `?`, `[abc]`, `[a-z]`, `[!x]` or `{a,b}` are matched as wildcards (`*.rs`,
+`test_?.py`, `*.{toml,md}`). A pattern containing `/` is matched against the
+path relative to the root (`src/**/mod.rs`-style). While a filter is active the
+tree shows only matching entries and the directories leading to them, searching
+the whole tree (capped at 100,000 entries, `.git` skipped). Up/Down move through the results while you keep typing (then Right expands and Left collapses the selected folder, until you type again); Enter opens
+the selected row (the first matching file if you haven't moved); Tab leaves the box and
+keeps the filter to browse the results with the tree keys; Esc (or clearing the box) restores the
+full tree and reveals the selected entry.
+
+### Floating explorer
+
+The floating window has its own toggle, independent of the pinned panel:
+`<space>X` / `:explorer-float-toggle`. `<space>x` keeps toggling the pinned
+panel; if the float is showing it switches to the pinned panel instead of
+re-opening the float.
+
+### Mouse
+
+The floating window's border is a plain solid line by default. When
+`[editor.gradient-borders]` is enabled it is drawn as a gradient border instead
+(using its colors, direction and thickness), exactly like the pickers.
+
+The floating window can be moved and resized with the mouse: drag the top
+border to move it, any other border (or a corner) to resize it. The geometry
+is remembered across sessions in `explorer-float.toml` in Helix's state
+directory (the config file itself is never rewritten), and takes precedence
+over `floating-width`, `floating-height`, `floating-x` and `floating-y` until
+you run `:explorer-float-reset`.
+
+The separator between a pinned panel and the editor can be dragged to resize
+the panel. Dividers between editor splits can be dragged too. Notifications
+are drawn in the area not covered by the pinned panel.
+
+With mouse support enabled (`[editor] mouse = true`, the default), left click
+selects and acts on the row under the pointer — a folder expands/collapses, a
+file opens in the buffer — and the scroll wheel moves the selection. Clicks
+outside the panel keep working as usual.
 
 ## Zenbones Themes
 

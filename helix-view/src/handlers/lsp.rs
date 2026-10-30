@@ -327,6 +327,21 @@ impl Editor {
             }
         }
 
+        let published_diagnostics = &diagnostics;
+        // Retain diagnostics for files that are not open: some language servers republish
+        // an empty diagnostic list after a textDocument/didClose, and overwriting the
+        // diagnostics of the last time the file was open with this empty list would
+        // discard useful workspace entries (e.g. in the workspace diagnostics picker).
+        if published_diagnostics.is_empty()
+            && doc.is_none()
+            && self
+                .diagnostics
+                .get(&uri)
+                .is_some_and(|existing| !existing.is_empty())
+        {
+            return;
+        }
+
         let diagnostics = diagnostics.into_iter().map(|d| (d, provider.clone()));
 
         // Insert the original lsp::Diagnostics here because we may have no open document

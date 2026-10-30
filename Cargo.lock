@@ -1879,6 +1879,7 @@ dependencies = [
  "helix-stdx",
  "helix-tui",
  "helix-vcs",
+ "ignore",
  "kstring",
  "libc",
  "log",

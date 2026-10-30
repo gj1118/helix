@@ -205,9 +205,10 @@ where
     }
 
     fn restore(&mut self) -> io::Result<()> {
-        // reset cursor shape
+        // reset cursor shape and mouse pointer shape
         self.buffer
             .write_all(self.capabilities.reset_cursor_command.as_bytes())?;
+        self.set_pointer_shape("")?;
         if self.config.enable_mouse_capture {
             execute!(self.buffer, DisableMouseCapture)?;
         }
@@ -329,6 +330,10 @@ where
 
     fn flush(&mut self) -> io::Result<()> {
         self.buffer.flush()
+    }
+
+    fn set_pointer_shape(&mut self, name: &str) -> io::Result<()> {
+        write!(self.buffer, "\x1b]22;{name}\x1b\\")
     }
 
     fn supports_true_color(&self) -> bool {

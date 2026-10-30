@@ -4866,6 +4866,86 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
             ..Signature::DEFAULT
         },
     },
+    TypableCommand {
+        name: "explorer-toggle",
+        aliases: &[],
+        doc: "Toggle the explorer file tree panel",
+        fun: explorer_toggle,
+        completer: CommandCompleter::none(),
+        signature: Signature { positionals: (0, Some(0)), ..Signature::DEFAULT },
+    },
+    TypableCommand {
+        name: "explorer-focus",
+        aliases: &[],
+        doc: "Focus the explorer file tree panel (opening it if hidden)",
+        fun: explorer_focus,
+        completer: CommandCompleter::none(),
+        signature: Signature { positionals: (0, Some(0)), ..Signature::DEFAULT },
+    },
+    TypableCommand {
+        name: "explorer-left",
+        aliases: &[],
+        doc: "Show the explorer panel pinned to the editor's left edge",
+        fun: explorer_left,
+        completer: CommandCompleter::none(),
+        signature: Signature { positionals: (0, Some(0)), ..Signature::DEFAULT },
+    },
+    TypableCommand {
+        name: "explorer-right",
+        aliases: &[],
+        doc: "Show the explorer panel pinned to the editor's right edge",
+        fun: explorer_right,
+        completer: CommandCompleter::none(),
+        signature: Signature { positionals: (0, Some(0)), ..Signature::DEFAULT },
+    },
+    TypableCommand {
+        name: "explorer-float",
+        aliases: &[],
+        doc: "Show the explorer panel as a floating window over the editor",
+        fun: explorer_float,
+        completer: CommandCompleter::none(),
+        signature: Signature { positionals: (0, Some(0)), ..Signature::DEFAULT },
+    },
+    TypableCommand {
+        name: "explorer-float-toggle",
+        aliases: &[],
+        doc: "Toggle the explorer panel as a floating window, independently of the pinned panel",
+        fun: explorer_float_toggle,
+        completer: CommandCompleter::none(),
+        signature: Signature { positionals: (0, Some(0)), ..Signature::DEFAULT },
+    },
+    TypableCommand {
+        name: "explorer-float-reset",
+        aliases: &[],
+        doc: "Forget the floating explorer window's mouse-set position and size, going back to the config",
+        fun: explorer_float_reset,
+        completer: CommandCompleter::none(),
+        signature: Signature { positionals: (0, Some(0)), ..Signature::DEFAULT },
+    },
+    TypableCommand {
+        name: "explorer-refresh",
+        aliases: &[],
+        doc: "Reload expanded directories in the explorer panel from disk",
+        fun: explorer_refresh,
+        completer: CommandCompleter::none(),
+        signature: Signature { positionals: (0, Some(0)), ..Signature::DEFAULT },
+    },
+    TypableCommand {
+        name: "explorer-reveal",
+        aliases: &[],
+        doc: "Reveal and select the current file in the explorer panel",
+        fun: explorer_reveal,
+        completer: CommandCompleter::none(),
+        signature: Signature { positionals: (0, Some(0)), ..Signature::DEFAULT },
+    },
+    TypableCommand {
+        name: "explorer-width",
+        aliases: &[],
+        doc: "Set the width of the pinned explorer panel in columns",
+        fun: explorer_width,
+        completer: CommandCompleter::none(),
+        signature: Signature { positionals: (1, Some(1)), ..Signature::DEFAULT },
+    },
 ];
 
 pub static TYPABLE_COMMAND_MAP: LazyLock<HashMap<&'static str, &'static TypableCommand>> =
@@ -5489,5 +5569,151 @@ fn reload_history(
     }
 
     cx.editor.set_status("History reloaded");
+    Ok(())
+}
+
+/// Bridges a compositor (`:]`) context into a
+/// `commands::Context` so typable commands can invoke the static
+/// explorer commands.
+fn explorer_typable(
+    cx: &mut compositor::Context,
+    f: fn(&mut crate::commands::Context),
+) -> anyhow::Result<()> {
+    let mut cx = crate::commands::Context {
+        register: None,
+        count: None,
+        editor: cx.editor,
+        callback: Vec::new(),
+        on_next_key_callback: None,
+        jobs: cx.jobs,
+        plugin_manager: cx.plugin_manager.clone(),
+    };
+    f(&mut cx);
+    Ok(())
+}
+
+fn explorer_toggle(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    explorer_typable(cx, crate::commands::explorer_toggle)
+}
+
+fn explorer_focus(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    explorer_typable(cx, crate::commands::explorer_focus)
+}
+
+fn explorer_left(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    explorer_typable(cx, crate::commands::explorer_left)
+}
+
+fn explorer_right(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    explorer_typable(cx, crate::commands::explorer_right)
+}
+
+fn explorer_float(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    explorer_typable(cx, crate::commands::explorer_float)
+}
+
+fn explorer_float_toggle(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    explorer_typable(cx, crate::commands::explorer_float_toggle)
+}
+
+fn explorer_float_reset(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    cx.editor.explorer_panel.floating_geometry = None;
+    helix_view::explorer::save_floating_geometry(None)?;
+    Ok(())
+}
+
+fn explorer_refresh(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    explorer_typable(cx, crate::commands::explorer_refresh)
+}
+
+fn explorer_reveal(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    explorer_typable(cx, crate::commands::explorer_reveal)
+}
+
+fn explorer_width(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    let arg = args
+        .first()
+        .context("explorer-width expects a number of columns")?;
+    let width: u16 = arg
+        .parse()
+        .map_err(|_| anyhow::anyhow!("explorer-width expects a number of columns"))?;
+    if width < 4 {
+        return Err(anyhow::anyhow!("explorer-width must be at least 4"));
+    }
+
+    cx.editor.explorer_panel.width = Some(width);
+    cx.editor
+        .set_status(format!("Explorer width set to {width} columns"));
     Ok(())
 }

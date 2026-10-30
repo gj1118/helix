@@ -111,6 +111,14 @@
 | `file_explorer` | Open file explorer in workspace root | normal: `` <space>e ``, select: `` <space>e `` |
 | `file_explorer_in_current_buffer_directory` | Open file explorer at current buffer's directory | normal: `` <space>. ``, select: `` <space>. `` |
 | `file_explorer_in_current_directory` | Open file explorer at current working directory |  |
+| `explorer_toggle` | Toggle the explorer file tree panel | normal: `` <space>x ``, select: `` <space>x `` |
+| `explorer_focus` | Focus the explorer file tree panel (opening it if hidden) | normal: `` <C-w>x ``, `` <space>wx ``, select: `` <C-w>x ``, `` <space>wx `` |
+| `explorer_left` | Show the explorer panel pinned to the left |  |
+| `explorer_right` | Show the explorer panel pinned to the right |  |
+| `explorer_float` | Show the explorer panel as a floating window |  |
+| `explorer_float_toggle` | Toggle the explorer panel as a floating window | normal: `` <space>X ``, select: `` <space>X `` |
+| `explorer_refresh` | Refresh the explorer panel from disk |  |
+| `explorer_reveal` | Reveal the current file in the explorer panel |  |
 | `code_action` | Perform code action | normal: `` <space>a ``, select: `` <space>a `` |
 | `code_action_picker` | Perform code action in a picker |  |
 | `buffer_picker` | Open buffer picker | normal: `` <space>b ``, select: `` <space>b `` |
