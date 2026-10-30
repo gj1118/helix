@@ -30,6 +30,7 @@ mod item;
 mod path;
 mod request;
 mod resolve;
+mod snippets;
 mod word;
 
 async fn handle_response(

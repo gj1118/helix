@@ -325,6 +325,7 @@ This layer is a kludge of mappings, mostly pickers.
 | `/`     | Global search in workspace folder                                       | `global_search`                            |
 | `?`     | Open command palette                                                    | `command_palette`                          |
 | `B`     | Show blame for the current line                                         | `blame_line`                             |
+| `i`     | Open the snippet picker (see [Snippets](./snippets.md))                 | `snippet_picker`                         |
 
 For the full commit behind a line, run `:blame` (or bind `blame_details`): a popup
 shows the full commit ID, author name and email, date and commit message. `y` copies

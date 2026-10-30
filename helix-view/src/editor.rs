@@ -13,6 +13,7 @@ use crate::{
     persistence::{self, FileHistoryEntry},
     regex::EqRegex,
     register::Registers,
+    snippets::Snippets,
     theme::{self, Theme},
     tree::{self, Dimension, Resize, Tree},
     view::ViewPosition,
@@ -452,6 +453,8 @@ pub struct Config {
     /// Configures completion of words from open buffers.
     /// Defaults to enabled with a trigger length of 7.
     pub word_completion: WordCompletion,
+    /// Offer user-defined snippets (see `snippets.toml`) in the completion menu.
+    pub snippet_completion: bool,
     /// Automatic formatting on save. Defaults to true.
     pub auto_format: bool,
     /// Default register used for yank/paste. Defaults to '"'
@@ -1920,6 +1923,7 @@ impl Default for Config {
             auto_completion: true,
             path_completion: true,
             word_completion: WordCompletion::default(),
+            snippet_completion: true,
             auto_format: true,
             default_yank_register: '"',
             auto_save: AutoSave::default(),
@@ -2175,6 +2179,8 @@ pub struct Editor {
     pub pending_quit: Option<PendingQuit>,
     /// The arguments of the custom command being run, for `%arg{..}`.
     pub command_args: Option<Vec<String>>,
+    /// User-defined snippets, loaded from `snippets.toml` and the `snippets/` directories.
+    pub snippets: Arc<Snippets>,
 
     pub count: Option<std::num::NonZeroUsize>,
     pub selected_register: Option<char>,
@@ -2346,6 +2352,7 @@ impl Editor {
             write_count: 0,
             pending_quit: None,
             command_args: None,
+            snippets: Arc::new(Snippets::default()),
             count: None,
             selected_register: None,
             macro_recording: None,
@@ -2496,6 +2503,25 @@ impl Editor {
     }
 
     #[inline]
+    /// Reload the user-defined snippets from the config directory and, when the workspace is
+    /// trusted, from its `.helix/` directory.
+    ///
+    /// On failure the previous snippets stay active and the error is returned.
+    pub fn reload_snippets(&mut self) -> anyhow::Result<usize> {
+        let (workspace, _) = helix_loader::find_workspace();
+        let trusted = self
+            .workspace_trust
+            .query(&workspace, TrustQuery::LocalConfig)
+            .is_trusted();
+        let snippets = Snippets::load(
+            &helix_loader::config_dir(),
+            trusted.then_some(workspace.as_path()),
+        )?;
+        let count = snippets.len();
+        self.snippets = Arc::new(snippets);
+        Ok(count)
+    }
+
     pub fn set_error<T: Into<Cow<'static, str>>>(&mut self, error: T) {
         let error = error.into();
         log::debug!("editor error: {}", error);

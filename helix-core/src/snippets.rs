@@ -10,4 +10,4 @@ pub const LAST_TABSTOP_IDX: TabstopIdx = TabstopIdx(usize::MAX);
 pub use active::ActiveSnippet;
 pub use elaborate::{Snippet, SnippetElement, Transform};
 pub use render::RenderedSnippet;
-pub use render::SnippetRenderCtx;
+pub use render::{SnippetRenderCtx, VariableResolver};

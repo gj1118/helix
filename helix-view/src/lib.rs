@@ -21,6 +21,7 @@ pub mod keyboard;
 pub mod persistence;
 pub mod regex;
 pub mod register;
+pub mod snippets;
 pub mod theme;
 pub mod tree;
 pub mod view;

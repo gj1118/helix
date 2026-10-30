@@ -13,6 +13,7 @@ use helix_view::editor::CompletionHighlightType;
 use helix_view::icons::ICONS;
 use helix_view::Theme;
 use helix_view::{
+    document::Mode,
     editor::CompleteAction,
     handlers::lsp::SignatureHelpInvoked,
     theme::{Color, Modifier, Style},
@@ -321,9 +322,11 @@ impl Completion {
                                     snippet,
                                 )
                             }
-                            CompletionItem::Other(core::CompletionItem { transaction, .. }) => {
-                                (transaction, None, None)
-                            }
+                            CompletionItem::Other(core::CompletionItem {
+                                transaction,
+                                snippet,
+                                ..
+                            }) => (transaction, None, snippet),
                         };
 
                         doc.apply(&transaction, view.id);
@@ -724,7 +727,7 @@ fn lsp_item_to_transaction(
             edit_offset,
             replace_mode,
             snippet,
-            &mut doc.snippet_ctx(),
+            &mut doc.snippet_ctx(view_id, Mode::Insert, None),
         );
         (transaction, Some(snippet))
     } else {

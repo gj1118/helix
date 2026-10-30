@@ -84,6 +84,10 @@
 | `:reload-all-plugins` | Reload all plugins. |
 | `:config-open` | Open the user config.toml file. |
 | `:config-open-workspace` | Open the workspace config.toml file. |
+| `:snippet-insert` | Insert the snippet with the given name at the selections. |
+| `:snippets-open` | Open snippets.toml, or snippets/<file> in the user config directory. |
+| `:snippets-open-workspace` | Open .helix/snippets.toml, or .helix/snippets/<file> of the workspace. |
+| `:snippets-reload` | Reload the user and workspace snippets from disk. |
 | `:log-open` | Open the helix log file. |
 | `:insert-output` | Run shell command, inserting output before each selection. |
 | `:append-output` | Run shell command, appending output after each selection. |

@@ -15,6 +15,7 @@
   - [Keymap](./keymap.md)
   - [Command line](./command-line.md)
   - [Custom commands](./custom-commands.md)
+  - [Snippets](./snippets.md)
   - [Commands](./commands.md)
   - [Language servers](./lsp.md)
   - [Language support](./lang-support.md)

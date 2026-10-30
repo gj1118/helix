@@ -351,6 +351,7 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "A-c" => toggle_line_comments,
             "?" => command_palette,
             "B" => blame_line,
+            "i" => snippet_picker,
         },
         "z" => { "View"
             "z" | "c" => align_view_center,
