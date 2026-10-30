@@ -253,6 +253,8 @@ pub struct Document {
     // NOTE: ideally this would live on the handler for color swatches. This is blocked on a
     // large refactor that would make `&mut Editor` available on the `DocumentDidChange` event.
     pub color_swatch_controller: TaskController,
+    /// Ghost-text suggestions from the language server.
+    pub inline_completions: crate::inline_completion::InlineCompletions,
     /// Per-view task controllers for canceling in-flight document highlight requests.
     pub document_highlight_controllers: HashMap<ViewId, TaskController>,
     /// Per-view task controllers for canceling in-flight code action requests.
@@ -982,6 +984,7 @@ impl Document {
             color_swatches: None,
             document_links: Vec::new(),
             color_swatch_controller: TaskController::new(),
+            inline_completions: Default::default(),
             is_welcome: false,
             file_blame: None,
             is_blame_potentially_out_of_date: false,
@@ -2266,6 +2269,21 @@ impl Document {
     }
 
     /// Current document version, incremented at each change.
+    /// The inline completion to show for `view`, if it is still valid: the
+    /// document was not edited and the (single) cursor did not move since the
+    /// suggestion was requested.
+    pub fn inline_completion(
+        &self,
+        view: ViewId,
+    ) -> Option<&crate::inline_completion::InlineCompletion> {
+        let selection = self.selections.get(&view)?;
+        if selection.len() != 1 {
+            return None;
+        }
+        let cursor = selection.primary().cursor(self.text.slice(..));
+        self.inline_completions.current(view, self.version, cursor)
+    }
+
     pub fn version(&self) -> i32 {
         self.version
     }

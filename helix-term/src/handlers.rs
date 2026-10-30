@@ -28,6 +28,7 @@ mod document_colors;
 mod document_highlight;
 mod document_links;
 mod document_symbols;
+mod inline_completion;
 mod prompt;
 mod signature_help;
 mod snippet;
@@ -41,12 +42,13 @@ pub fn setup(config: Arc<ArcSwap<Config>>) -> Handlers {
 
     events::register();
 
-    let event_tx = completion::CompletionHandler::new(config).spawn();
+    let event_tx = completion::CompletionHandler::new(config.clone()).spawn();
     let signature_hints = SignatureHelpHandler::new().spawn();
     let auto_save = AutoSaveHandler::new().spawn();
     let auto_reload = AutoReloadHandler::new().spawn();
     let code_action_hint = code_action_hint::Handler::default().spawn();
     let document_colors = DocumentColorsHandler::default().spawn();
+    let inline_completion = inline_completion::InlineCompletionHandler::new(config.clone()).spawn();
     let document_symbols = DocumentSymbolsHandler::default().spawn();
     let blame = BlameHandler::default().spawn();
     let document_links = DocumentLinksHandler::default().spawn();
@@ -60,6 +62,7 @@ pub fn setup(config: Arc<ArcSwap<Config>>) -> Handlers {
         auto_save,
         auto_reload,
         document_colors,
+        inline_completion,
         document_symbols,
         blame,
         document_links,
@@ -79,6 +82,7 @@ pub fn setup(config: Arc<ArcSwap<Config>>) -> Handlers {
     diagnostics::register_hooks(&handlers);
     snippet::register_hooks(&handlers);
     document_colors::register_hooks(&handlers);
+    inline_completion::register_hooks(&handlers);
     document_links::register_hooks(&handlers);
     document_symbols::register_hooks(&handlers);
     prompt::register_hooks(&handlers);

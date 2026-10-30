@@ -1,6 +1,9 @@
 use crate::{
     align_view,
-    annotations::{diagnostics::InlineDiagnostics, plugins::PluginLineAnnotations},
+    annotations::{
+        diagnostics::InlineDiagnostics, inline_completion::InlineCompletionLines,
+        plugins::PluginLineAnnotations,
+    },
     document::{DocumentColorSwatches, DocumentInlayHints},
     editor::{GutterConfig, GutterType, ScrolloffConfig},
     graphics::Rect,
@@ -561,6 +564,18 @@ impl View {
 
         text_annotations
             .add_line_annotation(Box::new(PluginLineAnnotations::new(doc, self.id, width)));
+
+        if let Some(completion) = doc.inline_completion(self.id) {
+            let text = doc.text().slice(..);
+            let line = text.char_to_line(completion.cursor);
+            let line_end = helix_core::line_ending::line_end_char_index(&text, line);
+            text_annotations.add_line_annotation(Box::new(InlineCompletionLines::new(
+                completion.cursor,
+                &completion.lines,
+                doc.text_format(width, theme),
+                line_end,
+            )));
+        }
 
         if let Some(fold_container) = doc.fold_container(self.id) {
             text_annotations.add_folds(fold_container);

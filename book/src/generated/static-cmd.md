@@ -193,6 +193,11 @@
 | `extend_to_line_end` | Extend to line end | select: `` <end> `` |
 | `extend_to_line_end_newline` | Extend to line end |  |
 | `signature_help` | Show signature help |  |
+| `inline_completion_accept` | Accept the inline completion |  |
+| `inline_completion_dismiss` | Dismiss the inline completion |  |
+| `inline_completion_trigger` | Request an inline completion |  |
+| `inline_completion_next` | Show the next inline completion |  |
+| `inline_completion_prev` | Show the previous inline completion |  |
 | `smart_tab` | Insert tab if all cursors have all whitespace to their left; otherwise, run a separate command. | insert: `` <tab> `` |
 | `insert_tab` | Insert tab char | insert: `` <S-tab> `` |
 | `insert_newline` | Insert newline char | insert: `` <C-j> ``, `` <ret> `` |

@@ -16,6 +16,14 @@ use helix_lsp::{lsp, LanguageServerId, OffsetEncoding};
 use super::Handlers;
 
 pub struct DocumentColorsEvent(pub DocumentId);
+
+/// Asks for inline completion (ghost text) suggestions at the cursor of a view.
+pub struct InlineCompletionEvent {
+    pub doc: DocumentId,
+    pub view: ViewId,
+    /// Requested by the user (as opposed to by typing), so there is no delay.
+    pub manual: bool,
+}
 pub struct DocumentLinksEvent(pub DocumentId);
 pub struct DocumentSymbolsEvent(pub DocumentId);
 
