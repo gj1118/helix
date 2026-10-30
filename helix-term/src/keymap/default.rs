@@ -170,6 +170,8 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "T" => goto_prev_test,
             "p" => goto_prev_paragraph,
             "x" => goto_prev_xml_element,
+            "q" => quicklist_prev,
+            "l" => quicklist_prev_in_file,
             "space" => add_newline_above,
         },
         "]" => { "Right bracket" fallback=select_textobject_inside_next_pair
@@ -185,6 +187,8 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "T" => goto_next_test,
             "p" => goto_next_paragraph,
             "x" => goto_next_xml_element,
+            "q" => quicklist_next,
+            "l" => quicklist_next_in_file,
             "space" => add_newline_below,
         },
 
@@ -194,6 +198,8 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
         "N" => search_prev,
         "*" => search_selection_detect_word_boundaries,
         "A-*" => search_selection,
+
+        "A-q" => add_to_quicklist,
 
         "u" => undo,
         "U" => redo,
@@ -352,6 +358,7 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "?" => command_palette,
             "B" => blame_line,
             "i" => snippet_picker,
+            "q" => quicklist_picker,
         },
         "z" => { "View"
             "z" | "c" => align_view_center,

@@ -546,6 +546,24 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         }
     }
 
+    /// Replaces the quicklist with the locations of the results that currently match, in the
+    /// order they are shown in. Pickers whose results aren't locations (no preview) are left
+    /// alone; a picker without matches clears the quicklist.
+    fn copy_to_quicklist(&self, editor: &mut Editor) {
+        let Some(file_fn) = &self.file_fn else {
+            editor.set_status("The results of this picker are not locations");
+            return;
+        };
+        let snapshot = self.matcher.snapshot();
+        let entries = crate::commands::quicklist::entries_from_locations(
+            editor,
+            snapshot
+                .matched_items(..)
+                .filter_map(|item| file_fn(editor, item.data)),
+        );
+        crate::commands::quicklist::set_from_picker(editor, entries);
+    }
+
     /// Moves the cursor back to the item that was selected before a refresh.
     fn restore_selection(&mut self) {
         let Some(live) = &mut self.live else { return };
@@ -1734,6 +1752,10 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
             }
             ctrl!('t') => {
                 self.toggle_preview();
+            }
+            // Copy the matched locations into the quicklist.
+            ctrl!('q') => {
+                self.copy_to_quicklist(ctx.editor);
             }
             // Preview line scrolling. Alt-d/f/b are intentionally avoided here: the prompt
             // keybinds (which also apply in pickers) use them for word editing in the

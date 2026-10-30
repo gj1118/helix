@@ -26,6 +26,7 @@ mod test {
     mod inline_completion;
     mod movement;
     mod persistence;
+    mod quicklist;
     mod snippets;
     mod splits;
 }

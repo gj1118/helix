@@ -11,6 +11,7 @@ use crate::{
     info::Info,
     input::KeyEvent,
     persistence::{self, FileHistoryEntry},
+    quicklist::Quicklist,
     regex::EqRegex,
     register::Registers,
     snippets::Snippets,
@@ -2181,6 +2182,8 @@ pub struct Editor {
     pub command_args: Option<Vec<String>>,
     /// User-defined snippets, loaded from `snippets.toml` and the `snippets/` directories.
     pub snippets: Arc<Snippets>,
+    /// Locations collected to revisit, see [`Quicklist`].
+    pub quicklist: Quicklist,
 
     pub count: Option<std::num::NonZeroUsize>,
     pub selected_register: Option<char>,
@@ -2353,6 +2356,7 @@ impl Editor {
             pending_quit: None,
             command_args: None,
             snippets: Arc::new(Snippets::default()),
+            quicklist: Quicklist::default(),
             count: None,
             selected_register: None,
             macro_recording: None,

@@ -367,6 +367,12 @@
 | `blame_line` | Show blame for the current line | normal: `` <space>B ``, select: `` <space>B `` |
 | `blame_details` | Show commit details for the current line in a popup |  |
 | `snippet_picker` | Open the snippet picker | normal: `` <space>i ``, select: `` <space>i `` |
+| `add_to_quicklist` | Add the current location to the quicklist | normal: `` <A-q> ``, select: `` <A-q> `` |
+| `quicklist_next` | Go to the next quicklist entry | normal: `` ]q ``, select: `` ]q `` |
+| `quicklist_prev` | Go to the previous quicklist entry | normal: `` [q ``, select: `` [q `` |
+| `quicklist_next_in_file` | Go to the next quicklist entry in this file | normal: `` ]l ``, select: `` ]l `` |
+| `quicklist_prev_in_file` | Go to the previous quicklist entry in this file | normal: `` [l ``, select: `` [l `` |
+| `quicklist_picker` | Open the quicklist picker | normal: `` <space>q ``, select: `` <space>q `` |
 | `restore_change` | Restore the changes touched by the selections from the diff base (HEAD) |  |
 | `rotate_selections_first` | Make the first selection your primary one |  |
 | `rotate_selections_last` | Make the last selection your primary one |  |
