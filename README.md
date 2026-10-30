@@ -118,7 +118,8 @@ names like `rust` are not matched, use the extension instead:
 [icons.mime]
 enabled = true
 directory = "📁"  # collapsed folder icon in the tree (default: built-in nerd-font folder)
-directory-open = "📂"  # expanded folder icon (default: open-folder glyph, or `directory` if that is customised)
+directory-open = "📂"
+directory-empty = "🗀"  # folder with nothing in it (default: outline folder glyph)  # expanded folder icon (default: open-folder glyph, or `directory` if that is customised)
 rs = "🦀"
 toml = "⚙"
 ```

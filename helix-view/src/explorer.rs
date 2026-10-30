@@ -265,6 +265,8 @@ pub struct Entry {
     /// The `...` row above the root, which goes up to the parent directory
     /// ([`Tree::set_show_parent`]). Its `path` is that parent directory.
     pub is_parent: bool,
+    /// Directories only: nothing (that would be listed) inside.
+    pub is_empty: bool,
 }
 
 #[derive(Debug)]
@@ -274,6 +276,9 @@ struct Child {
     /// Lowercased name, cached so comparisons never allocate.
     sort_key: String,
     is_dir: bool,
+    /// Directories only: whether it has nothing to list, as of the time its
+    /// parent was loaded.
+    is_empty: bool,
 }
 
 #[derive(Debug)]
@@ -925,11 +930,13 @@ impl Tree {
                 _ => false,
             };
             let sort_key = name.to_lowercase();
+            let is_empty = is_dir && dir_is_empty(&path, params.show_hidden);
             children.push(Child {
                 path,
                 name,
                 sort_key,
                 is_dir,
+                is_empty,
             });
         }
 
@@ -1197,6 +1204,7 @@ impl Tree {
                 name: entry.name.clone(),
                 sort_key: entry.name_lower.clone(),
                 is_dir: entry.is_dir,
+                is_empty: false,
             });
         }
         // The root row exists even when nothing matched.
@@ -1312,6 +1320,7 @@ fn build_visible(root: &Path, dirs: &HashMap<PathBuf, Dir>, with_parent: bool) -
             expanded: false,
             is_last: false,
             is_parent: true,
+            is_empty: false,
         });
     }
 
@@ -1323,6 +1332,7 @@ fn build_visible(root: &Path, dirs: &HashMap<PathBuf, Dir>, with_parent: bool) -
         expanded: root_dir.expanded,
         is_last: true,
         is_parent: false,
+        is_empty: root_dir.children.is_empty(),
     });
     if !root_dir.expanded {
         return visible;
@@ -1345,6 +1355,12 @@ fn build_visible(root: &Path, dirs: &HashMap<PathBuf, Dir>, with_parent: bool) -
                     expanded: dirs.get(&child.path).is_some_and(|d| d.expanded),
                     is_last: false,
                     is_parent: false,
+                    // A loaded directory knows its own contents; otherwise
+                    // go by what was seen when its parent was listed.
+                    is_empty: child.is_dir
+                        && dirs
+                            .get(&child.path)
+                            .map_or(child.is_empty, |d| d.children.is_empty()),
                 });
                 if child.is_dir {
                     if let Some(dir) = dirs.get(&child.path) {
@@ -1373,6 +1389,18 @@ fn build_visible(root: &Path, dirs: &HashMap<PathBuf, Dir>, with_parent: bool) -
         }
     }
     visible
+}
+
+/// Whether `dir` has nothing a listing would show. Stops at the first entry,
+/// so it is cheap even for huge directories; an unreadable directory counts as
+/// non-empty.
+fn dir_is_empty(dir: &Path, show_hidden: bool) -> bool {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return false;
+    };
+    !entries
+        .flatten()
+        .any(|entry| show_hidden || !entry.file_name().to_string_lossy().starts_with('.'))
 }
 
 fn root_display_name(path: &Path) -> String {
@@ -2013,6 +2041,41 @@ mod tests {
             .unwrap()
             .file_type()
             .is_symlink());
+    }
+
+    #[test]
+    fn empty_directories_are_flagged() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir(root.join("empty")).unwrap();
+        std::fs::create_dir(root.join("only_hidden")).unwrap();
+        std::fs::write(root.join("only_hidden/.keep"), "").unwrap();
+        std::fs::create_dir(root.join("full")).unwrap();
+        std::fs::write(root.join("full/a.txt"), "").unwrap();
+        std::fs::write(root.join("file.txt"), "").unwrap();
+
+        let flags = |tree: &Tree| -> Vec<(String, bool)> {
+            tree.visible()
+                .iter()
+                .skip(1)
+                .map(|e| (e.name.clone(), e.is_empty))
+                .collect()
+        };
+        let p = params(false, true);
+        let mut tree = Tree::new(root.to_path_buf(), p).unwrap();
+        assert_eq!(
+            flags(&tree),
+            vec![
+                ("empty".into(), true),
+                ("full".into(), false),
+                ("only_hidden".into(), true),
+                ("file.txt".into(), false),
+            ]
+        );
+        // Showing hidden files makes the directory that only held one non-empty.
+        let shown = params(true, true);
+        tree.refresh(shown);
+        assert!(flags(&tree).contains(&("only_hidden".into(), false)));
     }
 
     #[test]

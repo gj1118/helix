@@ -718,6 +718,10 @@ pub struct Mime {
     /// folder glyph.
     #[serde(alias = "directory-open")]
     directory_open: Option<String>,
+    /// Glyph for a directory with nothing in it. Falls back to `directory`
+    /// when only that is configured, else to a built-in outline folder glyph.
+    #[serde(alias = "directory-empty")]
+    directory_empty: Option<String>,
     #[serde(flatten)]
     mime: HashMap<String, Icon>,
 }
@@ -871,6 +875,24 @@ impl Mime {
             (Some(open), _) => open.as_str(),
             (None, Some(closed)) => closed.as_str(),
             (None, None) => "󰝰",
+        };
+
+        Some(dir)
+    }
+
+    /// The glyph for an empty directory. An explicit `directory_empty` wins;
+    /// otherwise a custom `directory` glyph is reused, and with neither set a
+    /// built-in outline folder glyph is used.
+    #[inline]
+    pub fn directory_empty(&self) -> Option<&str> {
+        if !self.enabled {
+            return None;
+        }
+
+        let dir = match (&self.directory_empty, &self.directory) {
+            (Some(empty), _) => empty.as_str(),
+            (None, Some(closed)) => closed.as_str(),
+            (None, None) => "󰉖",
         };
 
         Some(dir)
@@ -1101,6 +1123,19 @@ mod tests {
         mime.directory_open = Some("📂".into());
         assert_eq!(mime.directory(), Some("📁"));
         assert_eq!(mime.directory_open(), Some("📂"));
+    }
+
+    #[test]
+    fn empty_glyph_is_configurable_and_falls_back() {
+        let icons: Icons =
+            toml::from_str("[mime]\nenabled = true\ndirectory = \"C\"\ndirectory-empty = \"E\"")
+                .unwrap();
+        assert_eq!(icons.mime().directory_empty(), Some("E"));
+        let icons: Icons = toml::from_str("[mime]\nenabled = true\ndirectory = \"C\"").unwrap();
+        assert_eq!(icons.mime().directory_empty(), Some("C"));
+        let icons: Icons = toml::from_str("[mime]\nenabled = true").unwrap();
+        assert_eq!(icons.mime().directory_empty(), Some("󰉖"));
+        assert_eq!(Mime::default().directory_empty(), None);
     }
 
     #[test]

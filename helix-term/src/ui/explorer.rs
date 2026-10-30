@@ -1787,6 +1787,8 @@ impl Component for Explorer {
                 // Expanded and collapsed folders get their own glyphs.
                 let glyph = if !show_icons {
                     None
+                } else if entry.is_empty {
+                    mime.directory_empty()
                 } else if entry.expanded {
                     mime.directory_open()
                 } else {

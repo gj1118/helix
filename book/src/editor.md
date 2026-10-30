@@ -342,6 +342,7 @@ extension (`rs`) — not by language name:
 enabled = true
 directory = "📁"
 directory-open = "📂"
+directory-empty = "🗀"  # folder with nothing in it (default: outline folder glyph)
 rs = "🦀"
 ```
 
