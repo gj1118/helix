@@ -3,9 +3,10 @@ use super::*;
 fn config(style: &str) -> Config {
     let raw: helix_term::config::ConfigRaw =
         toml::from_str(&format!("[editor]\nborder-style = \"{style}\"\n")).unwrap();
-    let mut config = Config::default();
-    config.editor = raw.editor.unwrap().try_into().unwrap();
-    config
+    Config {
+        editor: raw.editor.unwrap().try_into().unwrap(),
+        ..Default::default()
+    }
 }
 
 /// The screen while the buffer picker is open.
@@ -72,14 +73,18 @@ async fn border_style_none_hides_the_frame_but_keeps_the_separator() -> anyhow::
 async fn rounded_corners_is_overridden_by_border_style() -> anyhow::Result<()> {
     let raw: helix_term::config::ConfigRaw =
         toml::from_str("[editor]\nrounded-corners = true\nborder-style = \"double\"\n")?;
-    let mut cfg = Config::default();
-    cfg.editor = raw.editor.unwrap().try_into().unwrap();
+    let cfg = Config {
+        editor: raw.editor.unwrap().try_into().unwrap(),
+        ..Default::default()
+    };
     let screen = picker_screen(cfg).await?;
     assert!(screen.contains('╔') && !screen.contains('╭'), "{screen}");
 
     let raw: helix_term::config::ConfigRaw = toml::from_str("[editor]\nrounded-corners = true\n")?;
-    let mut cfg = Config::default();
-    cfg.editor = raw.editor.unwrap().try_into().unwrap();
+    let cfg = Config {
+        editor: raw.editor.unwrap().try_into().unwrap(),
+        ..Default::default()
+    };
     let screen = picker_screen(cfg).await?;
     assert!(screen.contains('╭'), "{screen}");
     Ok(())
