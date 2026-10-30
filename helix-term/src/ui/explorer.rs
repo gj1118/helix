@@ -842,6 +842,7 @@ impl Explorer {
         let drag = FloatDrag::at(frame, mouse.column, mouse.row)?;
         cx.editor.pointer_shape = float_pointer(drag);
         if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+            cx.editor.explorer_panel.focused = true;
             let bounds = self.float_bounds;
             let start = FloatGeometry {
                 x: frame.x.saturating_sub(bounds.x),
@@ -898,6 +899,7 @@ impl Explorer {
             cx.editor.pointer_shape = PointerShape::ColResize;
             return match mouse.kind {
                 MouseEventKind::Down(MouseButton::Left) => {
+                    cx.editor.explorer_panel.focused = true;
                     self.resizing = true;
                     EventResult::Consumed(None)
                 }
@@ -912,6 +914,11 @@ impl Explorer {
             || mouse.row >= panel.bottom()
         {
             return EventResult::Ignored(None);
+        }
+
+        // Clicking anywhere in the panel gives it the keyboard.
+        if matches!(mouse.kind, MouseEventKind::Down(_)) {
+            cx.editor.explorer_panel.focused = true;
         }
 
         let area = self.area;
