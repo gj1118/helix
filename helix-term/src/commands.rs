@@ -3916,6 +3916,26 @@ pub fn explorer_reveal(cx: &mut Context) {
 }
 
 /// Enqueues a full tree reload once the compositor is reachable.
+/// Refreshes the explorer tree from disk when the panel is showing, used by
+/// `:reload` and `:reload-all`. Unlike `explorer_refresh` this never opens a
+/// hidden panel, and it leaves the status line alone so the reload's own
+/// message is not replaced.
+pub(crate) fn explorer_refresh_if_visible(editor: &Editor, jobs: &mut Jobs) {
+    if !editor.explorer_panel.visible {
+        return;
+    }
+    jobs.callback(Box::pin(async move {
+        let call: Callback = Callback::EditorCompositor(Box::new(|editor, compositor| {
+            if let Some(explorer) =
+                compositor.find_id::<ui::explorer::Explorer>(ui::explorer::EXPLORER_ID)
+            {
+                explorer.refresh_keep(editor, None);
+            }
+        }));
+        Ok(call)
+    }));
+}
+
 fn explorer_refresh_job(cx: &mut Context, keep: Option<std::path::PathBuf>) {
     cx.jobs.callback(Box::pin(async move {
         let call: Callback = Callback::EditorCompositor(Box::new(move |editor, compositor| {

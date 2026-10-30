@@ -2526,7 +2526,10 @@ impl Component for EditorView {
         cx.editor.resize(editor_area);
 
         if use_bufferline {
-            self.render_bufferline(cx.editor, area.with_height(1), surface);
+            // The pinned explorer owns the full height, so the buffer line
+            // only spans the columns beside it.
+            let bufferline_area = crate::ui::explorer::layout(cx.editor, area.with_height(1));
+            self.render_bufferline(cx.editor, bufferline_area, surface);
         }
 
         for (view, is_focused) in cx.editor.tree.views() {

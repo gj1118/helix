@@ -1542,6 +1542,9 @@ fn reload(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyh
     }
     doc.is_blame_potentially_out_of_date = true;
 
+    // `:reload` also re-reads the explorer tree so files changed on disk show up.
+    crate::commands::explorer_refresh_if_visible(cx.editor, cx.jobs);
+
     Ok(())
 }
 
@@ -1632,6 +1635,9 @@ pub fn reload_all(
         }
         doc.is_blame_potentially_out_of_date = true;
     }
+
+    // Also re-read the explorer tree so files changed on disk show up.
+    crate::commands::explorer_refresh_if_visible(cx.editor, cx.jobs);
 
     Ok(())
 }

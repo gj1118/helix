@@ -29,7 +29,7 @@ use helix_view::icons::ICONS;
 use helix_view::input::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use helix_view::{
     document::Mode,
-    editor::{Action, BufferLineRenderMode, CmdlineStyle, GradientBorderConfig, PointerShape},
+    editor::{Action, CmdlineStyle, GradientBorderConfig, PointerShape},
     explorer::{
         copy_recursively, save_floating_geometry, Entry, ExplorerClipboard, ExplorerSide,
         FloatDrag, FloatGeometry, ScanOptions, Tree, TreeParams, FILTER_RESULT_LIMIT,
@@ -1542,18 +1542,11 @@ impl Component for Explorer {
             .explorer_width()
             .min(area.width.saturating_sub(MIN_EDITOR_WIDTH));
 
-        // Mirror EditorView's framing: skip the command line's bottom row and
-        // (when the buffer line is on) the top row, so the panel does not
-        // paint over them.
+        // Mirror EditorView's framing: skip the command line's bottom row so
+        // the panel does not paint over it. The pinned panel spans the full
+        // height from the very top row; `EditorView` starts the buffer line
+        // after the panel's column instead of above it.
         let config = cx.editor.config();
-        let top = if matches!(config.bufferline.render_mode, BufferLineRenderMode::Always)
-            || (config.bufferline.render_mode == BufferLineRenderMode::Multiple
-                && cx.editor.documents.len() > 1)
-        {
-            1
-        } else {
-            0
-        };
         let cmdline_popup_full_height =
             config.cmdline.style == CmdlineStyle::Popup && config.cmdline.use_full_height;
         let bottom = if cmdline_popup_full_height { 0 } else { 1 };
@@ -1588,12 +1581,7 @@ impl Component for Explorer {
                 ExplorerSide::Floating => unreachable!(),
             };
             (
-                Rect::new(
-                    x,
-                    top,
-                    panel_width,
-                    area.height.saturating_sub(top.saturating_add(bottom)),
-                ),
+                Rect::new(x, 0, panel_width, area.height.saturating_sub(bottom)),
                 None,
             )
         };
