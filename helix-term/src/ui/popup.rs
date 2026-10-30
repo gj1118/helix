@@ -2,6 +2,7 @@ use crate::{
     commands::Open,
     compositor::{Callback, Component, Context, Event, EventResult},
     ctrl, key,
+    ui::gradient_border::PanelBorder,
 };
 use tui::{
     buffer::Buffer as Surface,
@@ -39,6 +40,10 @@ pub struct Popup<T: Component> {
     ignore_escape_key: bool,
     id: &'static str,
     has_scrollbar: bool,
+    /// Always draw a border, regardless of `popup-border`, following
+    /// `gradient-borders` when it is enabled.
+    panel_border: bool,
+    border: PanelBorder,
 }
 
 impl<T: Component> Popup<T> {
@@ -53,7 +58,17 @@ impl<T: Component> Popup<T> {
             ignore_escape_key: false,
             id,
             has_scrollbar: true,
+            panel_border: false,
+            border: PanelBorder::default(),
         }
+    }
+
+    /// Always draws a border around the popup (independent of the
+    /// `popup-border` setting). The border is a gradient when
+    /// `[editor.gradient-borders]` is enabled.
+    pub fn panel_border(mut self, enable: bool) -> Self {
+        self.panel_border = enable;
+        self
     }
 
     /// Set the anchor position next to which the popup should be drawn.
@@ -139,7 +154,9 @@ impl<T: Component> Popup<T> {
             .type_name()
             .starts_with("helix_term::ui::menu::Menu");
 
-        let mut render_borders = if is_menu {
+        let mut render_borders = if self.panel_border {
+            true
+        } else if is_menu {
             editor.menu_border()
         } else {
             editor.popup_border()
@@ -337,9 +354,13 @@ impl<T: Component> Component for Popup<T> {
 
         let mut inner = area;
         if render_borders {
-            let border_type = BorderType::new(cx.editor.config().rounded_corners);
             inner = area.inner(Margin::all(1));
-            Widget::render(Block::bordered().border_type(border_type), area, surface);
+            if self.panel_border {
+                self.border.render(area, surface, cx.editor);
+            } else {
+                let border_type = BorderType::new(cx.editor.config().rounded_corners);
+                Widget::render(Block::bordered().border_type(border_type), area, surface);
+            }
         }
         let border = usize::from(render_borders);
 
