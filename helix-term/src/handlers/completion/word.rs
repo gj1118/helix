@@ -92,6 +92,7 @@ pub(super) fn completion(
                     label: word.into(),
                     kind: Cow::Borrowed(COMPLETION_KIND),
                     documentation: None,
+                    snippet: None,
                     provider: CompletionProvider::Word,
                 })
             })

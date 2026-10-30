@@ -2766,6 +2766,59 @@ fn open_workspace_config(
     Ok(())
 }
 
+fn snippet_insert(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    snippets::insert_snippet_by_name(cx.editor, &args.join(" "))
+}
+
+fn snippets_open(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    snippets::open_snippet_file(cx.editor, &helix_loader::config_dir(), args.first())
+}
+
+fn snippets_open_workspace(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    snippets::open_snippet_file(
+        cx.editor,
+        &helix_loader::find_workspace().0.join(".helix"),
+        args.first(),
+    )
+}
+
+fn snippets_reload(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    snippets::reload(cx.editor);
+    Ok(())
+}
+
 fn open_log(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
@@ -4731,6 +4784,50 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Open the workspace config.toml file.",
         fun: open_workspace_config,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "snippet-insert",
+        aliases: &[],
+        doc: "Insert the snippet with the given name at the selections.",
+        fun: snippet_insert,
+        completer: CommandCompleter::positional(&[completers::snippet]),
+        signature: Signature {
+            positionals: (1, None),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "snippets-open",
+        aliases: &[],
+        doc: "Open snippets.toml, or snippets/<file> in the user config directory.",
+        fun: snippets_open,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "snippets-open-workspace",
+        aliases: &[],
+        doc: "Open .helix/snippets.toml, or .helix/snippets/<file> of the workspace.",
+        fun: snippets_open_workspace,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "snippets-reload",
+        aliases: &[],
+        doc: "Reload the user and workspace snippets from disk.",
+        fun: snippets_reload,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

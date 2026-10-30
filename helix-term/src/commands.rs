@@ -3,6 +3,7 @@ pub(crate) mod git;
 pub(crate) mod git_history;
 pub(crate) mod lsp;
 pub(crate) mod notification;
+pub(crate) mod snippets;
 pub(crate) mod syntax;
 pub(crate) mod typed;
 
@@ -704,6 +705,7 @@ impl MappableCommand {
         goto_prev_tabstop, "Goto next snippet placeholder",
         blame_line, "Show blame for the current line",
         blame_details, "Show commit details for the current line in a popup",
+        snippet_picker, "Open the snippet picker",
         restore_change, "Restore the changes touched by the selections from the diff base (HEAD)",
         rotate_selections_first, "Make the first selection your primary one",
         rotate_selections_last, "Make the last selection your primary one",
@@ -4649,6 +4651,10 @@ fn git_file_history(cx: &mut Context) {
 
 fn git_history(cx: &mut Context) {
     git_history::git_history(cx.editor, cx.jobs)
+}
+
+fn snippet_picker(cx: &mut Context) {
+    snippets::snippet_picker(cx)
 }
 
 fn git_stash_picker(cx: &mut Context) {

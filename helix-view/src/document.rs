@@ -2702,14 +2702,17 @@ impl Document {
             .or(global_config)
     }
 
-    pub fn snippet_ctx(&self) -> SnippetRenderCtx {
-        SnippetRenderCtx {
-            // TODO snippet variable resolution
-            resolve_var: Box::new(|_| None),
-            tab_width: self.tab_width(),
-            indent_style: self.indent_style,
-            line_ending: self.line_ending.as_str(),
-        }
+    /// The context used to render a snippet into this document, as seen from `view_id`.
+    ///
+    /// `mode` decides whether a one character range counts as a selection and `clipboard` is the
+    /// text `$CLIPBOARD` expands to.
+    pub fn snippet_ctx(
+        &self,
+        view_id: ViewId,
+        mode: Mode,
+        clipboard: Option<String>,
+    ) -> SnippetRenderCtx {
+        crate::snippets::variables::render_ctx(self, view_id, mode, clipboard)
     }
 
     pub fn text_width(&self) -> usize {

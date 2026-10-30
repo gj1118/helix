@@ -591,6 +591,17 @@ pub mod completers {
             .collect()
     }
 
+    pub fn snippet(editor: &Editor, input: &str) -> Vec<Completion> {
+        fuzzy_match(
+            input,
+            editor.snippets.iter().map(|def| def.name.as_str()),
+            false,
+        )
+        .into_iter()
+        .map(|(name, _)| ((0..), name.to_owned().into()))
+        .collect()
+    }
+
     pub fn theme(_editor: &Editor, input: &str) -> Vec<Completion> {
         let mut names = theme::Loader::read_names(&helix_loader::config_dir().join("themes"));
         for rt_dir in helix_loader::runtime_dirs() {

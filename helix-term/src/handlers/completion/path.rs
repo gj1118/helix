@@ -114,6 +114,7 @@ pub(crate) fn path_completion(
                     label: file_name.into(),
                     transaction,
                     documentation: Some(documentation),
+                    snippet: None,
                     provider: CompletionProvider::Path,
                 }))
             })

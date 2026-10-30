@@ -21,7 +21,7 @@ pub enum TabstopKind {
     Transform(Arc<Transform>),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Tabstop {
     pub ranges: SmallVec<[Range; 1]>,
     pub parent: Option<TabstopIdx>,
@@ -58,7 +58,7 @@ impl Tabstop {
     }
 }
 
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default, PartialEq, Clone)]
 pub struct RenderedSnippet {
     pub tabstops: Vec<Tabstop>,
     pub ranges: Vec<Range>,
@@ -172,7 +172,9 @@ impl Snippet {
     }
 }
 
-pub type VariableResolver = dyn FnMut(&str) -> Option<Cow<str>>;
+/// Resolves a snippet variable. The second argument is the index of the cursor the snippet is
+/// currently being rendered for, so variables like `TM_SELECTED_TEXT` can differ per cursor.
+pub type VariableResolver = dyn FnMut(&str, usize) -> Option<Cow<'static, str>>;
 pub struct SnippetRenderCtx {
     pub resolve_var: Box<VariableResolver>,
     pub tab_width: usize,
@@ -184,7 +186,7 @@ impl SnippetRenderCtx {
     #[cfg(test)]
     pub(super) fn test_ctx() -> SnippetRenderCtx {
         SnippetRenderCtx {
-            resolve_var: Box::new(|_| None),
+            resolve_var: Box::new(|_, _| None),
             tab_width: 4,
             indent_style: IndentStyle::Spaces(4),
             line_ending: "\n",
@@ -217,9 +219,10 @@ impl SnippetRender<'_> {
                 ref default,
                 ref transform,
             } => {
-                // TODO: allow resolve_var access to the doc and make it return rope slice
-                // so we can access selections and other document content without allocating
-                if let Some(val) = (self.ctx.resolve_var)(name) {
+                // Every cursor is rendered in order and `render_at` records one range per
+                // cursor, so the number of ranges so far is the current cursor's index.
+                let cursor = self.dst.ranges.len();
+                if let Some(val) = (self.ctx.resolve_var)(name, cursor) {
                     if let Some(transform) = transform {
                         self.push_multiline_str(&transform.apply(
                             (&*val).into(),

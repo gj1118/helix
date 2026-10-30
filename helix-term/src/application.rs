@@ -159,6 +159,11 @@ impl Application {
             old_file_locs,
         );
 
+        if let Err(err) = editor.reload_snippets() {
+            log::error!("Failed to load snippets: {err:#}");
+            editor.set_error(format!("Failed to load snippets: {err:#}"));
+        }
+
         // The floating explorer reopens where it was left last time.
         editor.explorer_panel.floating_geometry = helix_view::explorer::load_floating_geometry();
 
@@ -701,6 +706,10 @@ impl Application {
             self.terminal.reconfigure((&default_config.editor).into())?;
             // Store new config
             self.config.store(Arc::new(default_config));
+            // On failure the previous snippets stay active.
+            self.editor
+                .reload_snippets()
+                .map_err(|err| anyhow::anyhow!("Snippets not reloaded: {err:#}"))?;
             Ok(())
         };
 
