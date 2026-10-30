@@ -4936,37 +4936,42 @@ async fn make_format_callback(
     let format = format.await;
 
     let call: job::Callback = Callback::Editor(Box::new(move |editor| {
-        if !editor.documents.contains_key(&doc_id) || !editor.tree.contains(view_id) {
+        if !editor.documents.contains_key(&doc_id) {
             return;
         }
 
-        let scrolloff = editor.config().scrolloff;
-        let doc = doc_mut!(editor, &doc_id);
-        let view = view_mut!(editor, view_id);
+        // The view can be closed while the formatter runs. The formatting is
+        // then dropped, but a save that was asked for must still happen.
+        if editor.tree.contains(view_id) {
+            let scrolloff = editor.config().scrolloff;
+            let doc = doc_mut!(editor, &doc_id);
+            let view = view_mut!(editor, view_id);
 
-        match format {
-            Ok(format) => {
-                if doc.version() == doc_version {
-                    doc.apply(&format, view.id);
-                    doc.append_changes_to_history(view);
-                    doc.detect_indent_and_line_ending();
-                    view.ensure_cursor_in_view(doc, scrolloff);
-                } else {
-                    log::info!("discarded formatting changes because the document changed");
+            match format {
+                Ok(format) => {
+                    if doc.version() == doc_version {
+                        doc.apply(&format, view.id);
+                        doc.append_changes_to_history(view);
+                        doc.detect_indent_and_line_ending();
+                        view.ensure_cursor_in_view(doc, scrolloff);
+                    } else {
+                        log::info!("discarded formatting changes because the document changed");
+                    }
+                }
+                Err(err) => {
+                    if write.is_none() {
+                        editor.set_error(err.to_string());
+                        return;
+                    }
+                    log::info!("failed to format '{}': {err}", doc.display_name());
                 }
             }
-            Err(err) => {
-                if write.is_none() {
-                    editor.set_error(err.to_string());
-                    return;
-                }
-                log::info!("failed to format '{}': {err}", doc.display_name());
-            }
+        } else if write.is_none() {
+            return;
         }
 
         if let Some((path, force)) = write {
-            let id = doc.id();
-            if let Err(err) = editor.save(id, path, force) {
+            if let Err(err) = editor.save(doc_id, path, force) {
                 editor.set_error(format!("Error saving: {}", err));
             }
         }
@@ -7883,7 +7888,7 @@ fn surround_delete(cx: &mut Context) {
     cx.editor.autoinfo = Some(Info::new("Delete surrounding pair of", &SURROUND_HELP_TEXT));
 }
 
-#[derive(Eq, PartialEq)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 enum ShellBehavior {
     Replace,
     Ignore,
@@ -7909,39 +7914,54 @@ fn shell_append_output(cx: &mut Context) {
 
 fn shell_keep_pipe(cx: &mut Context) {
     shell_prompt(cx, "keep-pipe:".into(), |cx, args| {
-        let shell = &cx.editor.config().shell;
+        let shell = cx.editor.config().shell.clone();
+        let cmd = args.join(" ");
         let (view, doc) = current!(cx.editor);
+        let (doc_id, view_id, version) = (doc.id(), view.id, doc.version());
         let selection = doc.selection(view.id);
-
-        let mut ranges = SmallVec::with_capacity(selection.len());
         let old_index = selection.primary_index();
-        let mut index: Option<usize> = None;
         let text = doc.text().slice(..);
+        let inputs: Vec<(Range, Rope)> = selection
+            .ranges()
+            .iter()
+            .map(|range| (*range, range.slice(text).into()))
+            .collect();
 
-        for (i, range) in selection.ranges().iter().enumerate() {
-            let fragment = range.slice(text);
-            if let Err(err) = shell_impl(shell, args.join(" ").as_str(), Some(fragment.into())) {
-                log::debug!("Shell command failed: {}", err);
-            } else {
-                ranges.push(*range);
-                if i >= old_index && index.is_none() {
-                    index = Some(ranges.len() - 1);
+        // The commands run in the background so the editor stays responsive.
+        let guard = ShellJobGuard::new();
+        let job = async move {
+            let mut kept = Vec::with_capacity(inputs.len());
+            for (i, (range, input)) in inputs.into_iter().enumerate() {
+                match shell_impl_async(&shell, &cmd, Some(input)).await {
+                    Ok(_) => kept.push((i, range)),
+                    Err(err) => log::debug!("Shell command failed: {}", err),
                 }
             }
-        }
-
-        if ranges.is_empty() {
-            cx.editor.set_error("No selections remaining");
-            return;
-        }
-
-        let index = index.unwrap_or_else(|| ranges.len() - 1);
-        doc.set_selection(view.id, Selection::new(ranges, index));
+            let call: job::Callback = Callback::Editor(Box::new(move |editor| {
+                let _guard = guard;
+                let Some(doc) = editor.documents.get_mut(&doc_id) else {
+                    return;
+                };
+                if doc.version() != version || !doc.selections().contains_key(&view_id) {
+                    editor.set_error("keep-pipe discarded: the document changed");
+                    return;
+                }
+                if kept.is_empty() {
+                    editor.set_error("No selections remaining");
+                    return;
+                }
+                let index = kept
+                    .iter()
+                    .position(|(i, _)| *i >= old_index)
+                    .unwrap_or(kept.len() - 1);
+                let ranges: SmallVec<[Range; 1]> =
+                    kept.into_iter().map(|(_, range)| range).collect();
+                doc.set_selection(view_id, Selection::new(ranges, index));
+            }));
+            Ok(call)
+        };
+        cx.jobs.callback(job);
     });
-}
-
-fn shell_impl(shell: &[String], cmd: &str, input: Option<Rope>) -> anyhow::Result<Tendril> {
-    tokio::task::block_in_place(|| helix_lsp::block_on(shell_impl_async(shell, cmd, input)))
 }
 
 async fn shell_impl_async(
@@ -8011,49 +8031,111 @@ async fn shell_impl_async(
     Ok(Tendril::from(output))
 }
 
+/// Number of shell commands running in the background (and not applied yet).
+static SHELL_JOBS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Counts a background shell command until it is dropped.
+struct ShellJobGuard;
+
+impl ShellJobGuard {
+    fn new() -> Self {
+        SHELL_JOBS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for ShellJobGuard {
+    fn drop(&mut self) {
+        SHELL_JOBS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Whether shell commands are still running; the integration tests wait for them.
+#[cfg(feature = "integration")]
+pub fn shell_jobs_running() -> bool {
+    SHELL_JOBS.load(std::sync::atomic::Ordering::SeqCst) > 0
+}
+
 fn shell(cx: &mut compositor::Context, cmd: &str, behavior: &ShellBehavior) {
+    let behavior = *behavior;
     let pipe = match behavior {
         ShellBehavior::Replace | ShellBehavior::Ignore => true,
         ShellBehavior::Insert | ShellBehavior::Append => false,
     };
 
-    let config = cx.editor.config();
-    let shell = &config.shell;
+    let shell = cx.editor.config().shell.clone();
+    let cmd = cmd.to_owned();
     let (view, doc) = current!(cx.editor);
-    let selection = doc.selection(view.id);
+    let (doc_id, view_id, version) = (doc.id(), view.id, doc.version());
+    let selection = doc.selection(view_id).clone();
+    let text = doc.text().slice(..);
+    // (input, whether the input ends with a newline) for every selection
+    let inputs: Vec<(Rope, bool)> = selection
+        .ranges()
+        .iter()
+        .map(|range| {
+            let input = range.slice(text);
+            (Rope::from(input), input.ends_with("\n"))
+        })
+        .collect();
+
+    // The command runs in the background so the editor stays responsive; its
+    // output is applied afterwards, as long as the document did not change.
+    let guard = ShellJobGuard::new();
+    let job = async move {
+        let mut outputs: Vec<Tendril> = Vec::with_capacity(inputs.len());
+        let mut shared: Option<Tendril> = None;
+        for (input, ends_with_newline) in inputs {
+            if let Some(output) = &shared {
+                outputs.push(output.clone());
+                continue;
+            }
+            let mut output = shell_impl_async(&shell, &cmd, pipe.then_some(input)).await?;
+            if !ends_with_newline && output.ends_with('\n') {
+                output.pop();
+                if output.ends_with('\r') {
+                    output.pop();
+                }
+            }
+            if !pipe {
+                shared = Some(output.clone());
+            }
+            outputs.push(output);
+        }
+
+        let call: job::Callback = Callback::Editor(Box::new(move |editor| {
+            let _guard = guard;
+            if !editor.documents.contains_key(&doc_id) || !editor.tree.contains(view_id) {
+                return;
+            }
+            if doc!(editor, &doc_id).version() != version {
+                editor.set_error("Shell command output discarded: the document changed");
+                return;
+            }
+            apply_shell_output(editor, doc_id, view_id, &selection, outputs, behavior);
+        }));
+        Ok(call)
+    };
+    cx.jobs.callback(job);
+}
+
+/// Inserts the output of a shell command for each selection range.
+fn apply_shell_output(
+    editor: &mut Editor,
+    doc_id: DocumentId,
+    view_id: ViewId,
+    selection: &Selection,
+    outputs: Vec<Tendril>,
+    behavior: ShellBehavior,
+) {
+    let scrolloff = editor.config().scrolloff;
+    let doc = doc_mut!(editor, &doc_id);
+    let view = view_mut!(editor, view_id);
 
     let mut changes = Vec::with_capacity(selection.len());
     let mut ranges = SmallVec::with_capacity(selection.len());
-    let text = doc.text().slice(..);
-
-    let mut shell_output: Option<Tendril> = None;
     let mut offset = 0isize;
-    for range in selection.ranges() {
-        let output = if let Some(output) = shell_output.as_ref() {
-            output.clone()
-        } else {
-            let input = range.slice(text);
-            match shell_impl(shell, cmd, pipe.then(|| input.into())) {
-                Ok(mut output) => {
-                    if !input.ends_with("\n") && output.ends_with('\n') {
-                        output.pop();
-                        if output.ends_with('\r') {
-                            output.pop();
-                        }
-                    }
-
-                    if !pipe {
-                        shell_output = Some(output.clone());
-                    }
-                    output
-                }
-                Err(err) => {
-                    cx.editor.set_error(err.to_string());
-                    return;
-                }
-            }
-        };
-
+    for (range, output) in selection.ranges().iter().zip(outputs) {
         let output_len = output.chars().count();
 
         let (from, to, deleted_len) = match behavior {
@@ -8080,7 +8162,7 @@ fn shell(cx: &mut compositor::Context, cmd: &str, behavior: &ShellBehavior) {
         changes.push((from, to, Some(output)));
     }
 
-    if behavior != &ShellBehavior::Ignore {
+    if behavior != ShellBehavior::Ignore {
         let transaction = Transaction::change(doc.text(), changes.into_iter())
             .with_selection(Selection::new(ranges, selection.primary_index()));
         doc.apply(&transaction, view.id);
@@ -8089,7 +8171,7 @@ fn shell(cx: &mut compositor::Context, cmd: &str, behavior: &ShellBehavior) {
 
     // after replace cursor may be out of bounds, do this to
     // make sure cursor is in view and update scroll as well
-    view.ensure_cursor_in_view(doc, config.scrolloff);
+    view.ensure_cursor_in_view(doc, scrolloff);
 }
 
 fn shell_prompt<F>(cx: &mut Context, prompt: Cow<'static, str>, mut callback_fn: F)

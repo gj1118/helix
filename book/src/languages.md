@@ -132,6 +132,10 @@ with the following priorities:
 
 ### Configuring the formatter command
 
+External formatters have a 20-second timeout. Set `timeout` (in seconds) in the
+`formatter` table to allow a longer or shorter runtime. A timed-out formatter is
+terminated; saving still writes the buffer without its formatting changes.
+
 [Command line expansions](./command-line.md#expansions) are supported in the arguments
 of the formatter command. In particular, the `%{buffer_name}` variable can be passed as
 argument to the formatter:

@@ -222,9 +222,10 @@ async fn test_multi_selection_paste() -> anyhow::Result<()> {
     Ok(())
 }
 
+// Shell commands run as background jobs, which are dispatched through a queue that is
+// set up once per runtime, so every case gets a test (and runtime) of its own.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_multi_selection_shell_commands() -> anyhow::Result<()> {
-    // pipe
+async fn test_multi_selection_shell_commands_pipe() -> anyhow::Result<()> {
     test((
         indoc! {"\
             #[|lorem]#
@@ -238,9 +239,11 @@ async fn test_multi_selection_shell_commands() -> anyhow::Result<()> {
             #(|foo)#"
         },
     ))
-    .await?;
+    .await
+}
 
-    // insert-output
+#[tokio::test(flavor = "multi_thread")]
+async fn test_multi_selection_shell_commands_insert_output() -> anyhow::Result<()> {
     test((
         indoc! {"\
             #[|lorem]#
@@ -254,9 +257,11 @@ async fn test_multi_selection_shell_commands() -> anyhow::Result<()> {
             #(|foo)#dolor
             "},
     ))
-    .await?;
+    .await
+}
 
-    // append-output
+#[tokio::test(flavor = "multi_thread")]
+async fn test_multi_selection_shell_commands_append_output() -> anyhow::Result<()> {
     test((
         indoc! {"\
             #[|lorem]#
@@ -270,9 +275,7 @@ async fn test_multi_selection_shell_commands() -> anyhow::Result<()> {
             dolor#(|foo)#
             "},
     ))
-    .await?;
-
-    Ok(())
+    .await
 }
 
 #[tokio::test(flavor = "multi_thread")]

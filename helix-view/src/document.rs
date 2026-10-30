@@ -1089,13 +1089,14 @@ impl Document {
         &self,
         editor: &Editor,
     ) -> Option<BoxFuture<'static, Result<Transaction, FormatterError>>> {
-        if let Some((fmt_cmd, fmt_args)) = self
+        if let Some((fmt_cmd, fmt_args, timeout_secs)) = self
             .language_config()
             .and_then(|c| c.formatter.as_ref())
             .and_then(|formatter| {
                 Some((
                     helix_stdx::env::which(&formatter.command).ok()?,
                     &formatter.args,
+                    formatter.timeout_secs(),
                 ))
             })
         {
@@ -1129,9 +1130,11 @@ impl Document {
                 .args(args.iter().map(AsRef::as_ref))
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
+                .stderr(Stdio::piped())
+                // A formatter that is abandoned (timeout, closed document) must not linger.
+                .kill_on_drop(true);
 
-            let formatting_future = async move {
+            let run_formatter = async move {
                 let mut process = process
                     .spawn()
                     .map_err(|e| FormatterError::SpawningFailed {
@@ -1173,6 +1176,11 @@ impl Document {
                     .map_err(|_| FormatterError::InvalidUtf8Output)?;
 
                 Ok(helix_core::diff::compare_ropes(&text, &Rope::from(str)))
+            };
+            let formatting_future = async move {
+                tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), run_formatter)
+                    .await
+                    .map_err(|_| FormatterError::Timeout(timeout_secs))?
             };
             return Some(formatting_future.boxed());
         };
@@ -3007,6 +3015,7 @@ pub enum FormatterError {
     WaitForOutputFailed,
     InvalidUtf8Output,
     NonZeroExitStatus(Option<String>),
+    Timeout(u64),
 }
 
 impl std::error::Error for FormatterError {}
@@ -3023,6 +3032,9 @@ impl Display for FormatterError {
             Self::NonZeroExitStatus(Some(output)) => write!(f, "Formatter error: {}", output),
             Self::NonZeroExitStatus(None) => {
                 write!(f, "Formatter exited with non zero exit status")
+            }
+            Self::Timeout(seconds) => {
+                write!(f, "Formatter timed out after {seconds} seconds")
             }
         }
     }

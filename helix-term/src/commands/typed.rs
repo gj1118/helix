@@ -15,7 +15,7 @@ use helix_core::{line_ending, SmartString};
 use helix_plugin::PluginManager;
 use helix_stdx::path::home_dir;
 use helix_view::document::{read_to_string, DEFAULT_LANGUAGE_NAME};
-use helix_view::editor::{CloseError, ConfigEvent};
+use helix_view::editor::{CloseError, ConfigEvent, PendingQuit};
 use helix_view::expansion;
 use helix_view::handlers::BlameEvent;
 use helix_view::persistence;
@@ -91,8 +91,13 @@ fn exit(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow:
             },
         )?;
     }
-    cx.block_try_flush_writes()?;
-    quit(cx, Args::default(), event)
+    quit_after_saves(
+        cx,
+        PendingQuit::View {
+            view: view!(cx.editor).id,
+            force: false,
+        },
+    )
 }
 
 fn force_exit(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
@@ -111,8 +116,45 @@ fn force_exit(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> a
             },
         )?;
     }
-    cx.block_try_flush_writes()?;
-    quit(cx, Args::default(), event)
+    quit_after_saves(
+        cx,
+        PendingQuit::View {
+            view: view!(cx.editor).id,
+            force: false,
+        },
+    )
+}
+
+/// Quits once the saves that were just started have finished. The editor stays
+/// responsive meanwhile, and a failed save cancels the quit (see `PendingQuit`).
+fn quit_after_saves(cx: &mut compositor::Context, pending: PendingQuit) -> anyhow::Result<()> {
+    if cx.jobs.wait_futures.is_empty() && cx.editor.write_count == 0 {
+        return run_pending_quit(cx, pending);
+    }
+    cx.editor.pending_quit = Some(pending);
+    cx.editor.set_status("Saving, quitting when done");
+    Ok(())
+}
+
+/// Carries out a quit that was waiting for saves, see [`quit_after_saves`].
+pub(crate) fn run_pending_quit(
+    cx: &mut compositor::Context,
+    pending: PendingQuit,
+) -> anyhow::Result<()> {
+    match pending {
+        PendingQuit::View { view, force } => {
+            if !cx.editor.tree.contains(view) {
+                return Ok(());
+            }
+            // last view and we have unsaved changes
+            if !force && cx.editor.tree.views().count() == 1 {
+                buffers_remaining_impl(cx.editor)?;
+            }
+            cx.editor.close(view);
+            Ok(())
+        }
+        PendingQuit::All { force } => quit_all_impl(cx, force),
+    }
 }
 
 fn quit(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
@@ -806,8 +848,13 @@ fn write_quit(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> a
             code_actions: !args.has_flag(WRITE_NO_CODE_ACTIONS_FLAG.name),
         },
     )?;
-    cx.block_try_flush_writes()?;
-    quit(cx, Args::default(), event)
+    quit_after_saves(
+        cx,
+        PendingQuit::View {
+            view: view!(cx.editor).id,
+            force: false,
+        },
+    )
 }
 
 fn force_write_quit(
@@ -828,8 +875,13 @@ fn force_write_quit(
             code_actions: !args.has_flag(WRITE_NO_CODE_ACTIONS_FLAG.name),
         },
     )?;
-    cx.block_try_flush_writes()?;
-    force_quit(cx, Args::default(), event)
+    quit_after_saves(
+        cx,
+        PendingQuit::View {
+            view: view!(cx.editor).id,
+            force: true,
+        },
+    )
 }
 
 /// Results in an error if there are modified buffers remaining and sets editor
@@ -1035,7 +1087,7 @@ fn write_all_quit(
             code_actions: !args.has_flag(WRITE_NO_CODE_ACTIONS_FLAG.name),
         },
     )?;
-    quit_all_impl(cx, false)
+    quit_after_saves(cx, PendingQuit::All { force: false })
 }
 
 fn force_write_all_quit(
@@ -1055,7 +1107,7 @@ fn force_write_all_quit(
             code_actions: !args.has_flag(WRITE_NO_CODE_ACTIONS_FLAG.name),
         },
     );
-    quit_all_impl(cx, true)
+    quit_after_saves(cx, PendingQuit::All { force: true })
 }
 
 fn quit_all_impl(cx: &mut compositor::Context, force: bool) -> anyhow::Result<()> {

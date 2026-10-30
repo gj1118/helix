@@ -121,6 +121,8 @@ impl Jobs {
                 Callback::Followup(call) => call(editor),
             },
             Err(e) => {
+                // A failed job (e.g. a save step) must not be followed by a quit.
+                editor.pending_quit = None;
                 editor.set_error(format!("Async job failed: {}", e));
                 None
             }
