@@ -20,6 +20,7 @@ mod test {
     mod breadcrumbs;
     mod command_line;
     mod commands;
+    mod history;
     mod inline_completion;
     mod movement;
     mod persistence;

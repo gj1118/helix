@@ -1,5 +1,6 @@
 pub(crate) mod dap;
 pub(crate) mod git;
+pub(crate) mod git_history;
 pub(crate) mod lsp;
 pub(crate) mod notification;
 pub(crate) mod syntax;
@@ -443,6 +444,8 @@ impl MappableCommand {
         lsp_or_syntax_symbol_picker, "Open symbol picker from LSP or syntax information",
         changed_file_picker, "Open changed file picker",
         git_stash_picker, "Open git stash picker",
+        git_file_history, "Browse commits that changed the current file",
+        git_history, "Browse repository commits and the files they changed",
         select_references_to_symbol_under_cursor, "Select symbol references",
         workspace_symbol_picker, "Open workspace symbol picker",
         syntax_workspace_symbol_picker, "Open workspace symbol picker from syntax information",
@@ -679,6 +682,7 @@ impl MappableCommand {
         goto_prev_tabstop, "Goto next snippet placeholder",
         blame_line, "Show blame for the current line",
         blame_details, "Show commit details for the current line in a popup",
+        restore_change, "Restore the changes touched by the selections from the diff base (HEAD)",
         rotate_selections_first, "Make the first selection your primary one",
         rotate_selections_last, "Make the last selection your primary one",
         fold, "Fold text objects",
@@ -4549,6 +4553,80 @@ fn jumplist_picker(cx: &mut Context) {
 
 fn changed_file_picker(cx: &mut Context) {
     git::changed_file_picker(cx)
+}
+
+/// Replaces every changed hunk touched by a selection with its version in the
+/// diff base (`HEAD`). Does not save the file; undo with `u`.
+pub(crate) fn restore_change_impl(editor: &mut Editor) -> Result<usize, &'static str> {
+    let (view, doc) = current!(editor);
+    let handle = doc
+        .diff_handle()
+        .ok_or("No changes to restore: not a tracked file")?;
+    let (changes, count) = {
+        let diff = handle.load();
+        if diff.is_inverted() {
+            return Err("Cannot restore changes in this buffer");
+        }
+        let text = doc.text();
+        let base = diff.diff_base();
+        let line_ranges = doc.selection(view.id).line_ranges(text.slice(..));
+        let mut hunks: Vec<Hunk> = diff
+            .hunks_intersecting_line_ranges(line_ranges)
+            .cloned()
+            .collect();
+        hunks.sort_by_key(|hunk| hunk.after.start);
+        hunks.dedup_by_key(|hunk| hunk.after.start);
+
+        let end_of = |rope: &Rope, line: u32| {
+            if line as usize >= rope.len_lines() {
+                rope.len_chars()
+            } else {
+                rope.line_to_char(line as usize)
+            }
+        };
+        let changes: Vec<(usize, usize, Option<Tendril>)> = hunks
+            .iter()
+            .map(|hunk| {
+                let from = end_of(text, hunk.after.start);
+                let to = end_of(text, hunk.after.end);
+                let before_from = end_of(base, hunk.before.start);
+                let before_to = end_of(base, hunk.before.end);
+                let replacement: String = base.slice(before_from..before_to).into();
+                (
+                    from,
+                    to,
+                    (!replacement.is_empty()).then(|| replacement.into()),
+                )
+            })
+            .collect();
+        let count = changes.len();
+        (changes, count)
+    };
+    if changes.is_empty() {
+        return Ok(0);
+    }
+    let transaction = Transaction::change(doc.text(), changes.into_iter());
+    doc.apply(&transaction, view.id);
+    Ok(count)
+}
+
+fn restore_change(cx: &mut Context) {
+    match restore_change_impl(cx.editor) {
+        Ok(0) => cx.editor.set_status("No changes under the selections"),
+        Ok(count) => cx.editor.set_status(format!(
+            "Restored {count} change{} from HEAD",
+            if count == 1 { "" } else { "s" }
+        )),
+        Err(err) => cx.editor.set_error(err),
+    }
+}
+
+fn git_file_history(cx: &mut Context) {
+    git_history::git_file_history(cx.editor, cx.jobs)
+}
+
+fn git_history(cx: &mut Context) {
+    git_history::git_history(cx.editor, cx.jobs)
 }
 
 fn git_stash_picker(cx: &mut Context) {

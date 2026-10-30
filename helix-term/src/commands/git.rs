@@ -131,7 +131,7 @@ pub fn parse_status(output: &[u8], repo_root: &Path) -> Vec<GitChange> {
 // --- running git -----------------------------------------------------------
 
 /// Runs `git -C dir args...`, returning stdout or the error git printed.
-async fn git(dir: &Path, args: &[OsString]) -> anyhow::Result<Vec<u8>> {
+pub(super) async fn git(dir: &Path, args: &[OsString]) -> anyhow::Result<Vec<u8>> {
     let output = tokio::process::Command::new("git")
         .arg("-C")
         .arg(dir)
@@ -155,11 +155,11 @@ async fn git(dir: &Path, args: &[OsString]) -> anyhow::Result<Vec<u8>> {
     Ok(output.stdout)
 }
 
-fn args<const N: usize>(args: [&str; N]) -> Vec<OsString> {
+pub(super) fn args<const N: usize>(args: [&str; N]) -> Vec<OsString> {
     args.iter().map(OsString::from).collect()
 }
 
-async fn repo_root(dir: &Path) -> anyhow::Result<PathBuf> {
+pub(super) async fn repo_root(dir: &Path) -> anyhow::Result<PathBuf> {
     let out = git(dir, &args(["rev-parse", "--show-toplevel"])).await?;
     Ok(PathBuf::from(String::from_utf8_lossy(&out).trim_end()))
 }
@@ -212,6 +212,17 @@ async fn stash_list(root: &Path) -> anyhow::Result<Vec<Stash>> {
             message: message.to_owned(),
         })
         .collect())
+}
+
+/// Whether `git` may be run for the workspace containing `dir`.
+pub(super) fn workspace_trusted(editor: &helix_view::Editor, dir: &Path) -> bool {
+    editor
+        .workspace_trust
+        .query(
+            &helix_loader::find_workspace_in(dir).0,
+            helix_loader::workspace_trust::TrustQuery::Git,
+        )
+        .is_trusted()
 }
 
 // --- picker ----------------------------------------------------------------

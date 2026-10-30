@@ -243,6 +243,8 @@ pub struct Document {
     pub focused_at: std::time::Instant,
 
     pub readonly: bool,
+    /// The name shown for a document without a path (e.g. a historical version).
+    pub title: Option<String>,
 
     pub previous_diagnostic_ids: HashMap<LanguageServerId, String>,
 
@@ -977,6 +979,7 @@ impl Document {
             version_control_head: None,
             focused_at: std::time::Instant::now(),
             readonly: false,
+            title: None,
             jump_labels: HashMap::new(),
             plugin_annotations: HashMap::new(),
             document_highlights: HashMap::new(),
@@ -2498,7 +2501,9 @@ impl Document {
 
     pub fn display_name(&self) -> Cow<'_, str> {
         self.relative_path()
-            .map_or_else(|| SCRATCH_BUFFER_NAME.into(), |path| path.to_string_lossy())
+            .map(|path| path.to_string_lossy())
+            .or_else(|| self.title.as_deref().map(Cow::Borrowed))
+            .unwrap_or_else(|| SCRATCH_BUFFER_NAME.into())
     }
 
     // transact(Fn) ?
