@@ -149,6 +149,10 @@ pub mod line {
     pub struct Set {
         pub vertical: &'static str,
         pub horizontal: &'static str,
+        /// The right edge (the same as `vertical` unless the set is asymmetric).
+        pub right: &'static str,
+        /// The bottom edge (the same as `horizontal` unless the set is asymmetric).
+        pub bottom: &'static str,
         pub top_right: &'static str,
         pub top_left: &'static str,
         pub bottom_right: &'static str,
@@ -163,6 +167,8 @@ pub mod line {
     pub const NORMAL: Set = Set {
         vertical: VERTICAL,
         horizontal: HORIZONTAL,
+        right: VERTICAL,
+        bottom: HORIZONTAL,
         top_right: TOP_RIGHT,
         top_left: TOP_LEFT,
         bottom_right: BOTTOM_RIGHT,
@@ -185,6 +191,8 @@ pub mod line {
     pub const DOUBLE: Set = Set {
         vertical: DOUBLE_VERTICAL,
         horizontal: DOUBLE_HORIZONTAL,
+        right: DOUBLE_VERTICAL,
+        bottom: DOUBLE_HORIZONTAL,
         top_right: DOUBLE_TOP_RIGHT,
         top_left: DOUBLE_TOP_LEFT,
         bottom_right: DOUBLE_BOTTOM_RIGHT,
@@ -199,6 +207,8 @@ pub mod line {
     pub const THICK: Set = Set {
         vertical: THICK_VERTICAL,
         horizontal: THICK_HORIZONTAL,
+        right: THICK_VERTICAL,
+        bottom: THICK_HORIZONTAL,
         top_right: THICK_TOP_RIGHT,
         top_left: THICK_TOP_LEFT,
         bottom_right: THICK_BOTTOM_RIGHT,
@@ -208,6 +218,58 @@ pub mod line {
         horizontal_down: THICK_HORIZONTAL_DOWN,
         horizontal_up: THICK_HORIZONTAL_UP,
         cross: THICK_CROSS,
+    };
+
+    /// Blank borders: they keep the space of a frame but draw nothing.
+    pub const HIDDEN: Set = Set {
+        vertical: " ",
+        horizontal: " ",
+        right: " ",
+        bottom: " ",
+        top_right: " ",
+        top_left: " ",
+        bottom_right: " ",
+        bottom_left: " ",
+        vertical_left: " ",
+        vertical_right: " ",
+        horizontal_down: " ",
+        horizontal_up: " ",
+        cross: " ",
+    };
+
+    /// A frame of quadrant blocks that sits inside the cells of the area: the
+    /// glyphs are filled on the side facing the content.
+    pub const QUADRANT_INSIDE: Set = Set {
+        vertical: "▐",
+        horizontal: "▄",
+        right: "▌",
+        bottom: "▀",
+        top_right: "▖",
+        top_left: "▗",
+        bottom_right: "▘",
+        bottom_left: "▝",
+        vertical_left: "▌",
+        vertical_right: "▐",
+        horizontal_down: "▄",
+        horizontal_up: "▀",
+        cross: "█",
+    };
+
+    /// A frame of quadrant blocks that is filled on the outer side of the area.
+    pub const QUADRANT_OUTSIDE: Set = Set {
+        vertical: "▌",
+        horizontal: "▀",
+        right: "▐",
+        bottom: "▄",
+        top_right: "▜",
+        top_left: "▛",
+        bottom_right: "▟",
+        bottom_left: "▙",
+        vertical_left: "▐",
+        vertical_right: "▌",
+        horizontal_down: "▀",
+        horizontal_up: "▄",
+        cross: "█",
     };
 }
 

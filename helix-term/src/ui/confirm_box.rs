@@ -12,7 +12,7 @@ use helix_view::{
 };
 use tui::{
     buffer::Buffer as Surface,
-    widgets::{Block, BorderType, Widget},
+    widgets::{Block, Widget},
 };
 
 use crate::compositor::{Component, Compositor, Context, Event, EventResult};
@@ -188,7 +188,7 @@ impl Component for ConfirmBox {
 
         surface.clear_with(rect, background);
         let block = Block::bordered()
-            .border_type(BorderType::new(cx.editor.config().rounded_corners))
+            .border_type(crate::ui::border_type(&cx.editor.config()))
             .border_style(border_style)
             .style(background)
             .title(self.title.as_str());

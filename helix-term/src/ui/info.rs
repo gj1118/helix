@@ -3,7 +3,7 @@ use helix_view::graphics::{Margin, Rect};
 use helix_view::info::Info;
 use tui::buffer::Buffer as Surface;
 use tui::text::Text;
-use tui::widgets::{Block, BorderType, Paragraph, Widget};
+use tui::widgets::{Block, Paragraph, Widget};
 
 impl Component for Info {
     fn render(&mut self, viewport: Rect, surface: &mut Surface, cx: &mut Context) {
@@ -23,7 +23,7 @@ impl Component for Info {
         ));
         surface.clear_with(area, popup_style);
 
-        let border_type = BorderType::new(cx.editor.config().rounded_corners);
+        let border_type = crate::ui::border_type(&cx.editor.config());
         let block = Block::bordered()
             .title(self.title.as_ref())
             .border_style(popup_style)

@@ -1003,14 +1003,16 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             }
 
             if let Some(ref mut gradient_border) = self.gradient_border {
-                let rounded = cx.editor.config().rounded_corners;
-                gradient_border.render_with_title(
-                    area,
-                    surface,
-                    &cx.editor.theme,
-                    self.title,
-                    rounded,
-                );
+                let rounded = cx.editor.config().border_rounded();
+                if !cx.editor.config().borders_hidden() {
+                    gradient_border.render_with_title(
+                        area,
+                        surface,
+                        &cx.editor.theme,
+                        self.title,
+                        rounded,
+                    );
+                }
             }
 
             let t: u16 = cx.editor.config().gradient_borders.thickness as u16;
@@ -1025,7 +1027,8 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                 Block::bordered().title(title)
             } else {
                 Block::bordered()
-            };
+            }
+            .border_type(crate::ui::border_type(&cx.editor.config()));
             let inner_area = block.inner(area);
             block.render(area, surface);
             inner_area
@@ -1084,7 +1087,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
 
         // -- Separator
         let sep_style = cx.editor.theme.get("ui.background.separator");
-        let borders = BorderType::line_symbols(BorderType::Plain);
+        let borders = BorderType::line_symbols(crate::ui::separator_type(&cx.editor.config()));
         for x in inner.left()..inner.right() {
             if let Some(cell) = surface.get_mut(x, inner.y + 1 + replace_rows) {
                 cell.set_symbol(borders.horizontal).set_style(sep_style);
@@ -1248,8 +1251,10 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                 ));
             }
             if let Some(ref mut gradient_border) = self.gradient_border {
-                let rounded = cx.editor.config().rounded_corners;
-                gradient_border.render(area, surface, &cx.editor.theme, rounded);
+                let rounded = cx.editor.config().border_rounded();
+                if !cx.editor.config().borders_hidden() {
+                    gradient_border.render(area, surface, &cx.editor.theme, rounded);
+                }
             }
             let t: u16 = cx.editor.config().gradient_borders.thickness as u16;
             Rect {
@@ -1259,7 +1264,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                 height: area.height.saturating_sub(t * 2),
             }
         } else {
-            let block = Block::bordered();
+            let block = Block::bordered().border_type(crate::ui::border_type(&cx.editor.config()));
             let inner_area = block.inner(area);
             block.render(area, surface);
             inner_area

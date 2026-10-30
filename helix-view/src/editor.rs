@@ -547,8 +547,11 @@ pub struct Config {
     pub smart_tab: Option<SmartTabConfig>,
     /// Draw border around popups.
     pub popup_border: PopupBorderConfig,
-    /// Draw rounded border corners
+    /// Draw rounded border corners. Superseded by `border-style`, which takes
+    /// priority when set.
     pub rounded_corners: bool,
+    /// The glyphs of panel, popup and menu borders and of separators.
+    pub border_style: Option<BorderStyle>,
     /// Which indent heuristic to use when a new line is inserted
     #[serde(default)]
     pub indent_heuristic: IndentationHeuristic,
@@ -1774,6 +1777,20 @@ impl From<LineEndingConfig> for LineEnding {
     }
 }
 
+/// The glyphs used for borders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BorderStyle {
+    /// Draw no border glyphs (the space of the border is kept).
+    None,
+    Plain,
+    Rounded,
+    Double,
+    Thick,
+    QuadrantInside,
+    QuadrantOutside,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PopupBorderConfig {
@@ -1854,6 +1871,28 @@ impl Default for PersistenceConfig {
     }
 }
 
+impl Config {
+    /// The border style in effect: `border-style`, or else what the older
+    /// `rounded-corners` option asks for.
+    pub fn effective_border_style(&self) -> BorderStyle {
+        self.border_style.unwrap_or(if self.rounded_corners {
+            BorderStyle::Rounded
+        } else {
+            BorderStyle::Plain
+        })
+    }
+
+    /// Whether borders have rounded corners (for the custom-drawn gradient borders).
+    pub fn border_rounded(&self) -> bool {
+        self.effective_border_style() == BorderStyle::Rounded
+    }
+
+    /// Whether border glyphs are hidden.
+    pub fn borders_hidden(&self) -> bool {
+        self.effective_border_style() == BorderStyle::None
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -1920,6 +1959,7 @@ impl Default for Config {
             smart_tab: Some(SmartTabConfig::default()),
             popup_border: PopupBorderConfig::None,
             rounded_corners: false,
+            border_style: None,
             indent_heuristic: IndentationHeuristic::default(),
             jump_label_alphabet: ('a'..='z').collect(),
             inline_diagnostics: InlineDiagnosticsConfig::default(),
@@ -3872,5 +3912,53 @@ impl CursorCache {
 
     pub fn reset(&self) {
         self.0.set(None)
+    }
+}
+
+#[cfg(test)]
+mod border_style_tests {
+    use super::*;
+
+    fn config(toml: &str) -> Config {
+        toml::from_str(toml).unwrap()
+    }
+
+    #[test]
+    fn border_style_parses_every_value() {
+        for (name, expected) in [
+            ("none", BorderStyle::None),
+            ("plain", BorderStyle::Plain),
+            ("rounded", BorderStyle::Rounded),
+            ("double", BorderStyle::Double),
+            ("thick", BorderStyle::Thick),
+            ("quadrant-inside", BorderStyle::QuadrantInside),
+            ("quadrant-outside", BorderStyle::QuadrantOutside),
+        ] {
+            let config = config(&format!("border-style = \"{name}\""));
+            assert_eq!(config.border_style, Some(expected), "{name}");
+            assert_eq!(config.effective_border_style(), expected);
+        }
+        assert!(toml::from_str::<Config>("border-style = \"dotted\"").is_err());
+    }
+
+    #[test]
+    fn rounded_corners_still_works_and_border_style_wins() {
+        assert_eq!(
+            Config::default().effective_border_style(),
+            BorderStyle::Plain
+        );
+        assert!(!Config::default().border_rounded());
+
+        let legacy = config("rounded-corners = true");
+        assert_eq!(legacy.effective_border_style(), BorderStyle::Rounded);
+        assert!(legacy.border_rounded());
+
+        let both = config("rounded-corners = true\nborder-style = \"double\"");
+        assert_eq!(both.effective_border_style(), BorderStyle::Double);
+        assert!(!both.border_rounded());
+
+        let none = config("border-style = \"none\"");
+        assert!(none.borders_hidden());
+        assert!(!config("border-style = \"plain\"").borders_hidden());
     }
 }
