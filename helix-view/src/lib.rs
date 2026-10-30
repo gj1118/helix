@@ -24,6 +24,7 @@ pub mod quicklist;
 pub mod regex;
 pub mod register;
 pub mod snippets;
+pub mod terminal_launcher;
 pub mod theme;
 pub mod tree;
 pub mod view;

@@ -75,3 +75,37 @@ by reference.
 
 The buffer, and the breakpoints in it, last until the adapter reports (`loadedSource` event) that
 the source changed or was removed, or until the session ends.
+
+## The terminal of the debuggee
+
+Adapters that ask for a terminal (`runInTerminal`, `console = "externalTerminal"` in the
+configuration) get a new pane or window. Helix opens it with the terminal or multiplexer it is
+running in, which it recognises by the environment variables they export:
+
+| Terminal | Detected by | Opens | Notes |
+| -------- | ----------- | ----- | ----- |
+| tmux | `TMUX` | `tmux split-window` | |
+| Zellij | `ZELLIJ` | `zellij run` | the pane is titled by the adapter |
+| WezTerm | `WEZTERM_UNIX_SOCKET` | `wezterm cli split-pane` | |
+| Kitty | `KITTY_WINDOW_ID` | `kitty @ launch --type=window` | needs `allow_remote_control` in `kitty.conf` |
+| Alacritty | `ALACRITTY_SOCKET` | `alacritty msg create-window` | a new window, there are no panes; needs the IPC socket (the default) |
+
+A multiplexer wins over the terminal it runs in (tmux inside Kitty opens a tmux pane), and
+the program has to be installed. The pane gets the working directory and the environment the
+adapter asks for, and the focus: the debuggee may be waiting for input. When the pane cannot be
+opened, the status line says why (`kitty failed to open a terminal: ...`).
+
+To choose the launcher yourself, for example when two multiplexers are nested, or to use a
+terminal that has no launcher:
+
+```toml
+[editor.terminal]
+launcher = "kitty" # "tmux", "zellij", "wezterm", "kitty" or "alacritty"
+
+# or any terminal that runs the rest of its command line
+[editor.terminal]
+command = "foot"
+args = ["-e"]
+```
+
+`launcher` wins when both are given. On Windows `wt` (or `conhost`) is used.

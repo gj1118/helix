@@ -816,23 +816,16 @@ impl Editor {
                             return true;
                         };
 
-                        let process = match std::process::Command::new(&config.command)
-                            .args(&config.args)
-                            .args(&arguments.args)
-                            .spawn()
-                        {
-                            Ok(process) => process,
+                        let process_id = match run_in_terminal(config, &arguments) {
+                            Ok(process_id) => process_id,
                             Err(err) => {
-                                self.set_error(format!(
-                                    "Error starting external terminal: {}",
-                                    err
-                                ));
+                                self.set_error(err);
                                 return true;
                             }
                         };
 
                         Ok(json!(dap::requests::RunInTerminalResponse {
-                            process_id: Some(process.id()),
+                            process_id: Some(process_id),
                             shell_process_id: None,
                         }))
                     }
@@ -915,5 +908,212 @@ impl Editor {
             }
         }
         true
+    }
+}
+
+/// How long a launcher gets to open the pane before it is given up on.
+const LAUNCHER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Opens the terminal for a debuggee and returns the id of the process that was started.
+fn run_in_terminal(
+    config: &crate::editor::TerminalConfig,
+    arguments: &dap::requests::RunInTerminalArguments,
+) -> Result<u32, String> {
+    use crate::terminal_launcher::Launch;
+    use std::process::Command;
+
+    let cwd = if arguments.cwd.is_empty() {
+        helix_stdx::env::current_working_dir()
+            .to_string_lossy()
+            .into_owned()
+    } else {
+        arguments.cwd.clone()
+    };
+
+    if let Some(launcher) = config.launcher {
+        let (program, args) = launcher.command_line(&Launch {
+            cwd: &cwd,
+            title: arguments.title.as_deref(),
+            args: &arguments.args,
+            env: arguments.env.as_ref(),
+        });
+        return run_launcher(&program, &args, LAUNCHER_TIMEOUT);
+    }
+
+    if config.command.is_empty() {
+        return Err("No external terminal defined".to_string());
+    }
+    let mut command = Command::new(&config.command);
+    command
+        .args(&config.args)
+        .args(&arguments.args)
+        .current_dir(&cwd);
+    for (name, value) in arguments.env.iter().flatten() {
+        match value {
+            Some(value) => command.env(name, value),
+            None => command.env_remove(name),
+        };
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|err| format!("Error starting external terminal: {err}"))?;
+    let process_id = child.id();
+    // Reap the terminal once it is closed.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(process_id)
+}
+
+/// Runs a command that opens a pane and returns as soon as it exists, so that we can wait for it
+/// and tell the user why there is no pane (kitty without `allow_remote_control`, no zellij
+/// session, ...).
+fn run_launcher(
+    program: &str,
+    args: &[String],
+    timeout: std::time::Duration,
+) -> Result<u32, String> {
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| format!("Error starting {program}: {err}"))?;
+    let process_id = child.id();
+
+    let deadline = std::time::Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("{program} did not open a terminal in time"));
+            }
+            Err(err) => return Err(format!("Error waiting for {program}: {err}")),
+        }
+    };
+    if status.success() {
+        return Ok(process_id);
+    }
+
+    let mut stderr = String::new();
+    if let Some(mut pipe) = child.stderr.take() {
+        use std::io::Read;
+        let _ = pipe.read_to_string(&mut stderr);
+    }
+    let stderr = stderr.trim();
+    Err(if stderr.is_empty() {
+        format!("{program} failed to open a terminal ({status})")
+    } else {
+        format!("{program} failed to open a terminal: {stderr}")
+    })
+}
+
+#[cfg(all(test, unix))]
+mod run_in_terminal_tests {
+    use super::*;
+    use crate::editor::TerminalConfig;
+    use std::collections::HashMap;
+    use std::time::Duration;
+
+    fn arguments(cwd: &str, args: &[&str]) -> dap::requests::RunInTerminalArguments {
+        dap::requests::RunInTerminalArguments {
+            kind: None,
+            title: Some("Debug".into()),
+            cwd: cwd.into(),
+            args: args.iter().map(|arg| arg.to_string()).collect(),
+            env: None,
+        }
+    }
+
+    fn wait_for(path: &std::path::Path) -> String {
+        for _ in 0..500 {
+            if let Ok(text) = std::fs::read_to_string(path) {
+                if !text.is_empty() {
+                    return text;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("{} was never written", path.display());
+    }
+
+    #[test]
+    fn custom_terminal_gets_the_cwd_the_environment_and_the_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out");
+        let config = TerminalConfig {
+            command: "sh".into(),
+            // `$0` is the first debuggee argument, `$@` the others
+            args: vec![
+                "-c".into(),
+                format!(
+                    "echo \"$PWD|$GREETING|${{UNSET_ME-unset}}|$0 $@\" > {}",
+                    out.display()
+                ),
+            ],
+            launcher: None,
+        };
+        let mut request = arguments(dir.path().to_str().unwrap(), &["./app", "--flag"]);
+        request.env = Some(HashMap::from([
+            ("GREETING".to_string(), Some("hello".to_string())),
+            ("UNSET_ME".to_string(), None),
+        ]));
+
+        run_in_terminal(&config, &request).unwrap();
+
+        let text = wait_for(&out);
+        let (pwd, rest) = text.split_once('|').unwrap();
+        assert_eq!(
+            std::fs::canonicalize(pwd).unwrap(),
+            std::fs::canonicalize(dir.path()).unwrap()
+        );
+        assert_eq!(rest.trim(), "hello|unset|./app --flag");
+    }
+
+    #[test]
+    fn no_terminal_is_an_error() {
+        let err = run_in_terminal(&TerminalConfig::default(), &arguments("/", &["app"]));
+        assert_eq!(err.unwrap_err(), "No external terminal defined");
+    }
+
+    #[test]
+    fn a_failing_launcher_reports_why() {
+        let err = run_launcher(
+            "sh",
+            &[
+                "-c".to_string(),
+                "echo remote control is off >&2; exit 1".to_string(),
+            ],
+            Duration::from_secs(5),
+        )
+        .unwrap_err();
+        assert_eq!(err, "sh failed to open a terminal: remote control is off");
+
+        let err = run_launcher("/definitely/not/installed", &[], Duration::from_secs(5));
+        assert!(err.unwrap_err().starts_with("Error starting"));
+    }
+
+    #[test]
+    fn a_launcher_that_hangs_is_given_up_on() {
+        let err = run_launcher(
+            "sh",
+            &["-c".to_string(), "sleep 30".to_string()],
+            Duration::from_millis(100),
+        );
+        assert_eq!(err.unwrap_err(), "sh did not open a terminal in time");
+    }
+
+    #[test]
+    fn a_launcher_that_succeeds_returns_its_process_id() {
+        let pid = run_launcher("true", &[], Duration::from_secs(5)).unwrap();
+        assert!(pid > 0);
     }
 }
