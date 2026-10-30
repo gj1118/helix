@@ -609,6 +609,20 @@ impl Backend for TerminaBackend {
         self.terminal.flush()
     }
 
+    fn write_raw(&mut self, x: u16, y: u16, bytes: &[u8]) -> io::Result<()> {
+        self.set_cursor(x, y)?;
+        self.terminal.write_all(bytes)
+    }
+
+    fn cell_size(&self) -> Option<(u16, u16)> {
+        let size = self.terminal.get_dimensions().ok()?;
+        let (width, height) = (size.pixel_width?, size.pixel_height?);
+        if size.cols == 0 || size.rows == 0 || width == 0 || height == 0 {
+            return None;
+        }
+        Some(((width / size.cols).max(1), (height / size.rows).max(1)))
+    }
+
     fn supports_true_color(&self) -> bool {
         self.capabilities.true_color
     }

@@ -62,4 +62,13 @@ pub trait Backend {
     fn set_pointer_shape(&mut self, _name: &str) -> io::Result<()> {
         Ok(())
     }
+    /// Writes bytes for the terminal as they are (a graphics protocol), with the cursor at
+    /// the given cell. The default does nothing.
+    fn write_raw(&mut self, _x: u16, _y: u16, _bytes: &[u8]) -> io::Result<()> {
+        Ok(())
+    }
+    /// The size of a cell in pixels, if the terminal reports it.
+    fn cell_size(&self) -> Option<(u16, u16)> {
+        None
+    }
 }

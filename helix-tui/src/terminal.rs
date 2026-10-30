@@ -157,10 +157,45 @@ where
             self.backend.clear()?;
             self.force_clear = false;
         }
-        let previous_buffer = &self.buffers[1 - self.current];
-        let current_buffer = &self.buffers[self.current];
+
+        // Overlays (images) that are gone or have changed: take them away, and draw the cells
+        // that were below them again.
+        let (previous_buffer, current_buffer) = if self.current == 0 {
+            let (current, previous) = self.buffers.split_at_mut(1);
+            (&mut previous[0], &current[0])
+        } else {
+            let (previous, current) = self.buffers.split_at_mut(1);
+            (&mut previous[0], &current[0])
+        };
+        for overlay in &previous_buffer.overlays {
+            if !current_buffer.overlays.contains(overlay) {
+                if let Some(cleanup) = &overlay.cleanup {
+                    self.backend
+                        .write_raw(overlay.area.x, overlay.area.y, cleanup)?;
+                }
+            }
+        }
+        let gone: Vec<_> = previous_buffer
+            .overlays
+            .iter()
+            .filter(|overlay| !current_buffer.overlays.contains(overlay))
+            .map(|overlay| overlay.area)
+            .collect();
+        for area in gone {
+            previous_buffer.invalidate(area);
+        }
+
         let updates = previous_buffer.diff(current_buffer);
-        self.backend.draw(updates.into_iter())
+        self.backend.draw(updates.into_iter())?;
+
+        // The new ones go over the cells.
+        for overlay in &current_buffer.overlays {
+            if !previous_buffer.overlays.contains(overlay) {
+                self.backend
+                    .write_raw(overlay.area.x, overlay.area.y, &overlay.payload)?;
+            }
+        }
+        Ok(())
     }
 
     /// Updates the Terminal so that internal buffers match the requested size. Requested size will
@@ -260,5 +295,92 @@ where
     /// Queries the real size of the backend.
     pub fn size(&self) -> Rect {
         self.backend.size().unwrap_or(DEFAULT_TERMINAL_SIZE)
+    }
+}
+
+#[cfg(test)]
+mod overlay_tests {
+    use super::*;
+    use crate::{backend::TestBackend, buffer::Overlay};
+    use std::sync::Arc;
+
+    fn overlay(key: u64, area: Rect) -> Overlay {
+        Overlay {
+            area,
+            key,
+            payload: Arc::from(format!("image {key}").into_bytes()),
+            cleanup: Some(Arc::from(format!("delete {key}").into_bytes())),
+        }
+    }
+
+    fn frame(terminal: &mut Terminal<TestBackend>, overlays: &[Overlay]) {
+        for overlay in overlays {
+            terminal.current_buffer_mut().add_overlay(overlay.clone());
+        }
+        terminal.draw(None, CursorKind::Hidden).unwrap();
+    }
+
+    fn raw(terminal: &mut Terminal<TestBackend>) -> Vec<(u16, u16, String)> {
+        std::mem::take(&mut terminal.backend_mut().raw)
+            .into_iter()
+            .map(|(x, y, bytes)| (x, y, String::from_utf8(bytes).unwrap()))
+            .collect()
+    }
+
+    #[test]
+    fn overlays_are_sent_once_and_taken_away_when_they_go() {
+        let mut terminal = Terminal::new(TestBackend::new(20, 10)).unwrap();
+        let area = Rect::new(3, 2, 5, 4);
+
+        frame(&mut terminal, &[overlay(1, area)]);
+        assert_eq!(raw(&mut terminal), [(3, 2, "image 1".to_string())]);
+
+        // the same image in the next frame is not sent again
+        frame(&mut terminal, &[overlay(1, area)]);
+        assert_eq!(raw(&mut terminal), []);
+
+        // another image in the same place: the old one is deleted, then the new one is shown
+        frame(&mut terminal, &[overlay(2, area)]);
+        assert_eq!(
+            raw(&mut terminal),
+            [
+                (3, 2, "delete 1".to_string()),
+                (3, 2, "image 2".to_string())
+            ]
+        );
+
+        // no image: it is deleted
+        frame(&mut terminal, &[]);
+        assert_eq!(raw(&mut terminal), [(3, 2, "delete 2".to_string())]);
+        frame(&mut terminal, &[]);
+        assert_eq!(raw(&mut terminal), []);
+    }
+
+    #[test]
+    fn an_image_that_moves_is_sent_again() {
+        let mut terminal = Terminal::new(TestBackend::new(20, 10)).unwrap();
+        frame(&mut terminal, &[overlay(1, Rect::new(0, 0, 4, 4))]);
+        raw(&mut terminal);
+        frame(&mut terminal, &[overlay(1, Rect::new(5, 0, 4, 4))]);
+        assert_eq!(
+            raw(&mut terminal),
+            [
+                (0, 0, "delete 1".to_string()),
+                (5, 0, "image 1".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn a_cleared_terminal_shows_the_image_again() {
+        let mut terminal = Terminal::new(TestBackend::new(20, 10)).unwrap();
+        let area = Rect::new(1, 1, 4, 4);
+        frame(&mut terminal, &[overlay(1, area)]);
+        raw(&mut terminal);
+
+        // a resize or a redraw request clears the screen, and the images with it
+        terminal.clear().unwrap();
+        frame(&mut terminal, &[overlay(1, area)]);
+        assert_eq!(raw(&mut terminal), [(1, 1, "image 1".to_string())]);
     }
 }

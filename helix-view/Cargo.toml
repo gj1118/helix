@@ -32,6 +32,8 @@ helix-dap = { path = "../helix-dap" }
 helix-vcs = { path = "../helix-vcs", features = ["git"] }
 
 bitflags.workspace = true
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
 foldhash.workspace = true
 anyhow = "1"
 termina = { workspace = true, optional = true }

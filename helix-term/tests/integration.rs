@@ -25,6 +25,7 @@ mod test {
     mod custom_commands;
     mod dap;
     mod history;
+    mod image_preview;
     mod inline_completion;
     mod movement;
     mod persistence;

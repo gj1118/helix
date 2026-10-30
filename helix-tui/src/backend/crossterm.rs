@@ -336,6 +336,16 @@ where
         write!(self.buffer, "\x1b]22;{name}\x1b\\")
     }
 
+    fn write_raw(&mut self, x: u16, y: u16, bytes: &[u8]) -> io::Result<()> {
+        queue!(self.buffer, MoveTo(x, y))?;
+        self.buffer.write_all(bytes)
+    }
+
+    fn cell_size(&self) -> Option<(u16, u16)> {
+        let size = terminal::window_size().ok()?;
+        pixels_per_cell(size.columns, size.rows, size.width, size.height)
+    }
+
     fn supports_true_color(&self) -> bool {
         false
     }
@@ -469,5 +479,26 @@ impl Command for SetUnderlineColor {
             std::io::ErrorKind::Other,
             "SetUnderlineColor not supported by winapi.",
         ))
+    }
+}
+
+/// The size of a cell, from the size of the window in cells and in pixels. Terminals that don't
+/// know their size in pixels report 0.
+fn pixels_per_cell(columns: u16, rows: u16, width: u16, height: u16) -> Option<(u16, u16)> {
+    if columns == 0 || rows == 0 || width == 0 || height == 0 {
+        return None;
+    }
+    Some(((width / columns).max(1), (height / rows).max(1)))
+}
+
+#[cfg(test)]
+mod pixel_tests {
+    use super::pixels_per_cell;
+
+    #[test]
+    fn cell_size_from_the_window() {
+        assert_eq!(pixels_per_cell(100, 50, 1000, 1000), Some((10, 20)));
+        assert_eq!(pixels_per_cell(100, 50, 0, 0), None);
+        assert_eq!(pixels_per_cell(0, 50, 1000, 1000), None);
     }
 }
