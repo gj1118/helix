@@ -18,7 +18,10 @@ use helix_view::{
     theme::{Color, Modifier, Style},
     ViewId,
 };
-use helix_view::{graphics::Rect, Document, Editor};
+use helix_view::{
+    graphics::{Margin, Rect},
+    Document, Editor,
+};
 use nucleo::{
     pattern::{Atom, AtomKind, CaseMatching, Normalization},
     Config, Utf32Str,
@@ -26,10 +29,14 @@ use nucleo::{
 use tui::{
     buffer::Buffer as Surface,
     text::{Span, Spans},
-    widgets::BorderType,
 };
 
+use crate::ui::gradient_border::PanelBorder;
+
 use std::cmp::Reverse;
+
+/// Cells a one-cell border takes from a panel's width and height.
+const BORDER_INSET: u16 = 2;
 
 #[derive(Clone, Debug)]
 pub struct FormatCompletionData {
@@ -150,11 +157,11 @@ impl menu::Item for CompletionItem {
             kind.0[0].style = theme.get("ui.text.directory");
         }
 
-        if let Some(icon) = icons.kind().get(name) {
-            kind.0[0].content = format!("{}  {name}", icon.glyph()).into();
-        } else {
-            kind.0[0].content = format!("{name}").into();
-        }
+        // The icon leads the label (icon, label, kind), tinted like the kind.
+        let icon_span = icons
+            .kind()
+            .get(name)
+            .map(|icon| Span::styled(format!("{} ", icon.glyph()), kind.0[0].style));
 
         let label_style = if deprecated {
             Style::default().add_modifier(Modifier::CROSSED_OUT)
@@ -163,9 +170,14 @@ impl menu::Item for CompletionItem {
         } else {
             Style::default()
         };
-        let label = Span::styled(label, label_style);
+        let mut label_spans = Vec::with_capacity(2);
+        label_spans.extend(icon_span);
+        label_spans.push(Span::styled(label, label_style));
 
-        menu::Row::new([menu::Cell::from(label), menu::Cell::from(kind)])
+        menu::Row::new([
+            menu::Cell::from(Spans::from(label_spans)),
+            menu::Cell::from(kind),
+        ])
     }
 }
 
@@ -177,6 +189,8 @@ pub struct Completion {
     filter: String,
     // TODO: move to helix-view/central handler struct in the future
     resolve_handler: ResolveHandler,
+    /// Border of the documentation panel beside the menu.
+    doc_border: PanelBorder,
 }
 
 impl Completion {
@@ -353,7 +367,10 @@ impl Completion {
             },
         );
 
-        let popup = Popup::new(Self::ID, menu)
+        // The menu is always boxed (a gradient when `gradient-borders` is on),
+        // independent of `popup-border`.
+        let popup = Popup::new(Self::ID, menu.panel_border(true))
+            .panel_border(true)
             .with_scrollbar(false)
             .ignore_escape_key(true);
 
@@ -375,6 +392,7 @@ impl Completion {
             // and avoid allocation during matching
             filter: String::from(fragment),
             resolve_handler: ResolveHandler::new(),
+            doc_border: PanelBorder::default(),
         };
 
         // need to recompute immediately in case start_offset != trigger_offset
@@ -601,11 +619,14 @@ impl Component for Completion {
             let x = popup_area.right();
             let y = popup_area.top();
 
-            if let Some((rel_width, rel_height)) =
-                markdown_doc.required_size((doc_width, doc_height))
-            {
-                doc_width = rel_width.min(doc_width);
-                doc_height = rel_height.min(doc_height);
+            // The markdown reports its own padding; the border adds a cell
+            // on every side on top of that.
+            if let Some((rel_width, rel_height)) = markdown_doc.required_size((
+                doc_width.saturating_sub(BORDER_INSET),
+                doc_height.saturating_sub(BORDER_INSET),
+            )) {
+                doc_width = rel_width.saturating_add(BORDER_INSET).min(doc_width);
+                doc_height = rel_height.saturating_add(BORDER_INSET).min(doc_height);
             }
             Rect::new(x, y, doc_width, doc_height)
         } else {
@@ -634,17 +655,11 @@ impl Component for Completion {
         let background = cx.editor.theme.get("ui.popup");
         surface.clear_with(doc_area, background);
 
-        if cx.editor.popup_border() {
-            use tui::widgets::{Block, Widget};
-            let border_type = BorderType::new(cx.editor.config().rounded_corners);
-            Widget::render(
-                Block::bordered().border_type(border_type),
-                doc_area,
-                surface,
-            );
-        }
+        // Always boxed like the menu; a gradient when `gradient-borders` is on.
+        self.doc_border.render(doc_area, surface, cx.editor);
 
-        markdown_doc.render(doc_area, surface, cx);
+        // Inset by the border; the markdown then adds its own padding cell.
+        markdown_doc.render(doc_area.inner(Margin::all(1)), surface, cx);
     }
 }
 fn lsp_item_to_transaction(

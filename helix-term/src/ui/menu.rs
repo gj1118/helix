@@ -36,6 +36,9 @@ pub struct Menu<T: Item> {
     viewport: (u16, u16),
     recalculate: bool,
     auto_close: bool,
+    /// The menu sits inside a border its popup always draws, whatever
+    /// `popup-border` says.
+    panel_border: bool,
 }
 
 impl<T: Item> Menu<T> {
@@ -61,7 +64,14 @@ impl<T: Item> Menu<T> {
             viewport: (0, 0),
             recalculate: true,
             auto_close: false,
+            panel_border: false,
         }
+    }
+
+    /// Marks the menu as living inside an always-drawn popup border.
+    pub fn panel_border(mut self, enable: bool) -> Self {
+        self.panel_border = enable;
+        self
     }
 
     pub fn reset_cursor(&mut self) {
@@ -377,9 +387,11 @@ impl<T: Item + 'static> Component for Menu<T> {
             false,
         );
 
-        let render_borders = cx.editor.menu_border();
+        let render_borders = self.panel_border || cx.editor.menu_border();
 
-        if !render_borders {
+        // A panel border leaves the padding cells inside it, so the selection
+        // bar spans the full inner width there too.
+        if !render_borders || self.panel_border {
             if let Some(cursor) = self.cursor {
                 let offset_from_top = cursor - scroll;
                 let left = &mut surface[(area.left(), area.y + offset_from_top as u16)];

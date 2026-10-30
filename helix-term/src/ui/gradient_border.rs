@@ -2,10 +2,54 @@ use helix_view::{
     editor::{GradientBorderConfig, GradientDirection},
     graphics::{Color, Rect, Style},
     theme::{Modifier, Theme},
+    Editor,
 };
-use tui::buffer::Buffer as Surface;
+use tui::{
+    buffer::Buffer as Surface,
+    widgets::{Block, BorderType, Widget},
+};
 
 type Rgb = (u8, u8, u8);
+
+/// A one-cell border around a popup panel (e.g. the completion menu and its
+/// documentation). It is always drawn, and follows `[editor.gradient-borders]`
+/// whenever that is enabled; otherwise it is a plain box honoring
+/// `rounded-corners`.
+#[derive(Default)]
+pub struct PanelBorder {
+    gradient: Option<(GradientBorderConfig, GradientBorder)>,
+}
+
+impl PanelBorder {
+    pub fn render(&mut self, area: Rect, surface: &mut Surface, editor: &Editor) {
+        if area.width < 2 || area.height < 2 {
+            return;
+        }
+        let config = editor.config();
+        if config.gradient_borders.enable {
+            let stale = self
+                .gradient
+                .as_ref()
+                .is_none_or(|(cached, _)| *cached != config.gradient_borders);
+            if stale {
+                self.gradient = Some((
+                    config.gradient_borders.clone(),
+                    GradientBorder::from_theme(&editor.theme, &config.gradient_borders),
+                ));
+            }
+            if let Some((_, border)) = self.gradient.as_mut() {
+                border.render(area, surface, &editor.theme, config.rounded_corners);
+            }
+        } else {
+            self.gradient = None;
+            Widget::render(
+                Block::bordered().border_type(BorderType::new(config.rounded_corners)),
+                area,
+                surface,
+            );
+        }
+    }
+}
 
 /// A utility for rendering gradient borders around UI components
 pub struct GradientBorder {
