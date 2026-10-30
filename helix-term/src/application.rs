@@ -575,12 +575,19 @@ impl Application {
                         // set in `handle_document_write`) can run before the `DocumentSavedEvent` is processed. Slow file I/O on Windows
                         // (atomic_save's rename/fsync dance over the still-open temp file) makes this race observable.
                         // Errors produce an event too, so it cannot hang.
-                        if _idle_handled && self.editor.write_count == 0 {
+                        if _idle_handled
+                            && self.editor.write_count == 0
+                            && self.editor.pending_quit.is_none()
+                            && self.jobs.wait_futures.is_empty()
+                            && !crate::commands::shell_jobs_running()
+                        {
                             return true;
                         }
                     }
                 }
             }
+
+            self.finish_pending_quit();
 
             // for integration tests only, reset the idle timer after every
             // event to signal when test events are done processing
@@ -588,6 +595,26 @@ impl Application {
             {
                 self.editor.reset_idle_timer();
             }
+        }
+    }
+
+    /// Carries out a quit requested together with a save (`:wq`) once the saves are done.
+    fn finish_pending_quit(&mut self) {
+        let Some(pending) = self.editor.pending_quit else {
+            return;
+        };
+        if !self.jobs.wait_futures.is_empty() || self.editor.write_count > 0 {
+            return;
+        }
+        self.editor.pending_quit = None;
+        let mut cx = crate::compositor::Context {
+            editor: &mut self.editor,
+            jobs: &mut self.jobs,
+            scroll: None,
+            plugin_manager: Some(self.plugin_manager.clone()),
+        };
+        if let Err(err) = crate::commands::typed::run_pending_quit(&mut cx, pending) {
+            self.editor.set_error(err.to_string());
         }
     }
 
@@ -814,6 +841,8 @@ impl Application {
         let doc_save_event = match doc_save_event {
             Ok(event) => event,
             Err(err) => {
+                // Keep the editor (and the unsaved edits) open when a write fails.
+                self.editor.pending_quit = None;
                 self.editor.set_error(err.to_string());
                 return;
             }

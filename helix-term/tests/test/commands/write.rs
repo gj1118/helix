@@ -1039,3 +1039,83 @@ async fn test_write_then_open_does_not_panic_on_closed_scratch() -> anyhow::Resu
 
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_write_quit_formatter_timeout_still_saves() -> anyhow::Result<()> {
+    let mut file = tempfile::Builder::new().suffix(".rs").tempfile()?;
+
+    let lang_conf = indoc! {r#"
+            [[language]]
+            name = "rust"
+            formatter = { command = "bash", args = [ "-c", "sleep 30" ], timeout = 1 }
+        "#};
+
+    let mut app = helpers::AppBuilder::new()
+        .with_file(file.path(), None)
+        .with_input_text("#[l|]#et foo = 0;\n")
+        .with_lang_loader(helpers::test_syntax_loader(Some(lang_conf.into())))
+        .build()?;
+
+    let started = std::time::Instant::now();
+    test_key_sequences(&mut app, vec![(Some(":wq<ret>"), None)], true).await?;
+
+    // the hanging formatter was terminated and the unformatted text was saved
+    assert!(started.elapsed() < std::time::Duration::from_secs(20));
+    helpers::assert_file_has_content(&mut file, "let foo = 0;\n")?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_write_quit_waits_for_slow_formatter() -> anyhow::Result<()> {
+    let mut file = tempfile::Builder::new().suffix(".rs").tempfile()?;
+
+    let lang_conf = indoc! {r#"
+            [[language]]
+            name = "rust"
+            formatter = { command = "bash", args = [ "-c", "sleep 1; echo slow content" ] }
+        "#};
+
+    let mut app = helpers::AppBuilder::new()
+        .with_file(file.path(), None)
+        .with_input_text("#[l|]#et foo = 0;\n")
+        .with_lang_loader(helpers::test_syntax_loader(Some(lang_conf.into())))
+        .build()?;
+
+    test_key_sequences(&mut app, vec![(Some(":wq<ret>"), None)], true).await?;
+
+    helpers::assert_file_has_content(&mut file, "slow content\n")?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_write_formatter_save_survives_closed_view() -> anyhow::Result<()> {
+    // Closing the view while the formatter runs must not lose the requested save.
+    let mut file = tempfile::Builder::new().suffix(".rs").tempfile()?;
+
+    let lang_conf = indoc! {r#"
+            [[language]]
+            name = "rust"
+            formatter = { command = "bash", args = [ "-c", "sleep 1; echo formatted" ] }
+        "#};
+
+    let mut app = helpers::AppBuilder::new()
+        .with_file(file.path(), None)
+        .with_input_text("#[l|]#et foo = 0;\n")
+        .with_lang_loader(helpers::test_syntax_loader(Some(lang_conf.into())))
+        .build()?;
+
+    // `<C-w>o` closes the original view, the one the save was started from.
+    test_key_sequences(
+        &mut app,
+        vec![(Some(":w<ret>:vsplit<ret><C-w>o"), None)],
+        false,
+    )
+    .await?;
+
+    // the formatting is dropped with the view, but the save still happens
+    helpers::assert_file_has_content(&mut file, "let foo = 0;\n")?;
+
+    Ok(())
+}

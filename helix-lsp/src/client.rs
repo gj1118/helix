@@ -72,6 +72,51 @@ pub struct Client {
     req_timeout: u64,
 }
 
+/// Sends `$/cancelRequest` for a request when dropped before its response arrived.
+struct CancelOnDrop {
+    server_tx: UnboundedSender<Payload>,
+    id: jsonrpc::Id,
+    method: &'static str,
+}
+
+impl CancelOnDrop {
+    fn disarm(&mut self) {
+        self.method = "";
+    }
+}
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        use lsp::request::Request as _;
+        // Nothing to cancel once answered; the handshake and shutdown must run to completion.
+        if self.method.is_empty()
+            || self.method == lsp::request::Initialize::METHOD
+            || self.method == lsp::request::Shutdown::METHOD
+        {
+            return;
+        }
+        let jsonrpc::Id::Num(id) = self.id else {
+            return;
+        };
+        let Ok(id) = i32::try_from(id) else { return };
+        let params = lsp::CancelParams {
+            id: lsp::NumberOrString::Number(id),
+        };
+        let Ok(params) = serde_json::to_value(params) else {
+            return;
+        };
+        // Errors only mean the server is gone already.
+        let _ = self
+            .server_tx
+            .send(Payload::Notification(jsonrpc::Notification {
+                jsonrpc: Some(jsonrpc::Version::V2),
+                method: <lsp::notification::Cancel as lsp::notification::Notification>::METHOD
+                    .to_string(),
+                params: Client::value_into_params(params),
+            }));
+    }
+}
+
 impl Client {
     pub fn try_add_doc(
         self: &Arc<Self>,
@@ -489,13 +534,26 @@ impl Client {
                 Ok(rx)
             });
 
+        // Tells the server to stop working on a request nobody waits for anymore: the
+        // future was dropped (a newer request replaced it) or the request timed out.
+        let mut cancel = rx.is_ok().then(|| CancelOnDrop {
+            server_tx: self.server_tx.clone(),
+            id: id.clone(),
+            method: R::METHOD,
+        });
+
         async move {
             use std::time::Duration;
             use tokio::time::timeout;
             // TODO: delay other calls until initialize success
-            timeout(Duration::from_secs(timeout_secs), rx?.recv())
+            let response = timeout(Duration::from_secs(timeout_secs), rx?.recv())
                 .await
-                .map_err(|_| Error::Timeout(id))? // return Timeout
+                .map_err(|_| Error::Timeout(id))?; // return Timeout
+                                                   // The server answered (or the stream closed): nothing left to cancel.
+            if let Some(mut cancel) = cancel.take() {
+                cancel.disarm();
+            }
+            response
                 .ok_or(Error::StreamClosed)?
                 .and_then(|value| serde_json::from_value(value).map_err(Into::into))
         }

@@ -457,6 +457,19 @@ pub struct FormatterConfiguration {
     #[serde(default)]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
+    /// Seconds after which a formatter that has not finished is terminated
+    /// (the buffer is then saved without formatting). Defaults to 20.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<u64>,
+}
+
+impl FormatterConfiguration {
+    pub const DEFAULT_TIMEOUT_SECS: u64 = 20;
+
+    pub fn timeout_secs(&self) -> u64 {
+        self.timeout.unwrap_or(Self::DEFAULT_TIMEOUT_SECS)
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Deserialize, Serialize)]

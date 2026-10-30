@@ -2077,6 +2077,17 @@ impl NotificationManager {
     }
 }
 
+/// A quit requested together with a save (`:wq`, `:x`, `:wqa`, ...). The editor keeps
+/// running while the saves finish and the application quits afterwards. A failed
+/// save cancels it, so unsaved edits are never lost.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingQuit {
+    /// Close one view.
+    View { view: ViewId, force: bool },
+    /// Close every view.
+    All { force: bool },
+}
+
 pub struct Editor {
     /// Current editing mode.
     pub mode: Mode,
@@ -2089,6 +2100,8 @@ pub struct Editor {
     pub saves: HashMap<DocumentId, UnboundedSender<Once<DocumentSavedEventFuture>>>,
     pub save_queue: SelectAll<Flatten<UnboundedReceiverStream<Once<DocumentSavedEventFuture>>>>,
     pub write_count: usize,
+    /// A quit that waits for the saves in flight to finish, see [`PendingQuit`].
+    pub pending_quit: Option<PendingQuit>,
 
     pub count: Option<std::num::NonZeroUsize>,
     pub selected_register: Option<char>,
@@ -2258,6 +2271,7 @@ impl Editor {
             saves: HashMap::new(),
             save_queue: SelectAll::new(),
             write_count: 0,
+            pending_quit: None,
             count: None,
             selected_register: None,
             macro_recording: None,
