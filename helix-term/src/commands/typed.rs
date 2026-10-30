@@ -1569,6 +1569,49 @@ fn blame(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyho
     Ok(())
 }
 
+fn file_history(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    super::git_history::git_file_history(cx.editor, cx.jobs);
+    Ok(())
+}
+
+fn git_history(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    super::git_history::git_history(cx.editor, cx.jobs);
+    Ok(())
+}
+
+fn restore_change(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    match super::restore_change_impl(cx.editor) {
+        Ok(0) => cx.editor.set_status("No changes under the selections"),
+        Ok(count) => cx.editor.set_status(format!(
+            "Restored {count} change{} from HEAD",
+            if count == 1 { "" } else { "s" }
+        )),
+        Err(err) => bail!(err),
+    }
+    Ok(())
+}
+
 fn reload(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
@@ -4269,6 +4312,39 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &["char"],
         doc: "Get info about the character under the primary cursor.",
         fun: get_character_info,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "restore-change",
+        aliases: &[],
+        doc: "Restore the changes touched by the selections from HEAD.",
+        fun: restore_change,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "file-history",
+        aliases: &[],
+        doc: "Browse the commits that changed the current file.",
+        fun: file_history,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "git-history",
+        aliases: &["vcs-history"],
+        doc: "Browse the repository's commits and the files they changed.",
+        fun: git_history,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

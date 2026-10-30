@@ -516,6 +516,31 @@ be bound to a key. In it, `Enter` and `Alt-s` apply the selected stash and
 `Alt-i` applies it restoring the index as well. Applying asks for confirmation,
 needs all buffers to be saved, and keeps the stash.
 
+### Git history
+
+Browse history without checking anything out; diffs and old versions open in
+scratch buffers and nothing touches the working tree or the index. These need
+the `git` executable and a [trusted workspace](./workspace-trust.md), and have no
+default key: run them as commands, from the command palette, or bind them.
+
+| Command | Description |
+| ------- | ----------- |
+| `:file-history` (`git_file_history`) | Commits that changed the current file, following renames |
+| `:git-history`, `:vcs-history` (`git_history`) | Commits leading to `HEAD`, then the files each one changed |
+| `:restore-change` (`restore_change`) | Replace every hunk touched by the selections with its `HEAD` version |
+
+In the commit pickers `Enter` (and `Ctrl-s` / `Ctrl-v` for splits) opens the
+commit's diff for the file in a scratch buffer named like `a.txt @ 1a2b3c4d [diff]`;
+in repository history it first lists the commit's files, and `Alt-h` goes back to the
+commits. `Alt-o` opens the file as it was at that commit (highlighted by its file
+name), and `Alt-y` copies the commit hash. Merge commits are shown against their
+first parent. Up to 5000 commits are loaded per picker.
+
+History buffers are scratch buffers marked `[readonly]`; Helix has no read-only
+mode, so they can still be edited, but they have no file to save to.
+
+`:restore-change` leaves the file unsaved and the index alone; undo it with `u`.
+
 ### File Explorer
 
 There are additional keys accessible when using the File Explorer (`Space-e` and `Space-E`).

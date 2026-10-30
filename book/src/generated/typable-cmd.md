@@ -50,6 +50,9 @@
 | `:show-directory`, `:pwd` | Show the current working directory. |
 | `:encoding` | Set encoding. Based on `https://encoding.spec.whatwg.org`. |
 | `:character-info`, `:char` | Get info about the character under the primary cursor. |
+| `:restore-change` | Restore the changes touched by the selections from HEAD. |
+| `:file-history` | Browse the commits that changed the current file. |
+| `:git-history`, `:vcs-history` | Browse the repository's commits and the files they changed. |
 | `:blame` | Show the commit that last changed the current line, with copy actions. |
 | `:reload`, `:rl` | Discard changes and reload from the source file. |
 | `:reload-all`, `:rla` | Discard changes and reload all documents from the source files. |
