@@ -521,6 +521,10 @@ pub struct Config {
     /// Debugger display options.
     #[serde(default)]
     pub debugger: DebuggerConfig,
+    /// The `[keys.picker]`, `[keys.menu]`, `[keys.popup]` and `[keys.prompt]` tables. They are
+    /// not part of `[editor]`: the application fills them in when it loads the config.
+    #[serde(skip)]
+    pub component_keys: crate::component_keys::ComponentKeys,
     pub terminal: Option<TerminalConfig>,
     /// Column numbers at which to draw the rulers. Defaults to `[]`, meaning no rulers.
     pub rulers: Vec<u16>,
@@ -1969,6 +1973,7 @@ impl Default for Config {
             search: SearchConfig::default(),
             lsp: LspConfig::default(),
             debugger: DebuggerConfig::default(),
+            component_keys: Default::default(),
             terminal: get_terminal_provider(),
             rulers: Vec::new(),
             ruler_char: "".to_string(),

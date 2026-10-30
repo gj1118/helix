@@ -286,6 +286,14 @@ impl<T: Component> Component for Popup<T> {
             }
             _ => return EventResult::Ignored(None),
         };
+        let Some(key) =
+            super::component_key(cx.editor, helix_view::component_keys::Component::Popup, key)
+        else {
+            return EventResult::Consumed(None);
+        };
+        // What the contents get to see is the key after the popup's table (the menu of a
+        // completion popup has a table of its own).
+        let event = &Event::Key(key);
 
         if key!(Esc) == key && self.ignore_escape_key {
             return EventResult::Ignored(None);

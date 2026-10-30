@@ -1645,6 +1645,13 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
             Event::Mouse(_) => return EventResult::Consumed(None),
             _ => return EventResult::Ignored(None),
         };
+        let Some(key_event) = super::component_key(
+            ctx.editor,
+            helix_view::component_keys::Component::Picker,
+            key_event,
+        ) else {
+            return EventResult::Consumed(None);
+        };
 
         let close_fn = |picker: &mut Self| {
             // A closed picker no longer follows the editor (this also stops its file watcher).

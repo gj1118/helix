@@ -719,6 +719,13 @@ impl Component for Prompt {
             Event::Mouse(_) => return EventResult::Consumed(None),
             _ => return EventResult::Ignored(None),
         };
+        let Some(event) = super::component_key(
+            cx.editor,
+            helix_view::component_keys::Component::Prompt,
+            event,
+        ) else {
+            return EventResult::Consumed(None);
+        };
 
         let close_fn = EventResult::Consumed(Some(Box::new(|compositor: &mut Compositor, _| {
             // remove the layer
