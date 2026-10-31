@@ -1792,6 +1792,12 @@ impl Application {
         Ok(self.editor.exit_code)
     }
 
+    /// The foreground color of a cell of the (test) terminal.
+    #[cfg(feature = "integration")]
+    pub fn rendered_fg(&self, x: u16, y: u16) -> helix_view::graphics::Color {
+        self.terminal.backend().buffer()[(x, y)].fg
+    }
+
     /// The text currently shown on the (test) terminal, one string per row.
     #[cfg(feature = "integration")]
     pub fn rendered_rows(&self) -> Vec<String> {

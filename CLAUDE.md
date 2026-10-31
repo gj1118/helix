@@ -99,7 +99,7 @@ color-swatches-string = "●"  # Default: "■"
 [editor.lsp]
 display-code-lenses = true
 ```
-`Space+A` (`code_lens`) runs a lens of the cursor line. Implementation: `helix-term/src/handlers/code_lenses.rs`
+`Space+A` (`code_lens`) runs a lens of the cursor line, `Space+o` (`code_lens_picker`) picks one of the file. Implementation: `helix-term/src/handlers/code_lenses.rs`
 (requests, resolve, refresh), `helix-term/src/ui/text_decorations/code_lenses.rs` (rendering).
 
 ## Key Keybindings (Fork-specific)

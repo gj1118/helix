@@ -1157,10 +1157,15 @@ impl ui::menu::Item for CodeActionItem {
     }
 }
 
-/// One entry of the menu of [`code_lens`].
+/// One code lens that can be run: an entry of the menu of [`code_lens`] and of the picker of
+/// [`code_lens_picker`].
 struct CodeLensItem {
     command: lsp::Command,
     language_server_id: LanguageServerId,
+    /// Where the lens is, for the picker's preview and for jumping to it. `None` for a buffer
+    /// that is not a file.
+    location: Option<Location>,
+    line: usize,
 }
 
 impl ui::menu::Item for CodeLensItem {
@@ -1176,6 +1181,15 @@ impl ui::menu::Item for CodeLensItem {
 /// Lenses the server gave without a command (the title that is shown at the end of the line
 /// comes from the same command) are resolved first.
 pub fn code_lens(cx: &mut Context) {
+    code_lens_inner(cx, false);
+}
+
+/// Like [`code_lens`], for the lenses of the whole file, in a picker.
+pub fn code_lens_picker(cx: &mut Context) {
+    code_lens_inner(cx, true);
+}
+
+fn code_lens_inner(cx: &mut Context, whole_file: bool) {
     if !crate::handlers::code_lenses::enabled(cx.editor) {
         cx.editor
             .set_error("Code lenses are off, set `display-code-lenses` in `[editor.lsp]`");
@@ -1190,26 +1204,50 @@ pub fn code_lens(cx: &mut Context) {
     }
     let doc_id = doc.id();
     let version = doc.version();
-    let line = doc.cursor_line(view.id);
+    let cursor_line = doc.cursor_line(view.id);
+    let doc_uri = doc.uri();
+    let text = doc.text().clone();
 
-    // (lens, server) of every lens of the line; the server is needed to resolve a lens.
+    // The server is needed to resolve a lens, the encoding to find its place again.
     let mut lenses = Vec::new();
-    for (_, lens) in doc.code_lenses_on_line(line) {
+    for lens in &doc.code_lenses {
+        let line = text.char_to_line(lens.char_idx.min(text.len_chars()));
+        if !whole_file && line != cursor_line {
+            continue;
+        }
         let server = cx
             .editor
             .language_servers
             .get_by_id(lens.language_server_id)
             .cloned();
-        lenses.push((lens.lens.clone(), lens.language_server_id, server));
+        let location = doc_uri
+            .clone()
+            .zip(server.as_ref())
+            .map(|(uri, server)| Location {
+                uri,
+                range: lens.lens.range,
+                offset_encoding: server.offset_encoding(),
+            });
+        lenses.push((
+            lens.lens.clone(),
+            lens.language_server_id,
+            server,
+            location,
+            line,
+        ));
     }
     if lenses.is_empty() {
-        cx.editor.set_error("No code lenses on this line");
+        cx.editor.set_error(if whole_file {
+            "No code lenses in this file"
+        } else {
+            "No code lenses on this line"
+        });
         return;
     }
 
     cx.jobs.callback(async move {
         let mut items = Vec::new();
-        for (lens, language_server_id, server) in lenses {
+        for (lens, language_server_id, server, location, line) in lenses {
             let lens = match (lens.command.is_some(), server) {
                 (true, _) => Some(lens),
                 (false, Some(server)) => {
@@ -1227,6 +1265,8 @@ pub fn code_lens(cx: &mut Context) {
                 items.push(CodeLensItem {
                     command,
                     language_server_id,
+                    location,
+                    line,
                 });
             }
         }
@@ -1237,9 +1277,43 @@ pub fn code_lens(cx: &mut Context) {
                 return;
             }
             if items.is_empty() {
-                editor.set_error("No code lenses on this line");
+                editor.set_error(if whole_file {
+                    "No code lenses in this file"
+                } else {
+                    "No code lenses on this line"
+                });
                 return;
             }
+
+            if whole_file {
+                let columns = [
+                    ui::PickerColumn::new("line", |item: &CodeLensItem, _| {
+                        (item.line + 1).to_string().into()
+                    }),
+                    ui::PickerColumn::new("lens", |item: &CodeLensItem, _| {
+                        item.command.title.as_str().into()
+                    }),
+                ];
+                let picker = Picker::new(columns, 1, items, (), move |cx, item, action| {
+                    if let Some(location) = &item.location {
+                        jump_to_location(cx.editor, location, action);
+                    }
+                    cx.editor
+                        .execute_lsp_command(item.command.clone(), item.language_server_id);
+                })
+                .with_preview(|_editor, item| {
+                    item.location.as_ref().and_then(location_to_file_location)
+                })
+                .truncate_start(false)
+                .with_title("Code Lenses");
+
+                compositor.push(Box::new(overlaid(
+                    picker,
+                    editor.config().fullscreen_overlay,
+                )));
+                return;
+            }
+
             let mut menu = ui::Menu::new(items, (), move |editor, item, event| {
                 if event != PromptEvent::Validate {
                     return;

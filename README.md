@@ -456,6 +456,8 @@ fn parse(input: &str) -> Ast {     ▶ 12 references
 
 - `<space>A` (`code_lens`) opens a menu with the lenses of the cursor line; choosing one runs its
   command on the server.
+- `<space>o` (`code_lens_picker`) lists the lenses of the whole file in a picker (with a code
+  preview, and the same border as the other pickers); choosing one jumps to it and runs it.
 - Lenses are fetched on open, shortly after you stop typing, when a server starts and when it
   sends `workspace/codeLens/refresh`. Lenses without a title are resolved once they scroll into
   view.

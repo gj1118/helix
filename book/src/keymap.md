@@ -316,6 +316,7 @@ This layer is a kludge of mappings, mostly pickers.
 | `r`     | Rename symbol (**LSP**)                                                 | `rename_symbol`                            |
 | `a`     | Apply code action (**LSP**)                                             | `code_action`                              |
 | `A`     | Run a code lens of the current line (**LSP**, needs `display-code-lenses`) | `code_lens`                             |
+| `o`     | Pick a code lens of the file to run (**LSP**, needs `display-code-lenses`) | `code_lens_picker`                      |
 | `h`     | Select symbol references (**LSP**)                                      | `select_references_to_symbol_under_cursor` |
 | `'`     | Open last fuzzy picker                                                  | `last_picker`                              |
 | `w`     | Enter [window mode](#window-mode)                                       | N/A                                        |

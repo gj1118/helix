@@ -71,6 +71,7 @@ async fn lenses_are_shown_resolved_and_run() -> anyhow::Result<()> {
         .build()?;
 
     let run_log = log_path.clone();
+    let picker_log = log_path.clone();
     test_key_sequences(
         &mut app,
         vec![
@@ -134,6 +135,32 @@ async fn lenses_are_shown_resolved_and_run() -> anyhow::Result<()> {
                     assert!(log.contains(&"codeLens".to_string()), "{log:?}");
                     assert!(log.contains(&"resolve".to_string()), "{log:?}");
                     assert!(log.contains(&"execute:fake.run".to_string()), "{log:?}");
+                }),
+            ),
+            // the picker lists the lenses of the whole file ...
+            (Some("<space>o"), None),
+            (
+                Some("<C-n>"),
+                Some(&|app| {
+                    let screen = screen(app);
+                    assert!(screen.contains("Code Lenses"), "{screen}");
+                    assert!(screen.contains("2 references"), "{screen}");
+                    // ... in the frame the other pickers have
+                    assert!(screen.contains('┌') && screen.contains('┘'), "{screen}");
+                }),
+            ),
+            // the lens of the first line is the first entry; choosing it runs it again
+            (Some("<C-p>"), None),
+            (Some("<ret>"), None),
+            (Some("i<esc>"), None),
+            (
+                Some("i<esc>"),
+                Some(&move |_| {
+                    let runs = log_of(&picker_log)
+                        .iter()
+                        .filter(|entry| *entry == "execute:fake.run")
+                        .count();
+                    assert_eq!(runs, 2, "{:?}", log_of(&picker_log));
                 }),
             ),
         ],
