@@ -3,7 +3,7 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use helix_core::syntax;
 use helix_lsp::lsp;
-use helix_view::graphics::{Margin, Rect, Style};
+use helix_view::graphics::{Margin, Rect};
 use helix_view::input::Event;
 use tui::buffer::Buffer;
 use tui::widgets::{BorderType, Paragraph, Widget, Wrap};
@@ -100,7 +100,7 @@ impl Component for Hover {
             header.render(area.with_height(HEADER_HEIGHT), surface);
 
             // border
-            let sep_style = Style::default();
+            let sep_style = crate::ui::border_style(&cx.editor.theme);
             let borders = BorderType::line_symbols(crate::ui::separator_type(&cx.editor.config()));
             for x in area.left()..area.right() {
                 if let Some(cell) = surface.get_mut(x, area.top() + HEADER_HEIGHT) {
