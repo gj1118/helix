@@ -26,7 +26,7 @@ keys are listed below.
 | Goto definition / declaration / type / references / implementation | `gd` / `gD` / `gy` / `gr` / `gi` |
 | Rename symbol | `Space-r` |
 | Code actions | `Space-a` |
-| Code lenses (run, test, reference counts) | enable with `display-code-lenses`; run one with `Space-A` (see [below](#code-lenses)) |
+| Code lenses (run, test, reference counts) | enable with `display-code-lenses`; run one with `Space-A`, or pick one of the file with `Space-o` (see [below](#code-lenses)) |
 | Document / workspace symbols | `Space-s` / `Space-S` |
 | Format document | `:format`, or set `auto-format` to format on save |
 | Inlay hints | enable with `display-inlay-hints` (see below) |
@@ -55,6 +55,10 @@ Press `Space-A` (the `code_lens` command) to open a
 menu with the lenses of the cursor line and run the chosen one on the server, the same way a
 code action's command is run. The label is cut off when the line leaves no room for it, and
 it is placed after inline blame when both are shown.
+
+`Space-o` (`code_lens_picker`) lists the lenses of the whole file in a picker with a preview
+of the code; it has the same border as the other pickers (including `[editor.gradient-borders]`).
+Choosing an entry jumps to the lens and runs it.
 
 How it works:
 

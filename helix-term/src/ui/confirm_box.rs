@@ -10,12 +10,10 @@ use helix_view::{
     graphics::Rect,
     input::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind},
 };
-use tui::{
-    buffer::Buffer as Surface,
-    widgets::{Block, Widget},
-};
+use tui::buffer::Buffer as Surface;
 
 use crate::compositor::{Component, Compositor, Context, Event, EventResult};
+use crate::ui::gradient_border::PanelBorder;
 
 type OnConfirm = Box<dyn FnOnce(&mut Compositor, &mut Context)>;
 
@@ -32,6 +30,8 @@ pub struct ConfirmBox {
     // Button hit areas of the last render, for the mouse.
     confirm_button: Rect,
     cancel_button: Rect,
+    /// Follows `[editor.gradient-borders]`, otherwise the common border color.
+    border: PanelBorder,
 }
 
 impl ConfirmBox {
@@ -51,6 +51,7 @@ impl ConfirmBox {
             on_confirm: Some(Box::new(on_confirm)),
             confirm_button: Rect::default(),
             cancel_button: Rect::default(),
+            border: PanelBorder::default(),
         }
     }
 
@@ -187,16 +188,20 @@ impl Component for ConfirmBox {
         );
 
         surface.clear_with(rect, background);
-        let block = Block::bordered()
-            .border_type(crate::ui::border_type(&cx.editor.config()))
-            .border_style(border_style)
-            .style(background)
-            .title(self.title.as_str());
-        let inner = block.inner(rect);
-        block.render(rect, surface);
+        self.border.render(rect, surface, cx.editor);
+        let inner = rect.inner(helix_view::graphics::Margin::all(1));
         if inner.width < 3 || inner.height == 0 {
             return;
         }
+        // The title sits in the top border, where the border drew its line.
+        let title_width = inner.width.saturating_sub(2) as usize;
+        surface.set_stringn(
+            inner.x + 1,
+            rect.y,
+            self.title.as_str(),
+            title_width,
+            border_style,
+        );
 
         let text_x = inner.x + 1;
         let text_width = inner.width.saturating_sub(2) as usize;

@@ -123,6 +123,7 @@
 | `explorer_reveal` | Reveal the current file in the explorer panel |  |
 | `code_action` | Perform code action | normal: `` <space>a ``, select: `` <space>a `` |
 | `code_lens` | Run a code lens (run, test, ...) of the current line | normal: `` <space>A ``, select: `` <space>A `` |
+| `code_lens_picker` | Pick a code lens of the file to run | normal: `` <space>o ``, select: `` <space>o `` |
 | `code_action_picker` | Perform code action in a picker |  |
 | `buffer_picker` | Open buffer picker | normal: `` <space>b ``, select: `` <space>b `` |
 | `jumplist_picker` | Open jumplist picker | normal: `` <space>j ``, select: `` <space>j `` |
