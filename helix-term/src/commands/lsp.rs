@@ -1760,7 +1760,9 @@ fn hover_impl(cx: &mut Context, hover_action: HoverDisplay) {
 
             match hover_action {
                 HoverDisplay::Popup => {
-                    let popup = Popup::new(Hover::ID, hover).auto_close(true);
+                    let popup = Popup::new(Hover::ID, hover)
+                        .auto_close(true)
+                        .panel_border(true);
                     compositor.replace_or_push(Hover::ID, popup);
                 }
                 HoverDisplay::File => {

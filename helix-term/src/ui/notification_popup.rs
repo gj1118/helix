@@ -473,7 +473,7 @@ impl NotificationPopup {
         // Get notification style
         let notification_style =
             self.get_notification_style(&item.notification.severity, theme, fade_progress);
-        let border_style = theme.get("ui.popup.border");
+        let border_style = crate::ui::border_style(theme);
         let background_style = theme.get("ui.popup");
 
         // Per-notification corner radius override

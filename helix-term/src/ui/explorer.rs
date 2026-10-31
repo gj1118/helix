@@ -1651,7 +1651,9 @@ impl Component for Explorer {
                     // Plain solid border otherwise.
                     self.gradient_border = None;
                     Widget::render(
-                        Block::bordered().border_type(crate::ui::border_type(&config)),
+                        Block::bordered()
+                            .border_type(crate::ui::border_type(&config))
+                            .border_style(crate::ui::border_style(theme)),
                         frame,
                         surface,
                     );

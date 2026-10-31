@@ -57,7 +57,9 @@ impl<T: Item> Component for Select<T> {
     }
 
     fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
-        let block = Block::bordered().border_type(crate::ui::border_type(&cx.editor.config()));
+        let block = Block::bordered()
+            .border_type(crate::ui::border_type(&cx.editor.config()))
+            .border_style(crate::ui::border_style(&cx.editor.theme));
 
         // +---------------------+
         // | message             |

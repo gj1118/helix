@@ -136,7 +136,7 @@ impl CmdlinePopup {
             }
         } else {
             // Use traditional border
-            let border_style = theme.get("ui.popup.border");
+            let border_style = crate::ui::border_style(theme);
             let background_style = theme.get("ui.popup");
 
             let border_type = crate::ui::border_type(&cx.editor.config());
@@ -266,7 +266,7 @@ impl CmdlinePopup {
             let block = Block::default()
                 .borders(tui::widgets::Borders::ALL)
                 .border_type(border_type)
-                .border_style(theme.get("ui.popup.border"))
+                .border_style(crate::ui::border_style(theme))
                 .style(completion_bg);
 
             let inner_area = block.inner(comp_area);

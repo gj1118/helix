@@ -156,7 +156,7 @@ impl Component for ConfirmBox {
     fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
         let theme = &cx.editor.theme;
         let background = theme.get("ui.popup");
-        let border_style = theme.get("ui.popup.border");
+        let border_style = crate::ui::border_style(theme);
         let text_style = theme.get("ui.text");
         let selected_style = theme.get("ui.menu.selected");
 

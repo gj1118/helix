@@ -4,10 +4,7 @@ use crate::{
     ctrl, key,
     ui::gradient_border::PanelBorder,
 };
-use tui::{
-    buffer::Buffer as Surface,
-    widgets::{Block, Widget},
-};
+use tui::buffer::Buffer as Surface;
 
 use helix_core::Position;
 use helix_view::{
@@ -363,12 +360,8 @@ impl<T: Component> Component for Popup<T> {
         let mut inner = area;
         if render_borders {
             inner = area.inner(Margin::all(1));
-            if self.panel_border {
-                self.border.render(area, surface, cx.editor);
-            } else {
-                let border_type = crate::ui::border_type(&cx.editor.config());
-                Widget::render(Block::bordered().border_type(border_type), area, surface);
-            }
+            // A gradient when `gradient-borders` is on, else the common border color.
+            self.border.render(area, surface, cx.editor);
         }
         let border = usize::from(render_borders);
 

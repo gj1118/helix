@@ -76,6 +76,17 @@ pub fn border_type(config: &helix_view::editor::Config) -> tui::widgets::BorderT
     }
 }
 
+/// The color of the border of a picker, panel or popup when `gradient-borders` is off: the same
+/// for all of them. It is the foreground of `ui.popup.border`, else of `ui.window`, else of
+/// `ui.text`, so that a theme can color it, and it is never the terminal default.
+pub fn border_style(theme: &helix_view::Theme) -> helix_view::graphics::Style {
+    ["ui.popup.border", "ui.window", "ui.text"]
+        .into_iter()
+        .find_map(|scope| theme.try_get(scope).and_then(|style| style.fg))
+        .map(|fg| helix_view::graphics::Style::default().fg(fg))
+        .unwrap_or_default()
+}
+
 /// The border type of the separator lines inside a panel. Hidden borders keep
 /// their separators, which would otherwise merge the sections they divide.
 pub fn separator_type(config: &helix_view::editor::Config) -> tui::widgets::BorderType {

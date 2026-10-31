@@ -338,7 +338,7 @@ These scopes are used for theming the editor interface:
 | `ui.popup`                        | Documentation popups (e.g. Space + k), notification popups, and cmdline popup background       |
 | `ui.popup.explorer`               | File tree panel background (falls back to `ui.popup`)                                           |
 | `ui.popup.info`                   | Prompt for multiple key options                                                                |
-| `ui.popup.border`                 | Border styling for popups including notifications and cmdline                                  |
+| `ui.popup.border`                 | Border color of pickers, previews, the explorer, popups (hover, signature help, completion documentation), notifications and the cmdline when `gradient-borders` is off. Falls back to the foreground of `ui.window`, then `ui.text`; only the foreground is used |
 | `ui.picker.header`                | Header row area in pickers with multiple columns                                               |
 | `ui.picker.header.column`         | Column names in pickers with multiple columns                                                  |
 | `ui.picker.header.column.active`  | The column name in pickers with multiple columns where the cursor is entering into.            |
