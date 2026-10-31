@@ -80,7 +80,7 @@ type TerminalEvent = crossterm::event::Event;
 type Terminal = tui::terminal::Terminal<TerminalBackend>;
 
 pub struct Application {
-    compositor: Compositor,
+    pub compositor: Compositor,
     terminal: Terminal,
     /// Pointer shape last sent to the terminal.
     pointer_shape: helix_view::editor::PointerShape,

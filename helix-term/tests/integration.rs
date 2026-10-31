@@ -25,6 +25,7 @@ mod test {
     mod component_keys;
     mod custom_commands;
     mod dap;
+    mod explorer;
     mod history;
     mod image_preview;
     mod inline_completion;

@@ -61,6 +61,12 @@ pub struct ExplorerConfig {
     pub show_hidden: bool,
     /// Sort directories before files. Defaults to `true`.
     pub directories_first: bool,
+    /// Mark changed files (and the folders that contain them) with their git status.
+    /// Defaults to `true`.
+    pub git_status: bool,
+    /// Draw vertical guide lines for the nesting of folders. Off by default: the folder icons
+    /// and a two column indent show the structure without the lines. Defaults to `false`.
+    pub indent_guides: bool,
 }
 
 impl Default for ExplorerConfig {
@@ -76,6 +82,8 @@ impl Default for ExplorerConfig {
             auto_reveal: false,
             show_hidden: false,
             directories_first: true,
+            git_status: true,
+            indent_guides: false,
         }
     }
 }

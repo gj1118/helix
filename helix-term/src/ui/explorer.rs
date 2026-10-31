@@ -43,6 +43,7 @@ use tui::text::Span;
 use tui::widgets::{Block, Widget};
 
 use crate::{
+    commands::git::{change_marker, change_style, StatusMap},
     compositor::{Component, Compositor, Context, Event, EventResult},
     job::Callback,
     ui::{completers, gradient_border::GradientBorder, CmdlinePopup, ConfirmBox, PromptEvent},
@@ -59,8 +60,11 @@ const SEPARATOR_WIDTH: u16 = 1;
 const MIN_PANEL_WIDTH: u16 = 4;
 /// Drawn in front of the filter input (it is focused with `/`).
 const FILTER_PREFIX: &str = "/ ";
-/// Greyed hint shown in the empty filter box.
-const FILTER_PLACEHOLDER: &str = "fuzzy filter or *.rs";
+/// How long a git status is kept before the panel asks for a new one (it is asked for while the
+/// panel is drawn, so a hidden panel costs nothing).
+const GIT_STATUS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
+/// The same when `git status` failed, e.g. because the folder is not in a repository.
+const GIT_STATUS_RETRY: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// `TreeParams` as seen from the current editor state; what the tree ops and
 /// the renderer both use.
@@ -223,6 +227,14 @@ pub struct Explorer {
     filter_editing: bool,
     /// The arrows moved the selection since the filter text last changed.
     filter_navigated: bool,
+    /// Git status of the tree (changed files, folders with changes).
+    git: StatusMap,
+    /// When the status was last asked for: when the answer came, or `None` to ask again now.
+    git_asked: Option<std::time::Instant>,
+    /// A `git status` is running.
+    git_in_flight: bool,
+    /// How long to wait before asking again: longer when there is no repository to ask.
+    git_interval: std::time::Duration,
 }
 
 impl Explorer {
@@ -251,6 +263,10 @@ impl Explorer {
             filter_cursor: 0,
             filter_editing: false,
             filter_navigated: false,
+            git: StatusMap::default(),
+            git_asked: None,
+            git_in_flight: false,
+            git_interval: GIT_STATUS_INTERVAL,
         })
     }
 
@@ -378,6 +394,7 @@ impl Explorer {
         let params = tree_params(editor);
         let keep = keep.or_else(|| self.entry().map(|entry| entry.path.clone()));
         self.tree.refresh(params);
+        self.git_asked = None;
         self.clamp_cursor();
         if let Some(keep) = keep {
             self.select_path(&keep);
@@ -388,6 +405,7 @@ impl Explorer {
     /// its ancestors are expanded so the entry is actually on screen.
     pub fn refresh_reveal(&mut self, editor: &Editor, path: PathBuf) {
         self.tree.refresh(tree_params(editor));
+        self.git_asked = None;
         if !self.reveal_path(&path, editor) {
             self.clamp_cursor();
             self.select_path(&path);
@@ -1318,10 +1336,14 @@ impl Explorer {
     // Rendering
     // --------------------------------------------------------------------
 
-    /// Guide characters for one row: `│  ` per ancestor, then `├─ `/`└─ `.
-    fn prefix(&self, entry: &Entry) -> String {
+    /// What comes before an entry: two columns per level of nesting. With `guides` the columns
+    /// are the lines of the folders that continue (`│ `) and the branch of the entry (`├ `/`└ `).
+    fn prefix(&self, entry: &Entry, guides: bool) -> String {
         if entry.depth == 0 {
             return String::new();
+        }
+        if !guides {
+            return "  ".repeat(entry.depth as usize);
         }
         // Every ancestor directory between root and entry (excluding the
         // root itself), nearest last.
@@ -1334,20 +1356,64 @@ impl Explorer {
             ancestors.push(parent);
             cur = parent.parent();
         }
-        let mut prefix = String::with_capacity((entry.depth as usize + 1) * 3);
+        let mut prefix = String::with_capacity((entry.depth as usize + 1) * 4);
         for ancestor in ancestors.iter().rev() {
             if self.tree.is_last_child(ancestor) {
-                prefix.push_str("   "); // ancestor branch ended here
+                prefix.push_str("  "); // ancestor branch ended here
             } else {
-                prefix.push_str("│  "); // vertical guide continues
+                prefix.push_str("│ "); // vertical guide continues
             }
         }
-        prefix.push_str(if entry.is_last {
-            "└─ " // └─
-        } else {
-            "├─ " // ├─
-        });
+        prefix.push_str(if entry.is_last { "└ " } else { "├ " });
         prefix
+    }
+
+    /// Asks for a new git status when the last one is old, and stores it when it arrives.
+    fn request_git_status(&mut self, cx: &mut Context) {
+        if !cx.editor.config().explorer.git_status {
+            self.git = StatusMap::default();
+            return;
+        }
+        if self.git_in_flight
+            || self
+                .git_asked
+                .is_some_and(|asked| asked.elapsed() < self.git_interval)
+        {
+            return;
+        }
+        self.git_in_flight = true;
+        let root = self.root.clone();
+        let trusted = crate::commands::git::workspace_trusted(cx.editor, &root);
+        let providers = cx.editor.diff_providers.clone();
+        cx.jobs.callback(async move {
+            let result = crate::commands::git::changes_under(root.clone(), trusted, providers)
+                .await
+                .map(|changes| StatusMap::new(&changes, &root));
+            let call: Callback = Callback::EditorCompositor(Box::new(move |editor, compositor| {
+                let Some(explorer) = compositor.find_id::<Explorer>(EXPLORER_ID) else {
+                    return;
+                };
+                explorer.git_in_flight = false;
+                explorer.git_asked = Some(std::time::Instant::now());
+                // The panel may have been re-rooted while git was working.
+                match result {
+                    Ok(map) if explorer.root == root => {
+                        explorer.git_interval = GIT_STATUS_INTERVAL;
+                        if explorer.git != map {
+                            explorer.git = map;
+                            editor.needs_redraw = true;
+                        }
+                    }
+                    Ok(_) => explorer.git_asked = None,
+                    Err(err) => {
+                        log::debug!("explorer git status: {err}");
+                        explorer.git_interval = GIT_STATUS_RETRY;
+                        explorer.git = StatusMap::default();
+                    }
+                }
+            }));
+            Ok(call)
+        });
     }
 }
 
@@ -1547,6 +1613,7 @@ impl Component for Explorer {
     }
 
     fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
+        self.request_git_status(cx);
         if !cx.editor.explorer_panel.visible {
             self.filter_editing = false;
             self.resizing = false;
@@ -1611,15 +1678,9 @@ impl Component for Explorer {
             return;
         }
 
-        // The filter box takes the top row, with a rule under it when there is
-        // room for both.
-        let header: u16 = if rect.height >= 5 {
-            2
-        } else if rect.height >= 3 {
-            1
-        } else {
-            0
-        };
+        // The top row shows the folder, or the filter while there is one. No rule under it:
+        // the panel already has its separator, and every line costs a row of the tree.
+        let header: u16 = if rect.height >= 3 { 1 } else { 0 };
         let rows_area = Rect::new(rect.x, rect.y + header, rect.width, rect.height - header);
         // Remember where things live so that mouse events can be hit-tested
         // against the panel without re-deriving the layout.
@@ -1702,8 +1763,17 @@ impl Component for Explorer {
             }
         }
 
-        // Filter box.
-        if header > 0 {
+        // The folder the tree starts in, until there is a filter to show.
+        if header > 0 && !self.filter_editing && self.filter.is_empty() {
+            let label = root_label(&self.root, self.input_area.width as usize);
+            surface.set_stringn(
+                self.input_area.x,
+                self.input_area.y,
+                &label,
+                self.input_area.width as usize,
+                dir_style,
+            );
+        } else if header > 0 {
             let input = self.input_area;
             let editing = self.filter_editing;
             if editing {
@@ -1723,39 +1793,20 @@ impl Component for Explorer {
             );
             let prefix_width = FILTER_PREFIX.width() as u16;
             let avail = input.width.saturating_sub(prefix_width) as usize;
-            if avail > 0 {
-                if self.filter.is_empty() {
-                    if !editing {
-                        surface.set_stringn(
-                            input.x + prefix_width,
-                            input.y,
-                            FILTER_PLACEHOLDER,
-                            avail,
-                            inactive_style,
-                        );
-                    }
+            if avail > 0 && !self.filter.is_empty() {
+                let start = self.filter_window_start(avail);
+                let style = if editing {
+                    theme.get("ui.menu").patch(text_style)
                 } else {
-                    let start = self.filter_window_start(avail);
-                    let style = if editing {
-                        theme.get("ui.menu").patch(text_style)
-                    } else {
-                        text_style
-                    };
-                    surface.set_stringn(
-                        input.x + prefix_width,
-                        input.y,
-                        &self.filter[start..],
-                        avail,
-                        style,
-                    );
-                }
-            }
-            if header == 2 {
-                for x in 0..rect.width {
-                    surface[(rect.x + x, rect.y + 1)]
-                        .set_symbol("─")
-                        .set_style(virtual_style);
-                }
+                    text_style
+                };
+                surface.set_stringn(
+                    input.x + prefix_width,
+                    input.y,
+                    &self.filter[start..],
+                    avail,
+                    style,
+                );
             }
         }
 
@@ -1786,6 +1837,8 @@ impl Component for Explorer {
         let icons = ICONS.load();
         let mime = icons.mime();
         let show_icons = cx.editor.config().explorer.icons;
+        let guides = cx.editor.config().explorer.indent_guides;
+        let show_git = cx.editor.config().explorer.git_status;
         let mut matcher = new_matcher();
         let mut indices: Vec<u32> = Vec::new();
 
@@ -1831,7 +1884,7 @@ impl Component for Explorer {
             };
 
             let mut spans: Vec<Span> = Vec::with_capacity(3);
-            spans.push(Span::styled(self.prefix(entry), virtual_style));
+            spans.push(Span::styled(self.prefix(entry, guides), virtual_style));
             if entry.is_dir {
                 // Expanded and collapsed folders get their own glyphs.
                 let glyph = if !show_icons {
@@ -1861,10 +1914,33 @@ impl Component for Explorer {
                 spans.extend(name_spans(text_style));
             }
 
+            // Changed files are marked at the right edge, outside of what the name may take.
+            let marker = if !show_git || entry.is_parent || entry.depth == 0 {
+                None
+            } else if entry.is_dir {
+                self.git
+                    .folder(&entry.path)
+                    .map(|kind| ("•".to_string(), change_style(&cx.editor.theme, kind)))
+            } else {
+                self.git
+                    .file(&entry.path)
+                    .map(|kind| (change_marker(kind), change_style(&cx.editor.theme, kind)))
+            }
+            // Not for a panel so narrow that the marker would be all there is.
+            .filter(|(text, _)| rows_area.width as usize > text.width() + 6);
+            let name_width = match &marker {
+                Some((text, _)) => rows_area.width as usize - text.width() - 2,
+                None => rows_area.width as usize,
+            };
+
             let mut x = rows_area.x;
-            for span in truncate_spans(spans, rows_area.width as usize) {
+            for span in truncate_spans(spans, name_width) {
                 surface.set_string(x, y, &span.content, span.style);
                 x += span.content.width() as u16;
+            }
+            if let Some((text, style)) = marker {
+                let marker_x = rows_area.right() - text.width() as u16 - 1;
+                surface.set_string(marker_x, y, &text, style);
             }
         }
 
@@ -1935,31 +2011,63 @@ fn highlighted_name(
     spans
 }
 
-/// Trims a styled line to at most `width` display columns.
+/// Trims a styled line to at most `width` display columns. A line that is cut ends in `…`.
 fn truncate_spans(spans: Vec<Span>, width: usize) -> Vec<Span> {
     if width == 0 {
         return Vec::new();
     }
-    let mut out = Vec::with_capacity(spans.len());
+    let total: usize = spans.iter().map(|span| span.content.width()).sum();
+    if total <= width {
+        return spans;
+    }
+
+    // One column is kept for the ellipsis.
+    let budget = width - 1;
+    let mut out = Vec::with_capacity(spans.len() + 1);
     let mut used = 0usize;
+    let mut last_style = Style::default();
     for span in spans {
-        if used >= width {
+        if used >= budget {
             break;
         }
-        let mut budget = width - used;
+        let mut left = budget - used;
         let mut taken = String::new();
         for grapheme in span.content.graphemes(true) {
             let w = grapheme.width();
-            if w > budget {
+            if w > left {
                 break;
             }
-            budget -= w;
+            left -= w;
             taken.push_str(grapheme);
         }
         used += taken.width();
+        last_style = span.style;
         out.push(Span::styled(taken, span.style));
     }
+    out.push(Span::styled("…", last_style));
     out
+}
+
+/// The folder the panel shows in its top row: relative to the home folder when it is in it, and
+/// cut at the start (`…/src/ui`) when it does not fit `width` columns.
+fn root_label(root: &Path, width: usize) -> String {
+    let label = helix_stdx::path::fold_home_dir(root).display().to_string();
+    if label.width() <= width {
+        return label;
+    }
+    // The end is what tells folders apart.
+    let mut tail: Vec<&str> = Vec::new();
+    let mut used = 1; // the ellipsis
+    for grapheme in label.graphemes(true).rev() {
+        let w = grapheme.width();
+        if used + w > width {
+            break;
+        }
+        used += w;
+        tail.push(grapheme);
+    }
+    tail.reverse();
+    format!("…{}", tail.concat())
 }
 
 #[cfg(test)]
@@ -1984,6 +2092,34 @@ mod tests {
             ]
         );
         assert_eq!(highlighted_name("a", &[], base, hit).len(), 1);
+    }
+
+    #[test]
+    fn long_lines_end_in_an_ellipsis() {
+        let line = |text: &str| vec![Span::raw("  "), Span::raw(text.to_string())];
+        let text = |spans: Vec<Span>| {
+            spans
+                .iter()
+                .map(|s| s.content.to_string())
+                .collect::<String>()
+        };
+        assert_eq!(text(truncate_spans(line("short"), 20)), "  short");
+        assert_eq!(
+            text(truncate_spans(line("json_unmarshal"), 10)),
+            "  json_un…"
+        );
+        // exactly fitting is not cut
+        assert_eq!(text(truncate_spans(line("12345678"), 10)), "  12345678");
+        assert_eq!(text(truncate_spans(line("abc"), 1)), "…");
+        assert!(truncate_spans(line("abc"), 0).is_empty());
+    }
+
+    #[test]
+    fn the_root_is_cut_at_the_start() {
+        let root = Path::new("/very/long/folder/name");
+        assert_eq!(root_label(root, 40), "/very/long/folder/name");
+        assert_eq!(root_label(root, 12), "…folder/name");
+        assert_eq!(root_label(root, 1), "…");
     }
 
     #[test]

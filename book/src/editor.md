@@ -340,6 +340,8 @@ children are read from disk on first expansion only.
 |`auto-reveal` | Select the current buffer's file when the panel opens | `false` |
 |`show-hidden` | Show dotfiles (hidden files) | `false` |
 |`directories-first` | Sort directories before files in directory listings | `true` |
+|`git-status` | Mark changed files, and the folders that contain them, with their git status (see [Git status](#git-status-in-the-tree)) | `true` |
+|`indent-guides` | Draw vertical guide lines for the nesting of folders. Off: the tree is indented by two columns per level and the folder icons show the structure | `false` |
 
 Example:
 
@@ -404,9 +406,30 @@ Inside the panel (while it is focused):
 |`q` | Close the panel |
 |`Esc` | Clear an active filter first; otherwise hand keyboard focus back to the editor (panel keeps its tree; a floating panel closes instead) |
 
+### Git status in the tree
+
+Changed files are marked at the right edge of their row, and a folder that contains
+changes shows a `•` in the color of its strongest change (conflict, deleted, modified,
+renamed, added, untracked). The marks use the glyphs of the `[icons.vcs]` set (letters
+`M`, `A`, `D`, `R`, `U`, `?` when icons are off) and the `diff.plus`, `diff.delta`,
+`diff.minus`, `diff.delta.moved` and `diff.delta.conflict` theme keys, the same as the
+`changed_file_picker`. A file that is only staged shows its staged change.
+
+The status is read when the panel opens, after file operations and `R`, and again when
+it is older than three seconds while the panel is drawn. In a trusted workspace it comes
+from `git status`; otherwise from the built-in listing (no staged state). Turn it off
+with `git-status = false`.
+
+### The first row and the lines
+
+The first row of the panel shows the folder the tree starts in (shortened from the start
+when it does not fit) until you start a filter. There is no rule under it and no
+connector lines in the tree by default (see `indent-guides`); names that do not fit end
+in `…`.
+
 ### Filtering
 
-The first row of the panel is a filter box. Press `/` (or click it) and type:
+The first row of the panel is also the filter box. Press `/` (or click it) and type:
 the input is a fuzzy search, matched and ranked like in the pickers (`mnrs` finds
 `main.rs`). The query uses smart case (an uppercase letter makes it case
 sensitive) and the picker operators: space separated terms must all match, `^prefix`,

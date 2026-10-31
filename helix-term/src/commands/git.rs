@@ -44,6 +44,18 @@ pub enum ChangeKind {
 }
 
 impl ChangeKind {
+    /// How much a change deserves to be seen: the folder of two changes shows the stronger one.
+    fn weight(self) -> u8 {
+        match self {
+            Self::Conflict => 6,
+            Self::Deleted => 5,
+            Self::Modified | Self::TypeChanged => 4,
+            Self::Renamed => 3,
+            Self::Added | Self::Copied => 2,
+            Self::Untracked => 1,
+        }
+    }
+
     fn from_code(code: u8) -> Option<Self> {
         Some(match code {
             b'A' => Self::Added,
@@ -214,8 +226,130 @@ async fn stash_list(root: &Path) -> anyhow::Result<Vec<Stash>> {
         .collect())
 }
 
+/// The changes under `root` for the explorer: with `git status` in a trusted workspace (so the
+/// staged state is known), with the built-in listing otherwise.
+pub(crate) async fn changes_under(
+    root: PathBuf,
+    trusted: bool,
+    providers: helix_vcs::DiffProviderRegistry,
+) -> anyhow::Result<Vec<GitChange>> {
+    if trusted {
+        return status(&root, false).await;
+    }
+    // The built-in listing runs on a blocking thread and is done when it drops the closure, which
+    // closes the channel.
+    let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    providers.for_each_changed_file(root.clone(), false, move |change| match change {
+        Ok(change) => sender.send(from_file_change(change)).is_ok(),
+        Err(err) => {
+            log::debug!("git status for the explorer: {err}");
+            true
+        }
+    });
+    let mut changes = Vec::new();
+    while let Some(change) = receiver.recv().await {
+        if change.path.starts_with(&root) {
+            changes.push(change);
+        }
+    }
+    Ok(changes)
+}
+
+/// The git state of the paths of a tree: what is changed, and which folders contain changes.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct StatusMap {
+    files: std::collections::HashMap<PathBuf, ChangeKind>,
+    folders: std::collections::HashMap<PathBuf, ChangeKind>,
+}
+
+impl StatusMap {
+    /// `root` is where the explorer starts: folders above it are of no interest. Git reports
+    /// paths below the real path of the repository, `root` may reach it through a symlink
+    /// (`/tmp` on macOS): those paths are moved under `root`.
+    pub fn new(changes: &[GitChange], root: &Path) -> Self {
+        let real_root = std::fs::canonicalize(root).ok().filter(|real| real != root);
+        let mut map = Self::default();
+        for change in changes {
+            // What is not staged is what the file looks like in the working tree; a file that
+            // is only staged is shown as the staged change.
+            let Some(kind) = change.unstaged.or(change.staged) else {
+                continue;
+            };
+            let path = match &real_root {
+                Some(real) if !change.path.starts_with(root) => {
+                    match change.path.strip_prefix(real) {
+                        Ok(relative) => root.join(relative),
+                        Err(_) => continue,
+                    }
+                }
+                _ => change.path.clone(),
+            };
+            for folder in path.ancestors().skip(1) {
+                if !folder.starts_with(root) {
+                    break;
+                }
+                map.folders
+                    .entry(folder.to_path_buf())
+                    .and_modify(|seen| {
+                        if kind.weight() > seen.weight() {
+                            *seen = kind;
+                        }
+                    })
+                    .or_insert(kind);
+            }
+            map.files.insert(path, kind);
+        }
+        map
+    }
+
+    pub fn file(&self, path: &Path) -> Option<ChangeKind> {
+        self.files.get(path).copied()
+    }
+
+    pub fn folder(&self, path: &Path) -> Option<ChangeKind> {
+        self.folders.get(path).copied()
+    }
+}
+
+/// The one or two columns a change is drawn with: the glyph of the icon set (`[icons.vcs]`),
+/// or a letter when the icons are off.
+pub fn change_marker(kind: ChangeKind) -> String {
+    let icons = ICONS.load();
+    let glyph = match kind {
+        ChangeKind::Added | ChangeKind::Untracked | ChangeKind::Copied => icons.vcs().added(),
+        ChangeKind::Modified | ChangeKind::TypeChanged => icons.vcs().modified(),
+        ChangeKind::Deleted => icons.vcs().removed(),
+        ChangeKind::Renamed => icons.vcs().renamed(),
+        ChangeKind::Conflict => icons.vcs().conflict(),
+    };
+    if !glyph.is_empty() {
+        return glyph.to_string();
+    }
+    match kind {
+        ChangeKind::Added | ChangeKind::Copied => "A",
+        ChangeKind::Untracked => "?",
+        ChangeKind::Modified | ChangeKind::TypeChanged => "M",
+        ChangeKind::Deleted => "D",
+        ChangeKind::Renamed => "R",
+        ChangeKind::Conflict => "U",
+    }
+    .to_string()
+}
+
+/// The theme style a change is drawn with, the same as in the changed files picker.
+pub fn change_style(theme: &helix_view::Theme, kind: ChangeKind) -> Style {
+    ChangeStyles {
+        added: theme.get("diff.plus"),
+        modified: theme.get("diff.delta"),
+        deleted: theme.get("diff.minus"),
+        renamed: theme.get("diff.delta.moved"),
+        conflict: theme.get("diff.delta.conflict"),
+    }
+    .style(kind)
+}
+
 /// Whether `git` may be run for the workspace containing `dir`.
-pub(super) fn workspace_trusted(editor: &helix_view::Editor, dir: &Path) -> bool {
+pub(crate) fn workspace_trusted(editor: &helix_view::Editor, dir: &Path) -> bool {
     editor
         .workspace_trust
         .query(
@@ -890,6 +1024,149 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(status(&root, true).await.unwrap().len(), 2);
+    }
+
+    fn change(path: &str, staged: Option<ChangeKind>, unstaged: Option<ChangeKind>) -> GitChange {
+        GitChange {
+            path: PathBuf::from(path),
+            from: None,
+            staged,
+            unstaged,
+        }
+    }
+
+    #[test]
+    fn folders_show_the_strongest_change_below_them() {
+        let root = Path::new("/repo/src");
+        let map = StatusMap::new(
+            &[
+                change("/repo/src/a/new.rs", None, Some(ChangeKind::Untracked)),
+                change("/repo/src/a/b/lib.rs", None, Some(ChangeKind::Modified)),
+                change("/repo/src/c.rs", Some(ChangeKind::Added), None),
+                change("/repo/elsewhere.rs", None, Some(ChangeKind::Modified)),
+            ],
+            root,
+        );
+        assert_eq!(
+            map.file(Path::new("/repo/src/a/new.rs")),
+            Some(ChangeKind::Untracked)
+        );
+        // staged only: shown as the staged change
+        assert_eq!(
+            map.file(Path::new("/repo/src/c.rs")),
+            Some(ChangeKind::Added)
+        );
+        assert_eq!(
+            map.folder(Path::new("/repo/src/a")),
+            Some(ChangeKind::Modified)
+        );
+        assert_eq!(
+            map.folder(Path::new("/repo/src/a/b")),
+            Some(ChangeKind::Modified)
+        );
+        // the root itself is marked as well (the panel does not draw it), nothing above it is
+        assert_eq!(map.folder(Path::new("/repo")), None);
+        assert_eq!(map.file(Path::new("/repo/src/untouched.rs")), None);
+    }
+
+    /// Git reports the real path of the repository, the explorer may reach it through a link
+    /// (`/tmp` is one on macOS).
+    #[cfg(unix)]
+    #[test]
+    fn paths_of_a_repository_behind_a_link_are_moved_under_the_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().canonicalize().unwrap().join("real");
+        std::fs::create_dir_all(real.join("sub")).unwrap();
+        let link = dir.path().canonicalize().unwrap().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let map = StatusMap::new(
+            &[change(
+                real.join("sub/a.rs").to_str().unwrap(),
+                None,
+                Some(ChangeKind::Modified),
+            )],
+            &link,
+        );
+        assert_eq!(map.file(&link.join("sub/a.rs")), Some(ChangeKind::Modified));
+        assert_eq!(map.folder(&link.join("sub")), Some(ChangeKind::Modified));
+    }
+
+    #[test]
+    fn a_conflict_wins_over_other_changes_in_a_folder() {
+        let root = Path::new("/repo");
+        let map = StatusMap::new(
+            &[
+                change("/repo/d/x.rs", None, Some(ChangeKind::Conflict)),
+                change("/repo/d/y.rs", None, Some(ChangeKind::Modified)),
+                change("/repo/d/z.rs", None, Some(ChangeKind::Untracked)),
+            ],
+            root,
+        );
+        assert_eq!(map.folder(Path::new("/repo/d")), Some(ChangeKind::Conflict));
+    }
+
+    #[test]
+    fn markers_fall_back_to_letters_without_icons() {
+        // the default icon set is off
+        assert_eq!(change_marker(ChangeKind::Modified), "M");
+        assert_eq!(change_marker(ChangeKind::Untracked), "?");
+        assert_eq!(change_marker(ChangeKind::Conflict), "U");
+    }
+
+    #[tokio::test]
+    async fn changes_under_lists_a_repository_both_ways() {
+        if std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        git(&root, &args(["init", "-q"])).await.unwrap();
+        std::fs::write(root.join("a.txt"), "a\n").unwrap();
+        git(&root, &args(["add", "a.txt"])).await.unwrap();
+        git(
+            &root,
+            &args([
+                "-c",
+                "user.name=a",
+                "-c",
+                "user.email=a@b.c",
+                "commit",
+                "-q",
+                "-m",
+                "x",
+            ]),
+        )
+        .await
+        .unwrap();
+        std::fs::write(root.join("a.txt"), "changed\n").unwrap();
+        std::fs::write(root.join("new.txt"), "n\n").unwrap();
+
+        let kinds = |changes: Vec<GitChange>| {
+            let mut kinds: Vec<_> = changes
+                .into_iter()
+                .map(|c| (c.path.file_name().unwrap().to_owned(), c.unstaged))
+                .collect();
+            kinds.sort_by(|a, b| a.0.cmp(&b.0));
+            kinds
+        };
+        let expected = vec![
+            ("a.txt".into(), Some(ChangeKind::Modified)),
+            ("new.txt".into(), Some(ChangeKind::Untracked)),
+        ];
+        // with git itself, and with the built-in listing of an untrusted workspace
+        let trusted = changes_under(root.clone(), true, Default::default())
+            .await
+            .unwrap();
+        assert_eq!(kinds(trusted), expected);
+        let untrusted = changes_under(root, false, Default::default())
+            .await
+            .unwrap();
+        assert_eq!(kinds(untrusted), expected);
     }
 
     #[tokio::test]
