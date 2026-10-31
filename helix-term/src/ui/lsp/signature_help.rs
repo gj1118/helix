@@ -94,7 +94,8 @@ impl Component for SignatureHelp {
     }
 
     fn render(&mut self, area: Rect, surface: &mut Buffer, cx: &mut Context) {
-        let margin = Margin::all(1);
+        // The popup has a border: one cell of padding at the sides, none above and below.
+        let margin = Margin::horizontal(1);
         let area = area.inner(margin);
 
         let signature = self
@@ -156,9 +157,8 @@ impl Component for SignatureHelp {
             Some(doc) => Markdown::new(doc.clone(), Arc::clone(&self.config_loader)),
         };
         let sig_doc = sig_doc.parse(Some(&cx.editor.theme));
-        let sig_doc_area = area
-            .clip_top(sig_text_area.height + 2)
-            .clip_bottom(u16::from(cx.editor.popup_border()));
+        // right below the separator
+        let sig_doc_area = area.clip_top(sig_text_area.height + 1);
         let sig_doc_para = Paragraph::new(&sig_doc)
             .wrap(Wrap { trim: false })
             .scroll((cx.scroll.unwrap_or_default() as u16, 0));
@@ -166,6 +166,7 @@ impl Component for SignatureHelp {
     }
 
     fn required_size(&mut self, viewport: (u16, u16)) -> Option<(u16, u16)> {
+        // the sides; see `render`
         const PADDING: u16 = 2;
         const SEPARATOR_HEIGHT: u16 = 1;
 
@@ -206,6 +207,6 @@ impl Component for SignatureHelp {
             0
         };
 
-        Some((width + PADDING + sig_index_width as u16, height + PADDING))
+        Some((width + PADDING + sig_index_width as u16, height))
     }
 }
