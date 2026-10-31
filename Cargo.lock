@@ -1947,6 +1947,7 @@ dependencies = [
  "kstring",
  "libc",
  "log",
+ "nucleo",
  "once_cell",
  "parking_lot",
  "quickcheck",

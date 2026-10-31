@@ -59,6 +59,7 @@ regex.workspace = true
 
 parking_lot.workspace = true
 ignore = "0.4"
+nucleo.workspace = true
 thiserror.workspace = true
 
 kstring = "2.0"

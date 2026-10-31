@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 
+use nucleo::pattern::{CaseMatching, Normalization, Pattern as FuzzyPattern};
+use nucleo::{Config, Matcher, Utf32Str};
 use serde::{Deserialize, Serialize};
 
 use crate::graphics::Rect;
@@ -553,15 +555,11 @@ fn expand_braces(pattern: &str) -> Vec<String> {
     vec![pattern.to_string()]
 }
 
-/// One compiled alternative of a [`Filter`].
+/// One glob alternative of a [`Filter`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Pattern {
     /// Lowercased pattern characters, for the glob matcher.
     chars: Vec<char>,
-    /// For plain queries, the lowercased text to look for. Substring search
-    /// over a string is far cheaper than the glob matcher, and plain queries
-    /// are what gets typed most.
-    needle: Option<String>,
     /// Match against the relative path instead of the entry name.
     on_path: bool,
 }
@@ -570,32 +568,52 @@ impl Pattern {
     fn glob(pattern: &str) -> Self {
         Self {
             chars: pattern.chars().flat_map(char::to_lowercase).collect(),
-            needle: None,
             on_path: pattern.contains('/'),
         }
     }
+}
 
-    fn substring(raw: &str) -> Self {
-        let needle = raw.to_lowercase();
-        Self {
-            chars: format!("*{needle}*").chars().collect(),
-            on_path: needle.contains('/'),
-            needle: Some(needle),
-        }
-    }
+/// How a [`Filter`] matches.
+#[derive(Debug, Clone)]
+enum FilterKind {
+    /// Wildcard query: whole-name glob match.
+    Glob(Vec<Pattern>),
+    /// Everything else: fuzzy matching and ranking, like the pickers.
+    Fuzzy {
+        pattern: Arc<FuzzyPattern>,
+        /// Match against the relative path instead of the entry name.
+        on_path: bool,
+    },
+}
+
+/// A matcher configured like the file pickers' (bonuses for path separators).
+pub fn new_matcher() -> Matcher {
+    Matcher::new(Config::DEFAULT.match_paths())
 }
 
 /// A parsed filter query for the explorer's input box.
 ///
-/// Matching is case-insensitive. A query with no wildcard characters
-/// (`* ? [ {`) matches as a substring, so typing `main` finds `main.rs`.
-/// Wildcard queries must match the whole name, e.g. `*.rs` or `test_*`. A
-/// pattern containing `/` is matched against the path relative to the tree
-/// root, any other pattern against the entry's own name.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A query without wildcard characters (`* ? [ {`) is a fuzzy search, matched
+/// and ranked exactly like in the pickers: smart case (an uppercase letter
+/// makes it case sensitive), space separated terms that must all match, and
+/// the operators `^prefix`, `suffix$`, `'exact` and `!negated`. Typing `mnrs`
+/// finds `main.rs`. A query with wildcards is a glob that must match the
+/// whole name, e.g. `*.rs` or `test_*`, with `{a,b}` alternatives. A query
+/// containing `/` is matched against the path relative to the tree root, any
+/// other against the entry's own name.
+#[derive(Debug, Clone)]
 pub struct Filter {
-    patterns: Vec<Pattern>,
+    raw: String,
+    kind: FilterKind,
 }
+
+impl PartialEq for Filter {
+    fn eq(&self, other: &Self) -> bool {
+        self.raw == other.raw
+    }
+}
+
+impl Eq for Filter {}
 
 impl Filter {
     /// Parses `raw`; blank input means "no filter".
@@ -604,42 +622,128 @@ impl Filter {
         if raw.is_empty() {
             return None;
         }
-        let patterns = if raw.contains(['*', '?', '[', '{']) {
-            expand_braces(raw)
-                .iter()
-                .map(|pattern| Pattern::glob(pattern))
-                .collect()
+        let kind = if raw.contains(['*', '?', '[', '{']) {
+            FilterKind::Glob(
+                expand_braces(raw)
+                    .iter()
+                    .map(|pattern| Pattern::glob(pattern))
+                    .collect(),
+            )
         } else {
-            vec![Pattern::substring(raw)]
+            FilterKind::Fuzzy {
+                pattern: Arc::new(FuzzyPattern::parse(
+                    raw,
+                    CaseMatching::Smart,
+                    Normalization::Smart,
+                )),
+                on_path: raw.contains('/'),
+            }
         };
-        Some(Self { patterns })
+        Some(Self {
+            raw: raw.to_string(),
+            kind,
+        })
+    }
+
+    /// The query text, trimmed.
+    pub fn raw(&self) -> &str {
+        &self.raw
+    }
+
+    /// Whether this is a fuzzy (ranked) search rather than a glob.
+    pub fn is_fuzzy(&self) -> bool {
+        matches!(self.kind, FilterKind::Fuzzy { .. })
     }
 
     /// Whether an entry called `name`, at `relative` (a `/`-separated path
     /// below the tree root), passes the filter.
     pub fn matches(&self, name: &str, relative: &str) -> bool {
-        self.matches_lowered(
-            &name.to_lowercase(),
-            &relative.to_lowercase(),
-            &mut Vec::new(),
-        )
+        let mut buf = Vec::new();
+        match &self.kind {
+            FilterKind::Glob(patterns) => glob_any(
+                patterns,
+                &name.to_lowercase(),
+                &relative.to_lowercase(),
+                &mut buf,
+            ),
+            FilterKind::Fuzzy { pattern, on_path } => {
+                let text = if *on_path { relative } else { name };
+                pattern
+                    .score(Utf32Str::new(text, &mut buf), &mut new_matcher())
+                    .is_some()
+            }
+        }
     }
 
-    /// Like [`Filter::matches`] for text that is already lowercased. `scratch`
-    /// is a reusable buffer so scanning many entries does not allocate.
-    fn matches_lowered(&self, name: &str, relative: &str, scratch: &mut Vec<char>) -> bool {
-        self.patterns.iter().any(|pattern| {
-            let text = if pattern.on_path { relative } else { name };
-            match &pattern.needle {
-                Some(needle) => text.contains(needle.as_str()),
-                None => {
-                    scratch.clear();
-                    scratch.extend(text.chars());
-                    glob_match_chars(&pattern.chars, scratch)
-                }
+    /// The score of a scanned entry, `None` when it does not match. Globs all
+    /// score 0 (the tree order then decides). `buf` is a reusable buffer.
+    fn score(&self, entry: &ScanEntry, matcher: &mut Matcher, buf: &mut Vec<char>) -> Option<u32> {
+        match &self.kind {
+            FilterKind::Glob(patterns) => {
+                glob_any(patterns, &entry.name_lower, &entry.relative_lower, buf).then_some(0)
             }
-        })
+            FilterKind::Fuzzy { pattern, on_path } => {
+                let text = if *on_path {
+                    &entry.relative
+                } else {
+                    &entry.name
+                };
+                pattern.score(Utf32Str::new(text, buf), matcher)
+            }
+        }
     }
+
+    /// The character positions of `name` that the fuzzy query matched, for
+    /// highlighting; empty for globs and non-matches. `relative` is the
+    /// entry's path below the tree root.
+    pub fn match_indices(
+        &self,
+        name: &str,
+        relative: &str,
+        matcher: &mut Matcher,
+        out: &mut Vec<u32>,
+    ) {
+        out.clear();
+        let FilterKind::Fuzzy { pattern, on_path } = &self.kind else {
+            return;
+        };
+        let mut buf = Vec::new();
+        if *on_path {
+            if pattern
+                .indices(Utf32Str::new(relative, &mut buf), matcher, out)
+                .is_none()
+            {
+                out.clear();
+                return;
+            }
+            // Keep the part of the match that falls inside the name.
+            let offset = relative
+                .chars()
+                .count()
+                .saturating_sub(name.chars().count()) as u32;
+            out.retain(|&i| i >= offset);
+            for i in out.iter_mut() {
+                *i -= offset;
+            }
+        } else if pattern
+            .indices(Utf32Str::new(name, &mut buf), matcher, out)
+            .is_none()
+        {
+            out.clear();
+        }
+        out.sort_unstable();
+        out.dedup();
+    }
+}
+
+/// Whether any glob alternative matches the (already lowercased) text.
+fn glob_any(patterns: &[Pattern], name: &str, relative: &str, scratch: &mut Vec<char>) -> bool {
+    patterns.iter().any(|pattern| {
+        let text = if pattern.on_path { relative } else { name };
+        scratch.clear();
+        scratch.extend(text.chars());
+        glob_match_chars(&pattern.chars, scratch)
+    })
 }
 
 /// One entry of the recursive listing a filter searches.
@@ -649,7 +753,9 @@ struct ScanEntry {
     name: String,
     /// Lowercased `name`, so matching never has to lowercase again.
     name_lower: String,
-    /// Lowercased `/`-separated path below the tree root.
+    /// `/`-separated path below the tree root.
+    relative: String,
+    /// Lowercased `relative`.
     relative_lower: String,
     /// Index of the parent directory's entry, `None` for the root's children.
     /// Parents always precede their children in the scan.
@@ -763,6 +869,7 @@ fn run_scan(
         chunk.push(ScanEntry {
             name_lower: name.to_lowercase(),
             relative_lower: relative.to_lowercase(),
+            relative,
             path,
             name,
             parent,
@@ -809,6 +916,22 @@ pub struct Tree {
     results_capped: bool,
     /// Whether to list a `...` row above the root.
     show_parent: bool,
+    /// Scores of the previous fuzzy query, so typing one more character only
+    /// re-scores what already matched.
+    fuzzy_cache: Option<FuzzyCache>,
+    matcher: Matcher,
+    /// The best-scoring entry (and the best file) of the active filter.
+    best_match: Option<PathBuf>,
+    best_file: Option<PathBuf>,
+}
+
+/// Matches of a fuzzy query over the first `scanned` scan entries.
+#[derive(Debug)]
+struct FuzzyCache {
+    raw: String,
+    /// (scan index, score)
+    scored: Vec<(u32, u32)>,
+    scanned: usize,
 }
 
 impl Tree {
@@ -826,6 +949,10 @@ impl Tree {
             scan_truncated: false,
             results_capped: false,
             show_parent: false,
+            fuzzy_cache: None,
+            matcher: new_matcher(),
+            best_match: None,
+            best_file: None,
         };
         let root = tree.root.clone();
         tree.expand(&root, params)?;
@@ -895,6 +1022,17 @@ impl Tree {
     /// ([`FILTER_RESULT_LIMIT`]); a narrower query reveals the rest.
     pub fn filter_capped(&self) -> bool {
         self.filter.is_some() && self.results_capped
+    }
+
+    /// The entry that matches the filter best (the first in tree order for
+    /// globs). The explorer selects it, like a picker's top result.
+    pub fn best_match(&self) -> Option<&Path> {
+        self.best_match.as_deref().filter(|_| self.filter.is_some())
+    }
+
+    /// Like [`Tree::best_match`], restricted to files.
+    pub fn best_file(&self) -> Option<&Path> {
+        self.best_file.as_deref().filter(|_| self.filter.is_some())
     }
 
     /// Whether the background scan feeding the filter is still running.
@@ -1088,6 +1226,9 @@ impl Tree {
         self.scan_rx = None;
         self.scan_truncated = false;
         self.results_capped = false;
+        self.fuzzy_cache = None;
+        self.best_match = None;
+        self.best_file = None;
     }
 
     /// Starts the background scan the filter searches, unless one already ran
@@ -1165,23 +1306,69 @@ impl Tree {
             return;
         };
         let scan = &self.scan;
+        let fuzzy = filter.is_fuzzy();
+        let mut buf = Vec::new();
+        let matcher = &mut self.matcher;
+
+        // Typing more of a fuzzy query can only remove matches (and new scan
+        // entries get scored fresh), so re-score just what matched before.
+        let cache = self
+            .fuzzy_cache
+            .take()
+            .filter(|cache| fuzzy && cache.scanned <= scan.len());
+        let (mut scored, start): (Vec<(u32, u32)>, usize) = match cache {
+            Some(cache) if cache.raw == filter.raw() => (cache.scored, cache.scanned),
+            Some(cache)
+                if !cache.raw.is_empty()
+                    && filter.raw().starts_with(&cache.raw)
+                    && !filter.raw().contains('!') =>
+            {
+                let rescored = cache
+                    .scored
+                    .iter()
+                    .filter_map(|&(i, _)| {
+                        filter
+                            .score(&scan[i as usize], matcher, &mut buf)
+                            .map(|score| (i, score))
+                    })
+                    .collect();
+                (rescored, cache.scanned)
+            }
+            _ => (Vec::new(), 0),
+        };
+        for (i, entry) in scan.iter().enumerate().skip(start) {
+            if let Some(score) = filter.score(entry, matcher, &mut buf) {
+                scored.push((i as u32, score));
+            }
+        }
+        if fuzzy {
+            self.fuzzy_cache = Some(FuzzyCache {
+                raw: filter.raw().to_string(),
+                scored: scored.clone(),
+                scanned: scan.len(),
+            });
+        }
+
+        // Best matches first (ties keep scan order); only the top results are
+        // shown.
+        let by_rank = |a: &(u32, u32), b: &(u32, u32)| b.1.cmp(&a.1).then(a.0.cmp(&b.0));
+        let capped = scored.len() > FILTER_RESULT_LIMIT;
+        if capped {
+            scored.select_nth_unstable_by(FILTER_RESULT_LIMIT, by_rank);
+            scored.truncate(FILTER_RESULT_LIMIT);
+        }
+        scored.sort_unstable_by(by_rank);
+        self.best_match = scored.first().map(|&(i, _)| scan[i as usize].path.clone());
+        self.best_file = scored
+            .iter()
+            .find(|&&(i, _)| !scan[i as usize].is_dir)
+            .map(|&(i, _)| scan[i as usize].path.clone());
 
         let mut shown = vec![false; scan.len()];
-        let mut scratch = Vec::new();
-        let mut matched = 0usize;
-        let mut capped = false;
-        for (i, entry) in scan.iter().enumerate() {
-            if !filter.matches_lowered(&entry.name_lower, &entry.relative_lower, &mut scratch) {
-                continue;
-            }
-            if matched >= FILTER_RESULT_LIMIT {
-                capped = true;
-                break;
-            }
-            matched += 1;
+        for &(i, _) in &scored {
             // Mark the entry and every ancestor; stop at the first one that is
             // already marked since its own ancestors are then marked too.
-            let mut cur = Some(i);
+            let mut cur = Some(i as usize);
             while let Some(c) = cur {
                 if shown[c] {
                     break;
@@ -1906,13 +2093,76 @@ mod tests {
     }
 
     #[test]
-    fn plain_and_path_queries_match_case_insensitively() {
-        let filter = Filter::new("SRC/main").unwrap();
-        assert!(filter.matches("main.rs", "src/main.rs"));
-        assert!(!filter.matches("main.rs", "lib/main.rs"));
-        let filter = Filter::new("Main").unwrap();
+    fn plain_queries_are_fuzzy_with_smart_case() {
+        let filter = Filter::new("mnrs").unwrap();
+        assert!(filter.is_fuzzy());
         assert!(filter.matches("main.rs", "src/main.rs"));
         assert!(!filter.matches("lib.rs", "src/lib.rs"));
+        // Lowercase queries ignore case, an uppercase letter turns it on.
+        assert!(Filter::new("main").unwrap().matches("Main.rs", "Main.rs"));
+        assert!(!Filter::new("Main").unwrap().matches("main.rs", "main.rs"));
+        // Space separated terms must all match.
+        let filter = Filter::new("mn rs").unwrap();
+        assert!(filter.matches("main.rs", "main.rs"));
+        assert!(!filter.matches("main.py", "main.py"));
+        // A query with a slash is matched against the relative path.
+        let filter = Filter::new("src/main").unwrap();
+        assert!(filter.matches("main.rs", "src/main.rs"));
+        assert!(!filter.matches("main.rs", "lib/main.rs"));
+    }
+
+    #[test]
+    fn wildcard_queries_stay_globs() {
+        let filter = Filter::new("*.rs").unwrap();
+        assert!(!filter.is_fuzzy());
+        assert!(filter.matches("main.rs", "src/main.rs"));
+        assert!(!filter.matches("main.rs.bak", "main.rs.bak"));
+    }
+
+    #[test]
+    fn fuzzy_match_indices_point_at_the_name() {
+        let mut matcher = new_matcher();
+        let mut out = Vec::new();
+        let filter = Filter::new("mnrs").unwrap();
+        filter.match_indices("main.rs", "src/main.rs", &mut matcher, &mut out);
+        assert_eq!(out, vec![0, 3, 5, 6]);
+        // Path queries only report the part inside the name.
+        let filter = Filter::new("src/main").unwrap();
+        filter.match_indices("main.rs", "src/main.rs", &mut matcher, &mut out);
+        assert_eq!(out, vec![0, 1, 2, 3]);
+        // Globs highlight nothing.
+        let filter = Filter::new("*.rs").unwrap();
+        filter.match_indices("main.rs", "src/main.rs", &mut matcher, &mut out);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn fuzzy_filter_ranks_and_selects_the_best_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir(root.join("a")).unwrap();
+        fs::write(root.join("a/m_a_i_n.txt"), "").unwrap();
+        fs::write(root.join("main.rs"), "").unwrap();
+        fs::write(root.join("other.rs"), "").unwrap();
+        let p = params(false, true);
+        let mut tree = Tree::new(root.to_path_buf(), p).unwrap();
+        tree.set_filter("main", p);
+        tree.wait_for_scan(p);
+        let names: Vec<_> = tree.visible().iter().map(|e| e.name.as_str()).collect();
+        assert!(names.contains(&"main.rs"));
+        assert!(names.contains(&"m_a_i_n.txt"));
+        assert!(!names.contains(&"other.rs"));
+        assert_eq!(tree.best_file(), Some(root.join("main.rs").as_path()));
+
+        // Typing more narrows the earlier result set.
+        tree.set_filter("main.r", p);
+        tree.wait_for_scan(p);
+        let names: Vec<_> = tree.visible().iter().map(|e| e.name.as_str()).collect();
+        assert!(names.contains(&"main.rs"));
+        assert!(!names.contains(&"m_a_i_n.txt"));
+
+        tree.set_filter("", p);
+        assert!(tree.best_match().is_none());
     }
 
     #[test]
