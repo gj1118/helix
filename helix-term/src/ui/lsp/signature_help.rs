@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use arc_swap::ArcSwap;
 use helix_core::syntax::{self, OverlayHighlights};
-use helix_view::graphics::{Margin, Rect, Style};
+use helix_view::graphics::{Margin, Rect};
 use helix_view::input::Event;
 use tui::buffer::Buffer;
 use tui::layout::Alignment;
@@ -143,7 +143,7 @@ impl Component for SignatureHelp {
             return;
         }
 
-        let sep_style = Style::default();
+        let sep_style = crate::ui::border_style(&cx.editor.theme);
         let borders = BorderType::line_symbols(crate::ui::separator_type(&cx.editor.config()));
         for x in sig_text_area.left()..sig_text_area.right() {
             if let Some(cell) = surface.get_mut(x, sig_text_area.bottom()) {
