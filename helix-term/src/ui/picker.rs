@@ -573,11 +573,13 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
     /// Replaces the quicklist with the locations of the results that currently match, in the
     /// order they are shown in. Pickers whose results aren't locations (no preview) are left
     /// alone; a picker without matches clears the quicklist.
-    fn copy_to_quicklist(&self, editor: &mut Editor) {
-        let Some(file_fn) = &self.file_fn else {
+    fn copy_to_quicklist(&mut self, editor: &mut Editor) {
+        if self.file_fn.is_none() {
             editor.set_status("The results of this picker are not locations");
             return;
-        };
+        }
+        self.settle_matcher();
+        let Some(file_fn) = &self.file_fn else { return };
         let snapshot = self.matcher.snapshot();
         let entries = crate::commands::quicklist::entries_from_locations(
             editor,
@@ -586,6 +588,36 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                 .filter_map(|item| file_fn(editor, item.data)),
         );
         crate::commands::quicklist::set_from_picker(editor, entries);
+    }
+
+    /// Waits (briefly) until the results are those of the current query. The matcher works in
+    /// the background, so after typing, its snapshot is still the one of the previous query
+    /// for a moment, and `tick` can report that nothing is running while the job for the new
+    /// query is only queued: it is the snapshot's own pattern that tells.
+    fn settle_matcher(&mut self) {
+        let columns = self.columns.iter().filter(|column| column.filter).count();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut changed = false;
+        loop {
+            let status = self.matcher.tick(10);
+            changed |= status.changed;
+            let up_to_date = {
+                let snapshot = self.matcher.snapshot();
+                (0..columns).all(|column| {
+                    snapshot.pattern().column_pattern(column).atoms
+                        == self.matcher.pattern.column_pattern(column).atoms
+                })
+            };
+            if (up_to_date && !status.running) || std::time::Instant::now() >= deadline {
+                break;
+            }
+        }
+        // What `render_picker` does with a change.
+        if changed {
+            self.restore_selection();
+            let matched = self.matcher.snapshot().matched_item_count();
+            self.cursor = self.cursor.min(matched.saturating_sub(1));
+        }
     }
 
     /// Moves the cursor back to the item that was selected before a refresh.

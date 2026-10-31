@@ -117,7 +117,13 @@ async fn unsaved_buffers_can_be_collected() -> anyhow::Result<()> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn ctrl_q_copies_the_matched_picker_entries() -> anyhow::Result<()> {
-    let (_dir, a, b) = two_files()?;
+    // The picker matches against the whole path, whose temporary directory has a random name:
+    // names that fuzzy matching can't find in it by accident.
+    let dir = tempfile::tempdir()?;
+    let a = dir.path().join("qz_first.txt");
+    let b = dir.path().join("kv_second.txt");
+    std::fs::write(&a, "a0\na1\n")?;
+    std::fs::write(&b, "b0\nb1\n")?;
     let mut app = helpers::AppBuilder::new().with_file(&a, None).build()?;
     let open_b = format!(":o {}<ret>", b.display());
     test_key_sequences(
@@ -136,13 +142,16 @@ async fn ctrl_q_copies_the_matched_picker_entries() -> anyhow::Result<()> {
                 None,
                 Some(&|app| {
                     let rows = app.rendered_rows().join("\n");
-                    assert!(rows.contains("a.txt") && rows.contains("b.txt"), "{rows}");
+                    assert!(
+                        rows.contains("qz_first.txt") && rows.contains("kv_second.txt"),
+                        "{rows}"
+                    );
                 }),
             ),
             (Some("<esc>"), None),
             // filtering narrows what is copied
             (
-                Some("<space>ba.txt<C-q><esc>"),
+                Some("<space>bqz_first<C-q><esc>"),
                 Some(&|app| {
                     assert_eq!(app.editor.quicklist.len(), 1);
                     assert_eq!(
@@ -151,7 +160,7 @@ async fn ctrl_q_copies_the_matched_picker_entries() -> anyhow::Result<()> {
                             app.editor
                                 .documents
                                 .values()
-                                .find(|d| d.path().is_some_and(|p| p.ends_with("a.txt")))
+                                .find(|d| d.path().is_some_and(|p| p.ends_with("qz_first.txt")))
                                 .unwrap()
                                 .path()
                                 .unwrap()
@@ -160,7 +169,10 @@ async fn ctrl_q_copies_the_matched_picker_entries() -> anyhow::Result<()> {
                     );
                 }),
             ),
-            (Some("]q"), Some(&|app| assert_eq!(at(app), "a.txt:0"))),
+            (
+                Some("]q"),
+                Some(&|app| assert_eq!(at(app), "qz_first.txt:0")),
+            ),
             // a picker without matches clears the list
             (
                 Some("<space>bnomatchatall<C-q><esc>"),
