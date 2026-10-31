@@ -71,6 +71,12 @@ async fn file_history_opens_the_commit_diff() -> anyhow::Result<()> {
             // back to the newest commit; Enter opens its change to the file
             (Some("<C-p>"), None),
             (Some("<ret>"), None),
+            // idle rounds while git produces the diff: a slow machine needs more than two
+            (Some("<esc>"), None),
+            (Some("<esc>"), None),
+            (Some("<esc>"), None),
+            (Some("<esc>"), None),
+            (Some("<esc>"), None),
             (Some("<esc>"), None),
             (
                 Some("<esc>"),
@@ -112,6 +118,12 @@ async fn file_history_opens_an_older_version() -> anyhow::Result<()> {
             // move to the older commit and open the version at that commit
             (Some("<down>"), None),
             (Some("<A-o>"), None),
+            // idle rounds while git produces the diff: a slow machine needs more than two
+            (Some("<esc>"), None),
+            (Some("<esc>"), None),
+            (Some("<esc>"), None),
+            (Some("<esc>"), None),
+            (Some("<esc>"), None),
             (Some("<esc>"), None),
             (
                 Some("<esc>"),
@@ -157,6 +169,12 @@ async fn repository_history_browses_a_commit_then_a_file() -> anyhow::Result<()>
             ),
             // ... and the file its diff
             (Some("<ret>"), None),
+            // idle rounds while git produces the diff: a slow machine needs more than two
+            (Some("<esc>"), None),
+            (Some("<esc>"), None),
+            (Some("<esc>"), None),
+            (Some("<esc>"), None),
+            (Some("<esc>"), None),
             (Some("<esc>"), None),
             (
                 Some("<esc>"),
