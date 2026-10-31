@@ -416,6 +416,7 @@ impl Client {
                 )
             ),
             LanguageServerFeature::DocumentLinks => capabilities.document_link_provider.is_some(),
+            LanguageServerFeature::CodeLens => capabilities.code_lens_provider.is_some(),
             LanguageServerFeature::WorkspaceCommand => {
                 capabilities.execute_command_provider.is_some()
             }
@@ -666,6 +667,9 @@ impl Client {
                     inlay_hint: Some(lsp::InlayHintWorkspaceClientCapabilities {
                         refresh_support: Some(false),
                     }),
+                    code_lens: Some(lsp::CodeLensWorkspaceClientCapabilities {
+                        refresh_support: Some(true),
+                    }),
                     workspace_edit: Some(lsp::WorkspaceEditClientCapabilities {
                         document_changes: Some(true),
                         resource_operations: Some(vec![
@@ -791,6 +795,9 @@ impl Client {
                     inlay_hint: Some(lsp::InlayHintClientCapabilities {
                         dynamic_registration: Some(false),
                         resolve_support: None,
+                    }),
+                    code_lens: Some(lsp::CodeLensClientCapabilities {
+                        dynamic_registration: Some(false),
                     }),
                     document_link: Some(lsp::DocumentLinkClientCapabilities {
                         dynamic_registration: Some(false),
@@ -1399,6 +1406,45 @@ impl Client {
         }
 
         Some(self.call::<lsp::request::DocumentLinkResolve>(params))
+    }
+
+    pub fn text_document_code_lens(
+        &self,
+        text_document: lsp::TextDocumentIdentifier,
+    ) -> Option<impl Future<Output = Result<Option<Vec<lsp::CodeLens>>>>> {
+        if !self.supports_feature(LanguageServerFeature::CodeLens) {
+            return None;
+        }
+
+        let params = lsp::CodeLensParams {
+            text_document,
+            work_done_progress_params: lsp::WorkDoneProgressParams::default(),
+            partial_result_params: lsp::PartialResultParams::default(),
+        };
+
+        Some(self.call::<lsp::request::CodeLensRequest>(params))
+    }
+
+    /// Whether the server fills in the `command` of a lens on `codeLens/resolve`.
+    pub fn code_lens_resolve_provider(&self) -> bool {
+        self.capabilities
+            .get()
+            .and_then(|capabilities| capabilities.code_lens_provider.as_ref())
+            .and_then(|provider| provider.resolve_provider)
+            == Some(true)
+    }
+
+    pub fn resolve_code_lens(
+        &self,
+        lens: lsp::CodeLens,
+    ) -> Option<impl Future<Output = Result<lsp::CodeLens>>> {
+        if !self.supports_feature(LanguageServerFeature::CodeLens)
+            || !self.code_lens_resolve_provider()
+        {
+            return None;
+        }
+
+        Some(self.call::<lsp::request::CodeLensResolve>(lens))
     }
 
     pub fn text_document_hover(

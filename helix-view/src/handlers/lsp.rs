@@ -25,6 +25,7 @@ pub struct InlineCompletionEvent {
     pub manual: bool,
 }
 pub struct DocumentLinksEvent(pub DocumentId);
+pub struct CodeLensesEvent(pub DocumentId);
 pub struct DocumentSymbolsEvent(pub DocumentId);
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]

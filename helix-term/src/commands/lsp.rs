@@ -1157,6 +1157,108 @@ impl ui::menu::Item for CodeActionItem {
     }
 }
 
+/// One entry of the menu of [`code_lens`].
+struct CodeLensItem {
+    command: lsp::Command,
+    language_server_id: LanguageServerId,
+}
+
+impl ui::menu::Item for CodeLensItem {
+    type Data = ();
+
+    fn format(&self, _: &Self::Data) -> Row<'_> {
+        self.command.title.as_str().into()
+    }
+}
+
+/// Lists the code lenses of the cursor line and runs the chosen one on the language server.
+///
+/// Lenses the server gave without a command (the title that is shown at the end of the line
+/// comes from the same command) are resolved first.
+pub fn code_lens(cx: &mut Context) {
+    if !crate::handlers::code_lenses::enabled(cx.editor) {
+        cx.editor
+            .set_error("Code lenses are off, set `display-code-lenses` in `[editor.lsp]`");
+        return;
+    }
+
+    let (view, doc) = current_ref!(cx.editor);
+    if !doc.code_lenses_are_current() {
+        cx.editor
+            .set_error("Code lenses are not up to date, try again in a moment");
+        return;
+    }
+    let doc_id = doc.id();
+    let version = doc.version();
+    let line = doc.cursor_line(view.id);
+
+    // (lens, server) of every lens of the line; the server is needed to resolve a lens.
+    let mut lenses = Vec::new();
+    for (_, lens) in doc.code_lenses_on_line(line) {
+        let server = cx
+            .editor
+            .language_servers
+            .get_by_id(lens.language_server_id)
+            .cloned();
+        lenses.push((lens.lens.clone(), lens.language_server_id, server));
+    }
+    if lenses.is_empty() {
+        cx.editor.set_error("No code lenses on this line");
+        return;
+    }
+
+    cx.jobs.callback(async move {
+        let mut items = Vec::new();
+        for (lens, language_server_id, server) in lenses {
+            let lens = match (lens.command.is_some(), server) {
+                (true, _) => Some(lens),
+                (false, Some(server)) => {
+                    match crate::handlers::code_lenses::resolve_lens(server, lens).await {
+                        Ok(resolved) => resolved,
+                        Err(err) => {
+                            log::error!("code lens resolve failed: {err}");
+                            None
+                        }
+                    }
+                }
+                (false, None) => None,
+            };
+            if let Some(command) = lens.and_then(|lens| lens.command) {
+                items.push(CodeLensItem {
+                    command,
+                    language_server_id,
+                });
+            }
+        }
+
+        let call = move |editor: &mut Editor, compositor: &mut Compositor| {
+            // The text changed while the server was resolving: the lenses are for other code.
+            if editor.document(doc_id).map(|doc| doc.version()) != Some(version) {
+                return;
+            }
+            if items.is_empty() {
+                editor.set_error("No code lenses on this line");
+                return;
+            }
+            let mut menu = ui::Menu::new(items, (), move |editor, item, event| {
+                if event != PromptEvent::Validate {
+                    return;
+                }
+                if let Some(item) = item {
+                    editor.execute_lsp_command(item.command.clone(), item.language_server_id);
+                }
+            });
+            menu.move_down();
+
+            let popup = Popup::new("code-lens", menu)
+                .with_scrollbar(false)
+                .auto_close(true);
+            compositor.replace_or_push("code-lens", popup);
+        };
+        Ok(Callback::EditorCompositor(Box::new(call)))
+    });
+}
+
 pub fn code_action(cx: &mut Context) {
     code_action_inner(cx, false);
 }

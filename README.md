@@ -36,6 +36,7 @@ directory-open = " "  # expanded folder icon (default: open-folder glyph, or 
    <img width="428" height="220" alt="image" src="https://github.com/user-attachments/assets/dea63278-a649-4561-a29a-b1c0eddacf9f" />
 
 5. Explorer file tree panel — toggle with `<space>x`, pinned or floating, with file operations (see [Explorer](#explorer) below)
+6. LSP code lenses — `Run`, `Debug`, `12 references` labels at the end of lines, off by default (see [Code Lenses](#code-lenses) below)
 
 
    
@@ -433,6 +434,38 @@ color-swatches-string = "■"
 ```
 
 Color swatches appear next to color values in your code (CSS, configuration files, etc.) when LSP support is available, making it easier to visualize colors at a glance.
+
+## Code Lenses
+
+Language servers such as rust-analyzer attach actions and facts to lines of code: `Run`,
+`Debug`, `Run Test`, `3 implementations`, `12 references`. With code lenses on, they are shown
+at the end of the line they belong to, and `<space>A` runs one.
+
+Code lenses cost an extra request to the language server for every document, so they are
+**off by default**. Turn them on in your `config.toml`:
+
+```toml
+[editor.lsp]
+display-code-lenses = true
+```
+
+```text
+fn main() {                        ▶ Run · Debug
+fn parse(input: &str) -> Ast {     ▶ 12 references
+```
+
+- `<space>A` (`code_lens`) opens a menu with the lenses of the cursor line; choosing one runs its
+  command on the server.
+- Lenses are fetched on open, shortly after you stop typing, when a server starts and when it
+  sends `workspace/codeLens/refresh`. Lenses without a title are resolved once they scroll into
+  view.
+- Style them with the `ui.virtual.code-lens` theme key (falls back to `ui.virtual.inlay-hint`).
+- Per language, `code-lens` is also a language server feature name, so a server can be excluded
+  with `except-features = ["code-lens"]` in `languages.toml`.
+
+The idea and the protocol handling follow the upstream proposal
+(https://github.com/helix-editor/helix/pull/5063) and the Mitos fork; the code here is written
+for this fork's handler, decoration and keymap structure.
 
 ## Line Movement Commands
 

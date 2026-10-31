@@ -254,6 +254,18 @@ pub struct Document {
     pub dap_inline_values: Vec<InlineAnnotation>,
     /// Cached LSP document links for navigation (e.g. goto_file).
     pub document_links: Vec<DocumentLink>,
+    /// LSP code lenses, ordered by position. Only filled when `editor.lsp.display-code-lenses`
+    /// is enabled.
+    pub code_lenses: Vec<CodeLens>,
+    /// The document version `code_lenses` was requested for. Lens ranges, commands and resolve
+    /// data are only valid for that version, even though `char_idx` follows edits.
+    pub code_lenses_version: Option<i32>,
+    /// Cancels the in-flight `textDocument/codeLens` request.
+    pub code_lens_controller: TaskController,
+    /// Cancels in-flight `codeLens/resolve` requests (they refer to indices in `code_lenses`).
+    pub code_lens_resolve_controller: TaskController,
+    /// The handle of the current batch of resolves; canceled with the controller.
+    pub code_lens_resolve_handle: Option<helix_event::TaskHandle>,
     // NOTE: ideally this would live on the handler for color swatches. This is blocked on a
     // large refactor that would make `&mut Editor` available on the `DocumentDidChange` event.
     pub color_swatch_controller: TaskController,
@@ -461,6 +473,43 @@ pub struct DocumentLink {
     pub end: usize,
     pub link: lsp::DocumentLink,
     pub language_server_id: LanguageServerId,
+}
+
+/// A code lens: a command shown along with the source text, such as "Run" or "3 references".
+#[derive(Debug, Clone)]
+pub struct CodeLens {
+    /// Character offset of the start of the lens range, mapped through edits.
+    pub char_idx: usize,
+    /// The lens as sent by the server. Kept as is for `codeLens/resolve`, which needs its
+    /// opaque `data`.
+    pub lens: lsp::CodeLens,
+    pub language_server_id: LanguageServerId,
+    /// A resolve was already attempted (or is running): don't ask again for the same lens.
+    pub resolve_attempted: bool,
+}
+
+impl Document {
+    /// The code lenses that start on `line`.
+    pub fn code_lenses_on_line(&self, line: usize) -> impl Iterator<Item = (usize, &CodeLens)> {
+        let text = self.text();
+        self.code_lenses
+            .iter()
+            .enumerate()
+            .filter(move |(_, lens)| text.char_to_line(lens.char_idx.min(text.len_chars())) == line)
+    }
+
+    /// Whether the cached code lenses belong to the current text of the document.
+    pub fn code_lenses_are_current(&self) -> bool {
+        self.code_lenses_version == Some(self.version())
+    }
+
+    pub fn clear_code_lenses(&mut self) {
+        self.code_lens_controller.cancel();
+        self.code_lens_resolve_controller.cancel();
+        self.code_lens_resolve_handle = None;
+        self.code_lenses.clear();
+        self.code_lenses_version = None;
+    }
 }
 
 /// Inlay hints for a single `(Document, View)` combo.
@@ -989,6 +1038,11 @@ impl Document {
             color_swatches: None,
             dap_inline_values: Vec::new(),
             document_links: Vec::new(),
+            code_lenses: Vec::new(),
+            code_lenses_version: None,
+            code_lens_controller: TaskController::new(),
+            code_lens_resolve_controller: TaskController::new(),
+            code_lens_resolve_handle: None,
             color_swatch_controller: TaskController::new(),
             inline_completions: Default::default(),
             is_welcome: false,

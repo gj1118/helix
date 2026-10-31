@@ -48,6 +48,7 @@ pub struct Handlers {
     pub document_symbols: Sender<lsp::DocumentSymbolsEvent>,
     pub blame: Sender<BlameEvent>,
     pub document_links: Sender<lsp::DocumentLinksEvent>,
+    pub code_lenses: Sender<lsp::CodeLensesEvent>,
     pub word_index: word_index::Handler,
     pub pull_diagnostics: Sender<lsp::PullDiagnosticsEvent>,
     pub pull_all_documents_diagnostics: Sender<lsp::PullAllDocumentsDiagnosticsEvent>,

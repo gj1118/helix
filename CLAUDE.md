@@ -94,6 +94,14 @@ display-color-swatches = true
 color-swatches-string = "●"  # Default: "■"
 ```
 
+**Code Lenses**: LSP code lenses (Run / Debug / reference counts at the end of lines) are off by default:
+```toml
+[editor.lsp]
+display-code-lenses = true
+```
+`Space+A` (`code_lens`) runs a lens of the cursor line. Implementation: `helix-term/src/handlers/code_lenses.rs`
+(requests, resolve, refresh), `helix-term/src/ui/text_decorations/code_lenses.rs` (rendering).
+
 ## Key Keybindings (Fork-specific)
 
 **Window Management:**
