@@ -47,7 +47,9 @@ impl PanelBorder {
         } else {
             self.gradient = None;
             Widget::render(
-                Block::bordered().border_type(crate::ui::border_type(&config)),
+                Block::bordered()
+                    .border_type(crate::ui::border_type(&config))
+                    .border_style(crate::ui::border_style(&editor.theme)),
                 area,
                 surface,
             );

@@ -1127,7 +1127,8 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             } else {
                 Block::bordered()
             }
-            .border_type(crate::ui::border_type(&cx.editor.config()));
+            .border_type(crate::ui::border_type(&cx.editor.config()))
+            .border_style(crate::ui::border_style(&cx.editor.theme));
             let inner_area = block.inner(area);
             block.render(area, surface);
             inner_area
@@ -1363,7 +1364,9 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                 height: area.height.saturating_sub(t * 2),
             }
         } else {
-            let block = Block::bordered().border_type(crate::ui::border_type(&cx.editor.config()));
+            let block = Block::bordered()
+                .border_type(crate::ui::border_type(&cx.editor.config()))
+                .border_style(crate::ui::border_style(&cx.editor.theme));
             let inner_area = block.inner(area);
             block.render(area, surface);
             inner_area
