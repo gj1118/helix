@@ -31,8 +31,8 @@ use helix_view::{
     document::Mode,
     editor::{Action, CmdlineStyle, GradientBorderConfig, PointerShape},
     explorer::{
-        copy_recursively, save_floating_geometry, Entry, ExplorerClipboard, ExplorerSide,
-        FloatDrag, FloatGeometry, ScanOptions, Tree, TreeParams, FILTER_RESULT_LIMIT,
+        copy_recursively, new_matcher, save_floating_geometry, Entry, ExplorerClipboard,
+        ExplorerSide, FloatDrag, FloatGeometry, ScanOptions, Tree, TreeParams, FILTER_RESULT_LIMIT,
         FILTER_SCAN_LIMIT,
     },
     graphics::{Color, Rect, Style},
@@ -60,7 +60,7 @@ const MIN_PANEL_WIDTH: u16 = 4;
 /// Drawn in front of the filter input (it is focused with `/`).
 const FILTER_PREFIX: &str = "/ ";
 /// Greyed hint shown in the empty filter box.
-const FILTER_PLACEHOLDER: &str = "filter: name or *.rs";
+const FILTER_PLACEHOLDER: &str = "fuzzy filter or *.rs";
 
 /// `TreeParams` as seen from the current editor state; what the tree ops and
 /// the renderer both use.
@@ -398,8 +398,27 @@ impl Explorer {
     // Filter box
     // --------------------------------------------------------------------
 
-    /// Applies the filter box text to the tree. The selection stays on its
-    /// entry when that is still listed; otherwise it moves to the first match.
+    /// The row of the best-scoring match of a fuzzy filter, the one a picker
+    /// would put on top. `files_only` skips folders.
+    fn best_row(&self, files_only: bool) -> Option<usize> {
+        if !self.tree.filter().is_some_and(|filter| filter.is_fuzzy()) {
+            return None;
+        }
+        let best = if files_only {
+            self.tree.best_file()
+        } else {
+            self.tree.best_match()
+        }?;
+        self.tree
+            .visible()
+            .iter()
+            .position(|entry| entry.path == best)
+    }
+
+    /// Applies the filter box text to the tree. A fuzzy query selects its best
+    /// match, like a picker's top result; a wildcard query keeps the selection
+    /// on its entry when that is still listed, otherwise moves to the first
+    /// match.
     fn filter_changed(&mut self, editor: &mut Editor) {
         let params = tree_params(editor);
         let keep = self.entry().map(|entry| entry.path.clone());
@@ -417,6 +436,8 @@ impl Explorer {
                 }
                 None => self.cursor = 0,
             }
+        } else if let Some(row) = self.best_row(false) {
+            self.cursor = row;
         } else {
             let kept = keep.and_then(|path| {
                 self.tree
@@ -503,11 +524,12 @@ impl Explorer {
                     // Once the user picked a row with the arrows, Enter acts
                     // on that row; otherwise on the first file match.
                     if !self.filter_navigated {
-                        let first_file = self
-                            .tree
-                            .visible()
-                            .iter()
-                            .position(|entry| !entry.is_dir && !entry.is_parent);
+                        let first_file = self.best_row(true).or_else(|| {
+                            self.tree
+                                .visible()
+                                .iter()
+                                .position(|entry| !entry.is_dir && !entry.is_parent)
+                        });
                         if let Some(i) = first_file {
                             self.cursor = i;
                         }
@@ -1619,6 +1641,7 @@ impl Component for Explorer {
         let sel_style = theme.get("ui.selection");
         let virtual_style = theme.get("ui.virtual");
         let inactive_style = theme.get("ui.text.inactive");
+        let match_style = theme.get("special");
         // The panel's own scope so the background can be themed without
         // touching every other popup; falls back to `ui.popup`.
         let background_style = theme.get("ui.popup.explorer");
@@ -1738,6 +1761,13 @@ impl Component for Explorer {
 
         // Results stream in from the scan thread while a filter is active.
         if self.tree.poll_scan(tree_params(cx.editor)) {
+            // Better matches may arrive as the scan proceeds; follow the top
+            // one until the user picks a row themselves.
+            if self.filter_editing && !self.filter_navigated {
+                if let Some(row) = self.best_row(false) {
+                    self.cursor = row;
+                }
+            }
             self.clamp_cursor();
             if !self.tree.scanning() {
                 self.report_filter_limits(cx.editor);
@@ -1756,6 +1786,8 @@ impl Component for Explorer {
         let icons = ICONS.load();
         let mime = icons.mime();
         let show_icons = cx.editor.config().explorer.icons;
+        let mut matcher = new_matcher();
+        let mut indices: Vec<u32> = Vec::new();
 
         for (i, entry) in self
             .tree
@@ -1777,6 +1809,27 @@ impl Component for Explorer {
                 }
             }
 
+            let highlight = match self.tree.filter() {
+                Some(filter) if filter.is_fuzzy() => {
+                    let relative = entry
+                        .path
+                        .strip_prefix(self.tree.root())
+                        .unwrap_or(&entry.path)
+                        .to_string_lossy()
+                        .replace(std::path::MAIN_SEPARATOR, "/");
+                    filter.match_indices(&entry.name, &relative, &mut matcher, &mut indices);
+                    !indices.is_empty() && !entry.is_parent
+                }
+                _ => false,
+            };
+            let name_spans = |base: Style| -> Vec<Span<'static>> {
+                if highlight {
+                    highlighted_name(&entry.name, &indices, base, match_style)
+                } else {
+                    vec![Span::styled(entry.name.clone(), base)]
+                }
+            };
+
             let mut spans: Vec<Span> = Vec::with_capacity(3);
             spans.push(Span::styled(self.prefix(entry), virtual_style));
             if entry.is_dir {
@@ -1793,7 +1846,7 @@ impl Component for Explorer {
                 if let Some(glyph) = glyph {
                     spans.push(Span::styled(format!("{glyph} "), dir_style));
                 }
-                spans.push(Span::styled(entry.name.clone(), dir_style));
+                spans.extend(name_spans(dir_style));
             } else if let Some(icon) = mime
                 .get(Some(&entry.path), Some(entry.name.as_str()))
                 .filter(|_| show_icons)
@@ -1803,9 +1856,9 @@ impl Component for Explorer {
                     style = style.fg(color);
                 }
                 spans.push(Span::styled(format!("{} ", icon.glyph()), style));
-                spans.push(Span::styled(entry.name.clone(), text_style));
+                spans.extend(name_spans(text_style));
             } else {
-                spans.push(Span::styled(entry.name.clone(), text_style));
+                spans.extend(name_spans(text_style));
             }
 
             let mut x = rows_area.x;
@@ -1851,6 +1904,37 @@ fn float_pointer(drag: FloatDrag) -> PointerShape {
     }
 }
 
+/// Splits `name` into spans, styling the characters at `indices` (sorted
+/// character positions) with `matched` on top of `base`.
+fn highlighted_name(
+    name: &str,
+    indices: &[u32],
+    base: Style,
+    matched: Style,
+) -> Vec<Span<'static>> {
+    let hit_style = base.patch(matched);
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut run = String::new();
+    let mut run_hit = false;
+    let mut next = indices.iter().copied().peekable();
+    for (i, ch) in name.chars().enumerate() {
+        let hit = next.peek() == Some(&(i as u32));
+        if hit {
+            next.next();
+        }
+        if hit != run_hit && !run.is_empty() {
+            let style = if run_hit { hit_style } else { base };
+            spans.push(Span::styled(std::mem::take(&mut run), style));
+        }
+        run_hit = hit;
+        run.push(ch);
+    }
+    if !run.is_empty() {
+        spans.push(Span::styled(run, if run_hit { hit_style } else { base }));
+    }
+    spans
+}
+
 /// Trims a styled line to at most `width` display columns.
 fn truncate_spans(spans: Vec<Span>, width: usize) -> Vec<Span> {
     if width == 0 {
@@ -1881,6 +1965,26 @@ fn truncate_spans(spans: Vec<Span>, width: usize) -> Vec<Span> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn matched_characters_are_split_into_spans() {
+        let base = Style::default();
+        let hit = Style::default().fg(Color::Red);
+        let spans = highlighted_name("main.rs", &[0, 1, 6], base, hit);
+        let parts: Vec<_> = spans
+            .iter()
+            .map(|span| (span.content.to_string(), span.style == hit))
+            .collect();
+        assert_eq!(
+            parts,
+            vec![
+                ("ma".to_string(), true),
+                ("in.r".to_string(), false),
+                ("s".to_string(), true),
+            ]
+        );
+        assert_eq!(highlighted_name("a", &[], base, hit).len(), 1);
+    }
 
     #[test]
     fn relative_paths_are_validated() {
