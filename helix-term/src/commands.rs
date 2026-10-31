@@ -464,6 +464,7 @@ impl MappableCommand {
         explorer_refresh, "Refresh the explorer panel from disk",
         explorer_reveal, "Reveal the current file in the explorer panel",
         code_action, "Perform code action",
+        code_lens, "Run a code lens (run, test, ...) of the current line",
         code_action_picker, "Perform code action in a picker",
         buffer_picker, "Open buffer picker",
         jumplist_picker, "Open jumplist picker",

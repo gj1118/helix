@@ -1166,6 +1166,9 @@ pub struct LspConfig {
     /// Maximum displayed length of inlay hints (excluding the added trailing `…`).
     /// If it's `None`, there's no limit
     pub inlay_hints_length_limit: Option<NonZeroU8>,
+    /// Display code lenses (run/test/reference-count labels) at the end of lines.
+    /// Off by default: it makes an extra request to the language server per document.
+    pub display_code_lenses: bool,
     /// Display document color swatches
     pub display_color_swatches: bool,
     /// Color swatches string. Defaults to `"■"`.
@@ -1193,6 +1196,7 @@ impl Default for LspConfig {
             inlay_hints_length_limit: None,
             snippets: true,
             goto_reference_include_declaration: true,
+            display_code_lenses: false,
             display_color_swatches: true,
             color_swatches_string: "■".to_owned(),
             workspace_diagnostics: true,

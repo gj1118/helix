@@ -520,6 +520,9 @@ impl EditorView {
         }
 
         Self::render_inline_blame(&config.inline_blame, doc, view, &mut decorations, theme);
+        if config.lsp.enable && config.lsp.display_code_lenses {
+            Self::render_code_lenses(doc, view, &mut decorations, theme);
+        }
 
         if config.welcome_screen && doc.version() == 0 && doc.is_welcome {
             Self::render_welcome(
@@ -614,6 +617,47 @@ impl EditorView {
             statusline::RenderContext::new(editor, doc, view, is_focused, &self.spinners);
 
         statusline::render(&mut context, statusline_area, surface);
+    }
+
+    /// Labels of the code lenses on the visible lines, after the end of their line.
+    fn render_code_lenses(
+        doc: &Document,
+        view: &View,
+        decorations: &mut DecorationManager,
+        theme: &Theme,
+    ) {
+        if doc.code_lenses.is_empty() {
+            return;
+        }
+        let text = doc.text();
+        let visible = view.line_range(doc);
+        let mut titles: std::collections::HashMap<usize, Vec<&str>> =
+            std::collections::HashMap::new();
+        for lens in &doc.code_lenses {
+            let line = text.char_to_line(lens.char_idx.min(text.len_chars()));
+            if !visible.contains(&line) {
+                continue;
+            }
+            // lenses without a command are waiting for `codeLens/resolve`
+            if let Some(command) = &lens.lens.command {
+                titles.entry(line).or_default().push(&command.title);
+            }
+        }
+        let labels = titles
+            .into_iter()
+            .filter_map(|(line, titles)| {
+                text_decorations::code_lenses::label(titles).map(|label| (line, label))
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        if labels.is_empty() {
+            return;
+        }
+        let style = theme
+            .try_get("ui.virtual.code-lens")
+            .unwrap_or_else(|| theme.get("ui.virtual.inlay-hint"));
+        decorations.add_decoration(text_decorations::code_lenses::CodeLensDecoration::new(
+            labels, style,
+        ));
     }
 
     fn render_inline_blame(

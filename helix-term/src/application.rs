@@ -490,6 +490,8 @@ impl Application {
 
         helix_event::start_frame();
         cx.editor.needs_redraw = false;
+        // Scrolling brings lenses on screen that the server hasn't given a title yet.
+        handlers::code_lenses::resolve_visible_code_lenses(cx.editor);
 
         let area = self
             .terminal
@@ -1579,6 +1581,14 @@ impl Application {
                             server_id,
                         );
 
+                        Ok(serde_json::Value::Null)
+                    }
+                    Ok(MethodCall::CodeLensRefresh) => {
+                        let server_id = language_server!().id();
+                        handlers::code_lenses::refresh_for_language_server(
+                            &mut self.editor,
+                            server_id,
+                        );
                         Ok(serde_json::Value::Null)
                     }
                     Ok(MethodCall::ShowMessageRequest(params)) => {

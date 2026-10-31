@@ -260,6 +260,7 @@ The list of supported features is:
 - `completion`
 - `code-action`
 - `document-links`
+- `code-lens`
 - `workspace-command`
 - `document-symbols`
 - `workspace-symbols`
