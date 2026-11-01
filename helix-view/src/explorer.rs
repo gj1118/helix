@@ -64,8 +64,8 @@ pub struct ExplorerConfig {
     /// Mark changed files (and the folders that contain them) with their git status.
     /// Defaults to `true`.
     pub git_status: bool,
-    /// Draw vertical guide lines for the nesting of folders. Off by default: the folder icons
-    /// and a two column indent show the structure without the lines. Defaults to `false`.
+    /// Draw the lines (`├─ └─ │`) that show the nesting of folders. Without them the tree is
+    /// indented by two columns per level. Defaults to `true`.
     pub indent_guides: bool,
 }
 
@@ -83,7 +83,7 @@ impl Default for ExplorerConfig {
             show_hidden: false,
             directories_first: true,
             git_status: true,
-            indent_guides: false,
+            indent_guides: true,
         }
     }
 }

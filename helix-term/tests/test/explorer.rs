@@ -139,10 +139,31 @@ async fn git_status_can_be_turned_off() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn the_tree_is_compact_and_has_no_rule_under_the_header() -> anyhow::Result<()> {
+async fn the_tree_has_lines_and_room_under_the_header() -> anyhow::Result<()> {
     let rows = explorer_rows("").await?;
     let text = rows.join("\n");
 
+    // three columns per level, with the lines of the tree
+    assert!(row(&rows, "sub").contains("├─ sub"), "{text}");
+    assert!(row(&rows, "b.txt").contains("│  └─ b.txt"), "{text}");
+    assert!(row(&rows, "new.txt").contains("└─ new.txt"), "{text}");
+    let sub = column(row(&rows, "sub"), "sub");
+    let nested = column(row(&rows, "b.txt"), "b.txt");
+    assert_eq!(nested - sub, 3, "{text}");
+
+    // the folder on the first row, then a blank row (not a rule) before the tree
+    assert!(
+        rows[0].contains("/tmp") || rows[0].contains(".tmp"),
+        "{text}"
+    );
+    assert!(rows[1].trim().is_empty(), "{text}");
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn indent_guides_can_be_turned_off() -> anyhow::Result<()> {
+    let rows = explorer_rows("indent-guides = false").await?;
+    let text = rows.join("\n");
     // two columns per level, without lines
     let sub = column(row(&rows, "sub"), "sub");
     let nested = column(row(&rows, "b.txt"), "b.txt");
@@ -153,27 +174,5 @@ async fn the_tree_is_compact_and_has_no_rule_under_the_header() -> anyhow::Resul
             "{glyph} in the panel:\n{text}"
         );
     }
-    // the folder is on the first row
-    let folder = _root_name(&text);
-    assert!(rows[0].contains(&folder), "{text}");
-    Ok(())
-}
-
-fn _root_name(text: &str) -> String {
-    // the temporary folder shows up in the header; any `.tmp...` name will do
-    text.lines()
-        .next()
-        .and_then(|line| line.split('/').next_back())
-        .unwrap_or_default()
-        .trim()
-        .to_string()
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn indent_guides_are_optional() -> anyhow::Result<()> {
-    let rows = explorer_rows("indent-guides = true").await?;
-    let text = rows.join("\n");
-    assert!(row(&rows, "b.txt").contains('└'), "{text}");
-    assert!(row(&rows, "sub").contains('├'), "{text}");
     Ok(())
 }

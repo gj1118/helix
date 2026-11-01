@@ -108,7 +108,7 @@ Default settings (`[editor.explorer]` in your `config.toml`):
 |`show-hidden` | Show dotfiles (hidden files) | `false` |
 |`directories-first` | Sort directories before files in directory listings | `true` |
 |`git-status` | Mark changed files, and the folders that contain them, with their git status (see [Git status](#git-status-in-the-tree)) | `true` |
-|`indent-guides` | Draw vertical guide lines for the nesting of folders. Off: the tree is indented by two columns per level and the folder icons show the structure | `false` |
+|`indent-guides` | Draw the lines (`├─ └─ │`) that show the nesting of folders. Off: the tree is indented by two columns per level, without lines | `true` |
 
 Example:
 
@@ -204,9 +204,11 @@ it off with `git-status = false`.
 
 ### The first row and the lines
 
-The first row of the panel shows the folder the tree starts in (shortened from the
-start when it does not fit) until you start a filter. There is no rule under it and
-no connector lines in the tree by default; names that do not fit end in `…`.
+The first row of the panel shows the folder the tree starts in (shortened from the start
+when it does not fit) until you start a filter, with a blank row under it before the tree.
+The nesting of folders is drawn with the tree lines `├─`, `└─` and `│`, three columns per
+level; `indent-guides = false` turns the lines off and indents by two columns instead.
+Names that do not fit end in `…`.
 
 ### Filtering
 

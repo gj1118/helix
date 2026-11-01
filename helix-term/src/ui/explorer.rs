@@ -1336,8 +1336,9 @@ impl Explorer {
     // Rendering
     // --------------------------------------------------------------------
 
-    /// What comes before an entry: two columns per level of nesting. With `guides` the columns
-    /// are the lines of the folders that continue (`│ `) and the branch of the entry (`├ `/`└ `).
+    /// What comes before an entry. With `guides`, three columns per level: the lines of the
+    /// folders that continue (`│  `) and the branch of the entry (`├─ `/`└─ `). Without,
+    /// two blank columns per level.
     fn prefix(&self, entry: &Entry, guides: bool) -> String {
         if entry.depth == 0 {
             return String::new();
@@ -1356,15 +1357,15 @@ impl Explorer {
             ancestors.push(parent);
             cur = parent.parent();
         }
-        let mut prefix = String::with_capacity((entry.depth as usize + 1) * 4);
+        let mut prefix = String::with_capacity((entry.depth as usize + 1) * 3 * 3);
         for ancestor in ancestors.iter().rev() {
             if self.tree.is_last_child(ancestor) {
-                prefix.push_str("  "); // ancestor branch ended here
+                prefix.push_str("   "); // ancestor branch ended here
             } else {
-                prefix.push_str("│ "); // vertical guide continues
+                prefix.push_str("│  "); // vertical guide continues
             }
         }
-        prefix.push_str(if entry.is_last { "└ " } else { "├ " });
+        prefix.push_str(if entry.is_last { "└─ " } else { "├─ " });
         prefix
     }
 
@@ -1678,9 +1679,15 @@ impl Component for Explorer {
             return;
         }
 
-        // The top row shows the folder, or the filter while there is one. No rule under it:
-        // the panel already has its separator, and every line costs a row of the tree.
-        let header: u16 = if rect.height >= 3 { 1 } else { 0 };
+        // The top row shows the folder, or the filter while there is one, with a blank row under
+        // it to set it apart from the tree (no rule: the panel has its separator already).
+        let header: u16 = if rect.height >= 6 {
+            2
+        } else if rect.height >= 3 {
+            1
+        } else {
+            0
+        };
         let rows_area = Rect::new(rect.x, rect.y + header, rect.width, rect.height - header);
         // Remember where things live so that mouse events can be hit-tested
         // against the panel without re-deriving the layout.
