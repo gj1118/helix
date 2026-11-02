@@ -2023,12 +2023,16 @@ fn explorer_border_style(
 }
 
 /// Style of the path to the cursor: the root row, the ancestors of the cursor and the
-/// guide lines that lead to it. `ui.explorer.path`; without it, the selection highlight.
+/// guide lines that lead to it. `ui.explorer.path`; without it, the primary cursor line,
+/// so the selected row (the selection highlight) is the only strongly highlighted row.
 fn explorer_path_style(
     theme: &helix_view::Theme,
     selection: helix_view::graphics::Style,
 ) -> helix_view::graphics::Style {
-    theme.try_get("ui.explorer.path").unwrap_or(selection)
+    theme
+        .try_get("ui.explorer.path")
+        .or_else(|| theme.try_get("ui.cursorline.primary"))
+        .unwrap_or(selection)
 }
 
 /// The rows on the path from the top of the tree down to the cursor.

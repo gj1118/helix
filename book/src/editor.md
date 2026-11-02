@@ -463,7 +463,7 @@ keymap (see [Fork-specific keys](./keymap.md#fork-specific-keys)):
 
 ### Theming the explorer
 
-Three theme scopes style the explorer:
+Four theme scopes style the explorer:
 
 - `ui.explorer.border` styles the separator of a pinned panel and the frame of the floating window.
   Without it, the separator uses `ui.virtual` and the frame uses `ui.popup.border`.
@@ -472,7 +472,8 @@ Three theme scopes style the explorer:
   guide style over the selection highlight.
 - `ui.explorer.path` styles the path from the root of the tree to the selected row: the root row,
   every ancestor row, and the selected row, with their own guide lines. Sibling rows are not
-  highlighted. Without it, the selection highlight (`ui.selection`) is used.
+  highlighted. The selected row itself always uses `ui.selection`, so it stays the most visible row.
+  Without `ui.explorer.path`, `ui.cursorline.primary` is used, then `ui.selection`.
 
 ```toml
 "ui.explorer.border" = { fg = "#7aa2f7" }

@@ -243,7 +243,8 @@ buffer also moves focus there. Both keys are ordinary keymap entries, so they ca
   guide style over the selection highlight.
 - `ui.explorer.path`: the path from the root of the tree to the selected row: the root row, every
   ancestor row, and the selected row, with their own guide lines. Sibling rows are not highlighted.
-  Falls back to the selection highlight (`ui.selection`).
+  The selected row itself always uses `ui.selection`, so it stays the most visible row. Falls back
+  to `ui.cursorline.primary`, then to `ui.selection`.
 
 ```toml
 "ui.explorer.border" = { fg = "#7aa2f7" }
