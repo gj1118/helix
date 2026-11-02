@@ -509,8 +509,11 @@ async fn sources_generated_by_the_adapter_open_read_only_and_take_breakpoints() 
                 Some(&|app| {
                     let rows = app.rendered_rows().join("\n");
                     assert!(rows.contains("generated line 1"), "{rows}");
-                    assert!(rows.contains("generated.txt"), "{rows}");
                     let (_, doc) = helix_view::current_ref!(app.editor);
+                    // The document's own name, not the status line: under a long temp
+                    // directory (macOS) the status line truncates the path before it.
+                    let name = doc.path().and_then(|path| path.file_name());
+                    assert_eq!(name, Some(std::ffi::OsStr::new("generated.txt")), "{rows}");
                     assert!(doc.readonly);
                     assert!(!doc.is_modified());
                     assert_eq!(cursor_line(app), 1);
