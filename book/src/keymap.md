@@ -423,6 +423,8 @@ keymap (see [Remapping](./remapping.md)).
 | `Space w x` | normal | `explorer_focus` | Move focus to the explorer, opening it if hidden |
 | `C-j` | normal | `move_lines_down` | Move the selected lines down |
 | `C-k` | normal | `move_lines_up` | Move the selected lines up |
+| `Space l` | normal | `local_search_grep` | Search the current buffer for text (grep-style) |
+| `Space L` | normal | `local_search_fuzzy` | Fuzzy search the current buffer |
 | `Space B` | normal | `blame_line` | Show the git blame of the current line in the statusline |
 | `Space K` | normal | `goto_hover` | Show hover documentation in a scratch buffer |
 | `Alt w h/j/k/l` | normal | `shrink_buffer_width`, … | Resize the window (see [Window resizing](./editor.md#window-resizing-and-focus-mode)) |

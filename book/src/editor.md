@@ -535,6 +535,17 @@ max-panel-width-percent = 0.8   # used when max-panel-width is 0 (0.0-1.0)
 max-panel-height-percent = 0.8  # used when max-panel-height is 0 (0.0-1.0)
 ```
 
+### Welcome screen
+
+When Helix starts without a file to open, the editor shows a welcome screen in the empty buffer.
+It disappears as soon as you type or open a file. Turn it off with the `[editor]` key
+`welcome-screen`:
+
+```toml
+[editor]
+welcome-screen = false
+```
+
 ### Ruler character
 
 Rulers (`rulers = [80, 100]`) are drawn as a background color by default. Set `ruler-char` to a

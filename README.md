@@ -396,7 +396,7 @@ Show line numbers with the same color based on the current mode (insert/normal/s
 # Structured format (recommended):
 gutters = { 
     layout = ["line-numbers", "diagnostics"], 
-    line_numbers = { same-color = true } 
+    "line-numbers" = { same-color = true } 
 }
 
 # Or array format (existing configs):

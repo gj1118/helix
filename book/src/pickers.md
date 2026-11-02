@@ -13,3 +13,9 @@ You can insert the contents of a [register](./registers.md) using `Ctrl-r` follo
 ### File explorer
 
 `Space-e` opens an interactive file explorer for browsing and opening files, rooted at the workspace; `Space-.` opens one rooted at the current buffer's directory. Unlike the file picker, the explorer does not ignore most files by default; its ignore behaviour is configured separately in the [`[editor.file-explorer]`](./editor.md#editorfile-explorer-section) section.
+
+### Preview on narrow terminals
+
+The preview sits beside the list when there is room for both. When the terminal is narrower than
+about 144 columns, the preview is placed below the list instead, so both stay readable. There is
+no option for this: the layout is chosen from the width of the terminal.
