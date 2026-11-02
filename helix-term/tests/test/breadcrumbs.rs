@@ -77,6 +77,9 @@ async fn breadcrumb_disabled_by_default() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// One step of [`test_key_sequences`]: keys, then an assertion.
+type Step<'a> = (Option<&'a str>, Option<&'a dyn Fn(&Application)>);
+
 /// The tree-sitter symbols are computed in the background after an edit: a function added
 /// while editing shows up in the trail once the computation is done.
 #[tokio::test(flavor = "multi_thread")]
@@ -109,8 +112,7 @@ async fn breadcrumb_tree_sitter_symbols_follow_edits() -> anyhow::Result<()> {
         );
     };
 
-    let mut steps: Vec<(Option<&str>, Option<&dyn Fn(&Application)>)> =
-        vec![(Some("jofn added() { let y = 2;<esc>"), None)];
+    let mut steps: Vec<Step> = vec![(Some("jofn added() { let y = 2;<esc>"), None)];
     // idle rounds while the symbols are computed after the debounce
     steps.extend(std::iter::repeat_n((Some("<esc>"), None), 20));
     steps.push((Some("<esc>"), Some(&has_added)));
