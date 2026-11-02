@@ -409,6 +409,29 @@ These mappings are in the style of [vim-unimpaired](https://github.com/tpope/vim
 | `]l`     | Go to the next quicklist entry in this file  | `quicklist_next_in_file` |
 | `[l`     | Go to the previous quicklist entry in this file | `quicklist_prev_in_file` |
 
+## Fork-specific keys
+
+These keys are added by this fork of Helix. Like any other key, they can be changed in the
+keymap (see [Remapping](./remapping.md)).
+
+| Key | Mode | Command | Action |
+| --- | --- | --- | --- |
+| `Space x` | normal | `explorer_toggle` | Show, hide or refocus the explorer panel |
+| `Space X` | normal | `explorer_float_toggle` | Toggle the explorer as a floating window |
+| `C-h` | normal | `explorer_focus` | Move keyboard focus to the explorer (opens it if hidden) |
+| `C-l` | normal | `explorer_blur` | Move keyboard focus from the explorer back to the buffer area |
+| `Space w x` | normal | `explorer_focus` | Move focus to the explorer, opening it if hidden |
+| `C-j` | normal | `move_lines_down` | Move the selected lines down |
+| `C-k` | normal | `move_lines_up` | Move the selected lines up |
+| `Space B` | normal | `blame_line` | Show the git blame of the current line in the statusline |
+| `Space K` | normal | `goto_hover` | Show hover documentation in a scratch buffer |
+| `Alt w h/j/k/l` | normal | `shrink_buffer_width`, … | Resize the window (see [Window resizing](./editor.md#window-resizing-and-focus-mode)) |
+| `Alt w f` | normal | `toggle_focus_window` | Toggle focus mode |
+| `Alt W` | normal | | Enter sticky resize mode |
+
+Inside the explorer panel, `x` cuts the entry under the cursor and `Esc` gives the keyboard back to
+the editor. See [the explorer keys](./editor.md#editorexplorer-section) for the full list.
+
 ## Insert mode
 
 Accessed by typing `i` in [normal mode](#normal-mode).

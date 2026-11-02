@@ -227,6 +227,24 @@ the selected row (the best matching file if you haven't moved); Tab leaves the b
 keeps the filter to browse the results with the tree keys; Esc (or clearing the box) restores the
 full tree and reveals the selected entry.
 
+### Moving focus between the tree and the buffers
+
+`C-h` moves keyboard focus from the buffer to the tree (opening the panel if it is
+hidden), and `C-l` moves it back to the buffer area while the tree stays open. Clicking in a
+buffer also moves focus there. Both keys are ordinary keymap entries, so they can be changed in
+`[keys.normal]`. `<space>x` only toggles the panel.
+
+### Theming the explorer borders
+
+The tree guides (`├─ └─ │`), the separator of a pinned panel and the floating window's frame use
+the `ui.explorer.border` theme scope. Without it they keep their previous look (`ui.virtual` for
+lines, `ui.popup.border` for the frame). For the floating frame, `[editor.gradient-borders]` has
+the highest priority: when it is enabled the gradient is drawn and `ui.explorer.border` is not used.
+
+```toml
+"ui.explorer.border" = { fg = "#7aa2f7" }
+```
+
 ### Floating explorer
 
 The floating window has its own toggle, independent of the pinned panel:
@@ -378,7 +396,7 @@ Show line numbers with the same color based on the current mode (insert/normal/s
 # Structured format (recommended):
 gutters = { 
     layout = ["line-numbers", "diagnostics"], 
-    line_numbers = { same_color = true } 
+    line_numbers = { same-color = true } 
 }
 
 # Or array format (existing configs):
@@ -401,13 +419,13 @@ When using the structured format, you can also customize mode-specific line numb
 
 ### Ruler Character
 
-Choose the character used to render rulers in the foreground (defaults to `┊`).
-Set it to an empty string to fall back to background-style rulers.
+Choose the character used to render rulers in the foreground. The default is an empty string,
+which draws background-style rulers; set a character such as `┊` to draw rulers as glyphs.
 
 ```toml
 [editor]
 rulers = [80, 100, 120]
-ruler-char = "┊"   # examples: "┊", "│", ".", "|"; set to "" for background style
+ruler-char = "┊"   # examples: "┊", "│", ".", "|"; "" (the default) draws background-style rulers
 ```
 
 ## Hover Documentation Commands

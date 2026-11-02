@@ -236,10 +236,12 @@ The following statusline elements can be configured:
 | `display-messages`    | Display LSP `window/showMessage` messages below statusline[^1] | `true` |
 | `display-progress-messages` | Display LSP progress messages below statusline[^1]    | `false` |
 | `auto-signature-help` | Enable automatic popup of signature help (parameter hints)  | `true`  |
+| `signature-help-position` | Place the signature help popup `"above"` or `"below"` the cursor | `"above"` |
 | `auto-document-highlight` | Automatically highlight symbol references at the cursor | `false` |
 | `display-inlay-hints` | Display inlay hints[^2]                                     | `false` |
 | `inlay-hints-length-limit` | Maximum displayed length (non-zero number) of inlay hints | Unset by default  |
 | `display-color-swatches` | Show color swatches next to colors | `true` |
+| `color-swatches-string` | Symbol drawn for each color swatch. Any string, e.g. `"●"`, `"◆"`, `"⬢"` | `"■"` |
 | `display-code-lenses` | Show [code lenses](./lsp.md#code-lenses) (run, debug, test, reference counts, ...) from the language server at the end of the lines they belong to. When off, no code lens request is sent. | `false` |
 | `display-signature-help-docs` | Display docs under signature help popup             | `true`  |
 | `snippets`      | Enables snippet completions. Requires a server restart (`:lsp-restart`) to take effect after `:config-reload`/`:set`. | `true`  |
@@ -286,6 +288,7 @@ All git related options are only enabled in a git repository.
 |`git-global` | Enables reading global `.gitignore`, whose path is specified in git's config: `core.excludesfile` option | `true`
 |`git-exclude` | Enables reading `.git/info/exclude` files | `true`
 |`max-depth` | Set with an integer value for maximum depth to recurse | Unset by default
+|`hide-preview` | Hide the preview panel in the file picker, to save space or improve performance | `false` |
 
 Ignore files can be placed locally as `.ignore` or put in your home directory as `~/.ignore`. They support the usual ignore and negative ignore (unignore) rules used in `.gitignore` files.
 
@@ -445,6 +448,37 @@ the selected row (the best matching file if you haven't moved); Tab leaves the b
 keeps the filter to browse the results with the tree keys; Esc (or clearing the box) restores the
 full tree and reveals the selected entry.
 
+### Moving focus between the tree and the buffers
+
+Focus moves in both directions with keys that are bound by default and can be changed in your
+keymap (see [Fork-specific keys](./keymap.md#fork-specific-keys)):
+
+- `C-h` (`explorer_focus`) moves keyboard focus from the buffer to the tree. If the panel is
+  hidden, it opens.
+- `C-l` (`explorer_blur`) moves keyboard focus from the tree back to the buffer area. The panel
+  stays open.
+- Clicking in a buffer (or its gutter) moves focus to that buffer as well.
+
+`<space>x` only toggles the panel: it shows it and takes focus, hides it when the tree is focused,
+and refocuses the tree when the panel is open but the editor has focus.
+
+### Theming the explorer borders
+
+The tree guides (`├─ └─ │`), the separator of a pinned panel and the frame of the floating window
+are styled by the `ui.explorer.border` theme scope. It only needs to be set in your theme:
+
+```toml
+"ui.explorer.border" = { fg = "#7aa2f7" }
+```
+
+Without it, the guides and separator use `ui.virtual` and the floating frame uses `ui.popup.border`,
+as before. The floating frame has one exception: when `[editor.gradient-borders]` is enabled, the
+gradient is drawn instead and both theme scopes are ignored. The priority is:
+
+1. `[editor.gradient-borders]`, when enabled.
+2. `ui.explorer.border`, when the theme sets it.
+3. `ui.popup.border` (the previous style).
+
 ### Floating explorer
 
 The floating window has its own toggle, independent of the pinned panel:
@@ -473,6 +507,157 @@ With mouse support enabled (`[editor]` `mouse = true`, the default), left click
 selects and acts on the row under the pointer — a folder expands/collapses, a
 file opens in the buffer — and the scroll wheel moves the selection. Clicks
 outside the panel are unaffected.
+
+### Window resizing and focus mode
+
+Panels and splits can be resized from the keyboard. Holding `Alt` with the `w` key starts a
+one-off command; `Alt+W` (Alt+Shift+w) enters a sticky mode in which single keys repeat:
+
+| Key                          | Action                               |
+| ---                          | ---                                  |
+| `Alt+w h` / `Alt+w left`     | Shrink the window width              |
+| `Alt+w l` / `Alt+w right`    | Grow the window width                |
+| `Alt+w j` / `Alt+w down`     | Shrink the window height             |
+| `Alt+w k` / `Alt+w up`       | Grow the window height               |
+| `Alt+w f`                    | Toggle focus mode (expands the current window) |
+
+In sticky mode (`Alt+W`), use `h`/`l`/`j`/`k`, the arrow keys, or `f`. Sticky mode stays on until
+you press a key that is not a window resize command.
+
+How far a window can grow is limited by the `[editor]` keys below. `0` for an absolute limit means
+the limit is calculated from the terminal size, using the percentage keys instead:
+
+```toml
+[editor]
+max-panel-width = 50            # absolute maximum, in terminal columns (0 = use the percentage)
+max-panel-height = 50           # absolute maximum, in terminal rows (0 = use the percentage)
+max-panel-width-percent = 0.8   # used when max-panel-width is 0 (0.0-1.0)
+max-panel-height-percent = 0.8  # used when max-panel-height is 0 (0.0-1.0)
+```
+
+### Ruler character
+
+Rulers (`rulers = [80, 100]`) are drawn as a background color by default. Set `ruler-char` to a
+single character to draw them as a glyph instead, such as `┊`, `│`, `.` or `|`. An empty string (the
+default) keeps the background style.
+
+```toml
+[editor]
+rulers = [80, 100, 120]
+ruler-char = "┊"
+```
+
+### `[editor.cmdline]` Section
+
+The command line can be shown as a centered popup, in the style of noice.nvim, instead of on the
+bottom line. See [Command line](./command-line.md#popup-style) for how it is used.
+
+| Key | Description | Default |
+|--|--|--|
+| `style` | `"bottom"` (the bottom line) or `"popup"` | `"bottom"` |
+| `show-icons` | Show an icon for the type of command | `true` |
+| `min-popup-width` | Minimum width of the popup, in columns | `40` |
+| `max-popup-width` | Maximum width of the popup, in columns | `80` |
+| `use-full-height` | With `style = "popup"`, use the full terminal height and drop the reserved bottom line | `false` |
+| `icons.search` | Icon for search prompts (`/`, `?`) | `"🔍"` |
+| `icons.command` | Icon for command mode (`:`) | `"🛠️"` |
+| `icons.shell` | Icon for shell prompts (`!`) | `"⚡"` |
+| `icons.general` | Icon for other prompts | `"💬"` |
+
+```toml
+[editor.cmdline]
+style = "popup"
+use-full-height = true
+
+[editor.cmdline.icons]
+search = "/"
+command = ":"
+shell = "$"
+general = ">"
+```
+
+### `[editor.notifications]` Section
+
+Messages that used to go to the statusline can be shown as popups instead. The history is
+available with `:notifications-history`, `:notifications-clear` clears it and
+`:notifications-dismiss` closes the active popups.
+
+| Key | Description | Default |
+|--|--|--|
+| `enable` | Turn the notification system on | `true` |
+| `style` | `"popup"` (noice-style popups) or `"statusline"` | `"popup"` |
+| `position` | `"top-right"`, `"top-left"`, `"bottom-right"` or `"bottom-left"` | `"top-right"` |
+| `max-width` | Maximum width of a popup, in columns | `60` |
+| `max-height` | Maximum height of a popup, in lines | `10` |
+| `default-timeout` | Time before a popup fades out, in milliseconds. `0` keeps it until dismissed | `5000` |
+| `show-icons` | Show an icon for the severity | `true` |
+| `show-emojis` | Show an emoji for the severity | `true` |
+| `padding` | Blank space inside the popup, in cells | `1` |
+| `max-history` | Number of notifications kept for `:notifications-history` | `100` |
+| `enable-history` | Keep the history at all | `true` |
+| `border.enable` | Draw a border around each popup | `true` |
+| `border.width` | Border width | `1` |
+| `border.radius` | Corner radius (`0` for square corners) | `2` |
+| `shadow.enable` | Draw a shadow behind each popup | `true` |
+| `shadow.offset-x`, `shadow.offset-y` | Offset of the shadow, in cells | `1`, `1` |
+| `icons.info`, `icons.warning`, `icons.error`, `icons.success` | Icon text for each severity | `ℹ`, `⚠`, `✗`, `✓` |
+| `emojis.info`, `emojis.warning`, `emojis.error`, `emojis.success` | Emoji text for each severity | `💡`, `⚠️`, `❌`, `✅` |
+
+The colors come from the theme: `ui.popup` for the background and the `error`, `warning`,
+`info` and `hint` scopes for the text. See [Notification and cmdline popup
+styling](./themes.md#notification-and-cmdline-popup-styling).
+
+### `[editor.inline-blame]` Section
+
+Shows the latest commit that changed the line under the cursor, as virtual text at the end of the
+line. The same information is available on demand with `<space>B`, which shows it in the status
+line.
+
+| Key | Description | Default |
+|--|--|--|
+| `show` | `"cursor-line"` (only the cursor line), `"all-lines"` or `"never"` | `"never"` |
+| `format` | Text to show. Placeholders: `{author}`, `{commit}`, `{time-ago}`, `{title}` | `"{author}, {time-ago} • {title} • {commit}"` |
+| `auto-fetch` | Fetch the blame in the background, so it is ready before you ask for it | `false` |
+
+```toml
+[editor.inline-blame]
+show = "cursor-line"
+format = "{author} • {time-ago}"
+auto-fetch = false
+```
+
+The color of the indicator is the `ui.virtual.inline-blame` theme key.
+
+### `[editor.gradient-borders]` Section
+
+Draws the borders of pickers, command line popups, completion menus, previews and the floating
+explorer as a gradient, instead of a solid line. It is off by default.
+
+| Key | Description | Default |
+|--|--|--|
+| `enable` | Turn gradient borders on | `false` |
+| `thickness` | Line weight, from `1` (thin, rounded corners possible) to `5` (full blocks) | `1` |
+| `direction` | `"horizontal"`, `"vertical"`, `"diagonal"` or `"radial"` | `"horizontal"` |
+| `start-color` | Hex color at the start of the gradient | `"#8A2BE2"` |
+| `end-color` | Hex color at the end of the gradient | `"#00BFFF"` |
+| `middle-color` | Optional third color, for a three-color gradient | unset |
+| `animation-speed` | `0` (off) to `10`; the gradient moves at this speed | `0` |
+
+```toml
+[editor.gradient-borders]
+enable = true
+thickness = 2
+direction = "diagonal"
+start-color = "#FF4500"
+middle-color = "#FFD700"
+end-color = "#FF69B4"
+animation-speed = 1
+```
+
+Rounded corners follow `rounded-corners` and `border-style`: `"rounded"` rounds the corners of a
+thickness `1` border; thicker borders and the block styles keep square corners. When gradient
+borders are on, they replace the solid border of every component, including the floating explorer,
+which also overrides `ui.explorer.border` (see [Theming the explorer borders](#theming-the-explorer-borders)).
 
 ### `[editor.buffer-picker]` Section
 
@@ -650,6 +835,15 @@ Example:
 ```toml
 [editor.gutters.line-numbers]
 min-width = 1
+```
+
+| Key         | Description                                                                                                  | Default |
+| ---         | ---                                                                                                          | ---     |
+| `same-color` | Draw line numbers in the color of the current mode (insert, normal, select), ignoring whether the line is selected. Style the colors with `ui.linenr.insert`, `ui.linenr.normal` and `ui.linenr.select` in your theme | `false` |
+
+```toml
+[editor.gutters.line-numbers]
+same-color = true
 ```
 
 #### `[editor.gutters.diagnostics]` Section

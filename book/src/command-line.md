@@ -89,3 +89,18 @@ The `:set-option` and `:toggle-option` commands use regular parsing for the firs
 When providing multiple values to `:toggle-option` there should be no duplicates. `:toggle-option indent-heuristic hybrid simple tree-sitter simple` for example would only toggle between "hybrid" and "tree-sitter" values.
 
 `:lsp-workspace-command` works similarly to `:toggle-option`. The first argument (if present) is parsed according to normal rules. The rest of the line is parsed as JSON values. Unlike `:toggle-option`, string arguments for a command must be quoted. For example `:lsp-workspace-command lsp.Command "foo" "bar"`.
+
+## Popup style
+
+By default the command line sits on the bottom line. With `[editor.cmdline] style = "popup"` it
+is drawn as a centered popup instead, in the style of noice.nvim. The popup shows an icon for the
+kind of prompt (search, command, shell or other) and grows between `min-popup-width` and
+`max-popup-width` columns. `use-full-height = true` lets the popup use the full terminal height
+instead of leaving the bottom line free. All of these options are listed in
+[`[editor.cmdline]`](./editor.md#editorcmdline-section).
+
+```toml
+[editor.cmdline]
+style = "popup"
+show-icons = true
+```
