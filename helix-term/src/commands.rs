@@ -4129,13 +4129,10 @@ pub fn explorer_toggle(cx: &mut Context) {
         // one in its place.
         panel.floating = false;
         panel.focused = true;
-    } else if panel.focused {
-        // Focused: hide (the plain "toggle" case).
-        panel.hide();
     } else {
-        // Visible but the editor has the keyboard (e.g. after opening a
-        // file from the tree or Esc): refocus the tree.
-        panel.focused = true;
+        // Open: hide it, whether the tree or the editor has the keyboard.
+        // Use `explorer_focus` (`C-h`) to move back to the tree instead.
+        panel.hide();
     }
 }
 

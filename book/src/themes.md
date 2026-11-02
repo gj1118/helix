@@ -339,7 +339,9 @@ These scopes are used for theming the editor interface:
 | `ui.popup.explorer`               | File tree panel background (falls back to `ui.popup`)                                           |
 | `ui.popup.info`                   | Prompt for multiple key options                                                                |
 | `ui.popup.border`                 | Border color of pickers, previews, the explorer, popups (hover, signature help, completion documentation), notifications and the cmdline when `gradient-borders` is off. Falls back to the foreground of `ui.window`, then `ui.text`; only the foreground is used |
-| `ui.explorer.border`              | Tree guides (`├─ └─ │`), the separator of a pinned explorer and the frame of the floating explorer. Falls back to `ui.virtual` for lines and `ui.popup.border` for the frame. Ignored for the frame while `[editor.gradient-borders]` is enabled |
+| `ui.explorer.border`              | The separator of a pinned explorer and the frame of the floating explorer. Falls back to `ui.virtual` for the separator and `ui.popup.border` for the frame. Ignored for the frame while `[editor.gradient-borders]` is enabled |
+| `ui.explorer.tree`                | Tree guide lines (`├─ └─ │`) of the explorer on normal rows. Falls back to `ui.virtual` |
+| `ui.explorer.tree.selected`       | Tree guide lines of the explorer on the selected row. Falls back to the normal guide style over the selection highlight |
 | `ui.picker.header`                | Header row area in pickers with multiple columns                                               |
 | `ui.picker.header.column`         | Column names in pickers with multiple columns                                                  |
 | `ui.picker.header.column.active`  | The column name in pickers with multiple columns where the cursor is entering into.            |

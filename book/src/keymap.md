@@ -416,7 +416,7 @@ keymap (see [Remapping](./remapping.md)).
 
 | Key | Mode | Command | Action |
 | --- | --- | --- | --- |
-| `Space x` | normal | `explorer_toggle` | Show, hide or refocus the explorer panel |
+| `Space x` | normal | `explorer_toggle` | Show the explorer panel and focus it, or hide it when it is open |
 | `Space X` | normal | `explorer_float_toggle` | Toggle the explorer as a floating window |
 | `C-h` | normal | `explorer_focus` | Move keyboard focus to the explorer (opens it if hidden) |
 | `C-l` | normal | `explorer_blur` | Move keyboard focus from the explorer back to the buffer area |

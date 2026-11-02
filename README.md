@@ -76,11 +76,9 @@ This fork of Helix implements the following pull requests. Future pull requests 
 ## Explorer
 
 A keyboard-driven file tree sidebar. Toggle it with `<space>x` or
-`:explorer-toggle` — when the panel is hidden it opens and takes focus,
-when it is open but the editor has focus it re-focuses the tree, and
-while the tree is focused it hides the panel. `<space>wx` (the Window
-submode) and `:explorer-focus` move focus to the open panel without
-hiding it.
+`:explorer-toggle`: when the panel is hidden it opens and takes focus, and when it is
+open it hides, whether the tree or the editor has focus. `C-h` and `<space>wx` (the Window
+submode) move focus to the open panel without hiding it, and `C-l` moves it back to the buffer.
 While the panel is focused (in normal mode) a bare `x` cuts the file under the
 cursor, which is why the toggle itself is a two-key sequence. Moving back to a
 buffer is symmetrical: opening a file with `l`/Enter lands focus on that buffer
@@ -234,15 +232,20 @@ hidden), and `C-l` moves it back to the buffer area while the tree stays open. C
 buffer also moves focus there. Both keys are ordinary keymap entries, so they can be changed in
 `[keys.normal]`. `<space>x` only toggles the panel.
 
-### Theming the explorer borders
+### Theming the explorer
 
-The tree guides (`├─ └─ │`), the separator of a pinned panel and the floating window's frame use
-the `ui.explorer.border` theme scope. Without it they keep their previous look (`ui.virtual` for
-lines, `ui.popup.border` for the frame). For the floating frame, `[editor.gradient-borders]` has
-the highest priority: when it is enabled the gradient is drawn and `ui.explorer.border` is not used.
+- `ui.explorer.border`: the separator of a pinned panel and the frame of the floating window.
+  Without it, the separator uses `ui.virtual` and the frame `ui.popup.border`. For the frame,
+  `[editor.gradient-borders]` has the highest priority: when enabled, the gradient is drawn and
+  `ui.explorer.border` is not used.
+- `ui.explorer.tree`: the tree guide lines (`├─ └─ │`) on normal rows. Falls back to `ui.virtual`.
+- `ui.explorer.tree.selected`: the same guide lines on the selected row. Falls back to the normal
+  guide style over the selection highlight.
 
 ```toml
 "ui.explorer.border" = { fg = "#7aa2f7" }
+"ui.explorer.tree" = { fg = "#565f89" }
+"ui.explorer.tree.selected" = { fg = "#7aa2f7" }
 ```
 
 ### Floating explorer

@@ -1709,6 +1709,8 @@ impl Component for Explorer {
         let sel_style = theme.get("ui.selection");
         let virtual_style = theme.get("ui.virtual");
         let border_style = explorer_border_style(theme, virtual_style);
+        let tree_style = explorer_tree_style(theme, virtual_style);
+        let tree_selected_style = explorer_tree_selected_style(theme, tree_style, sel_style);
         let inactive_style = theme.get("ui.text.inactive");
         let match_style = theme.get("special");
         // The panel's own scope so the background can be themed without
@@ -1745,7 +1747,10 @@ impl Component for Explorer {
                     Widget::render(
                         Block::bordered()
                             .border_type(crate::ui::border_type(&config))
-                            .border_style(explorer_border_style(theme, crate::ui::border_style(theme))),
+                            .border_style(explorer_border_style(
+                                theme,
+                                crate::ui::border_style(theme),
+                            )),
                         frame,
                         surface,
                     );
@@ -1892,7 +1897,12 @@ impl Component for Explorer {
             };
 
             let mut spans: Vec<Span> = Vec::with_capacity(3);
-            spans.push(Span::styled(self.prefix(entry, guides), border_style));
+            let guide_style = if i == self.cursor {
+                tree_selected_style
+            } else {
+                tree_style
+            };
+            spans.push(Span::styled(self.prefix(entry, guides), guide_style));
             if entry.is_dir {
                 // Expanded and collapsed folders get their own glyphs.
                 let glyph = if !show_icons {
@@ -1970,15 +1980,35 @@ impl Component for Explorer {
     }
 }
 
-/// Style of the explorer's borders: the tree guides, the separator of a pinned
-/// panel and the frame of the floating window. Set `ui.explorer.border` in a
-/// theme to style them apart from other borders; without it, `fallback` (the
-/// style the border had before) is used.
+/// Style of the explorer's borders: the separator of a pinned panel and the
+/// frame of the floating window (not the tree guide lines, see
+/// `ui.explorer.tree`). Without `ui.explorer.border`, `fallback` is used.
 fn explorer_border_style(
     theme: &helix_view::Theme,
     fallback: helix_view::graphics::Style,
 ) -> helix_view::graphics::Style {
     theme.try_get("ui.explorer.border").unwrap_or(fallback)
+}
+
+/// Style of the tree guide lines (`├─ └─ │`) on normal rows. `ui.explorer.tree`;
+/// without it, `fallback` (`ui.virtual`).
+fn explorer_tree_style(
+    theme: &helix_view::Theme,
+    fallback: helix_view::graphics::Style,
+) -> helix_view::graphics::Style {
+    theme.try_get("ui.explorer.tree").unwrap_or(fallback)
+}
+
+/// Style of the tree guide lines on the selected row. `ui.explorer.tree.selected`;
+/// without it, the normal guide style over the selection highlight.
+fn explorer_tree_selected_style(
+    theme: &helix_view::Theme,
+    normal: helix_view::graphics::Style,
+    selection: helix_view::graphics::Style,
+) -> helix_view::graphics::Style {
+    theme
+        .try_get("ui.explorer.tree.selected")
+        .unwrap_or_else(|| normal.patch(selection))
 }
 
 /// The pointer shown over a part of the floating window's border.

@@ -359,11 +359,10 @@ The side and width can also be switched at runtime with
 `:explorer-left`, `:explorer-right`, `:explorer-float`, and
 `:explorer-width <columns>`.
 
-`<space>x` is a three-state toggle: it opens and focuses the panel when it
-is hidden, refocuses the tree while the panel is open but the editor has
-the keyboard (e.g. after opening a file from the tree), and hides the
-panel while it is focused. To move focus to an open panel without
-toggling, use `<space>wx` (the Window submode) or `:explorer-focus`.
+`<space>x` is a two-state toggle: it opens and focuses the panel when it is
+hidden, and hides it when it is open, whether the tree or the editor has the keyboard. To move
+focus to an open panel without hiding it, use `C-h`, `<space>wx` (the Window submode) or
+`:explorer-focus`.
 Opening a file with `l`/Enter lands focus on that buffer directly; `Esc`
 hands focus back to the editor while keeping the tree open, and `q` hides
 the panel entirely. When the panel floats, anything that hands focus back
@@ -460,21 +459,26 @@ keymap (see [Fork-specific keys](./keymap.md#fork-specific-keys)):
   stays open.
 - Clicking in a buffer (or its gutter) moves focus to that buffer as well.
 
-`<space>x` only toggles the panel: it shows it and takes focus, hides it when the tree is focused,
-and refocuses the tree when the panel is open but the editor has focus.
+`<space>x` only toggles the panel: it shows it and takes focus when hidden, and hides it when open.
 
-### Theming the explorer borders
+### Theming the explorer
 
-The tree guides (`├─ └─ │`), the separator of a pinned panel and the frame of the floating window
-are styled by the `ui.explorer.border` theme scope. It only needs to be set in your theme:
+Three theme scopes style the explorer:
+
+- `ui.explorer.border` styles the separator of a pinned panel and the frame of the floating window.
+  Without it, the separator uses `ui.virtual` and the frame uses `ui.popup.border`.
+- `ui.explorer.tree` styles the tree guide lines (`├─ └─ │`) on normal rows. Without it, `ui.virtual`.
+- `ui.explorer.tree.selected` styles the same guide lines on the selected row. Without it, the normal
+  guide style over the selection highlight.
 
 ```toml
 "ui.explorer.border" = { fg = "#7aa2f7" }
+"ui.explorer.tree" = { fg = "#565f89" }
+"ui.explorer.tree.selected" = { fg = "#7aa2f7" }
 ```
 
-Without it, the guides and separator use `ui.virtual` and the floating frame uses `ui.popup.border`,
-as before. The floating frame has one exception: when `[editor.gradient-borders]` is enabled, the
-gradient is drawn instead and both theme scopes are ignored. The priority is:
+The floating frame has one exception: when `[editor.gradient-borders]` is enabled, the gradient is
+drawn instead and `ui.explorer.border` is ignored. The priority for the floating frame is:
 
 1. `[editor.gradient-borders]`, when enabled.
 2. `ui.explorer.border`, when the theme sets it.
@@ -683,7 +687,7 @@ animation-speed = 1
 Rounded corners follow `rounded-corners` and `border-style`: `"rounded"` rounds the corners of a
 thickness `1` border; thicker borders and the block styles keep square corners. When gradient
 borders are on, they replace the solid border of every component, including the floating explorer,
-which also overrides `ui.explorer.border` (see [Theming the explorer borders](#theming-the-explorer-borders)).
+which also overrides `ui.explorer.border` (see [Theming the explorer](#theming-the-explorer)).
 
 ### `[editor.buffer-picker]` Section
 
