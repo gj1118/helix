@@ -470,11 +470,15 @@ Three theme scopes style the explorer:
 - `ui.explorer.tree` styles the tree guide lines (`├─ └─ │`) on normal rows. Without it, `ui.virtual`.
 - `ui.explorer.tree.selected` styles the same guide lines on the selected row. Without it, the normal
   guide style over the selection highlight.
+- `ui.explorer.path` styles the path from the root of the tree to the selected row: the root row,
+  every ancestor row, and the guide lines that lead to the selected row. Without it, the selection
+  highlight (`ui.selection`) is used.
 
 ```toml
 "ui.explorer.border" = { fg = "#7aa2f7" }
 "ui.explorer.tree" = { fg = "#565f89" }
 "ui.explorer.tree.selected" = { fg = "#7aa2f7" }
+"ui.explorer.path" = { bg = "#2a2f45" }
 ```
 
 The floating frame has one exception: when `[editor.gradient-borders]` is enabled, the gradient is

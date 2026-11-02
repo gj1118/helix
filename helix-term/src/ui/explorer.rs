@@ -1776,9 +1776,17 @@ impl Component for Explorer {
             }
         }
 
+        // The path highlight: the root row, the ancestors of the cursor and the guide lines
+        // that lead to it.
+        let path_style = explorer_path_style(theme, sel_style);
+
         // The folder the tree starts in, until there is a filter to show.
         if header > 0 && !self.filter_editing && self.filter.is_empty() {
             let label = root_label(&self.root, self.input_area.width as usize);
+            // The root is always on the path to the cursor.
+            for x in 0..self.input_area.width {
+                surface[(self.input_area.x + x, self.input_area.y)].set_style(path_style);
+            }
             surface.set_stringn(
                 self.input_area.x,
                 self.input_area.y,
@@ -1852,6 +1860,7 @@ impl Component for Explorer {
         let show_icons = cx.editor.config().explorer.icons;
         let guides = cx.editor.config().explorer.indent_guides;
         let show_git = cx.editor.config().explorer.git_status;
+        let path = PathInfo::new(self.tree.visible(), self.cursor);
         let mut matcher = new_matcher();
         let mut indices: Vec<u32> = Vec::new();
 
@@ -1872,6 +1881,10 @@ impl Component for Explorer {
             if i == self.cursor {
                 for x in 0..rows_area.width {
                     surface[(rows_area.x + x, y)].set_style(sel_style);
+                }
+            } else if path.is_path_row(i) {
+                for x in 0..rows_area.width {
+                    surface[(rows_area.x + x, y)].set_style(path_style);
                 }
             }
 
@@ -1897,12 +1910,30 @@ impl Component for Explorer {
             };
 
             let mut spans: Vec<Span> = Vec::with_capacity(3);
-            let guide_style = if i == self.cursor {
-                tree_selected_style
+            // The guide prefix is one 3-column block per ancestor level, then the branch of
+            // the entry itself. Blocks on the path to the cursor get the path style.
+            let prefix = self.prefix(entry, guides);
+            let depth = entry.depth as usize;
+            if guides {
+                for (block, chunk) in prefix.chars().collect::<Vec<char>>().chunks(3).enumerate() {
+                    let style = if block == depth {
+                        if i == self.cursor {
+                            tree_selected_style
+                        } else if path.is_path_row(i) {
+                            path_style
+                        } else {
+                            tree_style
+                        }
+                    } else if path.is_block_on_path(i, block) {
+                        path_style
+                    } else {
+                        tree_style
+                    };
+                    spans.push(Span::styled(chunk.iter().collect::<String>(), style));
+                }
             } else {
-                tree_style
-            };
-            spans.push(Span::styled(self.prefix(entry, guides), guide_style));
+                spans.push(Span::styled(prefix, tree_style));
+            }
             if entry.is_dir {
                 // Expanded and collapsed folders get their own glyphs.
                 let glyph = if !show_icons {
@@ -1988,6 +2019,73 @@ fn explorer_border_style(
     fallback: helix_view::graphics::Style,
 ) -> helix_view::graphics::Style {
     theme.try_get("ui.explorer.border").unwrap_or(fallback)
+}
+
+/// Style of the path to the cursor: the root row, the ancestors of the cursor and the
+/// guide lines that lead to it. `ui.explorer.path`; without it, the selection highlight.
+fn explorer_path_style(
+    theme: &helix_view::Theme,
+    selection: helix_view::graphics::Style,
+) -> helix_view::graphics::Style {
+    theme.try_get("ui.explorer.path").unwrap_or(selection)
+}
+
+/// The rows on the path from the top of the tree down to the cursor.
+struct PathInfo {
+    /// Index of the ancestor at each depth, the cursor's own row last.
+    ancestors: Vec<usize>,
+    /// For each ancestor depth, the first row after its subtree.
+    subtree_end: Vec<usize>,
+}
+
+impl PathInfo {
+    fn new(entries: &[Entry], cursor: usize) -> Self {
+        let Some(current) = entries.get(cursor) else {
+            return Self {
+                ancestors: Vec::new(),
+                subtree_end: Vec::new(),
+            };
+        };
+        let depth = current.depth as usize;
+        let mut ancestors = vec![cursor; depth + 1];
+        let mut level = depth;
+        for (index, entry) in entries[..cursor].iter().enumerate().rev() {
+            if level == 0 {
+                break;
+            }
+            let entry_depth = entry.depth as usize;
+            if entry_depth < level {
+                level = entry_depth;
+                ancestors[level] = index;
+            }
+        }
+        let subtree_end = (0..depth)
+            .map(|level| {
+                let mut end = ancestors[level] + 1;
+                while end < entries.len() && entries[end].depth as usize > level {
+                    end += 1;
+                }
+                end
+            })
+            .collect();
+        Self {
+            ancestors,
+            subtree_end,
+        }
+    }
+
+    /// Whether row `index` is the cursor's row or one of its ancestors.
+    fn is_path_row(&self, index: usize) -> bool {
+        self.ancestors.contains(&index)
+    }
+
+    /// Whether the guide block of row `index` at ancestor `level` is on the path: the row
+    /// lies in the subtree of the cursor's ancestor at that level.
+    fn is_block_on_path(&self, index: usize, level: usize) -> bool {
+        level < self.subtree_end.len()
+            && self.ancestors[level] <= index
+            && index < self.subtree_end[level]
+    }
 }
 
 /// Style of the tree guide lines (`├─ └─ │`) on normal rows. `ui.explorer.tree`;
