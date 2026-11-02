@@ -115,6 +115,34 @@ fn split_pointer(divider: helix_view::tree::SplitDivider) -> helix_view::editor:
     }
 }
 
+/// While the explorer tree has the keyboard, a movement command the keymap resolved to
+/// (`j`, `gg`, `ge`, `C-d`, with any count) moves the tree's cursor instead of the buffer's.
+/// Returns whether the command was handed to the tree.
+fn route_motion_to_explorer(
+    cxt: &mut commands::Context,
+    command: &commands::MappableCommand,
+) -> bool {
+    let panel = &cxt.editor.explorer_panel;
+    if !(panel.visible && panel.focused) || cxt.editor.mode != Mode::Normal {
+        return false;
+    }
+    let commands::MappableCommand::Static { name, .. } = command else {
+        return false;
+    };
+    let Some(motion) = super::explorer::Motion::from_command(name) else {
+        return false;
+    };
+    let count = cxt.count.map(NonZeroUsize::get);
+    cxt.callback.push(Box::new(move |compositor, _cx| {
+        if let Some(explorer) =
+            compositor.find_id::<super::explorer::Explorer>(super::explorer::EXPLORER_ID)
+        {
+            explorer.apply_motion(motion, count);
+        }
+    }));
+    true
+}
+
 impl EditorView {
     pub fn new(keymaps: Keymaps) -> Self {
         Self {
@@ -1816,6 +1844,11 @@ impl EditorView {
         // `<space>x` apart from bare keys.
         cxt.editor.keymap_pending = self.keymaps.pending().to_vec();
 
+        let routed_to_explorer = matches!(
+            &key_result,
+            KeymapResult::Matched(command) if route_motion_to_explorer(cxt, command)
+        );
+
         let mut execute_command = |command: &commands::MappableCommand| {
             command.execute(cxt);
             helix_event::dispatch(PostCommand { command, cx: cxt });
@@ -1843,7 +1876,9 @@ impl EditorView {
 
         match &key_result {
             KeymapResult::Matched(command) => {
-                execute_command(command);
+                if !routed_to_explorer {
+                    execute_command(command);
+                }
             }
             KeymapResult::Pending(node) => cxt.editor.autoinfo = Some(node.infobox()),
             KeymapResult::MatchedSequence(commands) => {

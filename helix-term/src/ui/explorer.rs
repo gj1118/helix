@@ -51,6 +51,55 @@ use crate::{
 
 pub const EXPLORER_ID: &str = "explorer";
 
+/// A movement of the editor's keymap that moves the tree's cursor while the tree has the
+/// keyboard. The editor resolves the keys (sequences such as `gg` and `ge`, counts, the
+/// user's own bindings) and hands the command to the tree instead of the buffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Motion {
+    Down,
+    Up,
+    /// `gg`: the first row, or row N with a count.
+    Top,
+    /// `ge`: the last row.
+    Bottom,
+    /// `G` with a count: row N.
+    Row,
+    PageDown,
+    PageUp,
+    HalfPageDown,
+    HalfPageUp,
+    /// `gt`, `gc`, `gb`: the top, middle and bottom of the visible rows.
+    WindowTop,
+    WindowCenter,
+    WindowBottom,
+}
+
+impl Motion {
+    /// The motion of a static command of the keymap, by its name.
+    pub fn from_command(name: &str) -> Option<Self> {
+        Some(match name {
+            "move_line_down"
+            | "move_visual_line_down"
+            | "extend_line_down"
+            | "extend_visual_line_down" => Motion::Down,
+            "move_line_up" | "move_visual_line_up" | "extend_line_up" | "extend_visual_line_up" => {
+                Motion::Up
+            }
+            "goto_file_start" => Motion::Top,
+            "goto_last_line" | "goto_file_end" => Motion::Bottom,
+            "goto_line" => Motion::Row,
+            "page_down" | "page_cursor_down" => Motion::PageDown,
+            "page_up" | "page_cursor_up" => Motion::PageUp,
+            "half_page_down" | "page_cursor_half_down" => Motion::HalfPageDown,
+            "half_page_up" | "page_cursor_half_up" => Motion::HalfPageUp,
+            "goto_window_top" => Motion::WindowTop,
+            "goto_window_center" => Motion::WindowCenter,
+            "goto_window_bottom" => Motion::WindowBottom,
+            _ => return None,
+        })
+    }
+}
+
 /// Minimum editor width the panel always leaves for views, even on narrow
 /// terminals.
 const MIN_EDITOR_WIDTH: u16 = 8;
@@ -270,6 +319,16 @@ impl Explorer {
         })
     }
 
+    /// The row the cursor is on, counted from 0.
+    pub fn cursor_row(&self) -> usize {
+        self.cursor
+    }
+
+    /// The number of rows of the tree.
+    pub fn row_count(&self) -> usize {
+        self.len()
+    }
+
     pub fn root(&self) -> &Path {
         &self.root
     }
@@ -322,6 +381,46 @@ impl Explorer {
                 .set_error(format!("Failed to open {}: {err}", parent.display())),
         }
         EventResult::Consumed(None)
+    }
+
+    /// Moves the cursor for a movement command of the editor's keymap (see [`Motion`]).
+    /// `count` is the count typed before it, if any.
+    pub fn apply_motion(&mut self, motion: Motion, count: Option<usize>) {
+        let len = self.len();
+        if len == 0 {
+            return;
+        }
+        let last = len - 1;
+        let times = count.unwrap_or(1).max(1);
+        // The rows of the last render; before the first one, a page is one row.
+        let page = (self.area.height as usize).max(1);
+        let half = (page / 2).max(1);
+        let window_top = self.scroll.min(last);
+        let window_bottom = (self.scroll + page).min(len) - 1;
+        let row = |n: usize| n.saturating_sub(1).min(last);
+
+        self.cursor = match motion {
+            Motion::Down => self.cursor.saturating_add(times).min(last),
+            Motion::Up => self.cursor.saturating_sub(times),
+            // `gg` goes to the top, `5gg` to the fifth row (like a line number).
+            Motion::Top => count.map_or(0, row),
+            Motion::Bottom => last,
+            // `5G`; without a count there is nothing to go to.
+            Motion::Row => count.map_or(self.cursor, row),
+            Motion::PageDown => self
+                .cursor
+                .saturating_add(page.saturating_mul(times))
+                .min(last),
+            Motion::PageUp => self.cursor.saturating_sub(page.saturating_mul(times)),
+            Motion::HalfPageDown => self
+                .cursor
+                .saturating_add(half.saturating_mul(times))
+                .min(last),
+            Motion::HalfPageUp => self.cursor.saturating_sub(half.saturating_mul(times)),
+            Motion::WindowTop => window_top,
+            Motion::WindowCenter => window_top + (window_bottom - window_top) / 2,
+            Motion::WindowBottom => window_bottom,
+        };
     }
 
     /// Reveals and selects the focused document's file. Used by
@@ -654,18 +753,11 @@ impl Explorer {
             return EventResult::Ignored(None);
         }
 
+        // Moving up and down (`j`/`k`, `gg`, `ge`, counts, paging, ...) is not handled
+        // here: those keys reach the editor's keymap, which hands the movement commands it
+        // resolves to back to the tree (see `Motion`), so the user's bindings apply.
         match key.code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                if self.cursor + 1 < self.len() {
-                    self.cursor += 1;
-                }
-                EventResult::Consumed(None)
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.cursor = self.cursor.saturating_sub(1);
-                EventResult::Consumed(None)
-            }
-            KeyCode::Char('g') | KeyCode::Home => {
+            KeyCode::Home => {
                 self.cursor = 0;
                 EventResult::Consumed(None)
             }
@@ -1590,7 +1682,14 @@ impl Component for Explorer {
             return self.on_filter_key(*key, cx);
         }
 
-        self.on_nav_key(*key, cx)
+        let result = self.on_nav_key(*key, cx);
+        // A count typed before one of the tree's own keys (`3d`) applies to nothing:
+        // drop it, so it doesn't carry over to the next key. Digits and movement keys
+        // are not the tree's: the editor's keymap counts them (`5j`, `10gg`).
+        if matches!(result, EventResult::Consumed(_)) {
+            cx.editor.count = None;
+        }
+        result
     }
 
     fn cursor(&self, _area: Rect, editor: &Editor) -> (Option<Position>, CursorKind) {

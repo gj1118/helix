@@ -255,6 +255,14 @@ impl Compositor {
             .and_then(|component| component.as_any_mut().downcast_mut())
     }
 
+    /// Like [`Compositor::find_id`], for reading only.
+    pub fn get_id<T: 'static>(&self, id: &'static str) -> Option<&T> {
+        self.layers
+            .iter()
+            .find(|component| component.id() == Some(id))
+            .and_then(|component| component.as_any().downcast_ref())
+    }
+
     pub fn need_full_redraw(&mut self) {
         self.full_redraw = true;
     }

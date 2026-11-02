@@ -271,3 +271,128 @@ async fn ctrl_keys_after_space_x_open_and_while_tree_focused() -> anyhow::Result
     .await?;
     Ok(())
 }
+
+/// A folder with 30 files, for moving through more rows than a page.
+fn many_files() -> anyhow::Result<(tempfile::TempDir, std::path::PathBuf)> {
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().canonicalize()?;
+    for i in 0..30 {
+        std::fs::write(root.join(format!("f{i:02}.txt")), "x\n")?;
+    }
+    Ok((dir, root))
+}
+
+fn tree(app: &Application) -> (usize, usize) {
+    let explorer = app
+        .compositor
+        .get_id::<Explorer>(EXPLORER_ID)
+        .expect("the explorer is open");
+    (explorer.cursor_row(), explorer.row_count())
+}
+
+fn assert_row(app: &Application, want: usize) {
+    assert_eq!(tree(app).0, want, "cursor row");
+}
+
+/// Moving in the tree goes through the editor's keymap: `gg`, `ge`, `j`/`k` with counts,
+/// `5gg` and paging behave like they do in a buffer, and move the tree, not the buffer.
+#[tokio::test(flavor = "multi_thread")]
+async fn helix_motions_move_the_tree() -> anyhow::Result<()> {
+    let (_dir, root) = many_files()?;
+    let mut app = helpers::AppBuilder::new().with_config(config("")).build()?;
+    open_explorer(&mut app, &root);
+    test_key_sequences(
+        &mut app,
+        vec![
+            (
+                Some("ge"),
+                Some(&|app| {
+                    let (row, len) = tree(app);
+                    assert!(len >= 30, "{len} rows");
+                    assert_eq!(row, len - 1, "ge goes to the last row");
+                }),
+            ),
+            (Some("gg"), Some(&|app| assert_row(app, 0))),
+            (Some("j"), Some(&|app| assert_row(app, 1))),
+            (Some("3j"), Some(&|app| assert_row(app, 4))),
+            (Some("2k"), Some(&|app| assert_row(app, 2))),
+            (Some("<down><down>"), Some(&|app| assert_row(app, 4))),
+            (Some("<up>"), Some(&|app| assert_row(app, 3))),
+            (Some("10gg"), Some(&|app| assert_row(app, 9))),
+            (
+                Some("999gg"),
+                Some(&|app| {
+                    let (row, len) = tree(app);
+                    assert_eq!(row, len - 1, "a count past the end stops at the last row");
+                }),
+            ),
+            (
+                Some("gg<C-d>"),
+                Some(&|app| {
+                    let row = tree(app).0;
+                    assert!(row > 0, "C-d moved down, at {row}");
+                }),
+            ),
+            (Some("<C-u>"), Some(&|app| assert_row(app, 0))),
+            (
+                Some("G"),
+                Some(&|app| {
+                    let (row, len) = tree(app);
+                    assert_eq!(row, len - 1, "G still goes to the last row");
+                }),
+            ),
+            (Some("<home>"), Some(&|app| assert_row(app, 0))),
+            (
+                Some("ge"),
+                Some(&|app| {
+                    // The buffer behind the tree did not move.
+                    let (view, doc) = helix_view::current_ref!(app.editor);
+                    let cursor = doc
+                        .selection(view.id)
+                        .primary()
+                        .cursor(doc.text().slice(..));
+                    assert_eq!(cursor, 0, "the buffer's cursor moved");
+                    assert!(app.editor.explorer_panel.focused);
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}
+
+/// A count typed before one of the tree's own keys is dropped instead of carrying over to
+/// the next key; with the buffer focused, the motions move the buffer as usual.
+#[tokio::test(flavor = "multi_thread")]
+async fn counts_do_not_leak_and_the_buffer_keeps_its_motions() -> anyhow::Result<()> {
+    let (_dir, root) = many_files()?;
+    let mut app = helpers::AppBuilder::new()
+        .with_input_text("#[o|]#ne\ntwo\nthree\nfour\n")
+        .with_config(config(""))
+        .build()?;
+    open_explorer(&mut app, &root);
+    test_key_sequences(
+        &mut app,
+        vec![
+            // `3` then `-` (the tree's parent-directory key): the count is dropped
+            (Some("3-"), Some(&|app| assert!(app.editor.count.is_none()))),
+            (Some("ggj"), Some(&|app| assert_row(app, 1))),
+            // back in the buffer, `ge` moves the buffer's cursor and not the tree's
+            (
+                Some("<C-l>ge"),
+                Some(&|app| {
+                    assert!(!app.editor.explorer_panel.focused);
+                    assert_row(app, 1);
+                    let (view, doc) = helix_view::current_ref!(app.editor);
+                    let text = doc.text().slice(..);
+                    let line = text.char_to_line(doc.selection(view.id).primary().cursor(text));
+                    assert!(line >= 3, "ge moved the buffer to its last line, at {line}");
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}

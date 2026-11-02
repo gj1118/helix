@@ -385,10 +385,19 @@ rs = "🦀"
 
 Inside the panel (while it is focused):
 
+Moving up and down uses your normal-mode keymap: the movement commands its keys resolve to
+(`move_visual_line_down`, `goto_file_start`, `goto_last_line`, `half_page_down`,
+`goto_window_top`, ..., with any count) move the tree's cursor instead of the buffer's. So
+remapping them in `[keys.normal]` changes them in the tree too. The keys below that are the
+tree's own (open, rename, delete, ...) take precedence over the keymap.
+
 | Key | Description |
 |--|--|
-|`j`/`k`, up/down | Move within the tree |
-|`g`/`G` | Jump to the top/bottom of the tree |
+|`j`/`k`, up/down, with a count (`5j`) | Move within the tree |
+|`gg`/`ge` | Jump to the top/bottom of the tree (`10gg`: the tenth row) |
+|`C-d`/`C-u`, `C-f`/`C-b`, PageDown/PageUp | Move by half a page / a page |
+|`gt`/`gc`/`gb` | Jump to the top/middle/bottom of the visible rows |
+|`G`, Home/End | Jump to the bottom (`G`), or the top/bottom (Home/End) |
 |`h`, left | Collapse the directory under the cursor, or ascend to its parent |
 |`-` | Move the cursor to the parent directory row |
 |`l`/Enter, right | Expand the directory under the cursor, or open the file |
