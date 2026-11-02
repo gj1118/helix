@@ -2034,8 +2034,8 @@ fn explorer_path_style(
 struct PathInfo {
     /// Index of the ancestor at each depth, the cursor's own row last.
     ancestors: Vec<usize>,
-    /// For each ancestor depth, the first row after its subtree.
-    subtree_end: Vec<usize>,
+    /// The cursor's row.
+    cursor: usize,
 }
 
 impl PathInfo {
@@ -2043,7 +2043,7 @@ impl PathInfo {
         let Some(current) = entries.get(cursor) else {
             return Self {
                 ancestors: Vec::new(),
-                subtree_end: Vec::new(),
+                cursor,
             };
         };
         let depth = current.depth as usize;
@@ -2059,19 +2059,7 @@ impl PathInfo {
                 ancestors[level] = index;
             }
         }
-        let subtree_end = (0..depth)
-            .map(|level| {
-                let mut end = ancestors[level] + 1;
-                while end < entries.len() && entries[end].depth as usize > level {
-                    end += 1;
-                }
-                end
-            })
-            .collect();
-        Self {
-            ancestors,
-            subtree_end,
-        }
+        Self { ancestors, cursor }
     }
 
     /// Whether row `index` is the cursor's row or one of its ancestors.
@@ -2079,12 +2067,11 @@ impl PathInfo {
         self.ancestors.contains(&index)
     }
 
-    /// Whether the guide block of row `index` at ancestor `level` is on the path: the row
-    /// lies in the subtree of the cursor's ancestor at that level.
+    /// Whether the guide block of row `index` at ancestor `level` is on the path. The
+    /// vertical line of an ancestor reaches the cursor from its own row down to the cursor's
+    /// row; the rows below the cursor are not on the path.
     fn is_block_on_path(&self, index: usize, level: usize) -> bool {
-        level < self.subtree_end.len()
-            && self.ancestors[level] <= index
-            && index < self.subtree_end[level]
+        level + 1 < self.ancestors.len() && self.ancestors[level] <= index && index <= self.cursor
     }
 }
 
