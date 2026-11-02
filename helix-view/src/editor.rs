@@ -2329,6 +2329,10 @@ pub struct Editor {
     pub diff_providers: DiffProviderRegistry,
 
     pub debug_adapters: dap::registry::Registry,
+    /// Bumped whenever the debugger's inline values are cleared (and so by every refresh):
+    /// a fetch only applies its values if no newer refresh or clear happened since it
+    /// started. Per editor, so separate editors (tests) don't drop each other's values.
+    pub dap_inline_values_generation: u64,
     pub breakpoints: HashMap<PathBuf, Vec<Breakpoint>>,
 
     pub syn_loader: Arc<ArcSwap<syntax::Loader>>,
@@ -2504,6 +2508,7 @@ impl Editor {
             diagnostics: Diagnostics::new(),
             diff_providers: DiffProviderRegistry::default(),
             debug_adapters: dap::registry::Registry::new(),
+            dap_inline_values_generation: 0,
             breakpoints: HashMap::new(),
             syn_loader,
             theme_loader,
@@ -3729,8 +3734,7 @@ impl Editor {
     /// Remove the variable values shown at the end of lines (see [`DebuggerConfig`]).
     pub fn clear_dap_inline_values(&mut self) {
         // Values still being fetched belong to what was cleared: drop them on arrival.
-        crate::handlers::dap::INLINE_VALUES_GENERATION
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.dap_inline_values_generation = self.dap_inline_values_generation.wrapping_add(1);
         for doc in self.documents_mut() {
             if !doc.dap_inline_values.is_empty() {
                 doc.dap_inline_values.clear();

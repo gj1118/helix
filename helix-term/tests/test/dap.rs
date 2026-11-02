@@ -351,6 +351,11 @@ async fn variable_values_are_shown_at_the_end_of_the_lines_and_hidden_when_modif
         &mut app,
         vec![
             (Some(start_keys.as_str()), None),
+            // idle rounds: the values are fetched in the background after the stop, which
+            // takes longer on a busy machine (the whole suite runs in parallel)
+            (Some("<esc>"), None),
+            (Some("<esc>"), None),
+            (Some("<esc>"), None),
             (Some("<esc>"), None),
             (
                 Some("<esc>"),
