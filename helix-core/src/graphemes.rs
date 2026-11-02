@@ -228,6 +228,10 @@ pub fn nth_prev_folded_grapheme_boundary(
     annotations.reset_pos(char_idx, |fold| fold.start.char);
 
     for _ in 0..n {
+        // Nothing before the start of the text: a huge count must not loop for ages.
+        if char_idx == 0 {
+            break;
+        }
         char_idx = prev_grapheme_boundary(slice, char_idx);
         if let Some(fold) = annotations.consume_prev(char_idx, |fold| fold.end.char) {
             char_idx = prev_grapheme_boundary(slice, fold.start.char)
@@ -260,7 +264,12 @@ pub fn nth_next_folded_grapheme_boundary(
         n -= 1;
     }
 
+    let len_chars = slice.len_chars();
     for _ in 0..n {
+        // Nothing after the end of the text: a huge count must not loop for ages.
+        if char_idx >= len_chars {
+            break;
+        }
         char_idx = next_grapheme_boundary(slice, char_idx);
         if let Some(fold) = annotations.consume_next(char_idx, |fold| fold.start.char) {
             char_idx = next_grapheme_boundary(slice, fold.end.char)
@@ -416,5 +425,38 @@ impl Display for GraphemeStr<'_> {
 impl Clone for GraphemeStr<'_> {
     fn clone(&self) -> Self {
         self.deref().to_owned().into()
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use ropey::Rope;
+
+    #[test]
+    fn folded_grapheme_steps_with_a_huge_count_stop_at_the_text_edges() {
+        let text = Rope::from("ab\ncd");
+        let slice = text.slice(..);
+        let annotations = FoldAnnotations::new(None);
+        let started = std::time::Instant::now();
+
+        assert_eq!(
+            nth_next_folded_grapheme_boundary(slice, &annotations, 1, usize::MAX),
+            slice.len_chars()
+        );
+        assert_eq!(
+            nth_prev_folded_grapheme_boundary(slice, &annotations, 4, usize::MAX),
+            0
+        );
+        assert_eq!(
+            nth_next_folded_grapheme_boundary(slice, &annotations, 1, 2),
+            3
+        );
+        assert_eq!(
+            nth_prev_folded_grapheme_boundary(slice, &annotations, 4, 2),
+            2
+        );
+
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
     }
 }

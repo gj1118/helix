@@ -133,9 +133,14 @@ pub fn move_vertically(
         .folds
         .reset_pos(line_idx, |fold| fold.start.line);
     let mut new_line_idx = line_idx;
+    let last_line = slice.len_lines() - 1;
     for _ in 0..count {
         match dir {
             Direction::Forward => {
+                // Stop at the last line: a huge count (`99999999j`) must not loop for ages.
+                if new_line_idx >= last_line {
+                    break;
+                }
                 new_line_idx += 1;
                 if let Some(fold) = annotations
                     .folds
@@ -145,21 +150,24 @@ pub fn move_vertically(
                 }
             }
             Direction::Backward => {
-                new_line_idx = new_line_idx.saturating_sub(1);
+                if new_line_idx == 0 {
+                    break;
+                }
+                new_line_idx -= 1;
                 if let Some(fold) = annotations
                     .folds
                     .consume_prev(new_line_idx, |fold| fold.end.line)
                 {
-                    new_line_idx = (fold).start.line - 1;
+                    new_line_idx = fold.start.line.saturating_sub(1);
                 }
             }
         }
     }
 
-    let line = if new_line_idx >= slice.len_lines() - 1 {
+    let line = if new_line_idx >= last_line {
         // there is no line terminator for the last line
         // so the logic below is not necessary here
-        new_line_idx = slice.len_lines() - 1;
+        new_line_idx = last_line;
         slice
     } else {
         // char_idx_at_visual_block_offset returns a one-past-the-end index
@@ -978,6 +986,38 @@ mod test {
         パーティーへ行かないか\n\
         The text above is Japanese\n\
     ";
+
+    #[test]
+    fn vertical_move_with_a_huge_count_stops_at_the_document_edges() {
+        let text = Rope::from("abcd\nefg\nwrs");
+        let slice = text.slice(..);
+        let start = Range::point(pos_at_coords(slice, (1, 1).into(), true));
+        let started = std::time::Instant::now();
+
+        let down = move_vertically(
+            slice,
+            start,
+            Direction::Forward,
+            usize::MAX,
+            Movement::Move,
+            &TextFormat::default(),
+            &mut TextAnnotations::default(),
+        );
+        assert_eq!(coords_at_pos(slice, down.head), (2, 1).into());
+
+        let up = move_vertically(
+            slice,
+            start,
+            Direction::Backward,
+            usize::MAX,
+            Movement::Move,
+            &TextFormat::default(),
+            &mut TextAnnotations::default(),
+        );
+        assert_eq!(coords_at_pos(slice, up.head), (0, 1).into());
+
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
 
     #[test]
     fn test_vertical_move() {

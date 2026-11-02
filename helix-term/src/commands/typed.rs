@@ -1662,13 +1662,23 @@ pub fn reload_all(
     if event != PromptEvent::Validate {
         return Ok(());
     }
+    reload_documents(cx, |_| true)
+}
 
+/// Reloads the documents `keep` accepts from disk (all of them for `:reload-all`; only
+/// the unmodified, externally changed ones for auto-reload, so unsaved edits are never
+/// thrown away).
+pub fn reload_documents(
+    cx: &mut compositor::Context,
+    keep: impl Fn(&Document) -> bool,
+) -> anyhow::Result<()> {
     let scrolloff = cx.editor.config().scrolloff;
     let view_id = view!(cx.editor).id;
 
     let docs_view_ids: Vec<(DocumentId, Vec<ViewId>)> = cx
         .editor
         .documents_mut()
+        .filter(|doc| keep(doc))
         .map(|doc| {
             let mut view_ids: Vec<_> = doc.selections().keys().cloned().collect();
 
@@ -2635,38 +2645,37 @@ fn index_impl(
 
     let count_selections = fragments.len();
 
-    let mut iter: Vec<isize> = if desc {
-        let start_from = start - ((count_selections - 1) * step) as isize;
-        (start_from..=start)
-            .rev()
-            .step_by(step)
-            .take(count_selections)
-            .collect()
-    } else {
-        (start..).step_by(step).take(count_selections).collect()
-    };
+    // Checked arithmetic: a huge --start or step must be an error, not a panic or a wrap.
+    let overflow = || anyhow!("Index overflows: --start or step is too large");
+    let step = isize::try_from(step).map_err(|_| overflow())?;
+    let mut iter: Vec<isize> = (0..count_selections)
+        .map(|i| {
+            let offset = isize::try_from(i).ok()?.checked_mul(step)?;
+            if desc {
+                start.checked_sub(offset)
+            } else {
+                start.checked_add(offset)
+            }
+        })
+        .collect::<Option<_>>()
+        .ok_or_else(overflow)?;
 
     if reverse {
         iter.reverse();
     }
 
+    // The width of the widest index, counting a minus sign.
+    let width = iter
+        .iter()
+        .map(|&num| {
+            let digits = num.unsigned_abs().checked_ilog10().unwrap_or(0) as usize + 1;
+            digits + usize::from(num < 0)
+        })
+        .max()
+        .unwrap_or(1);
+
     fragments.iter_mut().zip(&iter).for_each(|(frag, index)| {
         let index_str = if pad {
-            let width = iter
-                .iter()
-                .map(|&num| {
-                    if num == 0 {
-                        return 1;
-                    }
-                    let width = num.abs().ilog10() as usize + 1;
-                    if num > 0 {
-                        width
-                    } else {
-                        width + 1
-                    }
-                })
-                .max()
-                .unwrap(); // we already checked that we have multiple selections
             format!("{:0width$}", index, width = width)
         } else {
             index.to_string()

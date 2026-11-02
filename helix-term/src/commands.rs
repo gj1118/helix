@@ -3098,7 +3098,7 @@ fn replace_in_line(
 /// captures such as `$1` and `${name}` expand; `$$` is a literal dollar) on
 /// the given 0-indexed lines of each file. Open buffers, including unsaved
 /// edits, are changed in place as one undo step each; other files are
-/// rewritten on disk.
+/// rewritten on disk by a background job, which reports the result when done.
 fn global_replace(
     cx: &mut compositor::Context,
     smart_case: bool,
@@ -3121,93 +3121,129 @@ fn global_replace(
     let view_id = view!(cx.editor).id;
     let mut total = 0usize;
     let mut changed_files = 0usize;
-    let mut failures: Vec<String> = Vec::new();
+    let mut disk_targets = Vec::new();
 
     for (path, lines) in targets {
-        if let Some(doc_id) = cx.editor.document_by_path(&path).map(|doc| doc.id()) {
-            // Open buffer: edit it, so unsaved changes are kept and it is undoable.
-            let doc = doc_mut!(cx.editor, &doc_id);
-            doc.ensure_view_init(view_id);
-            let text = doc.text().clone();
-            let slice = text.slice(..);
-            let mut changes = Vec::new();
-            let mut file_matches = 0;
-            for &line in &lines {
-                if line >= text.len_lines() {
-                    continue;
-                }
-                let start = text.line_to_char(line);
-                let end = helix_core::line_ending::line_end_char_index(&slice, line);
-                let body: String = text.slice(start..end).into();
-                if let Some((replaced, n)) = replace_in_line(&matcher, &body, replacement) {
-                    file_matches += n;
-                    if replaced != body {
-                        changes.push((start, end, Some(replaced.into())));
-                    }
-                }
-            }
-            if changes.is_empty() {
+        let Some(doc_id) = cx.editor.document_by_path(&path).map(|doc| doc.id()) else {
+            disk_targets.push((path, lines));
+            continue;
+        };
+        // Open buffer: edit it, so unsaved changes are kept and it is undoable.
+        let doc = doc_mut!(cx.editor, &doc_id);
+        doc.ensure_view_init(view_id);
+        let text = doc.text().clone();
+        let slice = text.slice(..);
+        let mut changes = Vec::new();
+        let mut file_matches = 0;
+        for &line in &lines {
+            if line >= text.len_lines() {
                 continue;
             }
-            let transaction = Transaction::change(doc.text(), changes.into_iter());
-            doc.apply(&transaction, view_id);
-            doc.append_changes_to_history(view_mut!(cx.editor, view_id));
-            for (view, _) in cx.editor.tree.views_mut() {
-                if view.doc == doc_id {
-                    view.sync_changes(doc);
+            let start = text.line_to_char(line);
+            let end = helix_core::line_ending::line_end_char_index(&slice, line);
+            let body: String = text.slice(start..end).into();
+            if let Some((replaced, n)) = replace_in_line(&matcher, &body, replacement) {
+                file_matches += n;
+                if replaced != body {
+                    changes.push((start, end, Some(replaced.into())));
                 }
             }
-            total += file_matches;
-            changed_files += 1;
-        } else {
-            let content = match std::fs::read_to_string(&path) {
-                Ok(content) => content,
-                Err(err) => {
-                    failures.push(format!("{}: {err}", path.display()));
-                    continue;
-                }
-            };
-            let mut out = String::with_capacity(content.len());
-            let mut file_matches = 0;
-            for (index, raw) in content.split_inclusive('\n').enumerate() {
-                if lines.contains(&index) {
-                    let (body, eol) = match raw.strip_suffix("\r\n") {
-                        Some(body) => (body, "\r\n"),
-                        None => match raw.strip_suffix('\n') {
-                            Some(body) => (body, "\n"),
-                            None => (raw, ""),
-                        },
-                    };
-                    if let Some((replaced, n)) = replace_in_line(&matcher, body, replacement) {
-                        file_matches += n;
-                        out.push_str(&replaced);
-                        out.push_str(eol);
-                        continue;
-                    }
-                }
-                out.push_str(raw);
-            }
-            if out == content {
-                continue;
-            }
-            if let Err(err) = std::fs::write(&path, out) {
-                // Stop on the first write error; earlier files stay replaced.
-                failures.push(format!("{}: {err}", path.display()));
-                break;
-            }
-            total += file_matches;
-            changed_files += 1;
         }
+        if changes.is_empty() {
+            continue;
+        }
+        let transaction = Transaction::change(doc.text(), changes.into_iter());
+        doc.apply(&transaction, view_id);
+        doc.append_changes_to_history(view_mut!(cx.editor, view_id));
+        for (view, _) in cx.editor.tree.views_mut() {
+            if view.doc == doc_id {
+                view.sync_changes(doc);
+            }
+        }
+        total += file_matches;
+        changed_files += 1;
     }
 
-    if let Some(failure) = failures.first() {
-        cx.editor.set_error(format!(
+    if disk_targets.is_empty() {
+        report_global_replace(cx.editor, total, changed_files, None);
+        return;
+    }
+
+    // Files that are not open are read and written off the UI thread.
+    let replacement = replacement.to_string();
+    cx.jobs.callback(async move {
+        let (disk_total, disk_files, failure) = tokio::task::spawn_blocking(move || {
+            let mut total = 0usize;
+            let mut changed_files = 0usize;
+            let mut failure = None;
+            for (path, lines) in disk_targets {
+                let content = match std::fs::read_to_string(&path) {
+                    Ok(content) => content,
+                    Err(err) => {
+                        failure.get_or_insert_with(|| format!("{}: {err}", path.display()));
+                        continue;
+                    }
+                };
+                let mut out = String::with_capacity(content.len());
+                let mut file_matches = 0;
+                for (index, raw) in content.split_inclusive('\n').enumerate() {
+                    if lines.contains(&index) {
+                        let (body, eol) = match raw.strip_suffix("\r\n") {
+                            Some(body) => (body, "\r\n"),
+                            None => match raw.strip_suffix('\n') {
+                                Some(body) => (body, "\n"),
+                                None => (raw, ""),
+                            },
+                        };
+                        if let Some((replaced, n)) = replace_in_line(&matcher, body, &replacement) {
+                            file_matches += n;
+                            out.push_str(&replaced);
+                            out.push_str(eol);
+                            continue;
+                        }
+                    }
+                    out.push_str(raw);
+                }
+                if out == content {
+                    continue;
+                }
+                if let Err(err) = std::fs::write(&path, out) {
+                    // Stop on the first write error; earlier files stay replaced.
+                    failure.get_or_insert_with(|| format!("{}: {err}", path.display()));
+                    break;
+                }
+                total += file_matches;
+                changed_files += 1;
+            }
+            (total, changed_files, failure)
+        })
+        .await?;
+        let call: job::Callback = job::Callback::Editor(Box::new(move |editor: &mut Editor| {
+            report_global_replace(
+                editor,
+                total + disk_total,
+                changed_files + disk_files,
+                failure,
+            )
+        }));
+        Ok(call)
+    });
+}
+
+fn report_global_replace(
+    editor: &mut Editor,
+    total: usize,
+    changed_files: usize,
+    failure: Option<String>,
+) {
+    if let Some(failure) = failure {
+        editor.set_error(format!(
             "Replaced {total} in {changed_files} file(s); failed: {failure}"
         ));
     } else if total == 0 {
-        cx.editor.set_status("Nothing to replace");
+        editor.set_status("Nothing to replace");
     } else {
-        cx.editor.set_status(format!(
+        editor.set_status(format!(
             "Replaced {total} match{} in {changed_files} file{}",
             if total == 1 { "" } else { "es" },
             if changed_files == 1 { "" } else { "s" },
@@ -3240,77 +3276,107 @@ fn selection_for_global_search_match(
     ))
 }
 
-/// Local grep search in buffer
+/// A line of the current buffer found by the buffer search pickers.
+#[derive(Debug)]
+struct BufferSearchLine {
+    doc_id: DocumentId,
+    line_num: usize,
+}
+
+/// The "line" column of the buffer search pickers: the 1-based line number, padded.
+fn buffer_search_line_number_cell(line_num: usize, number_style: Style) -> Cell<'static> {
+    let line_num = (line_num + 1).to_string();
+    // files can never contain more than 99_999_999 lines
+    // thus using maximum line length to be 8 for this formatter is valid
+    let max_line_num_length: usize = 8;
+    // whitespace padding to align results after the line number
+    let padding = " ".repeat(max_line_num_length.saturating_sub(line_num.len()));
+    Cell::from(Spans::from(vec![
+        Span::styled(line_num, number_style),
+        Span::raw(padding),
+    ]))
+}
+
+/// Selects `line_num` of the buffer a buffer search picker searched.
+fn buffer_search_jump(
+    cx: &mut compositor::Context,
+    doc_id: DocumentId,
+    line_num: usize,
+    action: Action,
+) {
+    if !cx.editor.documents.contains_key(&doc_id) {
+        cx.editor.set_error("The searched buffer has been closed");
+        return;
+    }
+    cx.editor.switch(doc_id, action);
+    let (view, doc) = current!(cx.editor);
+    let text = doc.text();
+    if line_num >= text.len_lines() {
+        cx.editor.set_error(
+            "The line you jumped to does not exist anymore because the file has changed.",
+        );
+        return;
+    }
+    let start = text.line_to_char(line_num);
+    let end = text.line_to_char((line_num + 1).min(text.len_lines()));
+
+    doc.set_selection(view.id, Selection::single(start, end));
+    if action.align_view(view, doc.id()) {
+        align_view(doc, view, Align::Center);
+    }
+}
+
+/// The preview of a buffer search result: the buffer itself, at the line.
+fn buffer_search_preview(
+    editor: &Editor,
+    doc_id: DocumentId,
+    line_num: usize,
+) -> Option<ui::picker::FileLocation<'static>> {
+    editor
+        .documents
+        .contains_key(&doc_id)
+        .then_some((ui::picker::PathOrId::Id(doc_id), Some((line_num, line_num))))
+}
+
+/// Local grep search in buffer.
+///
+/// Searches the text of the current buffer (including unsaved edits, and buffers without a
+/// file), not the working directory. Each query matches against a snapshot of the buffer taken
+/// when the query runs; the search itself runs on a blocking thread.
 fn local_search_grep(cx: &mut Context) {
     #[derive(Debug)]
-    struct FileResult {
-        path: PathBuf,
-        line_num: usize,
+    struct GrepResult {
+        line: BufferSearchLine,
         line_content: String,
-    }
-
-    impl FileResult {
-        fn new(path: &Path, line_num: usize, line_content: String) -> Self {
-            Self {
-                path: path.to_path_buf(),
-                line_num,
-                line_content,
-            }
-        }
     }
 
     struct LocalSearchConfig {
         smart_case: bool,
-        file_picker_config: helix_view::editor::FilePickerConfig,
         number_style: Style,
     }
 
     let editor_config = cx.editor.config();
     let config = LocalSearchConfig {
         smart_case: editor_config.search.smart_case,
-        file_picker_config: editor_config.file_picker.clone(),
         number_style: cx.editor.theme.get("constant.numeric.integer"),
     };
 
     let columns = [
-        PickerColumn::new("line", |item: &FileResult, config: &LocalSearchConfig| {
-            let line_num = (item.line_num + 1).to_string();
-            // files can never contain more than 99_999_999 lines
-            // thus using maximum line length to be 8 for this formatter is valid
-            let max_line_num_length = 8;
-            // whitespace padding to align results after the line number
-            let padding_length = max_line_num_length - line_num.len();
-            let padding = " ".repeat(padding_length);
-            // create column value to be displayed in the picker
-            Cell::from(Spans::from(vec![
-                Span::styled(line_num, config.number_style),
-                Span::raw(padding),
-            ]))
+        PickerColumn::new("line", |item: &GrepResult, config: &LocalSearchConfig| {
+            buffer_search_line_number_cell(item.line.line_num, config.number_style)
         }),
-        PickerColumn::new("", |item: &FileResult, _config: &LocalSearchConfig| {
-            // extract line content to be displayed in the picker
-            // create column value to be displayed in the picker
+        PickerColumn::new("", |item: &GrepResult, _config: &LocalSearchConfig| {
             Cell::from(Spans::from(vec![Span::raw(&item.line_content)]))
         }),
     ];
 
-    let get_files = |query: &str,
+    let get_lines = |query: &str,
                      editor: &mut Editor,
                      config: std::sync::Arc<LocalSearchConfig>,
                      injector: &ui::picker::Injector<_, _>| {
         if query.is_empty() {
             return async { Ok(()) }.boxed();
         }
-
-        let search_root = helix_stdx::env::current_working_dir();
-        if !search_root.exists() {
-            return async { Err(anyhow::anyhow!("Current working directory does not exist")) }
-                .boxed();
-        }
-
-        // Only read the current document (not other documents opened in the buffer)
-        let doc = doc!(editor);
-        let documents = vec![(doc.path().map(|p| p.to_path_buf()), doc.text().to_owned())];
 
         let matcher = match RegexMatcherBuilder::new()
             .case_smart(config.smart_case)
@@ -3322,115 +3388,54 @@ fn local_search_grep(cx: &mut Context) {
                 matcher
             }
             Err(err) => {
-                log::info!("Failed to compile search pattern in global search: {}", err);
+                log::info!("Failed to compile search pattern in buffer search: {}", err);
                 return async { Err(anyhow::anyhow!("Failed to compile regex")) }.boxed();
             }
         };
 
-        let dedup_symlinks = config.file_picker_config.deduplicate_links;
-        let absolute_root = search_root
-            .canonicalize()
-            .unwrap_or_else(|_| search_root.clone());
+        // Only the current document is searched. Cloning a rope is cheap.
+        let doc = doc!(editor);
+        let doc_id = doc.id();
+        let text = doc.text().clone();
 
         let injector = injector.clone();
         async move {
-            let searcher = SearcherBuilder::new()
-                .binary_detection(BinaryDetection::quit(b'\x00'))
-                .build();
-            WalkBuilder::new(search_root)
-                .hidden(config.file_picker_config.hidden)
-                .parents(config.file_picker_config.parents)
-                .ignore(config.file_picker_config.ignore)
-                .follow_links(config.file_picker_config.follow_symlinks)
-                .git_ignore(config.file_picker_config.git_ignore)
-                .git_global(config.file_picker_config.git_global)
-                .git_exclude(config.file_picker_config.git_exclude)
-                .max_depth(config.file_picker_config.max_depth)
-                .filter_entry(move |entry| {
-                    filter_picker_entry(entry, &absolute_root, dedup_symlinks)
-                })
-                .add_custom_ignore_filename(helix_loader::config_dir().join("ignore"))
-                .add_custom_ignore_filename(".helix/ignore")
-                .build_parallel()
-                .run(|| {
-                    let mut searcher = searcher.clone();
-                    let matcher = matcher.clone();
-                    let injector = injector.clone();
-                    let documents = &documents;
-                    Box::new(move |entry: Result<DirEntry, ignore::Error>| -> WalkState {
-                        let entry = match entry {
-                            Ok(entry) => entry,
-                            Err(_) => return WalkState::Continue,
-                        };
+            tokio::task::spawn_blocking(move || {
+                // Maximum line length of the content displayed within the result picker.
+                // TODO: Expose this setting to the user so they can control it.
+                const RESULT_LINE_LENGTH: usize = 80;
 
-                        match entry.file_type() {
-                            Some(entry) if entry.is_file() => {}
-                            // skip everything else
-                            _ => return WalkState::Continue,
-                        };
-
-                        let mut stop = false;
-
-                        // Maximum line length of the content displayed within the result picker.
-                        // User should be allowed to control this to accomodate their monitor width.
-                        // TODO: Expose this setting to the user so they can control it.
-                        let local_search_result_line_length = 80;
-
-                        let sink = sinks::Lossy(|line_num, line_content| {
-                            stop = injector
-                                .push(FileResult::new(
-                                    entry.path(),
-                                    line_num as usize - 1,
-                                    line_content[0..std::cmp::min(
-                                        local_search_result_line_length,
-                                        line_content.len(),
-                                    )]
-                                        .to_string(),
-                                ))
-                                .is_err();
-
-                            Ok(!stop)
-                        });
-                        let doc = documents.iter().find(|&(doc_path, _)| {
-                            doc_path
-                                .as_ref()
-                                .is_some_and(|doc_path| doc_path == entry.path())
-                        });
-
-                        // search in current document
-                        let result = if let Some((_, doc)) = doc {
-                            // there is already a buffer for this file
-                            // search the buffer instead of the file because it's faster
-                            // and captures new edits without requiring a save
-                            if searcher.multi_line_with_matcher(&matcher) {
-                                // in this case a continuous buffer is required
-                                // convert the rope to a string
-                                let text = doc.to_string();
-                                searcher.search_slice(&matcher, text.as_bytes(), sink)
-                            } else {
-                                searcher.search_reader(
-                                    &matcher,
-                                    RopeReader::new(doc.slice(..)),
-                                    sink,
-                                )
-                            }
-                        } else {
-                            // Note: This is a hack!
-                            // We ignore all other files.
-                            // We only search an empty string (to satisfy rust's return type).
-                            searcher.search_slice(&matcher, "".to_owned().as_bytes(), sink)
-                        };
-
-                        if let Err(err) = result {
-                            log::error!("Local search error: {}, {}", entry.path().display(), err);
-                        }
-                        if stop {
-                            WalkState::Quit
-                        } else {
-                            WalkState::Continue
-                        }
-                    })
+                let mut searcher = SearcherBuilder::new()
+                    .binary_detection(BinaryDetection::none())
+                    .build();
+                let sink = sinks::Lossy(|line_num, line_content: &str| {
+                    let line_content = line_content.trim_end_matches(['\r', '\n']);
+                    // Cut on a char boundary: the line may hold multibyte text.
+                    let shown = match line_content.char_indices().nth(RESULT_LINE_LENGTH) {
+                        Some((end, _)) => &line_content[..end],
+                        None => line_content,
+                    };
+                    let pushed = injector.push(GrepResult {
+                        line: BufferSearchLine {
+                            doc_id,
+                            line_num: line_num as usize - 1,
+                        },
+                        line_content: shown.to_string(),
+                    });
+                    Ok(pushed.is_ok())
                 });
+                let result = if searcher.multi_line_with_matcher(&matcher) {
+                    // in this case a continuous buffer is required
+                    let text = text.to_string();
+                    searcher.search_slice(&matcher, text.as_bytes(), sink)
+                } else {
+                    searcher.search_reader(&matcher, RopeReader::new(text.slice(..)), sink)
+                };
+                if let Err(err) = result {
+                    log::error!("Buffer search error: {err}");
+                }
+            })
+            .await?;
             Ok(())
         }
         .boxed()
@@ -3444,39 +3449,15 @@ fn local_search_grep(cx: &mut Context) {
         1, // contents
         [],
         config,
-        move |cx, FileResult { path, line_num, .. }, action| {
-            let doc = match cx.editor.open(path, action) {
-                Ok(id) => doc_mut!(cx.editor, &id),
-                Err(e) => {
-                    cx.editor
-                        .set_error(format!("Failed to open file '{}': {}", path.display(), e));
-                    return;
-                }
-            };
-
-            let line_num = *line_num;
-            let view = view_mut!(cx.editor);
-            let text = doc.text();
-            if line_num >= text.len_lines() {
-                cx.editor.set_error(
-                    "The line you jumped to does not exist anymore because the file has changed.",
-                );
-                return;
-            }
-            let start = text.line_to_char(line_num);
-            let end = text.line_to_char((line_num + 1).min(text.len_lines()));
-
-            doc.set_selection(view.id, Selection::single(start, end));
-            if action.align_view(view, doc.id()) {
-                align_view(doc, view, Align::Center);
-            }
+        move |cx, GrepResult { line, .. }, action| {
+            buffer_search_jump(cx, line.doc_id, line.line_num, action)
         },
     )
-    .with_preview(|_editor, FileResult { path, line_num, .. }| {
-        Some((path.as_path().into(), Some((*line_num, *line_num))))
+    .with_preview(|editor, GrepResult { line, .. }| {
+        buffer_search_preview(editor, line.doc_id, line.line_num)
     })
     .with_history_register(Some(reg))
-    .with_dynamic_query(get_files, Some(275))
+    .with_dynamic_query(get_lines, Some(275))
     .with_title("Buffer Search");
     cx.push_layer(Box::new(overlaid(
         picker,
@@ -3484,96 +3465,41 @@ fn local_search_grep(cx: &mut Context) {
     )));
 }
 
+/// Fuzzy search over the lines of the current buffer.
+///
+/// The lines come from the buffer's text (including unsaved edits, and buffers without a
+/// file), not from the file on disk. They are added to the picker on a blocking thread, so a
+/// big buffer neither blocks the UI nor gets cut short.
 fn local_search_fuzzy(cx: &mut Context) {
-    #[derive(Debug)]
-    struct FileResult {
-        path: std::sync::Arc<PathBuf>,
-        line_num: usize,
-        file_contents_byte_start: usize,
-        file_contents_byte_end: usize,
-    }
-
     struct LocalSearchData {
-        file_contents: String,
+        // A snapshot of the buffer; cloning a rope is cheap.
+        text: Rope,
         number_style: Style,
     }
 
-    let current_document = doc!(cx.editor);
-    let Some(current_document_path) = current_document.path() else {
-        cx.editor.set_error("Failed to get current document path");
-        return;
-    };
-
-    let file_contents = std::fs::read_to_string(current_document_path).unwrap();
-
-    let current_document_path = std::sync::Arc::new(current_document_path.to_path_buf());
-
-    let file_results: Vec<FileResult> = file_contents
-        .lines()
-        .enumerate()
-        .filter_map(|(line_num, line)| {
-            if !line.trim().is_empty() {
-                // SAFETY: The offsets will be used to index back into the original `file_contents` String
-                // as a byte slice. Since the `file_contents` will be moved into the `Picker` as part of
-                // `editor_data`, we know that the `Picker` will take ownership of the underlying String,
-                // so it will be valid for displaying the `Span` as long as the user uses the `Picker`
-                // (the `Picker` gets dropped only when a new `Picker` is created). Furthermore, the
-                // process of reconstructing a `&str` back requires that we have access to the original
-                // `String` anyways so we can index into it, as is the case when we construct the `Span`
-                // when creating the `PickerColumn`s, so we know that we are returning the correct
-                // substring from the original `file_contents`.
-                // In fact, since we only store offsets, and accessing them from safe rust, there is
-                // no risk of memory safety (like our &str not living long enough). The only real
-                // bug would be moving out the original underlying `String` (which we obviously
-                // don't do). This would lead to an out of bounds crash in the `PickerColumn` function
-                // call, or a crash when we recreate back the &str if the new underlying `String`
-                // makes it so that our byte offsets index into the middle of a Unicode grapheme cluster.
-                // Last but not least, it could make it so that we do display the lines correctly,
-                // but these are from a different underlying `String` than the original, which would be
-                // different from the lines in the current buffer.
-                let beg =
-                    unsafe { line.as_ptr().byte_offset_from(file_contents.as_ptr()) } as usize;
-                let end = beg + line.len();
-                let result = FileResult {
-                    path: current_document_path.clone(),
-                    line_num,
-                    file_contents_byte_start: beg,
-                    file_contents_byte_end: end,
-                };
-                Some(result)
-            } else {
-                None
-            }
-        })
-        .collect();
+    let doc = doc!(cx.editor);
+    let doc_id = doc.id();
+    let text = doc.text().clone();
 
     let config = LocalSearchData {
         number_style: cx.editor.theme.get("constant.numeric.integer"),
-        file_contents,
+        text: text.clone(),
     };
 
     let columns = [
-        PickerColumn::new("line", |item: &FileResult, config: &LocalSearchData| {
-            let line_num = (item.line_num + 1).to_string();
-            // files can never contain more than 99_999_999 lines
-            // thus using maximum line length to be 8 for this formatter is valid
-            let max_line_num_length = 8;
-            // whitespace padding to align results after the line number
-            let padding_length = max_line_num_length - line_num.len();
-            let padding = " ".repeat(padding_length);
-            // create column value to be displayed in the picker
-            Cell::from(Spans::from(vec![
-                Span::styled(line_num, config.number_style),
-                Span::raw(padding),
-            ]))
-        }),
-        PickerColumn::new("", |item: &FileResult, config: &LocalSearchData| {
-            // extract line content to be displayed in the picker
-            let slice = &config.file_contents.as_bytes()
-                [item.file_contents_byte_start..item.file_contents_byte_end];
-            let content = std::str::from_utf8(slice).unwrap();
-            // create column value to be displayed in the picker
-            Cell::from(Spans::from(vec![Span::raw(content)]))
+        PickerColumn::new(
+            "line",
+            |item: &BufferSearchLine, config: &LocalSearchData| {
+                buffer_search_line_number_cell(item.line_num, config.number_style)
+            },
+        ),
+        PickerColumn::new("", |item: &BufferSearchLine, config: &LocalSearchData| {
+            let text = config.text.slice(..);
+            let start = text.line_to_char(item.line_num);
+            let end = line_end_char_index(&text, item.line_num);
+            Cell::from(Spans::from(vec![Span::raw(String::from(
+                text.slice(start..end),
+            ))]))
         }),
     ];
 
@@ -3585,50 +3511,31 @@ fn local_search_fuzzy(cx: &mut Context) {
         1, // contents
         [],
         config,
-        move |cx, FileResult { path, line_num, .. }, action| {
-            let doc = match cx.editor.open(path, action) {
-                Ok(id) => doc_mut!(cx.editor, &id),
-                Err(e) => {
-                    cx.editor
-                        .set_error(format!("Failed to open file '{}': {}", path.display(), e));
-                    return;
-                }
-            };
-
-            let line_num = *line_num;
-            let view = view_mut!(cx.editor);
-            let text = doc.text();
-            if line_num >= text.len_lines() {
-                cx.editor.set_error(
-                    "The line you jumped to does not exist anymore because the file has changed.",
-                );
-                return;
-            }
-            let start = text.line_to_char(line_num);
-            let end = text.line_to_char((line_num + 1).min(text.len_lines()));
-
-            doc.set_selection(view.id, Selection::single(start, end));
-            if action.align_view(view, doc.id()) {
-                align_view(doc, view, Align::Center);
-            }
+        move |cx, line: &BufferSearchLine, action| {
+            buffer_search_jump(cx, line.doc_id, line.line_num, action)
         },
     )
-    .with_preview(|_editor, FileResult { path, line_num, .. }| {
-        Some((path.as_path().into(), Some((*line_num, *line_num))))
+    .with_preview(|editor, line: &BufferSearchLine| {
+        buffer_search_preview(editor, line.doc_id, line.line_num)
     })
     .with_history_register(Some(reg))
     .with_title("Buffer Search");
 
     let injector = picker.injector();
-    let timeout = std::time::Instant::now() + std::time::Duration::from_millis(30);
-    for file_result in file_results {
-        if injector.push(file_result).is_err() {
-            break;
+    tokio::task::spawn_blocking(move || {
+        for (line_num, line) in text.lines().enumerate() {
+            if line.chars().all(char::is_whitespace) {
+                continue;
+            }
+            if injector
+                .push(BufferSearchLine { doc_id, line_num })
+                .is_err()
+            {
+                // The picker was closed.
+                break;
+            }
         }
-        if std::time::Instant::now() >= timeout {
-            break;
-        }
-    }
+    });
 
     cx.push_layer(Box::new(overlaid(
         picker,
@@ -3871,9 +3778,7 @@ fn delete_selection_impl(cx: &mut Context, op: Operation, yank: YankAction) {
         let reg_name = cx
             .register
             .unwrap_or_else(|| cx.editor.config.load().default_yank_register);
-        if cx.editor.config.load().persistence.clipboard {
-            persistence::write_clipboard_file(&values);
-        }
+        persist_clipboard(&cx.editor.config.load(), cx.jobs, reg_name, &values);
         if let Err(err) = cx.editor.registers.write(reg_name, values) {
             cx.editor.set_error(err.to_string());
             return;
@@ -5355,12 +5260,15 @@ fn goto_last_line_impl(cx: &mut Context, movement: Movement) {
     let text = doc.text().slice(..);
     let annotations = &view.fold_annotations(doc);
 
-    let last_visible_line = if let Some(fold) = annotations
-        .superest_fold_containing(text.len_lines(), |fold| fold.start.line..=fold.end.line)
+    // Folds end at most on the last line, `len_lines() - 1`; when one hides it, go to the
+    // header of the outermost such fold.
+    let last_line = text.len_lines().saturating_sub(1);
+    let last_visible_line = if let Some(fold) =
+        annotations.superest_fold_containing(last_line, |fold| fold.start.line..=fold.end.line)
     {
-        fold.start.line - 1
+        text.char_to_line(fold.header())
     } else {
-        text.len_lines().saturating_sub(1)
+        last_line
     };
 
     let line_idx = if text.line(last_visible_line).len_chars() == 0 {
@@ -6145,6 +6053,7 @@ fn commit_undo_checkpoint(cx: &mut Context) {
 fn yank(cx: &mut Context) {
     yank_impl(
         cx.editor,
+        cx.jobs,
         cx.register
             .unwrap_or(cx.editor.config().default_yank_register),
     );
@@ -6152,16 +6061,62 @@ fn yank(cx: &mut Context) {
 }
 
 fn yank_to_clipboard(cx: &mut Context) {
-    yank_impl(cx.editor, '+');
+    yank_impl(cx.editor, cx.jobs, '+');
     exit_select_mode(cx);
 }
 
 fn yank_to_primary_clipboard(cx: &mut Context) {
-    yank_impl(cx.editor, '*');
+    yank_impl(cx.editor, cx.jobs, '*');
     exit_select_mode(cx);
 }
 
-fn yank_impl(editor: &mut Editor, register: char) {
+/// Saves `values` as the persisted clipboard, which startup restores into the `"` register.
+///
+/// Only a write to `"` or to the configured default yank register (the register a plain yank or
+/// delete fills) is persisted, so yanking into a named register does not overwrite the persisted
+/// clipboard, and the black hole register `_` never writes. The file is written on a blocking
+/// thread, not the UI thread; the write is waited for before exiting, and a write that finishes
+/// after a newer one is dropped so the file always holds the latest yank.
+fn persist_clipboard(
+    config: &helix_view::editor::Config,
+    jobs: &Jobs,
+    register: char,
+    values: &[String],
+) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Mutex;
+
+    static REQUESTED: AtomicU64 = AtomicU64::new(0);
+    static WRITTEN: Mutex<u64> = Mutex::new(0);
+
+    if !config.persistence.clipboard
+        || register == '_'
+        || (register != '"' && register != config.default_yank_register)
+    {
+        return;
+    }
+
+    let seq = REQUESTED.fetch_add(1, Ordering::Relaxed) + 1;
+    let values = values.to_vec();
+    jobs.add(
+        job::Job::new(async move {
+            tokio::task::spawn_blocking(move || {
+                let mut written = WRITTEN
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if *written < seq {
+                    persistence::write_clipboard_file(&values);
+                    *written = seq;
+                }
+            })
+            .await?;
+            Ok(())
+        })
+        .wait_before_exiting(),
+    );
+}
+
+fn yank_impl(editor: &mut Editor, jobs: &Jobs, register: char) {
     let (view, doc) = current!(editor);
     let text = doc.text().slice(..);
 
@@ -6172,9 +6127,7 @@ fn yank_impl(editor: &mut Editor, register: char) {
         .collect();
     let selections = values.len();
 
-    if editor.config().persistence.clipboard {
-        persistence::write_clipboard_file(&values);
-    }
+    persist_clipboard(&editor.config.load(), jobs, register, &values);
 
     match editor.registers.write(register, values) {
         Ok(_) => editor.set_status(format!(
@@ -8733,199 +8686,103 @@ pub enum MoveSelection {
     Above,
 }
 
-#[derive(Clone)]
-struct ExtendedChange {
-    line_start: usize,
-    line_end: usize,
-    line_text: Option<Tendril>,
-    line_selection: Option<(usize, usize)>,
-}
-
 /// Move line or block of text in specified direction.
 /// The function respects single line, single selection, multiple lines using
 /// several cursors and multiple selections.
+///
+/// The lines of all selections are merged into sorted blocks of lines (overlapping or adjacent
+/// line ranges become one block, since they move together). Each block swaps places with the
+/// line above or below it; a block already at the edge of the document stays where it is
+/// without stopping the other blocks. The swap keeps the length of the text, so each block's
+/// change is independent and the changes never overlap.
 fn move_selection(cx: &mut Context, direction: MoveSelection) {
     let (view, doc) = current!(cx.editor);
-    let selection = doc.selection(view.id);
-    let text = doc.text();
+    let selection = doc.selection(view.id).clone();
+    // A cheap snapshot: the old positions are still needed after the change is applied.
+    let text = doc.text().clone();
     let slice = text.slice(..);
-    let mut last_step_changes: Vec<ExtendedChange> = vec![];
-    let mut at_doc_edge = false;
-    let all_changes = selection.into_iter().map(|range| {
-        let (start, end) = range.line_range(slice);
-        let line_start = text.line_to_char(start);
-        let line_end = line_end_char_index(&slice, end);
-        let line_text = text.slice(line_start..line_end).to_string();
-        let next_line = match direction {
-            MoveSelection::Above => start.saturating_sub(1),
-            MoveSelection::Below => end + 1,
-        };
-        let rel_pos_anchor = range.anchor - line_start;
-        let rel_pos_head = range.head - line_start;
-        let cursor_rel_pos = (rel_pos_anchor, rel_pos_head);
-        if next_line == start || next_line >= text.len_lines() || at_doc_edge {
-            at_doc_edge = true;
-            let changes = vec![ExtendedChange {
-                line_start,
-                line_end,
-                line_text: Some(line_text.into()),
-                line_selection: Some(cursor_rel_pos),
-            }];
-            last_step_changes = changes.clone();
-            changes
-        } else {
-            let next_line_start = text.line_to_char(next_line);
-            let next_line_end = line_end_char_index(&slice, next_line);
-            let next_line_text = text.slice(next_line_start..next_line_end).to_string();
-            let changes = match direction {
-                MoveSelection::Above => vec![
-                    ExtendedChange {
-                        line_start: next_line_start,
-                        line_end: next_line_end,
-                        line_text: Some(line_text.into()),
-                        line_selection: Some(cursor_rel_pos),
-                    },
-                    ExtendedChange {
-                        line_start,
-                        line_end,
-                        line_text: Some(next_line_text.into()),
-                        line_selection: None,
-                    },
-                ],
-                MoveSelection::Below => vec![
-                    ExtendedChange {
-                        line_start,
-                        line_end,
-                        line_text: Some(next_line_text.into()),
-                        line_selection: None,
-                    },
-                    ExtendedChange {
-                        line_start: next_line_start,
-                        line_end: next_line_end,
-                        line_text: Some(line_text.into()),
-                        line_selection: Some(cursor_rel_pos),
-                    },
-                ],
-            };
-            let changes = if last_step_changes.len() > 1 {
-                evaluate_changes(last_step_changes.clone(), changes, &direction)
-            } else {
-                changes
-            };
-            last_step_changes = changes.clone();
-            changes
-        }
-    });
+    let len_lines = slice.len_lines();
+    // A text ending in a line ending has an empty last "line" after it, which is not a line
+    // to swap with.
+    let last_line = if len_lines > 1 && slice.line(len_lines - 1).len_chars() == 0 {
+        len_lines - 2
+    } else {
+        len_lines - 1
+    };
 
-    /// Merge changes from subsequent cursors
-    fn evaluate_changes(
-        mut last_changes: Vec<ExtendedChange>,
-        current_changes: Vec<ExtendedChange>,
-        direction: &MoveSelection,
-    ) -> Vec<ExtendedChange> {
-        let mut current_it = current_changes.into_iter();
-        if let (Some(mut last), Some(mut current_first), Some(current_last)) =
-            (last_changes.pop(), current_it.next(), current_it.next())
-        {
-            if last.line_start == current_first.line_start {
-                match direction {
-                    MoveSelection::Above => {
-                        last.line_start = current_last.line_start;
-                        last.line_end = current_last.line_end;
-                        if let Some(first) = last_changes.pop() {
-                            last_changes.push(first)
-                        }
-                        last_changes.extend(vec![current_first, last]);
-                        last_changes
-                    }
-                    MoveSelection::Below => {
-                        current_first.line_start = last_changes[0].line_start;
-                        current_first.line_end = last_changes[0].line_end;
-                        last_changes[0] = current_first;
-                        last_changes.extend(vec![last, current_last]);
-                        last_changes
-                    }
+    // Blocks of lines (first, last, index of the block's first range) in document order.
+    let mut line_ranges: Vec<(usize, usize, usize)> = selection
+        .iter()
+        .enumerate()
+        .map(|(i, range)| {
+            let (start, end) = range.line_range(slice);
+            (start, end, i)
+        })
+        .collect();
+    line_ranges.sort_unstable();
+    let mut blocks: Vec<(usize, usize)> = Vec::new();
+    for &(start, end, _) in &line_ranges {
+        match blocks.last_mut() {
+            Some((_, last_end)) if start <= *last_end + 1 => *last_end = (*last_end).max(end),
+            _ => blocks.push((start, end)),
+        }
+    }
+
+    let mut changes = Vec::new();
+    // (first line, last line, chars the block's text moves by) of the blocks that move.
+    let mut moved: Vec<(usize, usize, isize)> = Vec::new();
+    for (start, end) in blocks {
+        let block_start = slice.line_to_char(start);
+        let block_end = line_end_char_index(&slice, end);
+        match direction {
+            MoveSelection::Above => {
+                if start == 0 {
+                    continue;
                 }
-            } else {
-                if let Some(first) = last_changes.pop() {
-                    last_changes.push(first)
-                }
-                last_changes.extend(vec![last, current_first, current_last]);
-                last_changes
+                let prev_start = slice.line_to_char(start - 1);
+                let prev_end = line_end_char_index(&slice, start - 1);
+                let mut new_text = String::from(slice.slice(block_start..block_end));
+                new_text.extend(slice.slice(prev_end..block_start).chunks());
+                new_text.extend(slice.slice(prev_start..prev_end).chunks());
+                changes.push((prev_start, block_end, Some(Tendril::from(new_text))));
+                moved.push((start, end, -((block_start - prev_start) as isize)));
             }
-        } else {
-            last_changes
+            MoveSelection::Below => {
+                if end >= last_line {
+                    continue;
+                }
+                let next_start = slice.line_to_char(end + 1);
+                let next_end = line_end_char_index(&slice, end + 1);
+                let mut new_text = String::from(slice.slice(next_start..next_end));
+                new_text.extend(slice.slice(block_end..next_start).chunks());
+                new_text.extend(slice.slice(block_start..block_end).chunks());
+                changes.push((block_start, next_end, Some(Tendril::from(new_text))));
+                moved.push((start, end, (next_end - block_end) as isize));
+            }
         }
     }
-    let mut flattened: Vec<Vec<ExtendedChange>> = all_changes.into_iter().collect();
-    let last_changes = flattened.pop().unwrap_or_default();
-    let acc_cursors = get_adjusted_selection(doc, &last_changes, direction, at_doc_edge);
-    let changes = last_changes
-        .into_iter()
-        .map(|change| (change.line_start, change.line_end, change.line_text));
-    let new_sel = Selection::new(acc_cursors.into(), 0);
-    let transaction = Transaction::change(doc.text(), changes);
-    doc.apply(&transaction, view.id);
-    doc.set_selection(view.id, new_sel);
-}
-
-/// Returns selection range that is valid for the updated document
-/// This logic is necessary because it's not possible to apply changes
-/// to the document first and then set selection.
-fn get_adjusted_selection(
-    doc: &Document,
-    last_changes: &[ExtendedChange],
-    direction: MoveSelection,
-    at_doc_edge: bool,
-) -> Vec<Range> {
-    let mut first_change_len = 0;
-    let mut next_start = 0;
-    let mut acc_cursors: Vec<Range> = vec![];
-
-    for change in last_changes.iter() {
-        let change_len = change.line_text.as_ref().map_or(0, |x| x.chars().count());
-        if let Some((rel_anchor, rel_head)) = change.line_selection {
-            let (anchor, head) = if at_doc_edge {
-                let anchor = change.line_start + rel_anchor;
-                let head = change.line_start + rel_head;
-                (anchor, head)
-            } else {
-                match direction {
-                    MoveSelection::Above => {
-                        if next_start == 0 {
-                            next_start = change.line_start;
-                        }
-                        let anchor = next_start + rel_anchor;
-                        let head = next_start + rel_head;
-                        // If there is next cursor below, selection position should be adjusted
-                        // according to the length of the current line.
-                        next_start += change_len + doc.line_ending.len_chars();
-                        (anchor, head)
-                    }
-                    MoveSelection::Below => {
-                        let anchor = change.line_start + first_change_len + rel_anchor - change_len;
-                        let head = change.line_start + first_change_len + rel_head - change_len;
-                        (anchor, head)
-                    }
-                }
-            };
-            let cursor = Range::new(anchor, head);
-            if let Some(last) = acc_cursors.pop() {
-                if cursor.overlaps(&last) {
-                    acc_cursors.push(last);
-                } else {
-                    acc_cursors.push(last);
-                    acc_cursors.push(cursor);
-                };
-            } else {
-                acc_cursors.push(cursor);
-            };
-        } else {
-            first_change_len = change.line_text.as_ref().map_or(0, |x| x.chars().count());
-            next_start = 0;
-        };
+    if changes.is_empty() {
+        return;
     }
-    acc_cursors
+
+    let transaction = Transaction::change(&text, changes.into_iter());
+    doc.apply(&transaction, view.id);
+    let len_chars = doc.text().len_chars();
+
+    // The selections move with the text of their block.
+    let ranges: SmallVec<[Range; 1]> = selection
+        .iter()
+        .map(|range| {
+            let (start, _) = range.line_range(slice);
+            let shift = moved
+                .iter()
+                .find(|&&(first, last, _)| (first..=last).contains(&start))
+                .map_or(0, |&(_, _, shift)| shift);
+            let shift_pos = |pos: usize| (pos.saturating_add_signed(shift)).min(len_chars);
+            Range::new(shift_pos(range.anchor), shift_pos(range.head))
+        })
+        .collect();
+    doc.set_selection(view.id, Selection::new(ranges, selection.primary_index()));
 }
 
 fn move_lines_up(cx: &mut Context) {
@@ -9131,12 +8988,15 @@ fn extend_to_word(cx: &mut Context) {
     jump_to_word(cx, Movement::Extend)
 }
 
-fn jump_to_label(cx: &mut Context, labels: Vec<Range>, behaviour: Movement) {
+fn jump_to_label(cx: &mut Context, mut labels: Vec<Range>, behaviour: Movement) {
     let doc = doc!(cx.editor);
     let alphabet = &cx.editor.config().jump_label_alphabet;
-    if labels.is_empty() {
+    // An empty alphabet (`jump-label-alphabet = ""`) has no labels to show.
+    if labels.is_empty() || alphabet.is_empty() {
         return;
     }
+    // Two-char labels can only tell apart `alphabet.len()²` candidates.
+    labels.truncate(alphabet.len().saturating_mul(alphabet.len()));
     let alphabet_char = |i| {
         let mut res = Tendril::new();
         res.push(alphabet[i]);
@@ -9252,6 +9112,9 @@ fn jump_to_word(cx: &mut Context, behaviour: Movement) {
     // Calculate the jump candidates: ranges for any visible words with two or
     // more characters.
     let alphabet = &cx.editor.config().jump_label_alphabet;
+    if alphabet.is_empty() {
+        return;
+    }
     let jump_label_limit = alphabet.len() * alphabet.len();
     let mut words = Vec::with_capacity(jump_label_limit);
     let (view, doc) = current_ref!(cx.editor);

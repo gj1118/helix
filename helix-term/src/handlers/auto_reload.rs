@@ -3,7 +3,6 @@ use std::sync::atomic::{self, AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use helix_core::command_line::Args;
 use helix_event::{register_hook, send_blocking};
 use helix_view::document::Mode;
 use helix_view::events::DocumentDidOpen;
@@ -14,7 +13,6 @@ use tokio::time::Instant;
 use crate::commands;
 use crate::events::OnModeSwitch;
 use crate::job::{self, Jobs};
-use crate::ui::PromptEvent;
 
 #[derive(Debug)]
 pub(super) struct AutoReloadHandler {
@@ -83,7 +81,9 @@ fn prompt_to_reload_if_needed(editor: &mut Editor) {
             plugin_manager: None,
         };
 
-        match commands::typed::reload_all(&mut cx, Args::default(), PromptEvent::Validate) {
+        // Only the documents that changed on disk and have no unsaved edits: reloading
+        // a modified buffer would replace the edits and mark it clean.
+        match commands::typed::reload_documents(&mut cx, is_externally_modified) {
             Ok(_) => cx.editor.set_status("Reloaded modified documents"),
             Err(err) => cx
                 .editor
@@ -103,26 +103,21 @@ fn prompt_to_reload_if_needed(editor: &mut Editor) {
 }
 
 pub fn count_externally_modified_documents<'a>(docs: impl Iterator<Item = &'a Document>) -> usize {
-    docs // Filter out documents that have unsaved changes.
-        .filter(|doc| !doc.is_modified())
-        // Get the documents that have been modified externally.
-        .filter(|doc| {
-            let last_saved_time = doc.get_last_saved_time();
-            let Some(path) = doc.path() else {
-                return false;
-            };
+    docs.filter(|doc| is_externally_modified(doc)).count()
+}
 
-            // Check if the file has been modified externally
-            if let Ok(metadata) = fs::metadata(path) {
-                if let Ok(modified_time) = metadata.modified() {
-                    if modified_time > last_saved_time {
-                        return true;
-                    }
-                }
-            }
-            false
-        })
-        .count()
+/// Whether `doc` has no unsaved changes and its file changed on disk since it was last
+/// read or written.
+fn is_externally_modified(doc: &Document) -> bool {
+    if doc.is_modified() {
+        return false;
+    }
+    let Some(path) = doc.path() else {
+        return false;
+    };
+    fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .is_ok_and(|modified| modified > doc.get_last_saved_time())
 }
 
 pub(super) fn register_hooks(handlers: &Handlers) {

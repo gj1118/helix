@@ -165,7 +165,7 @@ impl Quicklist {
             return None;
         }
         // The next entry to look at.
-        let mut next = match (self.cursor, forward) {
+        let next = match (self.cursor, forward) {
             (Cursor::None, true) => 0,
             (Cursor::None, false) => len - 1,
             (Cursor::At(i), true) => (i + 1) % len,
@@ -173,25 +173,30 @@ impl Quicklist {
             (Cursor::Gap(i), true) => i % len,
             (Cursor::Gap(i), false) => (i + len - 1) % len,
         };
-        let mut found = None;
-        for _ in 0..count.max(1) {
-            let hit = (0..len)
-                .map(|offset| {
-                    if forward {
-                        (next + offset) % len
-                    } else {
-                        (next + len - offset % len) % len
-                    }
-                })
-                .find(|&index| filter(&self.entries[index]))?;
-            found = Some(hit);
-            next = if forward {
-                (hit + 1) % len
-            } else {
-                (hit + len - 1) % len
-            };
+        // The walk visits the matching entries in a cycle, so it is computed directly over
+        // them: O(len) whatever `count` is.
+        let matches: Vec<usize> = (0..len)
+            .filter(|&index| filter(&self.entries[index]))
+            .collect();
+        let m = matches.len();
+        if m == 0 {
+            return None;
         }
-        found
+        // Steps after the first hit, reduced to one lap of the cycle.
+        let extra = (count.max(1) - 1) % m;
+        let index = if forward {
+            // The first hit is the first match at or after `next`, wrapping to the start.
+            let first = matches.partition_point(|&index| index < next) % m;
+            (first + extra) % m
+        } else {
+            // The first hit is the last match at or before `next`, wrapping to the end.
+            let first = match matches.partition_point(|&index| index <= next) {
+                0 => m - 1,
+                after => after - 1,
+            };
+            (first + m - extra) % m
+        };
+        Some(matches[index])
     }
 }
 
@@ -234,6 +239,25 @@ mod tests {
         assert_eq!(list.step(true, 1, any), Some(0));
         assert_eq!(list.step(true, 4, any), Some(0));
         assert_eq!(list.step(false, 2, any), Some(0));
+    }
+
+    #[test]
+    fn stepping_with_a_huge_count_is_reduced_to_one_lap() {
+        let mut list = list(&[("a", 1), ("b", 2), ("a", 3), ("b", 4), ("a", 5)]);
+        list.set_current(1);
+        let in_a = |entry: &Entry| entry.target == Target::Path("a".into());
+        // Three entries match; one lap is three steps (usize::MAX is a multiple of 3).
+        assert_eq!(list.step(true, usize::MAX, in_a), list.step(true, 3, in_a));
+        assert_eq!(list.step(true, 3, in_a), Some(0));
+        assert_eq!(
+            list.step(false, 3_000_000_001, in_a),
+            list.step(false, 1, in_a)
+        );
+        assert_eq!(
+            list.step(true, 3_000_000_002, in_a),
+            list.step(true, 2, in_a)
+        );
+        assert_eq!(list.step(true, 0, in_a), list.step(true, 1, in_a));
     }
 
     #[test]

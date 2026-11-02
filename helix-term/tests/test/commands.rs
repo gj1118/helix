@@ -1108,19 +1108,18 @@ async fn test_move_selection_single_selection_top_up() -> anyhow::Result<()> {
     .await?;
     Ok(())
 }
-// #[tokio::test(flavor = "multi_thread")]
-// async fn test_move_selection_single_selection_bottom_down() -> anyhow::Result<()> {
-//     // If going down on the bottom line, nothing should change
-//     // Note that this test is broken, due to the testing framework
-//     // implicitly entering a trailing newline. How to fix?
-//     test((
-//         "aaaaaa\nbbbbbb\ncccccc\ndd#[|d]#ddd",
-//         "<C-j><C-j>",
-//         "aaaaaa\nbbbbbb\ncccccc\ndd#[|d]#ddd",
-//     ))
-//     .await?;
-//     Ok(())
-// }
+#[tokio::test(flavor = "multi_thread")]
+async fn test_move_selection_single_selection_bottom_down() -> anyhow::Result<()> {
+    // If going down on the bottom line, nothing should change (the test framework adds a
+    // trailing newline; the empty "line" after it is not a line to swap with)
+    test((
+        "aaaaaa\nbbbbbb\ncccccc\ndd#[|d]#ddd",
+        "<C-j><C-j>",
+        "aaaaaa\nbbbbbb\ncccccc\ndd#[|d]#ddd",
+    ))
+    .await?;
+    Ok(())
+}
 #[tokio::test(flavor = "multi_thread")]
 async fn test_move_selection_block_up() -> anyhow::Result<()> {
     test((
@@ -1184,6 +1183,158 @@ async fn test_move_two_cursors_down() -> anyhow::Result<()> {
             d#(dd|)#ddd
             "},
     ))
+    .await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_move_two_cursors_on_one_line() -> anyhow::Result<()> {
+    test((
+        indoc! {"
+            aa#[|a]#a#(a|)#a
+            bbbbbb
+            cccccc
+            "},
+        "<C-j>",
+        indoc! {"
+            bbbbbb
+            aa#[|a]#a#(a|)#a
+            cccccc
+            "},
+    ))
+    .await?;
+    test((
+        indoc! {"
+            aaaaaa
+            bb#[|b]#b#(b|)#b
+            cccccc
+            "},
+        "<C-k>",
+        indoc! {"
+            bb#[|b]#b#(b|)#b
+            aaaaaa
+            cccccc
+            "},
+    ))
+    .await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_move_cursors_on_adjacent_lines() -> anyhow::Result<()> {
+    test((
+        indoc! {"
+            a#[|a]#aaaa
+            bbb#(b|)#bb
+            cccccc
+            dddddd
+            "},
+        "<C-j>",
+        indoc! {"
+            cccccc
+            a#[|a]#aaaa
+            bbb#(b|)#bb
+            dddddd
+            "},
+    ))
+    .await?;
+    test((
+        indoc! {"
+            aaaaaa
+            b#[|b]#bbbb
+            ccc#(c|)#cc
+            dddddd
+            "},
+        "<C-k>",
+        indoc! {"
+            b#[|b]#bbbb
+            ccc#(c|)#cc
+            aaaaaa
+            dddddd
+            "},
+    ))
+    .await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_move_cursors_with_one_at_the_document_edge() -> anyhow::Result<()> {
+    // The cursor on the first line stays, the other one still moves.
+    test((
+        indoc! {"
+            a#[|a]#aaaa
+            bbbbbb
+            ccc#(c|)#cc
+            dddddd
+            "},
+        "<C-k>",
+        indoc! {"
+            a#[|a]#aaaa
+            ccc#(c|)#cc
+            bbbbbb
+            dddddd
+            "},
+    ))
+    .await?;
+    // The cursor on the last line stays, the other one still moves.
+    test((
+        indoc! {"
+            aaaaaa
+            b#[|b]#bbbb
+            cccccc
+            ddd#(d|)#dd
+            "},
+        "<C-j>",
+        indoc! {"
+            aaaaaa
+            cccccc
+            b#[|b]#bbbb
+            ddd#(d|)#dd
+            "},
+    ))
+    .await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn goto_word_with_an_empty_jump_label_alphabet_does_nothing() -> anyhow::Result<()> {
+    let mut config = helpers::test_config();
+    config.editor.jump_label_alphabet = Vec::new();
+    test_with_config(
+        AppBuilder::new().with_config(config),
+        ("#[|h]#ello world\n", "gw", "#[|h]#ello world\n"),
+    )
+    .await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn index_errors_instead_of_overflowing() -> anyhow::Result<()> {
+    test((
+        "#[a|]# #(b|)# #(c|)#\n",
+        ":index --start 9 2<ret>",
+        "#[9|]# #(11|)# #(13|)#\n",
+    ))
+    .await?;
+    test((
+        "#[a|]# #(b|)# #(c|)#\n",
+        ":index --desc --pad --start 1 1<ret>",
+        "#[01|]# #(00|)# #(-1|)#\n",
+    ))
+    .await?;
+    test_key_sequence(
+        &mut AppBuilder::new()
+            .with_input_text("#[a|]# #(b|)#\n")
+            .build()?,
+        Some(":index --start 9223372036854775807<ret>"),
+        Some(&|app| {
+            assert_eq!("a b\n", helix_view::doc!(app.editor).text().to_string());
+            let (status, severity) = app.editor.get_status().unwrap();
+            assert!(status.contains("overflows"), "{status}");
+            assert_eq!(*severity, helix_view::editor::Severity::Error);
+        }),
+        false,
+    )
     .await?;
     Ok(())
 }
