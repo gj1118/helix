@@ -62,6 +62,7 @@
 | `bufferline` | Renders a line at the top of the editor displaying open buffers. Can be `always`, `never` or `multiple` (only shown if more than one buffer is in use) | `"never"` |
 | `color-modes` | Whether to color the mode indicator with different colors depending on the mode itself | `false` |
 | `text-width` | Maximum line length. Used for the `:reflow` command and soft-wrapping if `soft-wrap.wrap-at-text-width` is set | `80` |
+| `fold-textobjects` | Text objects folded automatically when a document is opened, such as `["comment"]`. See [Folding](./textobjects.md#folding-text-objects) | `[]` |
 | `workspace-lsp-roots` | Directories relative to the workspace root that are treated as LSP roots. Should only be set in `.helix/config.toml` | `[]` |
 | `default-line-ending` | The line ending to use for new documents. Can be `native`, `lf`, `crlf`, `ff`, `cr` or `nel`. `native` uses the platform's native line ending (`crlf` on Windows, otherwise `lf`). | `"native"` |
 | `insert-final-newline` | Whether to automatically insert a trailing line-ending on write if missing | `true` |
@@ -621,14 +622,13 @@ styling](./themes.md#notification-and-cmdline-popup-styling).
 ### `[editor.inline-blame]` Section
 
 Shows the latest commit that changed the line under the cursor, as virtual text at the end of the
-line. The same information is available on demand with `<space>B`, which shows it in the status
-line.
+line. `<space>B` (`blame_line`) shows the same information for the cursor line in the statusline.
 
 | Key | Description | Default |
 |--|--|--|
-| `show` | `"cursor-line"` (only the cursor line), `"all-lines"` or `"never"` | `"never"` |
-| `format` | Text to show. Placeholders: `{author}`, `{commit}`, `{time-ago}`, `{title}` | `"{author}, {time-ago} • {title} • {commit}"` |
-| `auto-fetch` | Fetch the blame in the background, so it is ready before you ask for it | `false` |
+| `show` | When to show inline blame: `"cursor-line"` (only the primary cursor's line), `"all-lines"` (every line) or `"never"` | `"never"` |
+| `format` | Text to show. See the placeholders below | `"{author}, {time-ago} • {title} • {commit}"` |
+| `auto-fetch` | Fetch the blame of the file in the background, so it is ready without `<space>B` | `false` |
 
 ```toml
 [editor.inline-blame]
@@ -636,6 +636,21 @@ show = "cursor-line"
 format = "{author} • {time-ago}"
 auto-fetch = false
 ```
+
+The `format` placeholders are:
+
+- `{author}`: the author of the commit
+- `{date}`: when the commit was made
+- `{time-ago}`: how long ago the commit was made
+- `{title}`: the title of the commit
+- `{body}`: the body of the commit
+- `{commit}`: the short hexadecimal SHA-1 hash of the commit
+- `{email}`: the email address of the author
+
+With `auto-fetch = false`, the blame of a file is fetched only when you ask for it with `<space>B`, so
+there can be a short delay. With `auto-fetch = true` it is fetched in the background, and `<space>B`
+then answers at once. When a file is opened, inline blame does not appear even with `show` set to
+`"all-lines"` or `"cursor-line"` until its blame has been fetched, which `<space>B` does.
 
 The color of the indicator is the `ui.virtual.inline-blame` theme key.
 
@@ -928,7 +943,7 @@ Options for soft wrapping lines that exceed the view width:
 | `enable`             | Whether soft wrapping is enabled.                            | `false` |
 | `max-wrap`           | Maximum free space left at the end of the line.              | `20`    |
 | `max-indent-retain`  | Maximum indentation to carry over when soft wrapping a line. | `40`    |
-| `wrap-indicator`     | Text inserted before soft wrapped lines, highlighted with `ui.virtual.wrap` | `"↪ "`    |
+| `wrap-indicator`     | Text inserted before soft wrapped lines, highlighted with `ui.virtual.wrap`. The line number gutter shows the same text on the continuation rows of a wrapped line | `"↪ "`    |
 | `wrap-at-text-width` | Soft wrap at `text-width` instead of using the full viewport size. | `false` |
 
 Example:

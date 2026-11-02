@@ -46,3 +46,37 @@ documentation.
 > 💡 This feature relies on tree-sitter textobjects
 > and requires the corresponding query file to work properly.
 
+## Folding text objects
+
+Folding hides the body of a text object (a function, a comment, a block) and shows only its first line,
+so you can read the structure of a file without the details. Folded text still takes part in movement
+and selection: moving over a fold steps past its hidden lines.
+
+| Key                    | Command       | Action                                                          |
+| ---                    | ---           | ---                                                             |
+| `z f` / `Z f`          | `fold`        | Fold the text object under the cursor                           |
+| `z F` / `Z F`          | `unfold`      | Unfold the text object under the cursor                         |
+| `z Alt-f` / `Z Alt-f`  | `toggle_fold` | Fold or unfold the text object at the primary cursor            |
+
+`:fold` and `:unfold` do the same from the command line. `:fold` takes the names of text objects as
+positional arguments, and these flags:
+
+- `-s` / `--selection`: fold the lines of the current selection (it must span at least two lines and end
+  with a line ending). It cannot be combined with the other flags or with text object names.
+- `-d` / `--document`: fold every text object of the names given in the entire document.
+- `-a` / `--all`: fold all text objects in the document, except the names given.
+
+```text
+:fold -d comment
+:fold -a comment
+:fold -s
+```
+
+To fold text objects automatically whenever a document is opened, list them in `fold-textobjects` (see
+[`[editor]`](./editor.md)):
+
+```toml
+[editor]
+fold-textobjects = ["comment"]  # fold all comments on open
+```
+
