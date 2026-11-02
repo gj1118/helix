@@ -4,11 +4,17 @@
 //! the counter between redraws to find out whether their results are stale. The
 //! watcher stops when the value is dropped.
 //!
-//! Directories are watched one by one (not recursively) from a background thread
-//! that walks the tree like the file picker does: ignored directories (`.gitignore`,
-//! `.ignore`), `.git` (except its top level) and noise such as `target` are skipped,
-//! and at most [`MAX_WATCHED_DIRS`] directories are watched. Opening a picker thus
-//! never waits for the walk, and huge trees don't use up the inotify watches.
+//! The watches are set up on a background thread, so opening a picker never waits
+//! for them. How depends on the platform (see [`Strategy`]):
+//!
+//! - Where the OS watches a tree natively (FSEvents on macOS, ReadDirectoryChangesW
+//!   on Windows), the root is watched recursively in one call, which doesn't walk
+//!   the tree. Changes in noise directories are filtered out as they arrive.
+//! - Elsewhere (inotify on Linux, kqueue on the BSDs) a recursive watch walks the
+//!   whole tree and adds a watch per directory, ignored ones included. So the tree
+//!   is walked like the file picker does: ignored directories (`.gitignore`,
+//!   `.ignore`), `.git` (except its top level) and noise such as `target` are
+//!   skipped, and at most [`MAX_WATCHED_DIRS`] directories are watched.
 
 use std::{
     path::{Component, Path, PathBuf},
@@ -22,8 +28,31 @@ use notify::{
     event::ModifyKind, Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher,
 };
 
-/// The most directories one [`FsWatch`] watches.
+/// The most directories one [`FsWatch`] watches with [`Strategy::PerDirectory`].
 const MAX_WATCHED_DIRS: usize = 4096;
+
+/// How a tree is watched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Strategy {
+    /// One recursive watch on the root. Right where the OS watches trees natively:
+    /// there, every non-recursive `watch` call is expensive (on macOS notify
+    /// restarts the FSEvents stream and loses the changes made meanwhile; on Windows
+    /// it starts a thread per directory).
+    Recursive,
+    /// A non-recursive watch per directory that isn't ignored. Right where watching
+    /// recursively means a watch per directory anyway (inotify, kqueue).
+    PerDirectory,
+}
+
+impl Strategy {
+    fn for_platform() -> Self {
+        if cfg!(any(target_os = "macos", target_os = "windows")) {
+            Strategy::Recursive
+        } else {
+            Strategy::PerDirectory
+        }
+    }
+}
 
 pub struct FsWatch {
     generation: Arc<AtomicU64>,
@@ -77,6 +106,10 @@ impl FsWatch {
     /// The directories are added from a background thread, so changes made right
     /// after this returns may go unnoticed.
     pub fn new(root: &Path) -> Option<Self> {
+        Self::with_strategy(root, Strategy::for_platform())
+    }
+
+    fn with_strategy(root: &Path, strategy: Strategy) -> Option<Self> {
         let generation = Arc::new(AtomicU64::new(0));
         let counter = generation.clone();
         let (new_dirs, new_dirs_rx) = mpsc::channel::<PathBuf>();
@@ -92,10 +125,12 @@ impl FsWatch {
                 // (a rename, not a create). The watcher can't be called from its own
                 // event handler, so the background thread adds them; it skips paths
                 // that are not directories (e.g. the old side of a rename).
-                if matches!(
-                    event.kind,
-                    EventKind::Create(_) | EventKind::Modify(ModifyKind::Name(_))
-                ) {
+                if strategy == Strategy::PerDirectory
+                    && matches!(
+                        event.kind,
+                        EventKind::Create(_) | EventKind::Modify(ModifyKind::Name(_))
+                    )
+                {
                     for path in event.paths {
                         if !is_noise(&path) {
                             let _ = new_dirs.send(path);
@@ -113,6 +148,19 @@ impl FsWatch {
         std::thread::Builder::new()
             .name("fs-watch".into())
             .spawn(move || {
+                if strategy == Strategy::Recursive {
+                    // One call; the OS covers new and moved directories itself.
+                    if let Some(watcher) = weak.upgrade() {
+                        let result = watcher
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .watch(&root, RecursiveMode::Recursive);
+                        if let Err(err) = result {
+                            log::debug!("could not watch {}: {err}", root.display());
+                        }
+                    }
+                    return;
+                }
                 let mut watched = 0;
                 // The top level of `.git` holds `index` and `HEAD`.
                 let git = root.join(".git");
@@ -168,7 +216,7 @@ fn watch_dir(watcher: &Weak<Mutex<RecommendedWatcher>>, dir: &Path, watched: &mu
     };
     let result = watcher
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .watch(dir, RecursiveMode::NonRecursive);
     match result {
         Ok(()) => *watched += 1,
@@ -233,9 +281,11 @@ mod tests {
         panic!("no change detected");
     }
 
+    /// Repeats `change` until the watcher sees it, for up to 5 s (FSEvents delivers
+    /// events with some delay, and the watches are set up in the background).
     fn wait_for(watch: &FsWatch, mut change: impl FnMut(usize)) -> bool {
         let before = watch.generation();
-        for i in 0..40 {
+        for i in 0..100 {
             change(i);
             std::thread::sleep(std::time::Duration::from_millis(50));
             if watch.generation() != before {
@@ -245,27 +295,47 @@ mod tests {
         false
     }
 
-    #[test]
-    fn watches_subdirectories_but_not_ignored_ones() {
+    /// Nested and newly created directories are watched with either strategy; with
+    /// [`Strategy::PerDirectory`] ignored directories are not.
+    fn watches_subdirectories(strategy: Strategy) {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join("src/deep")).unwrap();
         std::fs::create_dir_all(root.join("ignored/deep")).unwrap();
         std::fs::write(root.join(".ignore"), "ignored/\n").unwrap();
-        let Some(watch) = FsWatch::new(root) else {
+        let Some(watch) = FsWatch::with_strategy(root, strategy) else {
             return; // no watcher support in this environment
         };
         assert!(wait_for(&watch, |i| {
             std::fs::write(root.join("src/deep/a.txt"), i.to_string()).unwrap()
         }));
-        assert!(!wait_for(&watch, |i| {
-            std::fs::write(root.join("ignored/deep/a.txt"), i.to_string()).unwrap()
-        }));
+        if strategy == Strategy::PerDirectory {
+            assert!(!wait_for(&watch, |i| {
+                std::fs::write(root.join("ignored/deep/a.txt"), i.to_string()).unwrap()
+            }));
+        }
         // Directories created later are watched too.
         std::fs::create_dir(root.join("src/new")).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(300));
         assert!(wait_for(&watch, |i| {
             std::fs::write(root.join("src/new/a.txt"), i.to_string()).unwrap()
         }));
+    }
+
+    #[test]
+    fn watches_subdirectories_with_the_platform_strategy() {
+        watches_subdirectories(Strategy::for_platform());
+    }
+
+    #[test]
+    fn watches_subdirectories_recursively() {
+        watches_subdirectories(Strategy::Recursive);
+    }
+
+    // kqueue's per-directory watching is not exercised on macOS: it isn't used there.
+    #[test]
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    fn watches_subdirectories_one_by_one() {
+        watches_subdirectories(Strategy::PerDirectory);
     }
 }
