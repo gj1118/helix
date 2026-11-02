@@ -95,11 +95,31 @@ pub struct Container {
     node_bounds: Vec<ContainerBounds>,
 }
 
+/// Relative size of a split within its container.
+///
+/// All weights share one unit: a freshly created split weighs
+/// [`DEFAULT_WEIGHT`], a split in focus mode [`EXPANDED_WEIGHT`], and `Alt-w`
+/// resizing adds or removes one unit at a time (bounded by the
+/// `max-panel-*` settings). Dragging a divider rewrites the weights in the
+/// same unit (keeping their average at [`DEFAULT_WEIGHT`]) rather than in
+/// cells, so focus mode and keyboard resizing behave the same afterwards.
+type Weight = f64;
+const DEFAULT_WEIGHT: Weight = 10.0;
+const EXPANDED_WEIGHT: Weight = 40.0;
+/// Smallest weight keyboard resizing shrinks a split to.
+const MIN_WEIGHT: Weight = 1.0;
+
 #[derive(Debug, Clone, Copy)]
 pub struct ContainerBounds {
-    width: usize,
-    height: usize,
+    width: Weight,
+    height: Weight,
     expand: bool,
+}
+
+/// Cells for a child of `weight` when each weight unit is `slot` cells wide.
+/// The small bias absorbs float error so exact sizes don't floor one short.
+fn weighted_cells(slot: f64, weight: Weight) -> u16 {
+    (slot * weight + 1e-6).floor() as u16
 }
 
 impl Container {
@@ -133,8 +153,8 @@ impl Container {
 
     fn add_child_bounds(&mut self) -> &mut Self {
         self.node_bounds.push(ContainerBounds {
-            width: 10,
-            height: 10,
+            width: DEFAULT_WEIGHT,
+            height: DEFAULT_WEIGHT,
             expand: false,
         });
         self
@@ -144,8 +164,8 @@ impl Container {
         self.node_bounds.insert(
             index,
             ContainerBounds {
-                width: 10,
-                height: 10,
+                width: DEFAULT_WEIGHT,
+                height: DEFAULT_WEIGHT,
                 expand: false,
             },
         );
@@ -160,21 +180,21 @@ impl Container {
         self.children.len()
     }
 
-    fn calculate_slots_width(&self) -> usize {
+    fn calculate_slots_width(&self) -> Weight {
         self.node_bounds
             .iter()
             .map(|bounds| match bounds.expand {
-                true => 40,
+                true => EXPANDED_WEIGHT,
                 false => bounds.width,
             })
             .sum()
     }
 
-    fn calculate_slots_height(&self) -> usize {
+    fn calculate_slots_height(&self) -> Weight {
         self.node_bounds
             .iter()
             .map(|bounds| match bounds.expand {
-                true => 40,
+                true => EXPANDED_WEIGHT,
                 false => bounds.height,
             })
             .sum()
@@ -582,14 +602,14 @@ impl Tree {
                         Layout::Horizontal => {
                             let len = container.children.len();
                             let slots = container.calculate_slots_height();
-                            let slot_height = area.height as f32 / slots as f32;
+                            let slot_height = area.height as f64 / slots;
                             let mut child_y = area.y;
 
                             for (i, child) in container.children.iter().enumerate() {
                                 let bounds = container.node_bounds[i];
                                 let height = match bounds.expand {
-                                    true => (40.0 * slot_height) as u16,
-                                    false => (slot_height * bounds.height as f32).floor() as u16,
+                                    true => weighted_cells(slot_height, EXPANDED_WEIGHT),
+                                    false => weighted_cells(slot_height, bounds.height),
                                 };
 
                                 let mut area = Rect::new(
@@ -620,7 +640,7 @@ impl Tree {
                             let used_area = area.width.saturating_sub(total_gap);
 
                             let slots = container.calculate_slots_width();
-                            let slot_width: f32 = used_area as f32 / slots as f32;
+                            let slot_width = used_area as f64 / slots;
 
                             // Pre-compute child widths using floor, then distribute remaining pixels fairly
                             let mut base_widths: Vec<u16> = Vec::with_capacity(len);
@@ -628,8 +648,8 @@ impl Tree {
                             for i in 0..len {
                                 let bounds = container.node_bounds[i];
                                 let w = match bounds.expand {
-                                    true => (40.0 * slot_width).floor() as u16,
-                                    false => (slot_width * bounds.width as f32).floor() as u16,
+                                    true => weighted_cells(slot_width, EXPANDED_WEIGHT),
+                                    false => weighted_cells(slot_width, bounds.width),
                                 };
                                 base_widths.push(w);
                                 sum_widths = sum_widths.saturating_add(w);
@@ -872,8 +892,8 @@ impl Tree {
                 if let Some(bounds) = self.get_active_node_bounds_mut(Layout::Vertical) {
                     match resize_type {
                         Resize::Shrink => {
-                            if bounds.width > 1 {
-                                bounds.width -= 1;
+                            if bounds.width > MIN_WEIGHT {
+                                bounds.width = (bounds.width - 1.0).max(MIN_WEIGHT);
                             }
                         }
                         Resize::Grow => {
@@ -882,10 +902,10 @@ impl Tree {
                                 (terminal_width as f32 * config.max_panel_width_percent) as usize
                             } else {
                                 config.max_panel_width
-                            };
+                            } as Weight;
 
                             if bounds.width < max_width {
-                                bounds.width += 1;
+                                bounds.width = (bounds.width + 1.0).min(max_width);
                             }
                         }
                     };
@@ -897,8 +917,8 @@ impl Tree {
                 if let Some(bounds) = self.get_active_node_bounds_mut(Layout::Horizontal) {
                     match resize_type {
                         Resize::Shrink => {
-                            if bounds.height > 1 {
-                                bounds.height -= 1;
+                            if bounds.height > MIN_WEIGHT {
+                                bounds.height = (bounds.height - 1.0).max(MIN_WEIGHT);
                             }
                         }
                         Resize::Grow => {
@@ -907,10 +927,10 @@ impl Tree {
                                 (terminal_height as f32 * config.max_panel_height_percent) as usize
                             } else {
                                 config.max_panel_height
-                            };
+                            } as Weight;
 
                             if bounds.height < max_height {
-                                bounds.height += 1;
+                                bounds.height = (bounds.height + 1.0).min(max_height);
                             }
                         }
                     };
@@ -962,10 +982,12 @@ impl Tree {
     /// amount. Sizes are clamped so neither neighbour vanishes. Returns whether
     /// the layout changed.
     ///
-    /// The container's weights are rewritten to the splits' current sizes
-    /// (which keeps all the others exactly where they are) before the two
-    /// neighbours are adjusted. Any "focus mode" expansion in the container
-    /// ends, as the weights now describe the real sizes.
+    /// The container's weights are rewritten in proportion to the splits'
+    /// current sizes (which keeps all the others exactly where they are)
+    /// before the two neighbours are adjusted. The weights stay in the usual
+    /// unit (averaging [`DEFAULT_WEIGHT`]), so focus mode and keyboard
+    /// resizing keep working afterwards. Any "focus mode" expansion in the
+    /// container ends, as the weights now describe the real sizes.
     pub fn drag_divider(&mut self, divider: SplitDivider, row: u16, column: u16) -> bool {
         let SplitDivider {
             container, index, ..
@@ -1011,6 +1033,9 @@ impl Tree {
         else {
             return false;
         };
+        // Cells per weight unit, chosen so the average weight is DEFAULT_WEIGHT.
+        let total_cells: u32 = sizes.iter().map(|&s| s.max(1) as u32).sum();
+        let unit = sizes.len() as f64 * DEFAULT_WEIGHT / total_cells.max(1) as f64;
         for (i, bounds) in node.node_bounds.iter_mut().enumerate() {
             let size = if i == index {
                 new_first
@@ -1019,7 +1044,7 @@ impl Tree {
             } else {
                 sizes.get(i).copied().unwrap_or(1)
             };
-            let weight = size.max(1) as usize;
+            let weight = size.max(1) as f64 * unit;
             match layout {
                 Layout::Vertical => bounds.width = weight,
                 Layout::Horizontal => bounds.height = weight,
@@ -1812,6 +1837,53 @@ mod test {
 
         assert!(tree.drag_divider(divider, 0, 10));
         assert_eq!(tree.get(top).area.height, MIN_SPLIT_HEIGHT);
+    }
+
+    #[test]
+    fn focus_mode_after_dragging_grows_the_focused_split() {
+        let (mut tree, left) = new_tree(101, 40);
+        let right = tree.split(
+            View::new(DocumentId::default(), GutterConfig::default()),
+            Layout::Vertical,
+        );
+        let gap = tree.get(left).area.right();
+        let divider = tree.divider_at(10, gap).expect("divider on the gap");
+        assert!(tree.drag_divider(divider, 10, 60));
+        assert_eq!(tree.get(left).area.width, 60);
+        assert_eq!(tree.get(right).area.width, 40);
+
+        // Focus mode must enlarge the focused split, never shrink it.
+        tree.focus = left;
+        tree.toggle_focus_window();
+        assert!(tree.get(left).area.width > 60);
+        tree.toggle_focus_window();
+        assert_eq!(tree.get(left).area.width, 60);
+
+        tree.focus = right;
+        tree.toggle_focus_window();
+        assert!(tree.get(right).area.width > 40);
+        tree.toggle_focus_window();
+        assert_eq!(tree.get(right).area.width, 40);
+    }
+
+    #[test]
+    fn keyboard_resize_still_works_after_dragging() {
+        let config = crate::editor::Config::default();
+        let (mut tree, left) = new_tree(101, 40);
+        let _right = tree.split(
+            View::new(DocumentId::default(), GutterConfig::default()),
+            Layout::Vertical,
+        );
+        let gap = tree.get(left).area.right();
+        let divider = tree.divider_at(10, gap).expect("divider on the gap");
+        assert!(tree.drag_divider(divider, 10, 60));
+
+        tree.focus = left;
+        tree.resize_buffer(Resize::Grow, Dimension::Width, &config);
+        assert!(tree.get(left).area.width > 60);
+        let grown = tree.get(left).area.width;
+        tree.resize_buffer(Resize::Shrink, Dimension::Width, &config);
+        assert!(tree.get(left).area.width < grown);
     }
 
     #[test]

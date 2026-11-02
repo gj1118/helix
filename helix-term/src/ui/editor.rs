@@ -68,7 +68,7 @@ pub struct EditorView {
     bufferline_info: BufferLineInfo,
     /// Tracks if the terminal window is focused by reaction to terminal focus events
     terminal_focused: bool,
-    bufferline_positions: Vec<u16>,
+    bufferline_positions: Vec<usize>,
     /// Tracks if there are prompt layers active (updated by compositor)
     pub prompt_active: bool,
     notification_popup: NotificationPopup,
@@ -89,9 +89,9 @@ struct BufferlineCache {
     names: Vec<(DocumentId, String)>,
     modified: Vec<bool>,
     texts: Vec<String>,
-    widths: Vec<u16>,
-    positions: Vec<u16>,
-    total_width: u16,
+    widths: Vec<usize>,
+    positions: Vec<usize>,
+    total_width: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -690,9 +690,13 @@ impl EditorView {
                 }
             }
             InlineBlameShow::AllLines => {
-                let mut blame_lines = vec![None; text.len_lines()];
+                // Only the visible lines: sizing this by the whole file would allocate
+                // per line of the document on every frame.
+                let visible = view.line_range(doc);
+                let first_line = visible.start;
+                let mut blame_lines = vec![None; visible.len()];
 
-                let blame_for_all_lines = view.line_range(doc).filter_map(|line_idx| {
+                let blame_for_all_lines = visible.filter_map(|line_idx| {
                     // do not render inline blame for empty lines to reduce visual noise
                     if text.line(line_idx) != doc.line_ending.as_str() {
                         doc.line_blame(line_idx as u32, &inline_blame.format)
@@ -704,12 +708,15 @@ impl EditorView {
                 });
 
                 for (line_idx, blame) in blame_for_all_lines {
-                    blame_lines[line_idx] = Some(blame);
+                    blame_lines[line_idx - first_line] = Some(blame);
                 }
 
                 decorations.add_decoration(InlineBlame::new(
                     theme.get(INLINE_BLAME_SCOPE),
-                    text_decorations::blame::LineBlame::ManyLines(blame_lines),
+                    text_decorations::blame::LineBlame::ManyLines {
+                        first_line,
+                        lines: blame_lines,
+                    },
                 ));
             }
         }
@@ -1197,61 +1204,63 @@ impl EditorView {
         // Rebuild cache if document set changed
         self.refresh_bufferline_cache(editor);
 
-        // Use cached values directly
+        // Use cached values directly. All bufferline coordinates are display
+        // columns relative to the start of the (virtual, unscrolled) line,
+        // tracked as `usize` so thousands of buffers can't overflow.
         let total_width = self.bufferline_cache.total_width;
         let buffer_texts = &self.bufferline_cache.texts;
         let buffer_widths = &self.bufferline_cache.widths;
         self.bufferline_positions = self.bufferline_cache.positions.clone();
 
+        let view_width = viewport.width as usize;
+
         // Determine scroll offset
-        let scroll_offset =
-            if let Some(current_idx) = editor.documents().position(|d| d.id() == current_doc) {
-                if let Some(&target_x) = self.bufferline_positions.get(current_idx) {
-                    if target_x >= viewport.width / 2 {
-                        target_x
-                            .saturating_sub(viewport.width / 2)
-                            .min(total_width.saturating_sub(viewport.width))
-                    } else {
-                        0
-                    }
+        let scroll_offset = editor
+            .documents()
+            .position(|d| d.id() == current_doc)
+            .and_then(|current_idx| self.bufferline_positions.get(current_idx))
+            .map_or(0, |&target_x| {
+                if target_x >= view_width / 2 {
+                    (target_x - view_width / 2).min(total_width.saturating_sub(view_width))
                 } else {
                     0
                 }
-            } else {
-                0
-            };
+            });
+
+        let config = editor.config();
+        let sep = config.bufferline.separator.as_str();
+        let sep_width = sep.width();
 
         // Second pass: render with the calculated offset
         for (idx, doc) in editor.documents().enumerate() {
             let buffer_x = self.bufferline_positions[idx];
             let text = &buffer_texts[idx];
 
-            // Render separator if not first document
+            // Render separator if not first document (only when fully visible
+            // on the left edge, so it is never drawn over another label).
             if idx > 0 {
-                let sep = &editor.config().bufferline.separator;
-                let sep_x = buffer_x
-                    .saturating_sub(sep.len() as u16)
-                    .saturating_sub(scroll_offset);
-                if sep_x < viewport.width {
-                    let render_x = viewport.x + sep_x;
-                    surface.set_stringn(
-                        render_x,
-                        viewport.y,
-                        sep,
-                        (viewport.width - sep_x) as usize,
-                        bufferline_inactive,
-                    );
+                let sep_start = buffer_x.saturating_sub(sep_width);
+                if sep_start >= scroll_offset {
+                    let sep_x = sep_start - scroll_offset;
+                    if sep_x < view_width {
+                        surface.set_stringn(
+                            viewport.x + sep_x as u16,
+                            viewport.y,
+                            sep,
+                            view_width - sep_x,
+                            bufferline_inactive,
+                        );
+                    }
                 }
             }
 
-            // Skip buffers that are completely outside the visible area
-            let render_x = buffer_x.saturating_sub(scroll_offset);
-            if render_x >= viewport.width {
+            // Stop at buffers that start past the visible area
+            if buffer_x >= scroll_offset + view_width {
                 break;
             }
 
             // Skip buffers that end before the visible area
-            if buffer_x + buffer_widths[idx] < scroll_offset {
+            if buffer_x + buffer_widths[idx] <= scroll_offset {
                 continue;
             }
 
@@ -1261,33 +1270,31 @@ impl EditorView {
                 bufferline_inactive
             };
 
-            let mut visible_text = text.clone();
-            let mut text_start_x = render_x;
-
-            // Clip text if it starts before the visible area
-            if buffer_x < scroll_offset {
-                let chars_to_skip = (scroll_offset - buffer_x) as usize;
-                visible_text = text.chars().skip(chars_to_skip).collect();
-                text_start_x = viewport.x;
+            // Clip text (by display columns) if it starts before the visible area
+            let (visible_text, rel_x) = if buffer_x < scroll_offset {
+                skip_display_columns(text, scroll_offset - buffer_x)
+            } else {
+                (
+                    std::borrow::Cow::Borrowed(text.as_str()),
+                    buffer_x - scroll_offset,
+                )
+            };
+            if rel_x >= view_width {
+                continue;
             }
 
-            let actual_render_x = viewport.x + text_start_x;
-            let available_width = viewport.width.saturating_sub(text_start_x);
-
-            surface.set_stringn(
-                actual_render_x,
+            let start_x = viewport.x + rel_x as u16;
+            let (end_x, _) = surface.set_stringn(
+                start_x,
                 viewport.y,
                 &visible_text,
-                available_width as usize,
+                view_width - rel_x,
                 style,
             );
 
-            // Track buffer info for mouse clicks (adjust for scroll offset)
-            let start_x = actual_render_x;
-            let end_x =
-                (actual_render_x + visible_text.len() as u16).min(viewport.x + viewport.width);
+            // Track the columns actually drawn for mouse clicks
             self.bufferline_info
-                .add_buffer_info(doc.id(), start_x..end_x);
+                .add_buffer_info(doc.id(), start_x..end_x.max(start_x));
         }
     }
 
@@ -1299,11 +1306,9 @@ impl EditorView {
         let current_paths: Vec<String> = editor
             .documents()
             .map(|d| {
-                d.path()
-                    .unwrap_or(&scratch)
-                    .to_str()
-                    .unwrap_or_default()
-                    .to_string()
+                // Lossy conversion so non-UTF-8 paths keep distinct names
+                // instead of all collapsing to "".
+                d.path().unwrap_or(&scratch).to_string_lossy().into_owned()
             })
             .collect();
 
@@ -1343,12 +1348,14 @@ impl EditorView {
         let mut texts = Vec::new();
         let mut widths = Vec::new();
         let mut positions = Vec::new();
-        let mut total_width = 0u16;
+        let mut total_width = 0usize;
+        // Widths are measured in display columns (not bytes): the default
+        // separator "│" and file icons are multi-byte but one column wide.
+        let sep_width = editor.config().bufferline.separator.width();
 
         for (idx, doc) in editor.documents().enumerate() {
             if idx > 0 {
-                let sep = &editor.config().bufferline.separator;
-                total_width += sep.len() as u16;
+                total_width = total_width.saturating_add(sep_width);
             }
 
             let fname = &names[idx].1;
@@ -1364,10 +1371,10 @@ impl EditorView {
             };
 
             positions.push(total_width);
-            let text_width = text.len() as u16;
+            let text_width = text.width();
             texts.push(text);
             widths.push(text_width);
-            total_width += text_width;
+            total_width = total_width.saturating_add(text_width);
         }
 
         self.bufferline_cache = BufferlineCache {
@@ -1384,32 +1391,41 @@ impl EditorView {
 
     /// Compute a unique display name for the document at `doc_index` in the component list.
     /// This is the O(n²) core of `make_document_name` but called only when documents change.
+    ///
+    /// Uses the shortest path suffix that no other document shares. Documents whose full
+    /// paths are identical (e.g. several scratch buffers) can't be told apart by any
+    /// suffix, so they get an ordinal (`[scratch] (2)`) instead.
     fn compute_display_name(components: &[Vec<String>], doc_index: usize) -> String {
-        let doc_components_len = components[doc_index].len();
-        let mut k = 1;
+        let doc_components = &components[doc_index];
+        let doc_components_len = doc_components.len();
+        // Past the longest path every suffix is the whole path, so nothing more can change.
+        let max_len = components.iter().map(Vec::len).max().unwrap_or(0).max(1);
 
-        loop {
+        for k in 1..=max_len {
             let start = doc_components_len.saturating_sub(k);
-            let curr_doc: Vec<&str> = components[doc_index][start..]
-                .iter()
-                .map(|s| s.as_str())
-                .collect();
+            let curr_doc = &doc_components[start..];
 
-            let count = components
+            let clash = components
                 .iter()
                 .enumerate()
                 .filter(|&(index, _)| index != doc_index)
-                .filter(|&(_, parts)| {
-                    let len = parts.len();
-                    let start = len.saturating_sub(k);
-                    parts[start..] == curr_doc
-                })
-                .count();
+                .any(|(_, parts)| parts[parts.len().saturating_sub(k)..] == *curr_doc);
 
-            if count == 0 {
+            if !clash {
                 return curr_doc.join(MAIN_SEPARATOR_STR);
             }
-            k += 1;
+        }
+
+        // Identical to at least one other document: number the duplicates in order.
+        let full = doc_components.join(MAIN_SEPARATOR_STR);
+        let ordinal = components[..doc_index]
+            .iter()
+            .filter(|parts| *parts == doc_components)
+            .count();
+        if ordinal == 0 {
+            full
+        } else {
+            format!("{full} ({})", ordinal + 1)
         }
     }
 
@@ -1436,26 +1452,6 @@ impl EditorView {
             surface
                 .set_stringn(x, viewport.y, content, remaining, style)
                 .0
-        }
-
-        /// Truncate a crumb name in the middle with `…` when it exceeds
-        /// `max_len` (when `max_len` is non-zero).
-        fn truncate_name(name: &str, max_len: usize) -> std::borrow::Cow<'_, str> {
-            const ELLIPSIS: char = '…';
-            if max_len == 0 || name.chars().count() <= max_len {
-                return std::borrow::Cow::Borrowed(name);
-            }
-            let chars: Vec<char> = name.chars().collect();
-            let keep = max_len.saturating_sub(1);
-            let head = keep.div_ceil(2).max(1);
-            let tail = keep - head;
-            let mut out = String::with_capacity(max_len * 4);
-            out.extend(&chars[..head]);
-            out.push(ELLIPSIS);
-            if tail > 0 {
-                out.extend(&chars[chars.len() - tail..]);
-            }
-            std::borrow::Cow::Owned(out)
         }
 
         let config = editor.config();
@@ -1581,7 +1577,7 @@ impl EditorView {
                     _ => style,
                 };
 
-                let name = truncate_name(&symbol.name, max_name_length);
+                let name = truncate_crumb_name(&symbol.name, max_name_length);
                 x = draw_element(surface, viewport, x, &name, style);
             }
         }
@@ -2715,6 +2711,45 @@ impl Component for EditorView {
     }
 }
 
+/// Truncate a breadcrumb name in the middle with `…` when it exceeds
+/// `max_len` characters (when `max_len` is non-zero). The result never has
+/// more than `max_len` characters.
+fn truncate_crumb_name(name: &str, max_len: usize) -> std::borrow::Cow<'_, str> {
+    const ELLIPSIS: char = '…';
+    let char_count = name.chars().count();
+    if max_len == 0 || char_count <= max_len {
+        return std::borrow::Cow::Borrowed(name);
+    }
+    // Room for the ellipsis plus `keep` characters of the name (possibly none).
+    let keep = max_len - 1;
+    let head = keep.div_ceil(2);
+    let tail = keep - head;
+    let mut out = String::with_capacity(max_len * 4);
+    out.extend(name.chars().take(head));
+    out.push(ELLIPSIS);
+    out.extend(name.chars().skip(char_count - tail));
+    std::borrow::Cow::Owned(out)
+}
+
+/// Drop the first `cols` display columns of `text`.
+///
+/// Returns the remaining text and the column (relative to the clipped start) at which it
+/// begins; that is non-zero only when a wide grapheme straddles the clip point.
+fn skip_display_columns(text: &str, cols: usize) -> (std::borrow::Cow<'_, str>, usize) {
+    use helix_core::unicode::segmentation::UnicodeSegmentation;
+    let mut skipped = 0;
+    for (byte_idx, grapheme) in text.grapheme_indices(true) {
+        if skipped >= cols {
+            return (
+                std::borrow::Cow::Borrowed(&text[byte_idx..]),
+                skipped - cols,
+            );
+        }
+        skipped += grapheme.width();
+    }
+    (std::borrow::Cow::Borrowed(""), skipped.saturating_sub(cols))
+}
+
 #[derive(Debug, Default)]
 struct BufferLineInfo {
     visible_buffers: Vec<BufferInfo>,
@@ -2753,5 +2788,111 @@ fn canonicalize_key(key: &mut KeyEvent) {
     } = key
     {
         key.modifiers.remove(KeyModifiers::SHIFT)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn components(paths: &[&str]) -> Vec<Vec<String>> {
+        paths
+            .iter()
+            .map(|p| p.split(MAIN_SEPARATOR).map(String::from).collect())
+            .collect()
+    }
+
+    fn names(paths: &[&str]) -> Vec<String> {
+        let components = components(paths);
+        (0..paths.len())
+            .map(|i| EditorView::compute_display_name(&components, i))
+            .collect()
+    }
+
+    fn join(parts: &[&str]) -> String {
+        parts.join(MAIN_SEPARATOR_STR)
+    }
+
+    #[test]
+    fn display_name_unique_files_use_file_name() {
+        let a = join(&["src", "a.rs"]);
+        let b = join(&["src", "b.rs"]);
+        assert_eq!(names(&[&a, &b]), ["a.rs", "b.rs"]);
+    }
+
+    #[test]
+    fn display_name_nested_same_name_files() {
+        let a = join(&["", "proj", "foo", "mod.rs"]);
+        let b = join(&["", "proj", "bar", "mod.rs"]);
+        let c = join(&["", "other", "foo", "mod.rs"]);
+        assert_eq!(
+            names(&[&a, &b, &c]),
+            [
+                join(&["proj", "foo", "mod.rs"]),
+                join(&["bar", "mod.rs"]),
+                join(&["other", "foo", "mod.rs"]),
+            ]
+        );
+        // A path that is a suffix of another one.
+        let short = join(&["foo", "mod.rs"]);
+        let long = join(&["x", "foo", "mod.rs"]);
+        assert_eq!(names(&[&short, &long]), [short.clone(), long.clone()]);
+    }
+
+    #[test]
+    fn display_name_identical_paths_terminate() {
+        // Several scratch buffers (welcome scratch + `:new`) used to loop forever.
+        assert_eq!(
+            names(&[
+                SCRATCH_BUFFER_NAME,
+                SCRATCH_BUFFER_NAME,
+                SCRATCH_BUFFER_NAME
+            ]),
+            [
+                SCRATCH_BUFFER_NAME.to_string(),
+                format!("{SCRATCH_BUFFER_NAME} (2)"),
+                format!("{SCRATCH_BUFFER_NAME} (3)"),
+            ]
+        );
+        assert_eq!(names(&["", ""]), ["", " (2)"]);
+        let p = join(&["a", "b.rs"]);
+        let q = join(&["c", "d.rs"]);
+        // Identical paths can't be told apart by a suffix: full path plus ordinal.
+        assert_eq!(
+            names(&[&p, &q, &p]),
+            [p.clone(), "d.rs".into(), format!("{p} (2)")]
+        );
+        assert_eq!(names(&["x"]), ["x"]);
+    }
+
+    #[test]
+    fn truncate_crumb_name_small_limits() {
+        for name in ["abcdefgh", "äöüßéèêë", "日本語のテキスト", "ab", "a"] {
+            let len = name.chars().count();
+            for max_len in 0..=4 {
+                let out = truncate_crumb_name(name, max_len);
+                let out_len = out.chars().count();
+                if max_len == 0 || len <= max_len {
+                    assert_eq!(out, name);
+                } else {
+                    assert_eq!(out_len, max_len, "{name:?} max {max_len} -> {out:?}");
+                    assert!(out.contains('…'));
+                }
+            }
+        }
+        assert_eq!(truncate_crumb_name("abcdefgh", 1), "…");
+        assert_eq!(truncate_crumb_name("abcdefgh", 2), "a…");
+        assert_eq!(truncate_crumb_name("abcdefgh", 3), "a…h");
+        assert_eq!(truncate_crumb_name("äöüßéèêë", 4), "äö…ë");
+    }
+
+    #[test]
+    fn skip_display_columns_handles_wide_chars() {
+        assert_eq!(skip_display_columns("│ abc", 0), ("│ abc".into(), 0));
+        assert_eq!(skip_display_columns("│ abc", 1), (" abc".into(), 0));
+        assert_eq!(skip_display_columns("│ abc", 3), ("bc".into(), 0));
+        // A double width char straddling the clip point is dropped whole.
+        assert_eq!(skip_display_columns("日本", 1), ("本".into(), 1));
+        assert_eq!(skip_display_columns("ab", 5), ("".into(), 0));
     }
 }

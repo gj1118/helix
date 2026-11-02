@@ -77,13 +77,20 @@ impl NotificationPopup {
 
         // Remove expired checks/logs: get_active_notifications already filters them
 
-        // Immediately drop notifications that are inactive or expired (no fading)
+        // Immediately drop notifications that are no longer active (no fading).
+        // Refresh the kept copies: a duplicate message updates the timestamp of
+        // the original notification, which extends its lifetime.
         self.notifications.retain_mut(|item| {
-            let still_active = active_notifications
+            match active_notifications
                 .iter()
-                .any(|n| n.id == item.notification.id);
-            let is_expired = item.notification.is_expired();
-            still_active && !is_expired
+                .find(|n| n.id == item.notification.id)
+            {
+                Some(current) => {
+                    item.notification = (*current).clone();
+                    true
+                }
+                None => false,
+            }
         });
 
         // Add new notifications
@@ -116,7 +123,10 @@ impl NotificationPopup {
                         // Post back to the UI thread to mutate Editor safely
                         crate::job::dispatch(
                             move |editor: &mut helix_view::Editor, _compositor| {
-                                editor.dismiss_notification(id);
+                                // The notification may have been refreshed by a
+                                // duplicate since this was scheduled; only
+                                // dismiss it once its (new) timeout has passed.
+                                editor.dismiss_notification_if_expired(id);
                                 helix_event::request_redraw();
                             },
                         )
@@ -134,7 +144,24 @@ impl NotificationPopup {
         viewport: Rect,
         config: &helix_view::editor::NotificationConfig,
     ) {
+        // Smallest popup `render_notification` will draw.
+        const MIN_WIDTH: u16 = 4;
+        const MIN_HEIGHT: u16 = 3;
+
         let max_width = config.max_width.min(viewport.width.saturating_sub(4));
+        // Rows usable below/above the 1-row margin from the viewport edge.
+        let max_height = config
+            .max_height
+            .max(MIN_HEIGHT)
+            .min(viewport.height.saturating_sub(1));
+        if max_width < MIN_WIDTH || max_height < MIN_HEIGHT {
+            // No room (tiny terminal, narrow area beside a pinned panel, or a
+            // tiny `max-width`): don't render any notification.
+            for item in &mut self.notifications {
+                item.area = Rect::default();
+            }
+            return;
+        }
         let spacing = 1u16;
         let mut y_offset = 0u16;
 
@@ -145,8 +172,8 @@ impl NotificationPopup {
             // Estimate inner wrapping width: account for actual border thickness and padding only
             // Rounded corners do not require extra space; border thickness already accounts for frame size
             let wrap_inner_width = max_width
-                .saturating_sub(self.layout_thickness * 2)
-                .saturating_sub(self.layout_padding * 2)
+                .saturating_sub(self.layout_thickness.saturating_mul(2))
+                .saturating_sub(self.layout_padding.saturating_mul(2))
                 .max(1);
 
             // Build prefix for first line width calculation
@@ -180,16 +207,17 @@ impl NotificationPopup {
             }
 
             // Outer size from content + padding + border thickness (no extra rounded margin)
+            // `max_width >= MIN_WIDTH` and `max_height >= MIN_HEIGHT` were checked
+            // above, so these clamps can't have min > max.
             let width = content_max_w
-                .saturating_add(self.layout_padding * 2)
-                .saturating_add(self.layout_thickness * 2)
-                .clamp(3, max_width);
+                .saturating_add(self.layout_padding.saturating_mul(2))
+                .saturating_add(self.layout_thickness.saturating_mul(2))
+                .clamp(MIN_WIDTH, max_width);
 
-            let mut height = content_height
-                .saturating_add(self.layout_padding * 2)
-                .saturating_add(self.layout_thickness * 2)
-                .max(3);
-            height = height.min(config.max_height.max(3));
+            let height = content_height
+                .saturating_add(self.layout_padding.saturating_mul(2))
+                .saturating_add(self.layout_thickness.saturating_mul(2))
+                .clamp(MIN_HEIGHT, max_height);
 
             if log::log_enabled!(log::Level::Debug) {
                 log::debug!(
@@ -202,6 +230,12 @@ impl NotificationPopup {
                     self.layout_padding,
                     self.layout_thickness,
                 );
+            }
+
+            // Stacked notifications that no longer fit in the viewport are not drawn.
+            if y_offset.saturating_add(height).saturating_add(1) > viewport.height {
+                areas.push(Rect::default());
+                continue;
             }
 
             let (x, y) = match config.position {
@@ -242,16 +276,9 @@ impl NotificationPopup {
             areas.push(rect);
 
             // For bottom positions, we need to stack upwards
-            match config.position {
-                NotificationPosition::BottomLeft
-                | NotificationPosition::BottomCenter
-                | NotificationPosition::BottomRight => {
-                    y_offset += height + spacing;
-                }
-                _ => {
-                    y_offset += height + spacing;
-                }
-            }
+            // Stack the next notification (downwards for top positions,
+            // upwards for bottom positions).
+            y_offset = y_offset.saturating_add(height).saturating_add(spacing);
         }
 
         // Now assign the areas to the notifications
@@ -502,16 +529,9 @@ impl NotificationPopup {
                     }
                 }
 
-                // Calculate inner area manually using configured gradient thickness
-                {
-                    let t: u16 = cx.editor.config().gradient_borders.thickness as u16;
-                    Rect {
-                        x: item.area.x + t,
-                        y: item.area.y + t,
-                        width: item.area.width.saturating_sub(t * 2),
-                        height: item.area.height.saturating_sub(t * 2),
-                    }
-                }
+                // Inner area inside the gradient border, which is one cell
+                // wide whatever its thickness.
+                GradientBorder::inner_area(item.area)
             } else {
                 // Render simple border without filling background
                 let mut border_type = crate::ui::border_type(&cx.editor.config());
@@ -527,17 +547,13 @@ impl NotificationPopup {
                     config.border.width,
                 );
 
+                // `render_simple_border` draws at least one frame.
+                let bw = config.border.width.max(1) as u16;
                 Rect {
-                    x: item.area.x + config.border.width as u16,
-                    y: item.area.y + config.border.width as u16,
-                    width: item
-                        .area
-                        .width
-                        .saturating_sub(config.border.width as u16 * 2),
-                    height: item
-                        .area
-                        .height
-                        .saturating_sub(config.border.width as u16 * 2),
+                    x: item.area.x.saturating_add(bw),
+                    y: item.area.y.saturating_add(bw),
+                    width: item.area.width.saturating_sub(bw * 2),
+                    height: item.area.height.saturating_sub(bw * 2),
                 }
             }
         } else {
@@ -550,21 +566,19 @@ impl NotificationPopup {
 
         // Apply configured padding
         let pad = config.padding;
-        if content_area.width > pad * 2 && content_area.height > pad * 2 {
+        let pad2 = pad.saturating_mul(2);
+        if content_area.width > pad2 && content_area.height > pad2 {
             content_area = Rect {
                 x: content_area.x + pad,
                 y: content_area.y + pad,
-                width: content_area.width - pad * 2,
-                height: content_area.height - pad * 2,
+                width: content_area.width - pad2,
+                height: content_area.height - pad2,
             };
         }
 
-        // Final safety clamps to ensure we have drawable area
-        if content_area.width == 0 {
-            content_area.width = 1;
-        }
-        if content_area.height == 0 {
-            content_area.height = 1;
+        // Nothing fits inside the border (e.g. a very wide `border.width`).
+        if content_area.width == 0 || content_area.height == 0 {
+            return;
         }
 
         // Fill the entire inner area (card background). Overlay outside remains transparent.
@@ -598,7 +612,7 @@ impl NotificationPopup {
         }
 
         let prefix_width = prefix.width() as u16;
-        let show_prefix = !prefix.is_empty() && content_area.width > prefix_width + 1;
+        let show_prefix = !prefix.is_empty() && content_area.width > prefix_width.saturating_add(1);
 
         for (i, line) in content_lines.iter().enumerate() {
             let y_pos = content_area.y + i as u16;
@@ -640,11 +654,15 @@ impl Component for NotificationPopup {
         self.update(cx.editor);
 
         // Update layout params cache from editor config
-        // Use configured thickness for sizing (gradient or simple)
-        self.layout_thickness = if cx.editor.config().gradient_borders.enable {
-            cx.editor.config().gradient_borders.thickness as u16
+        // Border width used for sizing. The gradient border is always one cell
+        // wide (its thickness only picks glyphs); the simple border draws
+        // `border.width` nested frames.
+        self.layout_thickness = if !cx.editor.config().notifications.border.enable {
+            0
+        } else if cx.editor.config().gradient_borders.enable {
+            1
         } else {
-            cx.editor.config().notifications.border.width as u16
+            cx.editor.config().notifications.border.width.max(1) as u16
         };
         self.layout_rounded = cx.editor.config().border_rounded()
             || cx.editor.config().notifications.border.radius > 0;
@@ -879,6 +897,47 @@ mod tests {
 
         notification.dismiss();
         assert!(notification.dismissed);
+    }
+
+    #[test]
+    fn test_layout_never_panics_and_stays_in_viewport() {
+        use helix_view::editor::NotificationConfig;
+        let positions = [
+            NotificationPosition::TopLeft,
+            NotificationPosition::TopCenter,
+            NotificationPosition::TopRight,
+            NotificationPosition::BottomLeft,
+            NotificationPosition::BottomCenter,
+            NotificationPosition::BottomRight,
+        ];
+        let mut popup = NotificationPopup::new();
+        for id in 0..3 {
+            let mut n = Notification::new("a fairly long notification message", Severity::Info);
+            n.id = id;
+            popup.notifications.push(NotificationItem::new(n));
+        }
+        for max_width in [0, 1, 2, 3, 4, 60] {
+            for position in positions {
+                let config = NotificationConfig {
+                    max_width,
+                    position,
+                    ..Default::default()
+                };
+                for width in 0..12 {
+                    for height in 0..8 {
+                        let viewport = Rect::new(3, 2, width, height);
+                        popup.calculate_notification_areas(viewport, &config);
+                        for item in &popup.notifications {
+                            let area = item.area;
+                            if area.width > 0 && area.height > 0 {
+                                assert_eq!(viewport.intersection(area), area);
+                                assert!(area.width <= max_width);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

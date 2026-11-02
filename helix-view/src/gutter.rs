@@ -344,8 +344,6 @@ pub fn breakpoints<'doc>(
 
     let breakpoints = doc.path().and_then(|path| editor.breakpoints.get(path));
 
-    let breadcrumbs_enabled = editor.config().breadcrumb.enable;
-
     let Some(breakpoints) = breakpoints else {
         return Box::new(move |_, _, _, _| None);
     };
@@ -355,9 +353,13 @@ pub fn breakpoints<'doc>(
             if !first_visual_line {
                 return None;
             }
+            // `line` is the 0-based document line, and `editor.breakpoints`
+            // stores 0-based lines too (converted to/from the DAP's 1-based
+            // lines in `breakpoints_changed`). The breadcrumb row only moves
+            // the view's inner area down; it doesn't shift line numbers.
             let breakpoint = breakpoints
                 .iter()
-                .find(|breakpoint| breakpoint.line == line + usize::from(breadcrumbs_enabled))?;
+                .find(|breakpoint| breakpoint.line == line)?;
 
             let style = if breakpoint.condition.is_some() && breakpoint.log_message.is_some() {
                 error.underline_style(UnderlineStyle::Line)

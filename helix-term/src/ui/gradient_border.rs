@@ -93,7 +93,11 @@ impl GradientBorder {
 
     /// Parse hex color string to RGB
     fn parse_hex_color(hex: &str) -> Option<Rgb> {
-        if hex.len() != 7 || !hex.starts_with('#') {
+        // Require exactly `#` + six ASCII hex digits. Checking the bytes first
+        // keeps the slicing below on char boundaries (e.g. "#fé0ff" is 7 bytes)
+        // and rejects signs that `from_str_radix` would otherwise accept.
+        let digits = hex.strip_prefix('#')?;
+        if digits.len() != 6 || !digits.bytes().all(|b| b.is_ascii_hexdigit()) {
             return None;
         }
 
@@ -204,6 +208,19 @@ impl GradientBorder {
 
             // Fallback to thin
             _ => vec!["─", "│", "┌", "┐", "└", "┘"],
+        }
+    }
+
+    /// The area inside a gradient border drawn around `area`.
+    ///
+    /// The border is always one cell wide: `thickness` only selects the glyphs
+    /// (thin, thick, double, block), so content is inset by exactly one cell.
+    pub fn inner_area(area: Rect) -> Rect {
+        Rect {
+            x: area.x.saturating_add(1),
+            y: area.y.saturating_add(1),
+            width: area.width.saturating_sub(2),
+            height: area.height.saturating_sub(2),
         }
     }
 
@@ -423,6 +440,15 @@ mod tests {
         assert_eq!(GradientBorder::parse_hex_color("#GGGGGG"), None);
         assert_eq!(GradientBorder::parse_hex_color("#12345G"), None);
         assert_eq!(GradientBorder::parse_hex_color("#-12345"), None);
+    }
+
+    #[test]
+    fn test_parse_hex_color_non_ascii_does_not_panic() {
+        // 7 bytes but 'é' is two bytes: slicing by byte offsets used to panic.
+        assert_eq!(GradientBorder::parse_hex_color("#fé0ff"), None);
+        assert_eq!(GradientBorder::parse_hex_color("#ab€"), None);
+        assert_eq!(GradientBorder::parse_hex_color("€abcd"), None);
+        assert_eq!(GradientBorder::parse_hex_color("#+1+2+3"), None);
     }
 
     #[test]

@@ -2096,17 +2096,7 @@ impl Notification {
 
     pub fn is_expired(&self) -> bool {
         if let Some(timeout) = self.timeout {
-            let elapsed = self.timestamp.elapsed();
-            let expired = elapsed >= timeout;
-            if expired {
-                log::warn!(
-                    "Notification {} expired: elapsed={:?}, timeout={:?}",
-                    self.id,
-                    elapsed,
-                    timeout
-                );
-            }
-            expired
+            self.timestamp.elapsed() >= timeout
         } else {
             false
         }
@@ -2115,7 +2105,16 @@ impl Notification {
     pub fn dismiss(&mut self) {
         self.dismissed = true;
     }
+
+    /// Whether the notification is still shown (neither dismissed nor expired).
+    pub fn is_active(&self) -> bool {
+        !self.dismissed && !self.is_expired()
+    }
 }
+
+/// Upper bound on live (undismissed, unexpired) notifications kept when history is
+/// smaller, so notifications without a timeout can't grow the list without bound.
+const MAX_ACTIVE_NOTIFICATIONS: usize = 64;
 
 #[derive(Debug, Default)]
 pub struct NotificationManager {
@@ -2151,14 +2150,47 @@ impl NotificationManager {
 
         let id = notification.id; // Store the ID before moving
         self.notifications.push(notification);
-
-        // Clean up old notifications if we exceed max_history
-        if self.notifications.len() > self.max_history {
-            let excess = self.notifications.len() - self.max_history;
-            self.notifications.drain(0..excess);
-        }
+        self.trim_history();
 
         id
+    }
+
+    /// Keep at most `max_history` notifications. Past (dismissed or expired)
+    /// notifications are evicted oldest first; live ones are only evicted when
+    /// there are more than [`MAX_ACTIVE_NOTIFICATIONS`] of them, so a small
+    /// history (even 0) never hides a notification that is still on screen.
+    fn trim_history(&mut self) {
+        let limit = self.max_history;
+        let mut excess = self.notifications.len().saturating_sub(limit);
+        if excess > 0 {
+            self.notifications.retain(|n| {
+                if excess > 0 && !n.is_active() {
+                    excess -= 1;
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+
+        let hard_limit = limit.max(MAX_ACTIVE_NOTIFICATIONS);
+        if self.notifications.len() > hard_limit {
+            let excess = self.notifications.len() - hard_limit;
+            self.notifications.drain(0..excess);
+        }
+    }
+
+    /// Dismiss `id` only if its timeout has elapsed. Used by scheduled dismiss
+    /// tasks: a duplicate notification refreshes the timestamp, which must
+    /// extend its lifetime rather than be cut short by the original task.
+    pub fn dismiss_if_expired(&mut self, id: usize) {
+        if let Some(notification) = self
+            .notifications
+            .iter_mut()
+            .find(|n| n.id == id && n.is_expired())
+        {
+            notification.dismiss();
+        }
     }
 
     pub fn dismiss(&mut self, id: usize) {
@@ -2176,7 +2208,7 @@ impl NotificationManager {
     pub fn get_active(&self) -> Vec<&Notification> {
         self.notifications
             .iter()
-            .filter(|n| !n.dismissed && !n.is_expired())
+            .filter(|n| n.is_active())
             .collect()
     }
 
@@ -2184,13 +2216,74 @@ impl NotificationManager {
         &self.notifications
     }
 
+    /// Mark expired notifications as dismissed and trim the history to
+    /// `max_history`. Past notifications stay in the history; only
+    /// [`Self::get_active`] filters them out.
     pub fn cleanup_expired(&mut self) {
-        self.notifications
-            .retain(|n| !n.is_expired() && !n.dismissed);
+        for notification in &mut self.notifications {
+            if !notification.dismissed && notification.is_expired() {
+                notification.dismiss();
+            }
+        }
+        self.trim_history();
     }
 
     pub fn clear_history(&mut self) {
         self.notifications.clear();
+    }
+}
+
+#[cfg(test)]
+mod notification_manager_tests {
+    use super::*;
+
+    fn expired(message: &'static str) -> Notification {
+        let mut n = Notification::new(message, Severity::Info).with_timeout(Duration::ZERO);
+        n.timestamp = Instant::now();
+        n
+    }
+
+    #[test]
+    fn zero_history_keeps_live_notifications() {
+        let mut manager = NotificationManager::new(0);
+        let id = manager.add(Notification::new("hello", Severity::Info));
+        assert_eq!(manager.get_active().len(), 1);
+        assert_eq!(manager.get_active()[0].id, id);
+
+        manager.dismiss(id);
+        manager.cleanup_expired();
+        assert!(manager.get_all().is_empty());
+    }
+
+    #[test]
+    fn history_keeps_past_notifications() {
+        let mut manager = NotificationManager::new(3);
+        for msg in ["a", "b", "c", "d"] {
+            let id = manager.add(Notification::new(msg, Severity::Info));
+            manager.dismiss(id);
+        }
+        manager.add(expired("e"));
+        manager.cleanup_expired();
+
+        assert!(manager.get_active().is_empty());
+        let history: Vec<_> = manager.get_all().iter().map(|n| &*n.message).collect();
+        assert_eq!(history, ["c", "d", "e"]);
+        assert!(manager.get_all().iter().all(|n| n.dismissed));
+    }
+
+    #[test]
+    fn duplicate_is_merged_and_extends_lifetime() {
+        let mut manager = NotificationManager::new(10);
+        let timeout = Duration::from_secs(60);
+        let first = manager.add(Notification::new("dup", Severity::Info).with_timeout(timeout));
+        manager.add(Notification::new("other", Severity::Info));
+        let second = manager.add(Notification::new("dup", Severity::Info).with_timeout(timeout));
+        assert_eq!(first, second);
+        assert_eq!(manager.get_all().len(), 2);
+
+        // A scheduled dismiss for a refreshed (unexpired) notification is a no-op.
+        manager.dismiss_if_expired(first);
+        assert!(manager.get_active().iter().any(|n| n.id == first));
     }
 }
 
@@ -2668,7 +2761,8 @@ impl Editor {
             return 0;
         }
 
-        let mut notification = Notification::new(message, severity);
+        let message = message.into();
+        let mut notification = Notification::new(message.clone(), severity);
 
         // Set default timeout if configured
         if config.notifications.default_timeout > Duration::ZERO {
@@ -2681,42 +2775,18 @@ impl Editor {
             });
         }
 
+        // `add` may merge into an existing notification or (with a small
+        // `max-history`) evict entries, so use the message we were given rather
+        // than whatever happens to be last in the list.
         let id = self.notifications.add(notification);
 
         // Also set status message for compatibility if using statusline style
         if config.notifications.style == NotificationStyle::Statusline {
-            match severity {
-                Severity::Error => {
-                    let msg = self
-                        .notifications
-                        .notifications
-                        .last()
-                        .unwrap()
-                        .message
-                        .clone();
-                    self.status_msg = Some((msg, Severity::Error));
-                }
-                Severity::Warning => {
-                    let msg = self
-                        .notifications
-                        .notifications
-                        .last()
-                        .unwrap()
-                        .message
-                        .clone();
-                    self.status_msg = Some((msg, Severity::Warning));
-                }
-                _ => {
-                    let msg = self
-                        .notifications
-                        .notifications
-                        .last()
-                        .unwrap()
-                        .message
-                        .clone();
-                    self.status_msg = Some((msg, Severity::Info));
-                }
-            }
+            let severity = match severity {
+                Severity::Error | Severity::Warning => severity,
+                _ => Severity::Info,
+            };
+            self.status_msg = Some((message, severity));
         }
 
         id
@@ -2724,6 +2794,11 @@ impl Editor {
 
     pub fn dismiss_notification(&mut self, id: usize) {
         self.notifications.dismiss(id);
+    }
+
+    /// Dismiss notification `id` only if its timeout has elapsed.
+    pub fn dismiss_notification_if_expired(&mut self, id: usize) {
+        self.notifications.dismiss_if_expired(id);
     }
 
     pub fn dismiss_all_notifications(&mut self) {

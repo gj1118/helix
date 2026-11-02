@@ -1092,7 +1092,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         let background = cx.editor.theme.get("ui.background");
         surface.clear_with(area, background);
 
-        // calculate the inner area inside the box (respect gradient border thickness)
+        // calculate the inner area inside the box
         let inner = if cx.editor.config().gradient_borders.enable {
             if self.gradient_border.is_none() {
                 self.gradient_border = Some(GradientBorder::from_theme(
@@ -1114,13 +1114,8 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                 }
             }
 
-            let t: u16 = cx.editor.config().gradient_borders.thickness as u16;
-            Rect {
-                x: area.x + t,
-                y: area.y + t,
-                width: area.width.saturating_sub(t * 2),
-                height: area.height.saturating_sub(t * 2),
-            }
+            // The gradient border is one cell wide whatever its thickness.
+            crate::ui::gradient_border::GradientBorder::inner_area(area)
         } else {
             let block = if let Some(title) = self.title {
                 Block::bordered().title(title)
@@ -1342,7 +1337,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         let directory = cx.editor.theme.get("ui.text.directory");
         surface.clear_with(area, background);
 
-        // calculate the inner area inside the box (respect gradient border thickness)
+        // calculate the inner area inside the box
         let base_inner = if cx.editor.config().gradient_borders.enable {
             if self.gradient_border.is_none() {
                 self.gradient_border = Some(GradientBorder::from_theme(
@@ -1356,13 +1351,8 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                     gradient_border.render(area, surface, &cx.editor.theme, rounded);
                 }
             }
-            let t: u16 = cx.editor.config().gradient_borders.thickness as u16;
-            Rect {
-                x: area.x + t,
-                y: area.y + t,
-                width: area.width.saturating_sub(t * 2),
-                height: area.height.saturating_sub(t * 2),
-            }
+            // The gradient border is one cell wide whatever its thickness.
+            crate::ui::gradient_border::GradientBorder::inner_area(area)
         } else {
             let block = Block::bordered()
                 .border_type(crate::ui::border_type(&cx.editor.config()))
@@ -1888,15 +1878,10 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
     }
 
     fn cursor(&self, area: Rect, editor: &Editor) -> (Option<Position>, CursorKind) {
-        // calculate the inner area inside the box, honoring gradient border thickness
+        // calculate the inner area inside the box
         let inner = if editor.config().gradient_borders.enable {
-            let t: u16 = editor.config().gradient_borders.thickness as u16;
-            Rect {
-                x: area.x + t,
-                y: area.y + t,
-                width: area.width.saturating_sub(t * 2),
-                height: area.height.saturating_sub(t * 2),
-            }
+            // The gradient border is one cell wide whatever its thickness.
+            crate::ui::gradient_border::GradientBorder::inner_area(area)
         } else {
             let block = Block::bordered();
             block.inner(area)

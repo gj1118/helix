@@ -124,15 +124,10 @@ impl CmdlinePopup {
                 }
             }
 
-            // Calculate inner area manually using configured gradient thickness
+            // Inner area inside the gradient border
             {
-                let t: u16 = config.thickness as u16;
-                Rect {
-                    x: popup_area.x + t,
-                    y: popup_area.y + t,
-                    width: popup_area.width.saturating_sub(t * 2),
-                    height: popup_area.height.saturating_sub(t * 2),
-                }
+                // The gradient border is one cell wide whatever its thickness.
+                crate::ui::gradient_border::GradientBorder::inner_area(popup_area)
             }
         } else {
             // Use traditional border
@@ -250,15 +245,10 @@ impl CmdlinePopup {
                 }
             }
 
-            // Calculate inner area manually using configured gradient thickness
+            // Inner area inside the gradient border
             {
-                let t: u16 = config.thickness as u16;
-                Rect {
-                    x: comp_area.x + t,
-                    y: comp_area.y + t,
-                    width: comp_area.width.saturating_sub(t * 2),
-                    height: comp_area.height.saturating_sub(t * 2),
-                }
+                // The gradient border is one cell wide whatever its thickness.
+                crate::ui::gradient_border::GradientBorder::inner_area(comp_area)
             }
         } else {
             // Use traditional border, matching popup card styling
@@ -388,15 +378,10 @@ impl Component for CmdlinePopup {
                 };
                 let prefix_width = if icon.is_empty() { 0 } else { icon.width() };
 
-                // Compute inner area similar to render: respect gradient border thickness if enabled
+                // Compute inner area similar to render
                 let inner_area = if editor.config().gradient_borders.enable {
-                    let t: u16 = editor.config().gradient_borders.thickness as u16;
-                    Rect {
-                        x: self.popup_area.x + t,
-                        y: self.popup_area.y + t,
-                        width: self.popup_area.width.saturating_sub(t * 2),
-                        height: self.popup_area.height.saturating_sub(t * 2),
-                    }
+                    // The gradient border is one cell wide whatever its thickness.
+                    crate::ui::gradient_border::GradientBorder::inner_area(self.popup_area)
                 } else {
                     Block::default()
                         .borders(tui::widgets::Borders::ALL)
