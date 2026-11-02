@@ -43,7 +43,7 @@ use tui::text::Span;
 use tui::widgets::{Block, Widget};
 
 use crate::{
-    commands::git::{change_marker, change_style, StatusMap},
+    commands::git::{change_marker, change_style, ChangeKind, StatusMap},
     compositor::{Component, Compositor, Context, Event, EventResult},
     job::Callback,
     ui::{completers, gradient_border::GradientBorder, CmdlinePopup, ConfirmBox, PromptEvent},
@@ -2071,11 +2071,11 @@ impl Component for Explorer {
             } else if entry.is_dir {
                 self.git
                     .folder(&entry.path)
-                    .map(|kind| ("•".to_string(), change_style(&cx.editor.theme, kind)))
+                    .map(|kind| ("•".to_string(), marker_style(&cx.editor.theme, kind)))
             } else {
                 self.git
                     .file(&entry.path)
-                    .map(|kind| (change_marker(kind), change_style(&cx.editor.theme, kind)))
+                    .map(|kind| (change_marker(kind), marker_style(&cx.editor.theme, kind)))
             }
             // Not for a panel so narrow that the marker would be all there is.
             .filter(|(text, _)| rows_area.width as usize > text.width() + 6);
@@ -2126,6 +2126,17 @@ fn explorer_border_style(
 /// Style of the path to the cursor: the root row, the ancestors of the cursor and the
 /// guide lines that lead to it. `ui.explorer.path`; without it, the primary cursor line,
 /// so the selected row (the selection highlight) is the only strongly highlighted row.
+/// The style of a git status marker: only the foreground of the change's `diff.*` style.
+/// Many themes give those a background for diff views, which would paint a block behind
+/// the marker instead of keeping the row's own background (and the selection highlight).
+fn marker_style(theme: &helix_view::Theme, kind: ChangeKind) -> Style {
+    let style = change_style(theme, kind);
+    match style.fg {
+        Some(fg) => Style::default().fg(fg),
+        None => Style::default(),
+    }
+}
+
 fn explorer_path_style(
     theme: &helix_view::Theme,
     selection: helix_view::graphics::Style,
@@ -2303,6 +2314,19 @@ fn root_label(root: &Path, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn git_markers_keep_the_row_background() {
+        use helix_view::graphics::Color;
+        // A theme that gives `diff.plus` a background, as diff-oriented themes do.
+        let theme = helix_view::Theme::from(
+            toml::from_str::<toml::Value>(r##""diff.plus" = { fg = "#00ff00", bg = "#003300" }"##)
+                .unwrap(),
+        );
+        let style = marker_style(&theme, ChangeKind::Added);
+        assert_eq!(style.fg, Some(Color::Rgb(0, 255, 0)));
+        assert_eq!(style.bg, None);
+    }
 
     #[test]
     fn matched_characters_are_split_into_spans() {
