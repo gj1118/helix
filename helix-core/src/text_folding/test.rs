@@ -1,4 +1,5 @@
 use crate::graphemes::next_grapheme_boundary;
+use crate::Rope;
 
 use super::*;
 
@@ -497,4 +498,58 @@ fn fold_container_update_by_transaction() {
 
         assert();
     }
+}
+
+/// A fold whose target ends on line 0 with text after it has no block lines: it is
+/// dropped instead of the block line computation underflowing.
+#[test]
+fn fold_ending_on_the_first_line_is_dropped() {
+    let rope = Rope::from("fn f() { a } // c\nfn g() {}\n");
+    let text = rope.slice(..);
+    let points = Fold::new_points(text, FoldObject::TextObject("function"), 0, &(7..=11));
+    let container = FoldContainer::from(text, vec![points]);
+    assert_eq!(container.len(), 0);
+}
+
+/// Joining the lines of a fold whose closing line has trailing text leaves a fold that
+/// ends on line 0: the edit drops it rather than panicking.
+#[test]
+fn joining_a_fold_onto_the_first_line_drops_it() {
+    let mut rope = Rope::from("fn f() {\n    a\n} // c\n");
+    let old = rope.clone();
+    let text = rope.slice(..);
+    let points = Fold::new_points(text, FoldObject::TextObject("function"), 0, &(7..=15));
+    let mut container = FoldContainer::from(text, vec![points]);
+    assert_eq!(container.len(), 1);
+
+    let transaction = crate::Transaction::change(
+        &rope,
+        [(8, 13, Some(" ".into())), (14, 15, Some(" ".into()))].into_iter(),
+    );
+    transaction.apply(&mut rope);
+    container.update_by_transaction(rope.slice(..), old.slice(..), &transaction);
+    assert_eq!(container.len(), 0);
+}
+
+/// Two folds that overlap without one containing the other cannot both stay: folding
+/// relies on folds nesting.
+#[test]
+fn partially_overlapping_folds_do_not_both_survive() {
+    let sample: String = (0..12).map(|i| format!("line{i}\n")).collect();
+    let rope = Rope::from(sample.as_str());
+    let text = rope.slice(..);
+    let line = |n: usize| text.line_to_char(n);
+
+    // lines 2..=5 under a header on line 1, and lines 5..=9 under a header on line 4
+    let first = Fold::new_points(
+        text,
+        FoldObject::TextObject("function"),
+        line(1),
+        &(line(2)..=line(5) + 4),
+    );
+    let mut container = FoldContainer::from(text, vec![first]);
+    let second = Fold::new_points(text, FoldObject::Selection, line(4), &(line(5)..=line(9) + 4));
+    container.add(text, vec![second]);
+
+    assert_eq!(container.len(), 1);
 }

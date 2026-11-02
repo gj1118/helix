@@ -147,6 +147,9 @@ pub(super) async fn git(dir: &Path, args: &[OsString]) -> anyhow::Result<Vec<u8>
     let output = tokio::process::Command::new("git")
         .arg("-C")
         .arg(dir)
+        // Paths come back verbatim, not C-quoted: a quoted `"caf\303\251.rs"` would
+        // otherwise be taken as the file name of a non-ASCII path.
+        .args(["-c", "core.quotepath=off"])
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")

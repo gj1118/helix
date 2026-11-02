@@ -1,4 +1,4 @@
-use std::{mem, time::Duration};
+use std::{collections::HashMap, mem, path::PathBuf, time::Duration};
 
 use helix_event::register_hook;
 use helix_vcs::FileBlame;
@@ -11,12 +11,18 @@ use tokio::time::Instant;
 
 use crate::job;
 
-#[derive(Default)]
-pub struct BlameHandler {
-    pending_path: Option<std::path::PathBuf>,
-    doc_id: DocumentId,
+/// A blame request waiting for the debounce to run out.
+struct PendingBlame {
+    path: PathBuf,
     show_blame_for_line_in_statusline: Option<u32>,
     popup: bool,
+}
+
+#[derive(Default)]
+pub struct BlameHandler {
+    /// One request per document, so a burst of events (opening several files, turning
+    /// auto-fetch on, `:reload-all`) blames every document rather than only the last.
+    pending: HashMap<DocumentId, PendingBlame>,
 }
 
 impl helix_event::AsyncHook for BlameHandler {
@@ -27,34 +33,62 @@ impl helix_event::AsyncHook for BlameHandler {
         event: Self::Event,
         _timeout: Option<tokio::time::Instant>,
     ) -> Option<tokio::time::Instant> {
-        self.doc_id = event.doc_id;
-        self.show_blame_for_line_in_statusline = event.line;
-        self.popup = event.popup;
-        self.pending_path = Some(event.path);
+        self.pending.insert(
+            event.doc_id,
+            PendingBlame {
+                path: event.path,
+                show_blame_for_line_in_statusline: event.line,
+                popup: event.popup,
+            },
+        );
         Some(Instant::now() + Duration::from_millis(50))
     }
 
     fn finish_debounce(&mut self) {
-        let doc_id = self.doc_id;
-        let line_blame = self.show_blame_for_line_in_statusline;
-        let popup = self.popup;
-        let path = mem::take(&mut self.pending_path);
-        if let Some(path) = path {
-            job::dispatch_blocking(move |editor, _| {
-                let Some(doc) = editor.document_mut(doc_id) else {
-                    return;
-                };
-                let result = FileBlame::try_new(path);
-                doc.file_blame = Some(result);
-                if !editor.config().inline_blame.auto_fetch {
-                    if let Some(line) = line_blame {
-                        crate::commands::blame_line_impl(editor, doc_id, line, popup);
-                    } else {
-                        editor.set_status("Blame for this file is now available")
-                    }
-                }
-            });
+        let pending = mem::take(&mut self.pending);
+        if pending.is_empty() {
+            return;
         }
+        // The editor knows each document's workspace trust; the blame itself walks the
+        // file's history, which can take seconds on a long one, so it runs off the UI
+        // thread and only the result is handed back to the editor.
+        job::dispatch_blocking(move |editor, _| {
+            for (doc_id, pending) in pending {
+                let Some(doc) = editor.document(doc_id) else {
+                    continue;
+                };
+                // Untrusted workspaces open the repository with reduced trust, so its
+                // local config (e.g. filter drivers) is not honoured.
+                let trust_full = editor
+                    .workspace_trust
+                    .query(
+                        doc.workspace_root(),
+                        helix_loader::workspace_trust::TrustQuery::Git,
+                    )
+                    .is_trusted();
+                tokio::task::spawn_blocking(move || {
+                    let result = FileBlame::try_new(pending.path, trust_full);
+                    job::dispatch_blocking(move |editor, _| {
+                        let Some(doc) = editor.document_mut(doc_id) else {
+                            return;
+                        };
+                        doc.file_blame = Some(result);
+                        if !editor.config().inline_blame.auto_fetch {
+                            if let Some(line) = pending.show_blame_for_line_in_statusline {
+                                crate::commands::blame_line_impl(
+                                    editor,
+                                    doc_id,
+                                    line,
+                                    pending.popup,
+                                );
+                            } else {
+                                editor.set_status("Blame for this file is now available")
+                            }
+                        }
+                    });
+                });
+            }
+        });
     }
 }
 

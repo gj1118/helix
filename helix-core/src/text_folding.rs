@@ -234,7 +234,11 @@ impl EndFoldPoint {
             .flat_map(|g| g.chars())
             .any(|c| !c.is_whitespace());
 
-        text.char_to_line(self.target) - truncate as usize
+        // A target ending on line 0 with text after it leaves no block line; 0 makes
+        // the block empty (start > end), so `normalize` drops the fold instead of the
+        // subtraction underflowing.
+        text.char_to_line(self.target)
+            .saturating_sub(truncate as usize)
     }
 
     /// Sets `byte`, `char`, `line` fields.
@@ -626,7 +630,7 @@ impl FoldContainer {
                     .take(i)
                     .rev()
                     .map(|sfp| sfp.fold(self))
-                    .take_while(|&prev_fold| prev_fold.end.line == init - 1)
+                    .take_while(|&prev_fold| Some(prev_fold.end.line) == init.checked_sub(1))
                     .find_map(|prev_fold| {
                         (!removables.contains(&prev_fold.start_idx())).then_some(init + 1)
                     })
@@ -641,14 +645,13 @@ impl FoldContainer {
                 .skip(i + 1)
                 .map(|next_sfp| next_sfp.fold(self))
                 .take_while(|&next_fold| overlap(&range(fold), &range(next_fold)))
-                .find_map(|next_fold| {
+                .any(|next_fold| {
+                    // Overlapping without one containing the other: the folds would not
+                    // nest, which the rest of folding relies on.
                     let fold_range = &range(fold);
-                    let next_fold_range = &range(fold);
-
-                    (!span(fold_range, next_fold_range) && !span(next_fold_range, fold_range))
-                        .then(|| text.char_to_line(next_fold.header()) - 1)
+                    let next_fold_range = &range(next_fold);
+                    !span(fold_range, next_fold_range) && !span(next_fold_range, fold_range)
                 })
-                .is_some()
             {
                 removables.push(i);
                 continue;

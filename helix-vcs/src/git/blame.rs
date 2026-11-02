@@ -89,9 +89,11 @@ impl FileBlame {
     }
 
     /// Compute blame for this file (expensive)
-    pub fn try_new(file: PathBuf) -> Result<Self> {
+    /// `trust_full` is the workspace-trust decision for the file's workspace: without
+    /// it the repository is opened with reduced trust.
+    pub fn try_new(file: PathBuf, trust_full: bool) -> Result<Self> {
         let thread_safe_repo =
-            open_repo(get_repo_dir(&file)?, true).context("Failed to open git repo")?;
+            open_repo(get_repo_dir(&file)?, trust_full).context("Failed to open git repo")?;
         let repo = thread_safe_repo.to_thread_local();
         let head = repo.head()?.peel_to_commit()?.id;
 
@@ -104,10 +106,11 @@ impl FileBlame {
             // NOTE: bstr always uses unix separators `/`, even on
             // Windows which uses the `\` separator
             &gix::path::to_unix_separators_on_windows(gix::path::try_into_bstr(
+                // The work tree, not the git dir's parent: those differ for linked
+                // worktrees, submodules and separate git dirs.
                 file.strip_prefix(
-                    repo.path()
-                        .parent()
-                        .context("Could not get the parent path of the repo")?,
+                    repo.workdir()
+                        .context("Could not get the work tree of the repo")?,
                 )?,
             )?),
             gix::blame::Options::default(),
@@ -482,7 +485,7 @@ mod test {
                         // because we won't show it to the user.
                         $(
                             let blame_result =
-                                FileBlame::try_new(file.clone())
+                                FileBlame::try_new(file.clone(), true)
                                     .unwrap()
                                     .blame_for_line(line_number, added_lines, removed_lines)
                                     .commit_title;

@@ -1774,6 +1774,10 @@ impl Document {
         self.document_highlight_controllers.remove(&view_id);
         self.code_action_hints.remove(&view_id);
         self.code_action_controllers.remove(&view_id);
+        // Folds and plugin annotations are per view too; left behind, every later
+        // edit keeps updating the folds of windows that no longer exist.
+        self.fold_container.remove(&view_id);
+        self.plugin_annotations.remove(&view_id);
     }
 
     /// Apply a [`Transaction`] to the [`Document`] to change its text.
