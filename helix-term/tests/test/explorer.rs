@@ -176,3 +176,98 @@ async fn indent_guides_can_be_turned_off() -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+/// `C-h` and `C-l` move focus between the tree and the buffer, also while the tree's
+/// filter box is being typed into.
+#[tokio::test(flavor = "multi_thread")]
+async fn ctrl_h_and_ctrl_l_move_focus_between_tree_and_buffer() -> anyhow::Result<()> {
+    let (_dir, root) = repo()?;
+    let mut app = helpers::AppBuilder::new().with_config(config("")).build()?;
+    open_explorer(&mut app, &root);
+    test_key_sequences(
+        &mut app,
+        vec![
+            (
+                Some("<C-l>"),
+                Some(&|app| {
+                    assert!(
+                        !app.editor.explorer_panel.focused,
+                        "C-l did not leave the tree"
+                    );
+                }),
+            ),
+            (
+                Some("<C-h>"),
+                Some(&|app| {
+                    assert!(
+                        app.editor.explorer_panel.focused,
+                        "C-h did not focus the tree"
+                    );
+                }),
+            ),
+            (Some("/"), None),
+            (
+                Some("<C-l>"),
+                Some(&|app| {
+                    assert!(
+                        !app.editor.explorer_panel.focused,
+                        "C-l was swallowed by the filter box"
+                    );
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}
+
+/// From a hidden explorer: `C-h` opens and focuses the tree, `C-l` moves to the buffer and
+/// `C-h` moves back, again and again. The panel stays open throughout.
+#[tokio::test(flavor = "multi_thread")]
+async fn ctrl_h_opens_then_moves_between_tree_and_buffer_repeatedly() -> anyhow::Result<()> {
+    let (_dir, _root) = repo()?;
+    let mut app = helpers::AppBuilder::new().with_config(config("")).build()?;
+    test_key_sequences(
+        &mut app,
+        vec![
+            (Some("<C-h>"), Some(&|app| assert_tree_focus(app, true))),
+            (Some("<C-l>"), Some(&|app| assert_tree_focus(app, false))),
+            (Some("<C-h>"), Some(&|app| assert_tree_focus(app, true))),
+            (Some("<C-l>"), Some(&|app| assert_tree_focus(app, false))),
+            (Some("<C-h>"), Some(&|app| assert_tree_focus(app, true))),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}
+
+/// The panel is open and the tree has (or has not) the keyboard.
+fn assert_tree_focus(app: &Application, want_tree: bool) {
+    let panel = &app.editor.explorer_panel;
+    assert!(panel.visible, "panel was hidden");
+    assert_eq!(panel.focused, want_tree, "focus is in the wrong place");
+}
+
+/// Opened with `<space>x`, then `C-l` / `C-h` back and forth, and `C-h` pressed while the
+/// tree already has focus.
+#[tokio::test(flavor = "multi_thread")]
+async fn ctrl_keys_after_space_x_open_and_while_tree_focused() -> anyhow::Result<()> {
+    let (_dir, _root) = repo()?;
+    let mut app = helpers::AppBuilder::new().with_config(config("")).build()?;
+    test_key_sequences(
+        &mut app,
+        vec![
+            (Some("<space>x"), Some(&|app| assert_tree_focus(app, true))),
+            (Some("<C-h>"), Some(&|app| assert_tree_focus(app, true))),
+            (Some("<C-l>"), Some(&|app| assert_tree_focus(app, false))),
+            (Some("<C-h>"), Some(&|app| assert_tree_focus(app, true))),
+            (Some("<C-l>"), Some(&|app| assert_tree_focus(app, false))),
+            (Some("<C-h>"), Some(&|app| assert_tree_focus(app, true))),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}

@@ -633,6 +633,12 @@ impl Explorer {
                 self.filter_insert(c.encode_utf8(&mut buf));
                 self.filter_changed(cx.editor);
             }
+            // C-h and C-l move focus between the tree and the buffers, so the
+            // box lets them through and stops editing (the filter stays applied).
+            KeyCode::Char('h' | 'l') if ctrl => {
+                self.filter_editing = false;
+                return EventResult::Ignored(None);
+            }
             // Everything else is swallowed: the box owns the keyboard.
             _ => {}
         }
