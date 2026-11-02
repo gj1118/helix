@@ -2176,6 +2176,8 @@ impl EditorView {
 
                 if let Some((pos, view_id)) = pos_and_view(editor, row, column, true) {
                     editor.focus(view_id);
+                    // The click belongs to the buffer, so keyboard focus leaves the explorer.
+                    editor.explorer_panel.focused = false;
 
                     let prev_view_id = view!(editor).id;
                     let doc = doc_mut!(editor, &view!(editor, view_id).doc);
@@ -2207,6 +2209,7 @@ impl EditorView {
 
                 if let Some((coords, view_id)) = gutter_coords_and_view(editor, row, column) {
                     editor.focus(view_id);
+                    editor.explorer_panel.focused = false;
 
                     let (view, doc) = current!(cxt.editor);
 

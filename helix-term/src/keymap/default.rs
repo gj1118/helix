@@ -277,6 +277,10 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
         // move under <space>c
         "C-c" => toggle_comments,
 
+        // explorer focus: C-h moves to the explorer tree, C-l back to the buffer area
+        "C-h" => explorer_focus,
+        "C-l" => explorer_blur,
+
         // z family for save/restore/combine from/to sels from register
 
         "C-i" | "tab" => jump_forward, // tab == <C-i>

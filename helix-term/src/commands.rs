@@ -457,6 +457,7 @@ impl MappableCommand {
         file_explorer_in_current_directory, "Open file explorer at current working directory",
         explorer_toggle, "Toggle the explorer file tree panel",
         explorer_focus, "Focus the explorer file tree panel (opening it if hidden)",
+        explorer_blur, "Move keyboard focus from the explorer file tree to the buffer area",
         explorer_left, "Show the explorer panel pinned to the left",
         explorer_right, "Show the explorer panel pinned to the right",
         explorer_float, "Show the explorer panel as a floating window",
@@ -4158,6 +4159,12 @@ pub fn explorer_focus(cx: &mut Context) {
     cx.editor.explorer_panel.visible = true;
     cx.editor.explorer_panel.focused = true;
     explorer_install_layer(cx);
+}
+
+/// Hands keyboard focus from the explorer tree to the buffer area. The tree
+/// stays visible; this only changes where keys go.
+pub fn explorer_blur(cx: &mut Context) {
+    cx.editor.explorer_panel.focused = false;
 }
 
 pub fn explorer_left(cx: &mut Context) {
