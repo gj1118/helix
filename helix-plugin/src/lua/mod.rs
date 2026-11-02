@@ -2,7 +2,7 @@ use crate::error::{PluginError, Result};
 use crate::types::{EventType, PluginEvent};
 use helix_view::{Document, Editor, View};
 use mlua::prelude::*;
-use mlua::{HookTriggers, RegistryKey, VmState};
+use mlua::{ffi, RegistryKey};
 use parking_lot::RwLock;
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -89,18 +89,42 @@ where
     f()
 }
 
+/// The error raised when plugin code runs past its deadline.
+const TIMEOUT_MESSAGE: &std::ffi::CStr = c"plugin code exceeded the execution time limit";
+
+/// Raw Lua count hook: raises [`TIMEOUT_MESSAGE`] once the running plugin code is past its
+/// deadline.
+///
+/// # Safety
+/// Called by Lua only. `lua_error` long-jumps out of this frame, which holds no values
+/// with destructors at that point.
+unsafe extern "C-unwind" fn timeout_hook(state: *mut ffi::lua_State, _ar: *mut ffi::lua_Debug) {
+    if deadline_passed() {
+        ffi::lua_pushstring(state, TIMEOUT_MESSAGE.as_ptr());
+        ffi::lua_error(state);
+    }
+}
+
 /// Install the instruction hook that aborts plugin code running past its deadline.
-fn install_timeout_hook(lua: &Lua) {
-    lua.set_hook(
-        HookTriggers::new().every_nth_instruction(HOOK_INSTRUCTION_INTERVAL),
-        |_lua, _debug| match DEADLINE.with(|d| d.get()) {
-            Some(deadline) if Instant::now() >= deadline => Err(LuaError::RuntimeError(format!(
-                "plugin code exceeded the execution time limit of {:?}",
-                PLUGIN_EXECUTION_TIMEOUT
-            ))),
-            _ => Ok(VmState::Continue),
-        },
-    );
+///
+/// This is a plain Lua hook rather than mlua's `set_hook`: mlua runs its hook on a single
+/// thread and switches it off in any other, so a loop inside a coroutine would never be
+/// interrupted. Lua copies a thread's hook into every coroutine it creates, so this one
+/// covers coroutines too.
+fn install_timeout_hook(lua: &Lua) -> Result<()> {
+    // SAFETY: setting a hook on the state mlua hands us; `timeout_hook` only reads a
+    // thread-local and raises a Lua error.
+    unsafe {
+        lua.exec_raw::<()>((), |state| {
+            ffi::lua_sethook(
+                state,
+                Some(timeout_hook),
+                ffi::LUA_MASKCOUNT,
+                HOOK_INSTRUCTION_INTERVAL as std::ffi::c_int,
+            );
+        })
+    }
+    .map_err(|e| PluginError::InitializationFailed(format!("Failed to install time limit: {}", e)))
 }
 
 /// Create a sandboxed Lua state with the execution time limit hook installed.
@@ -121,8 +145,67 @@ fn new_sandboxed_lua() -> Result<Lua> {
     .exec()
     .map_err(|e| PluginError::InitializationFailed(format!("Failed to setup sandbox: {}", e)))?;
 
-    install_timeout_hook(&lua);
+    install_timeout_hook(&lua)?;
+    make_timeout_uncatchable(&lua)?;
     Ok(lua)
+}
+
+/// Whether the plugin code that is running is past its deadline.
+fn deadline_passed() -> bool {
+    DEADLINE
+        .with(|d| d.get())
+        .is_some_and(|deadline| Instant::now() >= deadline)
+}
+
+/// The timeout hook raises an ordinary Lua error, which `pcall`, `xpcall` and
+/// `coroutine.resume` would catch: `while true do pcall(spin) end` would never end. Once
+/// the deadline has passed, these wrappers raise the error again instead of returning it,
+/// so the abort reaches the Rust caller however deeply the plugin catches errors. Before
+/// the deadline they behave exactly like the originals. The originals are kept only in
+/// upvalues, and the debug library (which could reach them or remove the hook) is not
+/// loaded.
+fn make_timeout_uncatchable(lua: &Lua) -> Result<()> {
+    let passed = lua
+        .create_function(|_, ()| Ok(deadline_passed()))
+        .map_err(|e| {
+            PluginError::InitializationFailed(format!("Failed to setup sandbox: {}", e))
+        })?;
+    lua.load(
+        r#"
+        local deadline_passed = ...
+        local raw_pcall, raw_xpcall, raw_error = pcall, xpcall, error
+        local raw_resume = coroutine.resume
+
+        -- Re-raise a caught error once the deadline has passed.
+        local function check(ok, ...)
+            if not ok and deadline_passed() then
+                raw_error((...), 0)
+            end
+            return ok, ...
+        end
+
+        pcall = function(...)
+            return check(raw_pcall(...))
+        end
+
+        xpcall = function(f, handler, ...)
+            -- Past the deadline the plugin's handler is not run: it could loop too.
+            local function guarded(e)
+                if deadline_passed() then
+                    return e
+                end
+                return handler(e)
+            end
+            return check(raw_xpcall(f, guarded, ...))
+        end
+
+        coroutine.resume = function(...)
+            return check(raw_resume(...))
+        end
+        "#,
+    )
+    .call::<()>(passed)
+    .map_err(|e| PluginError::InitializationFailed(format!("Failed to setup sandbox: {}", e)))
 }
 
 /// Run `f` with `editor` available to the plugin API (and with an execution deadline).

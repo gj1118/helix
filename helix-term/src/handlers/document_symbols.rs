@@ -172,11 +172,12 @@ fn request_document_symbols(editor: &mut Editor, doc_id: DocumentId) {
     });
 }
 
-/// Compute symbols synchronously from tree-sitter tag queries (`tags.scm`).
-/// The resulting tags are flat, so they are nested by range containment.
+/// Compute symbols from tree-sitter tag queries (`tags.scm`). The resulting tags are flat, so
+/// they are nested by range containment.
 ///
-/// This runs on the editor's task (`Syntax` can't be moved to another one), so it is skipped
-/// when nothing it depends on changed since the last run.
+/// The query walks the whole file, so it runs on a blocking thread over a snapshot of the
+/// syntax tree and text (both cheap to clone); the result is applied only if the document is
+/// unchanged by then. It is skipped when nothing it depends on changed since the last run.
 fn compute_tree_sitter_symbols(editor: &mut Editor, doc_id: DocumentId) {
     let key = tree_sitter_key(editor, doc_id);
     let input = {
@@ -200,88 +201,112 @@ fn compute_tree_sitter_symbols(editor: &mut Editor, doc_id: DocumentId) {
         inputs.insert(key, input);
     }
 
-    let flat = {
-        let loader = editor.syn_loader.load();
+    let Some(doc) = editor.document(doc_id) else {
+        return;
+    };
+    let Some(syntax) = doc.syntax().cloned() else {
+        return;
+    };
+    let text = doc.text().clone();
+    let version = doc.version();
+    let loader = editor.syn_loader.load_full();
 
-        let Some(doc) = editor.document_mut(doc_id) else {
-            return;
-        };
-        let Some(syntax) = doc.syntax() else {
-            return;
-        };
-        let text = doc.text().clone();
-
-        let mut flat: Vec<ThinDocumentSymbol> = Vec::new();
-        let mut tags_iter = syntax.tags(text.slice(..), &loader, ..);
-
-        while let Some(event) = tags_iter.next() {
-            let QueryMatchIterEvent::Match(mat) = event else {
-                continue;
+    tokio::task::spawn_blocking(move || {
+        let flat = tree_sitter_symbols(&syntax, &text, &loader);
+        job::dispatch_blocking(move |editor, _| {
+            let Some(doc) = editor.document_mut(doc_id) else {
+                return;
             };
-            let query = match loader.tag_query(tags_iter.current_language()) {
-                Some(tag_query) => &tag_query.query,
-                None => continue,
-            };
-
-            // Find the @definition.* and optional @name captures in this match.
-            let mut def_capture = None::<(lsp::SymbolKind, std::ops::Range<u32>)>;
-            let mut name_range = None::<std::ops::Range<u32>>;
-            let name_capture = query.get_capture("name");
-
-            for node in mat.nodes.iter() {
-                let capture_name = query.capture_name(node.capture);
-                if let Some(kind) = capture_name
-                    .strip_prefix("definition.")
-                    .and_then(tag_kind_to_symbol_kind)
-                {
-                    def_capture = Some((kind, node.node.byte_range()));
-                } else if name_capture == Some(node.capture) {
-                    name_range = Some(node.node.byte_range());
-                }
+            // Stale: edited since, or a language server provides the symbols by now.
+            if doc.version() != version
+                || doc
+                    .language_servers_with_feature(LanguageServerFeature::DocumentSymbols)
+                    .next()
+                    .is_some()
+                || !editor.config().breadcrumb.enable
+            {
+                return;
             }
-
-            let Some((kind, def_byte_range)) = def_capture else {
-                continue;
+            let Some(doc) = editor.document_mut(doc_id) else {
+                return;
             };
-            let name_byte_range = name_range.unwrap_or_else(|| def_byte_range.clone());
+            doc.set_symbol_tree(ThinDocumentSymbol::nest_flat(flat), OffsetEncoding::Utf8);
+            update_breadcrumbs_for_all_views(editor, doc_id);
+        });
+    });
+}
 
-            let text_slice: RopeSlice = text.slice(..);
-            let name_start = text_slice.byte_to_char(name_byte_range.start as usize);
-            let name_end = text_slice.byte_to_char(name_byte_range.end as usize);
-            let def_start = text_slice.byte_to_char(def_byte_range.start as usize);
-            let def_end = text_slice.byte_to_char(def_byte_range.end as usize);
+/// The flat tree-sitter tags of `text`.
+fn tree_sitter_symbols(
+    syntax: &helix_core::syntax::Syntax,
+    text: &helix_core::Rope,
+    loader: &helix_core::syntax::Loader,
+) -> Vec<ThinDocumentSymbol> {
+    let mut flat: Vec<ThinDocumentSymbol> = Vec::new();
+    let mut tags_iter = syntax.tags(text.slice(..), loader, ..);
 
-            let name = text_slice.slice(name_start..name_end).to_string();
+    while let Some(event) = tags_iter.next() {
+        let QueryMatchIterEvent::Match(mat) = event else {
+            continue;
+        };
+        let query = match loader.tag_query(tags_iter.current_language()) {
+            Some(tag_query) => &tag_query.query,
+            None => continue,
+        };
 
-            // lsp positions use utf-8 columns here; the cache stores the matching
-            // offset encoding so cursor comparisons stay consistent.
-            let (start_line, start_character) = char_pos(&text, def_start);
-            let (end_line, end_character) = char_pos(&text, def_end);
+        // Find the @definition.* and optional @name captures in this match.
+        let mut def_capture = None::<(lsp::SymbolKind, std::ops::Range<u32>)>;
+        let mut name_range = None::<std::ops::Range<u32>>;
+        let name_capture = query.get_capture("name");
 
-            flat.push(ThinDocumentSymbol {
-                name: name.into(),
-                kind,
-                range: lsp::Range {
-                    start: lsp::Position {
-                        line: start_line as u32,
-                        character: start_character as u32,
-                    },
-                    end: lsp::Position {
-                        line: end_line as u32,
-                        character: end_character as u32,
-                    },
-                },
-                children: None,
-            });
+        for node in mat.nodes.iter() {
+            let capture_name = query.capture_name(node.capture);
+            if let Some(kind) = capture_name
+                .strip_prefix("definition.")
+                .and_then(tag_kind_to_symbol_kind)
+            {
+                def_capture = Some((kind, node.node.byte_range()));
+            } else if name_capture == Some(node.capture) {
+                name_range = Some(node.node.byte_range());
+            }
         }
 
-        flat
-    };
+        let Some((kind, def_byte_range)) = def_capture else {
+            continue;
+        };
+        let name_byte_range = name_range.unwrap_or_else(|| def_byte_range.clone());
 
-    if let Some(doc) = editor.document_mut(doc_id) {
-        doc.set_symbol_tree(ThinDocumentSymbol::nest_flat(flat), OffsetEncoding::Utf8);
+        let text_slice: RopeSlice = text.slice(..);
+        let name_start = text_slice.byte_to_char(name_byte_range.start as usize);
+        let name_end = text_slice.byte_to_char(name_byte_range.end as usize);
+        let def_start = text_slice.byte_to_char(def_byte_range.start as usize);
+        let def_end = text_slice.byte_to_char(def_byte_range.end as usize);
+
+        let name = text_slice.slice(name_start..name_end).to_string();
+
+        // lsp positions use utf-8 columns here; the cache stores the matching
+        // offset encoding so cursor comparisons stay consistent.
+        let (start_line, start_character) = char_pos(text, def_start);
+        let (end_line, end_character) = char_pos(text, def_end);
+
+        flat.push(ThinDocumentSymbol {
+            name: name.into(),
+            kind,
+            range: lsp::Range {
+                start: lsp::Position {
+                    line: start_line as u32,
+                    character: start_character as u32,
+                },
+                end: lsp::Position {
+                    line: end_line as u32,
+                    character: end_character as u32,
+                },
+            },
+            children: None,
+        });
     }
-    update_breadcrumbs_for_all_views(editor, doc_id);
+
+    flat
 }
 
 /// Convert a char index into `(line, character)` with utf-8 columns.

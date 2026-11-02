@@ -268,3 +268,91 @@ fn runaway_handler_is_aborted() {
     assert!(start.elapsed() < PLUGIN_EXECUTION_TIMEOUT * 3);
     assert!(DEADLINE.with(|d| d.get()).is_none());
 }
+
+/// Runs `code` as an `init` handler and asserts that it is aborted by the time limit.
+fn assert_aborted(code: &str) {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    engine
+        .lua
+        .load(format!(r#"helix.on("init", function() {code} end)"#))
+        .exec()
+        .unwrap();
+    let start = Instant::now();
+    let event = PluginEvent {
+        event_type: EventType::OnInit,
+        data: EventData::None,
+    };
+    let err = engine.call_event_handlers(&mut editor, &event).unwrap_err();
+    assert!(err.to_string().contains("time limit"), "{code}: {err}");
+    assert!(start.elapsed() < PLUGIN_EXECUTION_TIMEOUT * 3, "{code}");
+    assert!(DEADLINE.with(|d| d.get()).is_none());
+}
+
+#[test]
+fn timeout_cannot_be_caught_with_pcall() {
+    assert_aborted("while true do pcall(function() while true do end end) end");
+}
+
+#[test]
+fn timeout_cannot_be_caught_with_nested_pcall() {
+    assert_aborted(
+        "while true do pcall(function() pcall(function() while true do end end) end) end",
+    );
+}
+
+#[test]
+fn timeout_cannot_be_caught_with_xpcall() {
+    assert_aborted(
+        "while true do xpcall(function() while true do end end, function(e) return e end) end",
+    );
+}
+
+#[test]
+fn timeout_cannot_be_caught_by_a_looping_xpcall_handler() {
+    assert_aborted("xpcall(function() while true do end end, function() while true do end end)");
+}
+
+#[test]
+fn timeout_cannot_be_caught_with_coroutine_resume() {
+    assert_aborted(
+        "while true do coroutine.resume(coroutine.create(function() while true do end end)) end",
+    );
+}
+
+#[test]
+fn errors_are_still_caught_before_the_deadline() {
+    let engine = engine();
+    let caught: (bool, bool, bool) = engine
+        .lua
+        .load(
+            r#"
+            local a = pcall(error, "boom")
+            local b = xpcall(function() error("boom") end, function(e) return e end)
+            local c = coroutine.resume(coroutine.create(function() error("boom") end))
+            return not a, not b, not c
+            "#,
+        )
+        .eval()
+        .unwrap();
+    assert_eq!(caught, (true, true, true));
+    let value: i64 = engine
+        .lua
+        .load("local ok, v = pcall(function() return 42 end) return v")
+        .eval()
+        .unwrap();
+    assert_eq!(value, 42);
+}
+
+#[test]
+fn timeout_reaches_into_wrapped_and_nested_coroutines() {
+    assert_aborted("while true do pcall(coroutine.wrap(function() while true do end end)) end");
+    assert_aborted(
+        "local outer = coroutine.create(function() \
+             coroutine.resume(coroutine.create(function() while true do end end)) \
+         end) \
+         while true do coroutine.resume(outer) end",
+    );
+}

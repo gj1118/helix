@@ -511,7 +511,9 @@ impl FileTypeGlobMatcher {
     }
 }
 
-#[derive(Debug)]
+/// Cloning is cheap: tree-sitter trees are reference counted, so a clone shares them.
+/// That makes a snapshot to query on another thread.
+#[derive(Debug, Clone)]
 pub struct Syntax {
     inner: tree_house::Syntax,
 }
