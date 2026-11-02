@@ -18,7 +18,9 @@ use std::{
     },
 };
 
-use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{
+    event::ModifyKind, Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher,
+};
 
 /// The most directories one [`FsWatch`] watches.
 const MAX_WATCHED_DIRS: usize = 4096;
@@ -86,9 +88,14 @@ impl FsWatch {
                 }
                 counter.fetch_add(1, Ordering::Relaxed);
                 helix_event::request_redraw();
-                // New directories are watched too. The watcher can't be called from
-                // its own event handler, so the background thread adds them.
-                if matches!(event.kind, EventKind::Create(_)) {
+                // New directories are watched too, also ones moved into the tree
+                // (a rename, not a create). The watcher can't be called from its own
+                // event handler, so the background thread adds them; it skips paths
+                // that are not directories (e.g. the old side of a rename).
+                if matches!(
+                    event.kind,
+                    EventKind::Create(_) | EventKind::Modify(ModifyKind::Name(_))
+                ) {
                     for path in event.paths {
                         if !is_noise(&path) {
                             let _ = new_dirs.send(path);

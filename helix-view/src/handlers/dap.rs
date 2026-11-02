@@ -99,8 +99,16 @@ const INLINE_VALUES_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 /// Shows the values of the variables the lines around the selected stack frame use at the end
 /// of those lines. Best effort: any problem leaves the lines without values. The variables are
 /// requested in the background; values that arrive after the selected frame changed are dropped.
+/// Bumped whenever inline values are cleared (and so by every refresh): a fetch only
+/// applies its values if no newer refresh or clear happened since it started. The
+/// session/thread/frame check alone is not enough, as some adapters reuse frame ids
+/// across stops.
+pub(crate) static INLINE_VALUES_GENERATION: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 pub fn refresh_inline_values(editor: &mut Editor) {
     editor.clear_dap_inline_values();
+    let generation = INLINE_VALUES_GENERATION.load(std::sync::atomic::Ordering::Relaxed);
     if !editor.config().debugger.inline_values {
         return;
     }
@@ -141,8 +149,11 @@ pub fn refresh_inline_values(editor: &mut Editor) {
             .map(|variable| (variable.name, variable.value))
             .collect();
         Some(Box::new(move |editor: &mut Editor| {
-            // Stale: another session, thread or frame is shown by now.
-            let current = editor.debug_adapters.active_id() == Some(session)
+            // Stale: refreshed or cleared since, or another session, thread or frame
+            // is shown by now.
+            let current = INLINE_VALUES_GENERATION.load(std::sync::atomic::Ordering::Relaxed)
+                == generation
+                && editor.debug_adapters.active_id() == Some(session)
                 && editor
                     .debug_adapters
                     .get_active_client()

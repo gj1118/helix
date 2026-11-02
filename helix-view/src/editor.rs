@@ -3728,6 +3728,9 @@ impl Editor {
     #[inline]
     /// Remove the variable values shown at the end of lines (see [`DebuggerConfig`]).
     pub fn clear_dap_inline_values(&mut self) {
+        // Values still being fetched belong to what was cleared: drop them on arrival.
+        crate::handlers::dap::INLINE_VALUES_GENERATION
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         for doc in self.documents_mut() {
             if !doc.dap_inline_values.is_empty() {
                 doc.dap_inline_values.clear();

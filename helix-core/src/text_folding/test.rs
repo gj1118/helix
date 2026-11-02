@@ -548,7 +548,12 @@ fn partially_overlapping_folds_do_not_both_survive() {
         &(line(2)..=line(5) + 4),
     );
     let mut container = FoldContainer::from(text, vec![first]);
-    let second = Fold::new_points(text, FoldObject::Selection, line(4), &(line(5)..=line(9) + 4));
+    let second = Fold::new_points(
+        text,
+        FoldObject::Selection,
+        line(4),
+        &(line(5)..=line(9) + 4),
+    );
     container.add(text, vec![second]);
 
     assert_eq!(container.len(), 1);

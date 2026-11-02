@@ -263,11 +263,10 @@ fn diagnostics_fingerprint(editor: &Editor, only: Option<&Uri>) -> u64 {
         .iter()
         .filter(|(uri, _)| only.is_none_or(|only| only == *uri));
     for (uri, diags) in lists {
-        // `Uri` holds an `Arc`: its address identifies the entry.
-        uri.as_path()
-            .map(|path| path as *const std::path::Path as *const u8 as usize)
-            .hash(&mut hasher);
-        (diags.as_ptr() as usize, diags.len()).hash(&mut hasher);
+        // The path itself, not an address: a freed allocation can be reused by
+        // another entry. Hashing a path does not allocate.
+        uri.as_path().hash(&mut hasher);
+        diags.len().hash(&mut hasher);
         for (diag, _) in diags {
             let severity = match diag.severity {
                 Some(lsp::DiagnosticSeverity::ERROR) => 1u8,
@@ -282,7 +281,9 @@ fn diagnostics_fingerprint(editor: &Editor, only: Option<&Uri>) -> u64 {
                 diag.range.end.line,
                 diag.range.end.character,
                 severity,
-                diag.message.len(),
+                // The text, not just its length: a republish updates the list in
+                // place, and a same-length message change must still refresh.
+                diag.message.as_str(),
             )
                 .hash(&mut hasher);
         }

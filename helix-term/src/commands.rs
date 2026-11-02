@@ -6089,9 +6089,10 @@ fn persist_clipboard(
     static REQUESTED: AtomicU64 = AtomicU64::new(0);
     static WRITTEN: Mutex<u64> = Mutex::new(0);
 
+    // The default registers and the system clipboards (`Space y`) persist, as they
+    // always did; the black hole and named registers never overwrite the file.
     if !config.persistence.clipboard
-        || register == '_'
-        || (register != '"' && register != config.default_yank_register)
+        || !matches!(register, '"' | '+' | '*') && register != config.default_yank_register
     {
         return;
     }

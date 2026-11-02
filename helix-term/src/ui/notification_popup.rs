@@ -109,29 +109,7 @@ impl NotificationPopup {
 
                 // Schedule an exact-time dismiss on the UI thread if we have a timeout
                 if let Some(timeout) = timeout_opt {
-                    // Compute remaining time from the timestamp embedded in the cloned notification
-                    let started = notification.timestamp; // tokio::time::Instant
-                    let elapsed = started.elapsed();
-                    let remaining = if timeout > elapsed {
-                        timeout - elapsed
-                    } else {
-                        std::time::Duration::from_millis(0)
-                    };
-
-                    tokio::spawn(async move {
-                        tokio_sleep(remaining).await;
-                        // Post back to the UI thread to mutate Editor safely
-                        crate::job::dispatch(
-                            move |editor: &mut helix_view::Editor, _compositor| {
-                                // The notification may have been refreshed by a
-                                // duplicate since this was scheduled; only
-                                // dismiss it once its (new) timeout has passed.
-                                editor.dismiss_notification_if_expired(id);
-                                helix_event::request_redraw();
-                            },
-                        )
-                        .await;
-                    });
+                    schedule_dismiss(id, remaining_time(notification.timestamp, timeout));
                 }
             }
         }
@@ -690,6 +668,41 @@ impl Default for NotificationPopup {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// What is left of `timeout` since `started`.
+fn remaining_time(
+    started: tokio::time::Instant,
+    timeout: std::time::Duration,
+) -> std::time::Duration {
+    timeout.saturating_sub(started.elapsed())
+}
+
+/// Dismisses notification `id` once its timeout has passed. A repeated message
+/// refreshes the notification's timestamp, so when the timer fires early the
+/// notification is still active and the timer is armed again for what is left;
+/// otherwise the popup would stay until some unrelated redraw.
+fn schedule_dismiss(id: usize, after: std::time::Duration) {
+    tokio::spawn(async move {
+        tokio_sleep(after).await;
+        // Post back to the UI thread to mutate Editor safely
+        crate::job::dispatch(move |editor: &mut helix_view::Editor, _compositor| {
+            editor.dismiss_notification_if_expired(id);
+            let still_active = editor
+                .get_active_notifications()
+                .iter()
+                .find(|n| n.id == id)
+                .and_then(|n| {
+                    n.timeout
+                        .map(|timeout| remaining_time(n.timestamp, timeout))
+                });
+            if let Some(remaining) = still_active {
+                schedule_dismiss(id, remaining);
+            }
+            helix_event::request_redraw();
+        })
+        .await;
+    });
 }
 
 #[cfg(test)]
