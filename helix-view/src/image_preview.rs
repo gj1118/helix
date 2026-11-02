@@ -140,15 +140,31 @@ pub fn dimensions(path: &Path) -> Result<(u32, u32), String> {
         .map_err(|err| err.to_string())
 }
 
+/// The longest side of the images kept for previews: larger images are scaled down right after
+/// decoding, so that a preview holds at most `MAX_SIDE * MAX_SIDE * 4` bytes and drawing it at a
+/// new size stays cheap. No preview area of a terminal needs more pixels than this.
+pub const MAX_SIDE: u32 = 2048;
+
+/// Decodes the image at `path` at full size.
 pub fn load(path: &Path) -> Result<Image, String> {
+    load_scaled(path, u32::MAX)
+}
+
+/// Decodes the image at `path`, scaled down (keeping its proportions) so that neither side is
+/// longer than `max_side`.
+pub fn load_scaled(path: &Path, max_side: u32) -> Result<Image, String> {
     let (width, height) = dimensions(path)?;
     if u64::from(width) * u64::from(height) > MAX_PIXELS {
         return Err(format!("{width}x{height} pixels is too large to preview"));
     }
-    let decoded = reader(path)
+    let mut decoded = reader(path)
         .map_err(|err| err.to_string())?
         .decode()
         .map_err(|err| err.to_string())?;
+    let max_side = max_side.max(1);
+    if decoded.width() > max_side || decoded.height() > max_side {
+        decoded = decoded.thumbnail(max_side, max_side);
+    }
     Ok(Image {
         rgba: decoded.into_rgba8(),
     })
@@ -435,6 +451,18 @@ mod tests {
                 .find(|(key, _)| *key == name)
                 .map(|(_, value)| value.to_string())
         }
+    }
+
+    #[test]
+    fn large_images_are_scaled_down_when_loaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wide.png");
+        RgbaImage::from_pixel(400, 100, image::Rgba([1, 2, 3, 255]))
+            .save(&path)
+            .unwrap();
+        assert_eq!(load_scaled(&path, 100).unwrap().size(), (100, 25));
+        assert_eq!(load_scaled(&path, 1000).unwrap().size(), (400, 100));
+        assert_eq!(load(&path).unwrap().size(), (400, 100));
     }
 
     #[test]

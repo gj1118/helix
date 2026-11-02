@@ -547,20 +547,40 @@ fn glob_match_chars(pat: &[char], txt: &[char]) -> bool {
     p == pat.len()
 }
 
+/// The most patterns [`expand_braces`] makes: every group multiplies them, so a
+/// handful of groups would otherwise make millions (at every keystroke).
+const MAX_BRACE_EXPANSIONS: usize = 256;
+
 /// Expands `{a,b}` alternations (not nested) into plain patterns, so
-/// `*.{rs,toml}` becomes `*.rs` and `*.toml`.
+/// `*.{rs,toml}` becomes `*.rs` and `*.toml`. Groups that would make more than
+/// [`MAX_BRACE_EXPANSIONS`] patterns, and those after them, are kept literally.
 fn expand_braces(pattern: &str) -> Vec<String> {
-    if let Some(open) = pattern.find('{') {
-        if let Some(len) = pattern[open..].find('}') {
-            let close = open + len;
-            let (head, tail) = (&pattern[..open], &pattern[close + 1..]);
-            return pattern[open + 1..close]
-                .split(',')
-                .flat_map(|alt| expand_braces(&format!("{head}{alt}{tail}")))
-                .collect();
+    let mut expanded = vec![String::new()];
+    let mut rest = pattern;
+    while let Some(open) = rest.find('{') {
+        let Some(len) = rest[open..].find('}') else {
+            break;
+        };
+        let close = open + len;
+        let alternatives: Vec<&str> = rest[open + 1..close].split(',').collect();
+        if expanded.len() * alternatives.len() > MAX_BRACE_EXPANSIONS {
+            break;
         }
+        let head = &rest[..open];
+        expanded = expanded
+            .iter()
+            .flat_map(|prefix| {
+                alternatives
+                    .iter()
+                    .map(move |alt| format!("{prefix}{head}{alt}"))
+            })
+            .collect();
+        rest = &rest[close + 1..];
     }
-    vec![pattern.to_string()]
+    for pattern in &mut expanded {
+        pattern.push_str(rest);
+    }
+    expanded
 }
 
 /// One glob alternative of a [`Filter`].
@@ -1049,7 +1069,7 @@ impl Tree {
     }
 
     fn load_children(&self, dir: &Path, params: TreeParams) -> io::Result<Vec<Child>> {
-        let mut children = Vec::new();
+        let mut children: Vec<Child> = Vec::new();
         for entry in fs::read_dir(dir)? {
             let entry = match entry {
                 Ok(entry) => entry,
@@ -1076,14 +1096,22 @@ impl Tree {
                 _ => false,
             };
             let sort_key = name.to_lowercase();
-            let is_empty = is_dir && dir_is_empty(&path, params.show_hidden);
             children.push(Child {
                 path,
                 name,
                 sort_key,
                 is_dir,
-                is_empty,
+                is_empty: false,
             });
+        }
+
+        // Flagging empty folders lists each of them: skipped in directories
+        // with very many folders (`node_modules`), which then all show as
+        // regular folders.
+        if children.iter().filter(|child| child.is_dir).count() <= MAX_EMPTINESS_PROBES {
+            for child in children.iter_mut().filter(|child| child.is_dir) {
+                child.is_empty = dir_is_empty(&child.path, params.show_hidden);
+            }
         }
 
         if params.directories_first {
@@ -1129,6 +1157,30 @@ impl Tree {
                 children,
             },
         );
+        // Subdirectories left expanded when `path` was collapsed show up
+        // expanded again; their listings were dropped on collapse.
+        let mut below: Vec<PathBuf> = self
+            .dirs
+            .iter()
+            .filter(|(dir, entry)| entry.expanded && *dir != path && dir.starts_with(path))
+            .map(|(dir, _)| dir.clone())
+            .collect();
+        below.sort_by_key(|dir| dir.components().count());
+        for dir in below {
+            if !is_shown(&self.dirs, &self.root, &dir) {
+                continue;
+            }
+            match self.load_children(&dir, params) {
+                Ok(children) => {
+                    if let Some(entry) = self.dirs.get_mut(&dir) {
+                        entry.children = children;
+                    }
+                }
+                Err(_) => {
+                    self.dirs.remove(&dir);
+                }
+            }
+        }
         self.rebuild_visible();
         Ok(())
     }
@@ -1151,6 +1203,19 @@ impl Tree {
         if let Some(dir) = self.active_dirs_mut().get_mut(path) {
             dir.expanded = false;
         }
+        // Expanding lists a directory anew, so the listings of a collapsed
+        // subtree are dropped. Only the expansion state of the directories
+        // below stays, to show them expanded again. (A filtered view keeps
+        // its listings: they are search results, not reloadable.)
+        if self.filter.is_none() && !self.is_root(path) {
+            self.dirs.retain(|dir, entry| {
+                if !dir.starts_with(path) {
+                    return true;
+                }
+                entry.children = Vec::new();
+                entry.expanded
+            });
+        }
         self.rebuild_visible();
     }
 
@@ -1170,10 +1235,12 @@ impl Tree {
     /// (returned as the error count).
     pub fn refresh(&mut self, params: TreeParams) -> usize {
         let mut errors = 0;
+        // Directories expanded inside collapsed ones are not shown: they are
+        // listed when shown again.
         let paths: Vec<PathBuf> = self
             .dirs
             .iter()
-            .filter(|(_, dir)| dir.expanded)
+            .filter(|(path, dir)| dir.expanded && is_shown(&self.dirs, &self.root, path))
             .map(|(path, _)| path.clone())
             .collect();
         for path in paths {
@@ -1329,7 +1396,10 @@ impl Tree {
             Some(cache)
                 if !cache.raw.is_empty()
                     && filter.raw().starts_with(&cache.raw)
-                    && !filter.raw().contains('!') =>
+                    && !filter.raw().contains('!')
+                    // A `/` switches matching from the name to the relative path, so
+                    // the new matches are no longer a subset of the old ones.
+                    && cache.raw.contains('/') == filter.raw().contains('/') =>
             {
                 let rescored = cache
                     .scored
@@ -1586,6 +1656,49 @@ fn build_visible(root: &Path, dirs: &HashMap<PathBuf, Dir>, with_parent: bool) -
     visible
 }
 
+/// Directories with more subdirectories than this don't flag the empty ones
+/// (see [`Tree::load_children`]).
+const MAX_EMPTINESS_PROBES: usize = 200;
+
+/// Whether every directory between the root and `path` is expanded, so that
+/// `path` shows up in the tree.
+fn is_shown(dirs: &HashMap<PathBuf, Dir>, root: &Path, path: &Path) -> bool {
+    path.ancestors()
+        .skip(1)
+        .take_while(|ancestor| ancestor.starts_with(root))
+        .all(|ancestor| dirs.get(ancestor).is_some_and(|dir| dir.expanded))
+}
+
+/// Whether `path` is `ancestor` or inside it, also when one of them is reached
+/// through a symbolic link. Paths that don't exist (yet) are resolved as far as
+/// they exist; when nothing can be resolved the paths are compared as written.
+pub fn is_within(path: &Path, ancestor: &Path) -> bool {
+    if path.starts_with(ancestor) {
+        return true;
+    }
+    match (resolve_existing(path), ancestor.canonicalize()) {
+        (Some(path), Ok(ancestor)) => path.starts_with(ancestor),
+        _ => false,
+    }
+}
+
+/// Canonicalizes the longest existing prefix of `path` and appends the rest.
+fn resolve_existing(path: &Path) -> Option<PathBuf> {
+    let mut rest = Vec::new();
+    let mut existing = path;
+    loop {
+        if let Ok(canonical) = existing.canonicalize() {
+            return Some(
+                rest.iter()
+                    .rev()
+                    .fold(canonical, |path, name| path.join(name)),
+            );
+        }
+        rest.push(existing.file_name()?);
+        existing = existing.parent()?;
+    }
+}
+
 /// Whether `dir` has nothing a listing would show. Stops at the first entry,
 /// so it is cheap even for huge directories; an unreadable directory counts as
 /// non-empty.
@@ -1607,20 +1720,25 @@ fn root_display_name(path: &Path) -> String {
 /// Recursively copies `from` (file or directory) onto `to` (entries are
 /// replaced as they are copied). Used for paste.
 pub fn copy_recursively(from: &Path, to: &Path) -> io::Result<()> {
+    // Copying a directory into itself would never terminate. Links inside are
+    // copied as links, so checking the top is enough.
+    if fs::symlink_metadata(from)?.is_dir() && is_within(to, from) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cannot copy a directory into itself",
+        ));
+    }
+    copy_tree(from, to)
+}
+
+fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
     let file_type = fs::symlink_metadata(from)?.file_type();
 
     if file_type.is_dir() {
-        // Copying a directory into itself would never terminate.
-        if to.starts_with(from) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "cannot copy a directory into itself",
-            ));
-        }
         fs::create_dir_all(to)?;
         for entry in fs::read_dir(from)? {
             let entry = entry?;
-            copy_recursively(&entry.path(), &to.join(entry.file_name()))?;
+            copy_tree(&entry.path(), &to.join(entry.file_name()))?;
         }
         return Ok(());
     }
@@ -2280,6 +2398,103 @@ mod tests {
         let err = copy_recursively(&dir, &dir.join("copy")).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
         assert!(!dir.join("copy").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_refuses_to_copy_a_directory_into_itself_through_a_link() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("dir");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), "a").unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&dir, &link).unwrap();
+
+        assert!(is_within(&link.join("copy"), &dir));
+        assert!(is_within(&dir.join("copy/deeper"), &link));
+        assert!(!is_within(&tmp.path().join("other"), &dir));
+        let err = copy_recursively(&dir, &link.join("copy")).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(!dir.join("copy").exists());
+        // Copying next to it still works.
+        copy_recursively(&link, &tmp.path().join("copy")).unwrap();
+        assert!(tmp.path().join("copy/a.txt").exists());
+    }
+
+    #[test]
+    fn brace_expansion_is_capped() {
+        assert_eq!(expand_braces("*.{rs,toml}"), vec!["*.rs", "*.toml"]);
+        assert_eq!(
+            expand_braces("{a,b}{c,d}x"),
+            vec!["acx", "adx", "bcx", "bdx"]
+        );
+        assert_eq!(expand_braces("a{b"), vec!["a{b"]);
+        let huge = "{a,b,c,d}".repeat(10);
+        let expanded = expand_braces(&huge);
+        assert!(expanded.len() <= MAX_BRACE_EXPANSIONS);
+        // 4^4 = 256 patterns, the rest stays literal.
+        assert_eq!(expanded.len(), 256);
+        assert!(expanded[0].starts_with("aaaa{a,b,c,d}"));
+        assert!(Filter::new(&format!("*{huge}")).is_some());
+    }
+
+    #[test]
+    fn emptiness_is_not_probed_in_folders_with_many_folders() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir(root.join("few")).unwrap();
+        std::fs::create_dir(root.join("few/empty")).unwrap();
+        std::fs::create_dir(root.join("many")).unwrap();
+        for i in 0..=MAX_EMPTINESS_PROBES {
+            std::fs::create_dir(root.join(format!("many/{i}"))).unwrap();
+        }
+        let p = params(false, true);
+        let mut tree = Tree::new(root.to_path_buf(), p).unwrap();
+        tree.expand_at(&root.join("few"), p).unwrap();
+        tree.expand_at(&root.join("many"), p).unwrap();
+        let empty = |name: &str| {
+            tree.visible()
+                .iter()
+                .find(|e| e.path == root.join(name))
+                .unwrap()
+                .is_empty
+        };
+        assert!(empty("few/empty"));
+        assert!(!empty("many/0"));
+    }
+
+    #[test]
+    fn collapsing_drops_listings_and_expanding_restores_the_subtree() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("a/b/c")).unwrap();
+        std::fs::write(root.join("a/b/c/f.txt"), "").unwrap();
+        let p = params(false, true);
+        let mut tree = Tree::new(root.to_path_buf(), p).unwrap();
+        for dir in ["a", "a/b", "a/b/c"] {
+            tree.expand_at(&root.join(dir), p).unwrap();
+        }
+        let before = names(&tree);
+        tree.collapse(&root.join("a/b/c"));
+        tree.collapse(&root.join("a"));
+        assert!(tree.dirs.values().all(|dir| dir.expanded));
+        assert!(tree.dirs[&root.join("a/b")].children.is_empty());
+        assert!(!tree.dirs.contains_key(&root.join("a/b/c")));
+        // Hidden expanded directories are not listed on refresh.
+        std::fs::write(root.join("a/b/new.txt"), "").unwrap();
+        tree.refresh(p);
+        assert!(tree.dirs[&root.join("a/b")].children.is_empty());
+
+        tree.expand_at(&root.join("a"), p).unwrap();
+        let mut after = before.clone();
+        after.retain(|name| name != "f.txt");
+        after.push("new.txt".into());
+        let mut got = names(&tree);
+        got.sort();
+        after.sort();
+        assert_eq!(got, after);
+        assert!(tree.is_expanded(&root.join("a/b")));
+        assert!(!tree.is_expanded(&root.join("a/b/c")));
     }
 
     #[cfg(unix)]

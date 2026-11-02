@@ -1315,7 +1315,7 @@ impl Explorer {
             cx.editor.set_error("Pasting back onto the original path");
             return EventResult::Consumed(None);
         }
-        if dest.starts_with(&clip.path) {
+        if helix_view::explorer::is_within(&dest, &clip.path) {
             cx.editor
                 .set_error("Cannot paste a path into its own subtree");
             return EventResult::Consumed(None);
@@ -1620,12 +1620,14 @@ impl Component for Explorer {
     }
 
     fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
-        self.request_git_status(cx);
         if !cx.editor.explorer_panel.visible {
             self.filter_editing = false;
             self.resizing = false;
             return;
         }
+        // Only a shown panel refreshes git status: the layer stays installed while
+        // hidden, and `git status` on a large repo is not free.
+        self.request_git_status(cx);
         if !cx.editor.explorer_panel.focused {
             // Keys no longer reach the box once the panel lost the keyboard.
             self.filter_editing = false;

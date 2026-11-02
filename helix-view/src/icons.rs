@@ -913,27 +913,31 @@ impl Mime {
             // Search for fully specified name first so that custom icons,
             // for example for `README.md` or `docker-compose.yaml`, can
             // take precedence over any extension it make have.
+            // Names that aren't UTF-8 are matched lossily, so they still get
+            // an icon (at worst the default one) and stay aligned with the others.
             if let Some(name) = path.file_name() {
+                let name = name.to_string_lossy();
                 // Search config options first
-                if let Some(icon) = self.mime.get(name.to_str()?) {
+                if let Some(icon) = self.mime.get(name.as_ref()) {
                     return Some(icon);
                 }
 
                 // Then built-in
-                if let Some(icon) = MIMES.get(name.to_str()?) {
+                if let Some(icon) = MIMES.get(name.as_ref()) {
                     return Some(icon);
                 }
             }
 
             // Try to search for icons based off of the extension.
             if let Some(name) = path.extension() {
+                let name = name.to_string_lossy();
                 // Search config options first
-                if let Some(icon) = self.mime.get(name.to_str()?) {
+                if let Some(icon) = self.mime.get(name.as_ref()) {
                     return Some(icon);
                 }
 
                 // Then built-in
-                if let Some(icon) = MIMES.get(name.to_str()?) {
+                if let Some(icon) = MIMES.get(name.as_ref()) {
                     return Some(icon);
                 }
             }
@@ -1098,6 +1102,20 @@ mod tests {
 
     const CLOSED: &str = "\u{f024b}";
     const OPEN: &str = "\u{f0770}";
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_names_still_get_an_icon() {
+        use std::os::unix::ffi::OsStrExt;
+        let mime = Mime {
+            enabled: true,
+            ..Mime::default()
+        };
+        let rust = std::path::Path::new(std::ffi::OsStr::from_bytes(b"caf\xe9.rs"));
+        assert_eq!(mime.get(Some(rust), None), MIMES.get("rs"));
+        let other = std::path::Path::new(std::ffi::OsStr::from_bytes(b"caf\xe9"));
+        assert_eq!(mime.get(Some(other), None), MIMES.get("text"));
+    }
 
     #[test]
     fn built_in_folder_glyphs_differ_when_open() {

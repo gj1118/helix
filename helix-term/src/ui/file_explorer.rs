@@ -8,7 +8,11 @@ use helix_core::hashmap;
 use helix_view::{theme::Style, Editor};
 use tui::text::Span;
 
-use crate::{alt, compositor::Context, job::Callback};
+use crate::{
+    alt,
+    compositor::{Compositor, Context},
+    job::Callback,
+};
 
 use super::prompt::Movement;
 use super::{
@@ -111,7 +115,6 @@ fn create_file_operation_prompt<F>(
             prompt.set_line(prefill(&selected_path), editor);
 
             if let Some(movement) = movement {
-                log::error!("{movement:?}");
                 prompt.move_cursor(movement);
             }
 
@@ -137,6 +140,44 @@ fn refresh_file_explorer(cursor: u32, cx: &mut Context, root: PathBuf) {
         Ok(call)
     });
     cx.jobs.callback(callback);
+}
+
+/// Runs a file operation that can be slow (deleting a large tree, copying a large file) off the
+/// UI thread, then shows its result and refreshes the explorer.
+fn run_in_background(
+    cx: &mut Context,
+    cursor: u32,
+    root: PathBuf,
+    work: impl FnOnce() -> Result<String, String> + Send + 'static,
+) {
+    cx.jobs.callback(async move {
+        let result = tokio::task::spawn_blocking(work)
+            .await
+            .unwrap_or_else(|err| Err(err.to_string()));
+        let call: Callback = Callback::EditorCompositor(Box::new(move |editor, compositor| {
+            editor.set_result(result);
+            refresh_if_on_top(cursor, root, editor, compositor);
+        }));
+        Ok(call)
+    });
+}
+
+/// Replaces the file explorer with a fresh one, unless something else was opened over it in the
+/// meantime.
+fn refresh_if_on_top(cursor: u32, root: PathBuf, editor: &Editor, compositor: &mut Compositor) {
+    let Some(top) = compositor.pop() else {
+        return;
+    };
+    if top.type_name() != std::any::type_name::<overlay::Overlay<FileExplorer>>() {
+        compositor.push(top);
+        return;
+    }
+    if let Ok(picker) = file_explorer(Some(cursor), root, editor) {
+        compositor.push(Box::new(overlay::overlaid(
+            picker,
+            editor.config().fullscreen_overlay,
+        )));
+    }
 }
 
 pub fn file_explorer(
@@ -238,7 +279,6 @@ pub fn file_explorer(
             // Most of the time when we would like to rename a file we
             // don't want to change its file extension
             path.extension()
-                .inspect(|a| log::error!("{a:?}"))
                 // +1 to account for the dot in the extension (`.`)
                 .map(|ext| Movement::BackwardChar(ext.len() + 1)),
             |path| path.display().to_string(),
@@ -294,25 +334,22 @@ pub fn file_explorer(
                     return Some(Err(format!("Path {} does not exist", to_delete.display())));
                 };
 
-                if to_delete.is_dir() {
-                    if let Err(err) = fs::remove_dir_all(to_delete).map_err(|err| {
-                        format!("Unable to delete directory {}: {err}", to_delete.display())
-                    }) {
-                        return Some(Err(err));
-                    };
-                    refresh_file_explorer(cursor, cx, root);
+                let to_delete = to_delete.to_path_buf();
+                let status = format!("Deleting {}…", to_delete.display());
+                run_in_background(cx, cursor, root, move || {
+                    if to_delete.is_dir() {
+                        fs::remove_dir_all(&to_delete).map_err(|err| {
+                            format!("Unable to delete directory {}: {err}", to_delete.display())
+                        })?;
+                        return Ok(format!("Deleted directory: {}", to_delete.display()));
+                    }
+                    fs::remove_file(&to_delete).map_err(|err| {
+                        format!("Unable to delete file {}: {err}", to_delete.display())
+                    })?;
+                    Ok(format!("Deleted file: {}", to_delete.display()))
+                });
 
-                    return Some(Ok(format!("Deleted directory: {}", to_delete.display())));
-                }
-
-                if let Err(err) = fs::remove_file(to_delete)
-                    .map_err(|err| format!("Unable to delete file {}: {err}", to_delete.display()))
-                {
-                    return Some(Err(err));
-                };
-                refresh_file_explorer(cursor, cx, root);
-
-                Some(Ok(format!("Deleted file: {}", to_delete.display())))
+                Some(Ok(status))
             },
         )
     });
@@ -348,23 +385,26 @@ pub fn file_explorer(
                     cx,
                     root,
                     move |cx: &mut Context, picker_root: PathBuf, copy_from: &Path| {
-                        let copy_to = helix_stdx::path::expand_tilde(PathBuf::from(&copy_to_str));
-                        if let Err(err) = std::fs::copy(copy_from, &copy_to).map_err(|err| {
-                            format!(
-                                "Unable to copy from file {} to {}: {err}",
+                        let copy_to = helix_stdx::path::expand_tilde(PathBuf::from(&copy_to_str))
+                            .into_owned();
+                        let copy_from = copy_from.to_path_buf();
+                        let status = format!("Copying {}…", copy_from.display());
+                        run_in_background(cx, cursor, picker_root, move || {
+                            std::fs::copy(&copy_from, &copy_to).map_err(|err| {
+                                format!(
+                                    "Unable to copy from file {} to {}: {err}",
+                                    copy_from.display(),
+                                    copy_to.display()
+                                )
+                            })?;
+                            Ok(format!(
+                                "Copied contents of file {} to {}",
                                 copy_from.display(),
                                 copy_to.display()
-                            )
-                        }) {
-                            return Some(Err(err));
-                        };
-                        refresh_file_explorer(cursor, cx, picker_root);
+                            ))
+                        });
 
-                        Some(Ok(format!(
-                            "Copied contents of file {} to {}",
-                            copy_from.display(),
-                            copy_to.display()
-                        )))
+                        Some(Ok(status))
                     },
                 )
             },

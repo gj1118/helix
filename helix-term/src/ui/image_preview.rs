@@ -1,8 +1,14 @@
 //! The image in the preview of a picker.
+//!
+//! Images are decoded scaled down to at most [`image_preview::MAX_SIDE`] pixels on a side, large
+//! ones by a single background worker that only ever decodes the newest request, and only the
+//! [`MAX_READY`] most recently drawn previews keep their decoded image: the others drop it and
+//! decode it again when they are shown.
 
-use std::path::Path;
+use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
 
 use helix_view::graphics::{Color, Rect, Style};
 use helix_view::image_preview::{self, Image, Placement, Protocol, Rendered};
@@ -13,10 +19,15 @@ use tui::buffer::{Buffer as Surface, Overlay};
 /// thread, so that moving over a large photo doesn't stop the editor.
 const DECODE_NOW_PIXELS: u64 = 1_000_000;
 
+/// How many previews keep their decoded image (at most `MAX_SIDE² * 4` bytes each, 16 MB).
+const MAX_READY: usize = 6;
+
 /// The size of a cell when the terminal doesn't tell.
 const DEFAULT_CELL: (u16, u16) = (8, 16);
 
 enum Load {
+    /// Not decoded (yet, or any more): decoding starts when the preview is drawn.
+    Idle,
     Loading,
     Ready(Arc<Image>),
     Failed(String),
@@ -39,9 +50,27 @@ struct Drawn {
     id: u64,
 }
 
-pub struct ImagePreview {
-    load: Arc<Mutex<Load>>,
+struct Inner {
+    load: Mutex<Load>,
     drawn: Mutex<Option<(Key, Arc<Drawn>)>>,
+}
+
+impl Inner {
+    /// Forgets the decoded image, which is decoded again the next time it is drawn.
+    fn evict(&self) {
+        let mut load = self.load.lock().unwrap();
+        if matches!(*load, Load::Ready(_)) {
+            *load = Load::Idle;
+            *self.drawn.lock().unwrap() = None;
+        }
+    }
+}
+
+pub struct ImagePreview {
+    path: PathBuf,
+    /// The size of the image in pixels, from its header.
+    dimensions: (u32, u32),
+    inner: Arc<Inner>,
 }
 
 pub enum Status {
@@ -50,51 +79,162 @@ pub enum Status {
     Shown,
 }
 
+/// The previews holding a decoded image, the most recently drawn last.
+fn ready() -> &'static Mutex<VecDeque<Weak<Inner>>> {
+    static READY: OnceLock<Mutex<VecDeque<Weak<Inner>>>> = OnceLock::new();
+    READY.get_or_init(Default::default)
+}
+
+/// Marks `inner` as the most recently used decoded image and drops the decoded images of the
+/// previews used longest ago beyond [`MAX_READY`].
+fn touch(inner: &Arc<Inner>) {
+    let evicted: Vec<_> = {
+        let mut ready = ready().lock().unwrap();
+        let target = Arc::downgrade(inner);
+        ready.retain(|entry| entry.strong_count() > 0 && !entry.ptr_eq(&target));
+        ready.push_back(target);
+        let excess = ready.len().saturating_sub(MAX_READY);
+        ready.drain(..excess).collect()
+    };
+    for entry in evicted {
+        if let Some(inner) = entry.upgrade() {
+            inner.evict();
+        }
+    }
+}
+
+/// The background decoder: one thread, one pending request. A new request replaces the pending
+/// one, so scrolling over many large images only decodes the one the cursor stops on.
+struct Worker {
+    pending: Mutex<Option<(PathBuf, Weak<Inner>)>>,
+    wake: Condvar,
+}
+
+impl Worker {
+    fn get() -> &'static Worker {
+        static WORKER: OnceLock<Worker> = OnceLock::new();
+        let mut spawn = false;
+        let worker = WORKER.get_or_init(|| {
+            spawn = true;
+            Worker {
+                pending: Mutex::new(None),
+                wake: Condvar::new(),
+            }
+        });
+        if spawn {
+            std::thread::Builder::new()
+                .name("image-preview".into())
+                .spawn(move || worker.run())
+                .expect("failed to spawn the image preview thread");
+        }
+        worker
+    }
+
+    fn submit(&self, path: PathBuf, inner: &Arc<Inner>) {
+        let replaced = self
+            .pending
+            .lock()
+            .unwrap()
+            .replace((path, Arc::downgrade(inner)));
+        self.wake.notify_one();
+        // The replaced request is dropped: its preview decodes again when it is drawn.
+        if let Some(inner) = replaced.and_then(|(_, inner)| inner.upgrade()) {
+            let mut load = inner.load.lock().unwrap();
+            if matches!(*load, Load::Loading) {
+                *load = Load::Idle;
+            }
+        }
+    }
+
+    fn run(&self) {
+        loop {
+            let (path, inner) = {
+                let mut pending = self.pending.lock().unwrap();
+                loop {
+                    if let Some(request) = pending.take() {
+                        break request;
+                    }
+                    pending = self.wake.wait(pending).unwrap();
+                }
+            };
+            // The picker was closed or moved on.
+            let Some(inner) = inner.upgrade() else {
+                continue;
+            };
+            if !matches!(*inner.load.lock().unwrap(), Load::Loading) {
+                continue;
+            }
+            ImagePreview::finish(&inner, ImagePreview::decode(&path));
+            helix_event::request_redraw();
+        }
+    }
+}
+
 impl ImagePreview {
     pub fn open(path: &Path) -> Self {
-        let load = match image_preview::dimensions(path) {
-            Err(err) => Load::Failed(err),
-            Ok((width, height)) if u64::from(width) * u64::from(height) <= DECODE_NOW_PIXELS => {
-                Self::decode(path)
-            }
-            Ok(_) => Load::Loading,
+        let (load, dimensions) = match image_preview::dimensions(path) {
+            Err(err) => (Load::Failed(err), (0, 0)),
+            Ok(dimensions) => (Load::Idle, dimensions),
         };
-        let load = Arc::new(Mutex::new(load));
+        let preview = Self {
+            path: path.to_path_buf(),
+            dimensions,
+            inner: Arc::new(Inner {
+                load: Mutex::new(load),
+                drawn: Mutex::new(None),
+            }),
+        };
+        preview.start();
+        preview
+    }
 
-        if matches!(*load.lock().unwrap(), Load::Loading) {
-            let (path, load) = (path.to_path_buf(), load.clone());
-            std::thread::spawn(move || {
-                let decoded = Self::decode(&path);
-                *load.lock().unwrap() = decoded;
-                helix_event::request_redraw();
-            });
+    /// Starts decoding the image if it is not decoded: at once for small images, in the
+    /// background for the others.
+    fn start(&self) {
+        {
+            let mut load = self.inner.load.lock().unwrap();
+            if !matches!(*load, Load::Idle) {
+                return;
+            }
+            *load = Load::Loading;
         }
-
-        Self {
-            load,
-            drawn: Mutex::new(None),
+        let (width, height) = self.dimensions;
+        if u64::from(width) * u64::from(height) <= DECODE_NOW_PIXELS {
+            Self::finish(&self.inner, Self::decode(&self.path));
+        } else {
+            Worker::get().submit(self.path.clone(), &self.inner);
         }
     }
 
     fn decode(path: &Path) -> Load {
-        match image_preview::load(path) {
+        match image_preview::load_scaled(path, image_preview::MAX_SIDE) {
             Ok(image) => Load::Ready(Arc::new(image)),
             Err(err) => Load::Failed(err),
         }
     }
 
+    fn finish(inner: &Arc<Inner>, decoded: Load) {
+        let is_ready = matches!(decoded, Load::Ready(_));
+        *inner.drawn.lock().unwrap() = None;
+        *inner.load.lock().unwrap() = decoded;
+        if is_ready {
+            touch(inner);
+        }
+    }
+
     /// The size of the image in pixels, once it is decoded.
     pub fn size(&self) -> Option<(u32, u32)> {
-        match &*self.load.lock().unwrap() {
-            Load::Ready(image) => Some(image.size()),
+        match &*self.inner.load.lock().unwrap() {
+            Load::Ready(_) => Some(self.dimensions),
             _ => None,
         }
     }
 
     /// Draws the image into `area`.
     pub fn draw(&self, surface: &mut Surface, area: Rect, editor: &Editor) -> Status {
-        let image = match &*self.load.lock().unwrap() {
-            Load::Loading => return Status::Loading,
+        self.start();
+        let image = match &*self.inner.load.lock().unwrap() {
+            Load::Idle | Load::Loading => return Status::Loading,
             Load::Failed(err) => return Status::Failed(err.clone()),
             Load::Ready(image) => image.clone(),
         };
@@ -118,8 +258,9 @@ impl ImagePreview {
             },
         };
 
+        touch(&self.inner);
         let drawn = {
-            let mut cache = self.drawn.lock().unwrap();
+            let mut cache = self.inner.drawn.lock().unwrap();
             match &*cache {
                 Some((cached, drawn)) if *cached == key => drawn.clone(),
                 _ => {
@@ -195,11 +336,59 @@ mod tests {
 
         let preview = ImagePreview::open(&path);
         let deadline = Instant::now() + Duration::from_secs(20);
+        // Other tests may evict the image or replace the request: `start` asks again, like drawing.
         while preview.size().is_none() {
             assert!(Instant::now() < deadline, "the image was never decoded");
             std::thread::sleep(Duration::from_millis(10));
+            preview.start();
         }
         assert_eq!(preview.size(), Some((1200, 1000)));
+    }
+
+    #[test]
+    fn huge_images_are_kept_scaled_down() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("huge.png");
+        image::RgbaImage::from_pixel(image_preview::MAX_SIDE * 2, 10, image::Rgba([1, 2, 3, 255]))
+            .save(&path)
+            .unwrap();
+        let preview = ImagePreview::open(&path);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            if let Load::Ready(image) = &*preview.inner.load.lock().unwrap() {
+                assert_eq!(image.size(), (image_preview::MAX_SIDE, 5));
+                break;
+            }
+            assert!(Instant::now() < deadline, "the image was never decoded");
+            std::thread::sleep(Duration::from_millis(10));
+            preview.start();
+        }
+        // The original size is still reported.
+        assert_eq!(preview.size(), Some((image_preview::MAX_SIDE * 2, 10)));
+    }
+
+    #[test]
+    fn only_a_few_decoded_images_are_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let previews: Vec<_> = (0..MAX_READY + 3)
+            .map(|i| {
+                let path = dir.path().join(format!("{i}.png"));
+                image::RgbaImage::from_pixel(4, 4, image::Rgba([1, 2, 3, 255]))
+                    .save(&path)
+                    .unwrap();
+                ImagePreview::open(&path)
+            })
+            .collect();
+        let decoded = previews.iter().filter(|p| p.size().is_some()).count();
+        assert!(decoded <= MAX_READY, "{decoded} images are kept");
+        // An evicted image is decoded again when it is shown.
+        let first = &previews[0];
+        assert_eq!(first.size(), None);
+        first.start();
+        assert!(matches!(
+            &*first.inner.load.lock().unwrap(),
+            Load::Ready(_) | Load::Idle
+        ));
     }
 
     #[test]
@@ -216,6 +405,9 @@ mod tests {
     fn missing_files_fail() {
         let preview = ImagePreview::open(Path::new("/definitely/not/here.png"));
         assert_eq!(preview.size(), None);
-        assert!(matches!(&*preview.load.lock().unwrap(), Load::Failed(_)));
+        assert!(matches!(
+            &*preview.inner.load.lock().unwrap(),
+            Load::Failed(_)
+        ));
     }
 }
