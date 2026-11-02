@@ -1,9 +1,29 @@
+use crate::document::PluginAnnotation;
 use crate::Document;
 use crate::ViewId;
 use helix_core::doc_formatter::{FormattedGrapheme, TextFormat};
 use helix_core::text_annotations::LineAnnotation;
-use helix_core::{softwrapped_dimensions, Position};
+use helix_core::{softwrapped_dimensions, Position, RopeSlice};
 use std::collections::BTreeMap;
+
+/// The annotations anchored on `doc_line`.
+///
+/// `annots` must be sorted by `char_idx` (the plugin API stores them sorted), so the
+/// line's range is found with two binary searches instead of a scan per line.
+pub fn plugin_annotations_on_line<'a>(
+    annots: &'a [PluginAnnotation],
+    text: RopeSlice,
+    doc_line: usize,
+) -> &'a [PluginAnnotation] {
+    if doc_line >= text.len_lines() {
+        return &[];
+    }
+    let line_start = text.line_to_char(doc_line);
+    let line_end = text.line_to_char(doc_line + 1);
+    let lo = annots.partition_point(|a| a.char_idx < line_start);
+    let hi = lo + annots[lo..].partition_point(|a| a.char_idx < line_end);
+    &annots[lo..hi]
+}
 
 pub struct PluginLineAnnotations<'a> {
     doc: &'a Document,
@@ -45,13 +65,8 @@ impl LineAnnotation for PluginLineAnnotations<'_> {
         let mut next_auto_idx: u16 = 0;
 
         if let Some(annots) = self.doc.plugin_annotations.get(&self.view_id) {
-            let line_start = self.doc.text().line_to_char(doc_line);
-            let line_end = self.doc.text().line_to_char(doc_line + 1);
-
-            let line_annots: Vec<_> = annots
-                .iter()
-                .filter(|a| a.char_idx >= line_start && a.char_idx < line_end)
-                .collect();
+            let line_annots =
+                plugin_annotations_on_line(annots, self.doc.text().slice(..), doc_line);
 
             // Collect inline annotations
             let inline_annots: Vec<_> = line_annots.iter().filter(|a| !a.is_line).collect();
@@ -181,5 +196,42 @@ impl LineAnnotation for PluginLineAnnotations<'_> {
         }
 
         Position::new(0, 0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use helix_core::Rope;
+
+    fn annot(char_idx: usize) -> PluginAnnotation {
+        PluginAnnotation {
+            char_idx,
+            text: char_idx.to_string(),
+            style: None,
+            fg: None,
+            bg: None,
+            offset: 0,
+            is_line: false,
+            virt_line_idx: None,
+            dropped_text: None,
+        }
+    }
+
+    #[test]
+    fn annotations_on_line_uses_line_ranges() {
+        // lines: "ab\n" [0,3), "cd\n" [3,6), "" [6,6)
+        let text = Rope::from("ab\ncd\n");
+        let annots: Vec<_> = [0, 2, 3, 3, 5, 6, 100].into_iter().map(annot).collect();
+        let idx = |line| {
+            plugin_annotations_on_line(&annots, text.slice(..), line)
+                .iter()
+                .map(|a| a.char_idx)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(idx(0), vec![0, 2]);
+        assert_eq!(idx(1), vec![3, 3, 5]);
+        assert_eq!(idx(2), Vec::<usize>::new());
+        assert_eq!(idx(3), Vec::<usize>::new());
     }
 }

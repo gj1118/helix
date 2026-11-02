@@ -3,6 +3,8 @@ use crate::ui::text_decorations::Decoration;
 use helix_core::doc_formatter::{DocumentFormatter, FormattedGrapheme, TextFormat};
 use helix_core::text_annotations::TextAnnotations;
 use helix_core::Position;
+use helix_core::RopeSlice;
+use helix_view::annotations::plugins::plugin_annotations_on_line;
 use helix_view::{Document, Theme, ViewId};
 use std::collections::BTreeMap;
 
@@ -79,13 +81,8 @@ impl Decoration for PluginDecoration<'_> {
         let mut inline_col_used: u16 = 0;
 
         if let Some(annots) = self.doc.plugin_annotations.get(&self.view_id) {
-            let line_start = self.doc.text().line_to_char(pos.doc_line);
-            let line_end = self.doc.text().line_to_char(pos.doc_line + 1);
-
-            let line_annots: Vec<_> = annots
-                .iter()
-                .filter(|a| a.char_idx >= line_start && a.char_idx < line_end)
-                .collect();
+            let line_annots: &[helix_view::document::PluginAnnotation] =
+                plugin_annotations_on_line(annots, self.doc.text().slice(..), pos.doc_line);
 
             // Track overflow inline annotations separately (matches PluginLineAnnotations logic)
             let mut inline_extra_rows: u16 = 0;
@@ -170,9 +167,9 @@ impl Decoration for PluginDecoration<'_> {
                 };
 
                 let annotations = TextAnnotations::default();
-                let rope = helix_core::Rope::from(display_text.as_str());
+                // Format straight from the string slice, no per-frame Rope allocation.
                 let formatter = DocumentFormatter::new_at_prev_checkpoint(
-                    rope.slice(..),
+                    RopeSlice::from(display_text.as_str()),
                     &text_fmt,
                     &annotations,
                     0,
@@ -223,7 +220,7 @@ impl Decoration for PluginDecoration<'_> {
             let mut next_auto_idx: u16 = 0;
 
             // Collect all virtual line annotations
-            let virt_annots: Vec<_> = line_annots.iter().filter(|a| a.is_line).copied().collect();
+            let virt_annots: Vec<_> = line_annots.iter().filter(|a| a.is_line).collect();
 
             // Find the max explicit virt_line_idx
             for annot in &virt_annots {
@@ -273,9 +270,9 @@ impl Decoration for PluginDecoration<'_> {
                     };
 
                     let annotations = TextAnnotations::default();
-                    let rope = helix_core::Rope::from(annot.text.as_str());
+                    // Format straight from the string slice, no per-frame Rope allocation.
                     let formatter = DocumentFormatter::new_at_prev_checkpoint(
-                        rope.slice(..),
+                        RopeSlice::from(annot.text.as_str()),
                         &text_fmt,
                         &annotations,
                         0,

@@ -1,8 +1,9 @@
 use crate::compositor::Context;
-use crate::job::Jobs;
+use crate::job::{Job, Jobs};
 use crate::ui::PromptEvent;
 use helix_core::command_line::Args;
 use helix_plugin::types::{EditorCommandRegistry, UiHandler};
+use helix_plugin::PluginManager;
 use helix_view::Editor;
 use std::sync::Arc;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
@@ -107,9 +108,61 @@ impl EditorCommandRegistry for TermCommandRegistry {
         let args_struct = Args::parse(&line, cmd.signature, true, |token| Ok(token.content))
             .map_err(|e| anyhow::anyhow!("Failed to parse arguments: {}", e))?;
 
-        (cmd.fun)(&mut cx, args_struct, PromptEvent::Validate)?;
+        let result = (cmd.fun)(&mut cx, args_struct, PromptEvent::Validate);
 
+        // Plain jobs were already spawned by `Jobs::add` and report back through the
+        // global job queue. Jobs that the command wanted awaited (e.g. the
+        // format-then-save callbacks of `:write`) would be dropped together with this
+        // temporary `Jobs`, so spawn them as well. Their callbacks reach the
+        // application via the global job queue; they are just not awaited on exit.
+        for future in std::mem::take(&mut jobs.wait_futures) {
+            jobs.add(Job {
+                future,
+                wait: false,
+            });
+        }
+
+        result?;
         Ok(())
+    }
+}
+
+/// A UI callback a plugin is waiting on. Owned by the prompt/picker that will
+/// answer it; when that component is dropped (aborted, closed with Esc, ...)
+/// the pending Lua callback is released instead of leaking.
+pub struct PendingUiCallback {
+    plugin_manager: Arc<PluginManager>,
+    plugin_name: String,
+    callback_id: u64,
+}
+
+impl PendingUiCallback {
+    pub fn new(plugin_manager: Arc<PluginManager>, plugin_name: String, callback_id: u64) -> Self {
+        Self {
+            plugin_manager,
+            plugin_name,
+            callback_id,
+        }
+    }
+
+    /// Call the plugin's callback with `value` (at most once; later calls are no-ops).
+    pub fn fire(&self, editor: &mut Editor, value: serde_json::Value) {
+        if let Err(e) = self.plugin_manager.handle_ui_callback(
+            editor,
+            self.plugin_name.clone(),
+            self.callback_id,
+            value,
+        ) {
+            log::error!("Plugin UI callback failed: {}", e);
+            editor.set_error(format!("Plugin error: {}", e));
+        }
+    }
+}
+
+impl Drop for PendingUiCallback {
+    fn drop(&mut self) {
+        self.plugin_manager
+            .release_ui_callback(std::mem::take(&mut self.plugin_name), self.callback_id);
     }
 }
 

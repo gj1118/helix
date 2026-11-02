@@ -14,25 +14,28 @@ impl LuaUserData for LuaWindow {
 
         // Get buffer in this window
         methods.add_method("get_buffer", |_lua, this, ()| {
-            let editor = crate::lua::get_editor_mut()?;
-            let view = editor.tree.try_get(this.view_id).ok_or_else(|| {
-                LuaError::RuntimeError(format!("Window {:?} no longer exists", this.view_id))
+            let doc_id = crate::lua::with_editor(|editor| {
+                let view = editor.tree.try_get(this.view_id).ok_or_else(|| {
+                    LuaError::RuntimeError(format!("Window {:?} no longer exists", this.view_id))
+                })?;
+                Ok(view.doc)
             })?;
-            Ok(super::buffer::LuaBuffer::new(view.doc))
+            Ok(super::buffer::LuaBuffer::new(doc_id))
         });
 
         // Focus this window
         methods.add_method("focus", |_lua, this, ()| {
-            let editor = crate::lua::get_editor_mut()?;
-            if editor.tree.contains(this.view_id) {
-                editor.tree.focus = this.view_id;
-            } else {
-                return Err(LuaError::RuntimeError(format!(
-                    "Window {:?} no longer exists",
-                    this.view_id
-                )));
-            }
-            Ok(())
+            crate::lua::with_editor(|editor| {
+                if editor.tree.try_get(this.view_id).is_some() {
+                    editor.tree.focus = this.view_id;
+                    Ok(())
+                } else {
+                    Err(LuaError::RuntimeError(format!(
+                        "Window {:?} no longer exists",
+                        this.view_id
+                    )))
+                }
+            })
         });
     }
 }
@@ -42,21 +45,22 @@ pub fn register_window_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
 
     // helix.window.get_current() - Get focused window
     let get_current = lua.create_function(|_lua, ()| {
-        let editor = crate::lua::get_editor_mut()?;
-        Ok(LuaWindow {
-            view_id: editor.tree.focus,
-        })
+        let view_id = crate::lua::with_editor(|editor| Ok(editor.tree.focus))?;
+        Ok(LuaWindow { view_id })
     })?;
     window_module.set("get_current", get_current)?;
 
     // helix.window.list() - List all windows
     let list = lua.create_function(|lua, ()| {
-        let editor = crate::lua::get_editor_mut()?;
-        let windows = lua.create_table()?;
-        for (i, (view, _focused)) in editor.tree.views().enumerate() {
-            windows.set(i + 1, LuaWindow { view_id: view.id })?;
-        }
-        Ok(windows)
+        // Collect ids first: creating Lua values may run finalizers.
+        let ids: Vec<ViewId> = crate::lua::with_editor(|editor| {
+            Ok(editor
+                .tree
+                .views()
+                .map(|(view, _focused)| view.id)
+                .collect())
+        })?;
+        lua.create_sequence_from(ids.into_iter().map(|view_id| LuaWindow { view_id }))
     })?;
     window_module.set("list", list)?;
 

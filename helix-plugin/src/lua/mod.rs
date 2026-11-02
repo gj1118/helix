@@ -1,50 +1,226 @@
 use crate::error::{PluginError, Result};
 use crate::types::{EventType, PluginEvent};
-use helix_view::Editor;
+use helix_view::{Document, Editor, View};
 use mlua::prelude::*;
-use mlua::RegistryKey;
+use mlua::{HookTriggers, RegistryKey, VmState};
 use parking_lot::RwLock;
-use std::cell::RefCell;
+use std::cell::Cell;
 use std::collections::HashMap;
+use std::ptr::NonNull;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-thread_local! {
-    static CURRENT_EDITOR: RefCell<Option<*mut Editor>> = const { RefCell::new(None) };
+// ---------------------------------------------------------------------------
+// Editor access
+//
+// Invariant: at most one `&mut Editor` derived from `CURRENT_EDITOR` is alive
+// at any time, and it never outlives the `&mut Editor` handed to
+// `with_editor_context`.
+//
+// * `with_editor_context` publishes a pointer to an editor the caller has
+//   exclusively borrowed for the duration of `f`, and restores the previous
+//   slot on exit (also on panic/unwind) through a drop guard.
+// * `with_editor` is the only way API functions get at the editor. It marks the
+//   slot as borrowed while its closure runs; any nested `with_editor` (e.g. Lua
+//   code re-entered through a metamethod or a `__gc` finalizer while the
+//   closure is running) gets a Lua error instead of a second, aliasing `&mut`.
+//   The reference handed to the closure is higher-ranked, so it cannot escape.
+// * API functions read/convert all their Lua arguments *before* calling
+//   `with_editor` and build Lua return values *after* it returns, so in normal
+//   operation no Lua code runs while the editor is borrowed.
+// * A nested `with_editor_context` (e.g. a builtin command that fires plugin
+//   events) is sound: its `&mut Editor` is a reborrow of the one currently held,
+//   which is unusable until the nested call returns and the slot is restored.
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy)]
+struct EditorSlot {
+    editor: Option<NonNull<Editor>>,
+    borrowed: bool,
 }
 
-/// Helper to set the current editor context during a function execution
+const EMPTY_SLOT: EditorSlot = EditorSlot {
+    editor: None,
+    borrowed: false,
+};
+
+thread_local! {
+    static CURRENT_EDITOR: Cell<EditorSlot> = const { Cell::new(EMPTY_SLOT) };
+    /// Point in time after which running plugin code is aborted (see `install_timeout_hook`).
+    static DEADLINE: Cell<Option<Instant>> = const { Cell::new(None) };
+}
+
+/// Restores the editor slot on drop (panic safe).
+struct SlotRestore(EditorSlot);
+
+impl Drop for SlotRestore {
+    fn drop(&mut self) {
+        CURRENT_EDITOR.with(|slot| slot.set(self.0));
+    }
+}
+
+/// Restores the execution deadline on drop (panic safe).
+struct DeadlineRestore(Option<Instant>);
+
+impl Drop for DeadlineRestore {
+    fn drop(&mut self) {
+        DEADLINE.with(|d| d.set(self.0));
+    }
+}
+
+/// Maximum time a single entry into plugin code (event handler, command, UI
+/// callback, plugin init) may run before it is aborted with a Lua error.
+pub const PLUGIN_EXECUTION_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How many VM instructions run between two deadline checks.
+const HOOK_INSTRUCTION_INTERVAL: u32 = 10_000;
+
+/// Run `f` with an execution deadline. Nested calls keep the outer deadline.
+pub(crate) fn with_deadline<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    let prev = DEADLINE.with(|d| d.get());
+    let _restore = DeadlineRestore(prev);
+    if prev.is_none() {
+        DEADLINE.with(|d| d.set(Some(Instant::now() + PLUGIN_EXECUTION_TIMEOUT)));
+    }
+    f()
+}
+
+/// Install the instruction hook that aborts plugin code running past its deadline.
+fn install_timeout_hook(lua: &Lua) {
+    lua.set_hook(
+        HookTriggers::new().every_nth_instruction(HOOK_INSTRUCTION_INTERVAL),
+        |_lua, _debug| match DEADLINE.with(|d| d.get()) {
+            Some(deadline) if Instant::now() >= deadline => Err(LuaError::RuntimeError(format!(
+                "plugin code exceeded the execution time limit of {:?}",
+                PLUGIN_EXECUTION_TIMEOUT
+            ))),
+            _ => Ok(VmState::Continue),
+        },
+    );
+}
+
+/// Create a sandboxed Lua state with the execution time limit hook installed.
+fn new_sandboxed_lua() -> Result<Lua> {
+    let lua = Lua::new();
+
+    // Set up sandboxing - remove dangerous functions
+    lua.load(
+        r#"
+        -- Remove dangerous functions
+        os.execute = nil
+        os.exit = nil
+        io = nil
+        loadfile = nil
+        dofile = nil
+        "#,
+    )
+    .exec()
+    .map_err(|e| PluginError::InitializationFailed(format!("Failed to setup sandbox: {}", e)))?;
+
+    install_timeout_hook(&lua);
+    Ok(lua)
+}
+
+/// Run `f` with `editor` available to the plugin API (and with an execution deadline).
 pub(crate) fn with_editor_context<F, R>(editor: &mut Editor, f: F) -> R
 where
     F: FnOnce() -> R,
 {
-    CURRENT_EDITOR.with(|e| {
-        *e.borrow_mut() = Some(editor as *mut _);
+    let prev = CURRENT_EDITOR.with(|slot| {
+        slot.replace(EditorSlot {
+            editor: Some(NonNull::from(editor)),
+            borrowed: false,
+        })
     });
-    let result = f();
-    CURRENT_EDITOR.with(|e| {
-        *e.borrow_mut() = None;
-    });
-    result
+    let _restore = SlotRestore(prev);
+    with_deadline(f)
 }
 
-/// Internal helper to get the active editor context
-pub(crate) fn get_editor_mut() -> std::result::Result<&'static mut Editor, mlua::Error> {
-    CURRENT_EDITOR.with(|e| {
-        let ptr = *e.borrow();
-        match ptr {
-            Some(p) => Ok(unsafe { &mut *p }),
-            None => Err(mlua::Error::RuntimeError(
-                "No active editor context. This function can only be called from within a plugin callback.".to_string(),
-            )),
-        }
+/// Borrow the active editor for the duration of `f`.
+///
+/// Errors if there is no active editor context or if the editor is already
+/// borrowed (re-entrant access). See the invariant at the top of this module.
+pub(crate) fn with_editor<F, R>(f: F) -> LuaResult<R>
+where
+    F: FnOnce(&mut Editor) -> LuaResult<R>,
+{
+    try_with_editor(f)?.ok_or_else(|| {
+        LuaError::RuntimeError(
+            "No active editor context. This function can only be called from within a plugin callback."
+                .to_string(),
+        )
     })
 }
 
+/// Like [`with_editor`] but returns `Ok(None)` when there is no editor context.
+pub(crate) fn try_with_editor<F, R>(f: F) -> LuaResult<Option<R>>
+where
+    F: FnOnce(&mut Editor) -> LuaResult<R>,
+{
+    let slot = CURRENT_EDITOR.with(|slot| slot.get());
+    let Some(mut ptr) = slot.editor else {
+        return Ok(None);
+    };
+    if slot.borrowed {
+        return Err(LuaError::RuntimeError(
+            "The editor is already in use: Helix API functions cannot be called re-entrantly \
+             (e.g. from a metamethod or finalizer triggered by another API call)"
+                .to_string(),
+        ));
+    }
+    CURRENT_EDITOR.with(|s| {
+        s.set(EditorSlot {
+            editor: slot.editor,
+            borrowed: true,
+        })
+    });
+    let _restore = SlotRestore(slot);
+    // SAFETY: the pointer was created in `with_editor_context` from a `&mut Editor`
+    // that stays exclusively borrowed until the slot is restored. The `borrowed`
+    // flag guarantees this is the only live reference derived from it, and the
+    // closure's higher-ranked lifetime prevents the reference from escaping.
+    let editor = unsafe { ptr.as_mut() };
+    f(editor).map(Some)
+}
+
+/// The focused view and its document, or a Lua error if there is none.
+pub(crate) fn focused_mut(editor: &mut Editor) -> LuaResult<(&mut View, &mut Document)> {
+    let focus = editor.tree.focus;
+    if editor.tree.try_get(focus).is_none() {
+        return Err(LuaError::RuntimeError("No focused window".to_string()));
+    }
+    let view = editor.tree.get_mut(focus);
+    let doc = editor
+        .documents
+        .get_mut(&view.doc)
+        .ok_or_else(|| LuaError::RuntimeError("Focused window has no document".to_string()))?;
+    Ok((view, doc))
+}
+
+/// The focused view and its document, or a Lua error if there is none.
+pub(crate) fn focused_ref(editor: &Editor) -> LuaResult<(&View, &Document)> {
+    let view = editor
+        .tree
+        .try_get(editor.tree.focus)
+        .ok_or_else(|| LuaError::RuntimeError("No focused window".to_string()))?;
+    let doc = editor
+        .documents
+        .get(&view.doc)
+        .ok_or_else(|| LuaError::RuntimeError("Focused window has no document".to_string()))?;
+    Ok((view, doc))
+}
+
 pub mod api;
+#[cfg(test)]
+mod editor_tests;
 pub mod loader;
 
-type EventHandlers = HashMap<EventType, Vec<(String, RegistryKey)>>;
+type EventHandlers = HashMap<EventType, Vec<(String, Arc<RegistryKey>)>>;
+type Commands = HashMap<String, (crate::types::CommandMetadata, Arc<RegistryKey>)>;
 
 /// Lua scripting engine for Helix plugins
 pub struct LuaEngine {
@@ -53,10 +229,9 @@ pub struct LuaEngine {
     /// Registered event handlers: EventType -> Vec<(plugin_name, callback_ref)>
     event_handlers: Arc<RwLock<EventHandlers>>,
     /// Loaded plugins by name
-    /// Loaded plugins by name
     plugins: HashMap<String, crate::types::Plugin>,
     /// Registered commands: name -> (metadata, callback_ref)
-    commands: Arc<RwLock<HashMap<String, (crate::types::CommandMetadata, RegistryKey)>>>,
+    commands: Arc<RwLock<Commands>>,
     /// Builtin editor command registry
     builtin_commands: Option<Arc<dyn crate::types::EditorCommandRegistry>>,
     /// UI callbacks: (plugin_name, callback_id) -> callback_ref
@@ -70,23 +245,7 @@ pub struct LuaEngine {
 impl LuaEngine {
     /// Create a new Lua engine
     pub fn new() -> Result<Self> {
-        let lua = Lua::new();
-
-        // Set up sandboxing - remove dangerous functions
-        lua.load(
-            r#"
-            -- Remove dangerous functions
-            os.execute = nil
-            os.exit = nil
-            io = nil
-            loadfile = nil
-            dofile = nil
-            "#,
-        )
-        .exec()
-        .map_err(|e| {
-            PluginError::InitializationFailed(format!("Failed to setup sandbox: {}", e))
-        })?;
+        let lua = new_sandboxed_lua()?;
 
         let event_handlers = Arc::new(RwLock::new(HashMap::new()));
         let commands = Arc::new(RwLock::new(HashMap::new()));
@@ -107,23 +266,7 @@ impl LuaEngine {
 
     /// Reset the Lua engine, clearing all state and plugins
     pub fn reset(&mut self) -> Result<()> {
-        let lua = Lua::new();
-
-        // Set up sandboxing - remove dangerous functions
-        lua.load(
-            r#"
-            -- Remove dangerous functions
-            os.execute = nil
-            os.exit = nil
-            io = nil
-            loadfile = nil
-            dofile = nil
-            "#,
-        )
-        .exec()
-        .map_err(|e| {
-            PluginError::InitializationFailed(format!("Failed to setup sandbox: {}", e))
-        })?;
+        let lua = new_sandboxed_lua()?;
 
         self.lua = lua;
         self.event_handlers.write().clear();
@@ -212,11 +355,11 @@ impl LuaEngine {
                     .get::<String>("_current_plugin_name")
                     .unwrap_or_else(|_| "unknown".to_string());
 
-                let callback_ref = lua.create_registry_value(callback)?;
+                let callback_ref = Arc::new(lua.create_registry_value(callback)?);
 
-                // Add to event handlers
-                let mut handlers = event_handlers.write();
-                handlers
+                // Add to event handlers (no Lua code runs while the lock is held)
+                event_handlers
+                    .write()
                     .entry(event_type)
                     .or_default()
                     .push((plugin_name, callback_ref));
@@ -288,7 +431,7 @@ impl LuaEngine {
                 .get("handler")
                 .map_err(|_| LuaError::RuntimeError("Command handler function required".into()))?;
 
-            let callback_ref = lua.create_registry_value(handler)?;
+            let callback_ref = Arc::new(lua.create_registry_value(handler)?);
 
             let meta = crate::types::CommandMetadata {
                 name: name.clone(),
@@ -312,24 +455,26 @@ impl LuaEngine {
         name: &str,
         args: Vec<String>,
     ) -> Result<()> {
-        let commands = self.commands.read();
-        if let Some((_, callback_ref)) = commands.get(name) {
-            let callback: LuaFunction = self.lua.registry_value(callback_ref).map_err(|e| {
-                PluginError::CommandExecutionFailed(format!("Failed to retrieve callback: {}", e))
+        // Clone the key out so the lock is not held while Lua runs (the command
+        // may call `helix.register_command`, which takes the write lock).
+        let callback_ref = self
+            .commands
+            .read()
+            .get(name)
+            .map(|(_, key)| Arc::clone(key))
+            .ok_or_else(|| {
+                PluginError::CommandExecutionFailed(format!("Command not found: {}", name))
             })?;
 
-            with_editor_context(editor, || {
-                callback.call::<()>(args).map_err(|e| {
-                    PluginError::CommandExecutionFailed(format!("Execution failed: {}", e))
-                })
-            })?;
-        } else {
-            return Err(PluginError::CommandExecutionFailed(format!(
-                "Command not found: {}",
-                name
-            )));
-        }
-        Ok(())
+        let callback: LuaFunction = self.lua.registry_value(&callback_ref).map_err(|e| {
+            PluginError::CommandExecutionFailed(format!("Failed to retrieve callback: {}", e))
+        })?;
+
+        with_editor_context(editor, || {
+            callback.call::<()>(args).map_err(|e| {
+                PluginError::CommandExecutionFailed(format!("Execution failed: {}", e))
+            })
+        })
     }
 
     /// Get all registered commands metadata
@@ -348,8 +493,13 @@ impl LuaEngine {
         callback_id: u64,
         value: serde_json::Value,
     ) -> Result<()> {
-        let mut callbacks = self.ui_callbacks.write();
-        if let Some(callback_ref) = callbacks.remove(&(plugin_name, callback_id)) {
+        // Remove the entry and release the lock before running Lua: the callback
+        // may open another prompt/picker, which inserts into the same map.
+        let callback_ref = self
+            .ui_callbacks
+            .write()
+            .remove(&(plugin_name, callback_id));
+        if let Some(callback_ref) = callback_ref {
             let callback: LuaFunction = self
                 .lua
                 .registry_value(&callback_ref)
@@ -364,6 +514,15 @@ impl LuaEngine {
             })?;
         }
         Ok(())
+    }
+
+    /// Drop a pending UI callback without calling it (prompt aborted, picker closed).
+    /// Returns whether a callback was pending.
+    pub fn release_ui_callback(&self, plugin_name: String, callback_id: u64) -> bool {
+        self.ui_callbacks
+            .write()
+            .remove(&(plugin_name, callback_id))
+            .is_some()
     }
 
     pub fn load_plugin(&mut self, plugin: crate::types::Plugin) -> Result<()> {
@@ -384,14 +543,11 @@ impl LuaEngine {
 
         // Load and execute the plugin
         let code = std::fs::read_to_string(&entry_file)?;
-        self.lua
-            .load(&code)
-            .set_name(&plugin.metadata.name)
-            .exec()
-            .map_err(PluginError::LuaError)?;
+        let result = with_deadline(|| self.lua.load(&code).set_name(&plugin.metadata.name).exec());
 
-        // Clear the current plugin name
+        // Clear the current plugin name (also when loading failed)
         globals.set("_current_plugin_name", LuaValue::Nil)?;
+        result.map_err(PluginError::LuaError)?;
 
         self.plugins.insert(plugin.metadata.name.clone(), plugin);
 
@@ -400,10 +556,17 @@ impl LuaEngine {
 
     /// Call all event handlers for a given event
     pub fn call_event_handlers(&self, editor: &mut Editor, event: &PluginEvent) -> Result<()> {
-        let handlers = self.event_handlers.read();
+        // Snapshot the handlers and release the lock before running Lua: handlers
+        // may call `helix.on`, which takes the write lock.
+        let callbacks: Vec<(String, Arc<RegistryKey>)> = self
+            .event_handlers
+            .read()
+            .get(&event.event_type)
+            .cloned()
+            .unwrap_or_default();
 
-        if let Some(callbacks) = handlers.get(&event.event_type) {
-            for (plugin_name, callback_ref) in callbacks {
+        {
+            for (plugin_name, callback_ref) in &callbacks {
                 // Get the callback from the registry
                 let callback: LuaFunction = self.lua.registry_value(callback_ref).map_err(|e| {
                     PluginError::EventHandlerError {

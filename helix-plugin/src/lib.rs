@@ -179,6 +179,17 @@ impl PluginManager {
         let engine = self.engine.read();
         engine.handle_ui_callback(editor, plugin_name, callback_id, value)
     }
+
+    /// Release a pending UI callback without calling it (e.g. the prompt was
+    /// aborted or the picker was closed). Returns whether one was pending.
+    pub fn release_ui_callback(&self, plugin_name: String, callback_id: u64) -> bool {
+        // `try_read` so that dropping a UI component while the engine is being
+        // reloaded can never deadlock; a reload clears all callbacks anyway.
+        match self.engine.try_read() {
+            Some(engine) => engine.release_ui_callback(plugin_name, callback_id),
+            None => false,
+        }
+    }
 }
 
 #[cfg(test)]

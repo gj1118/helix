@@ -30,3 +30,5 @@ toml.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+arc-swap.workspace = true
+tokio = { version = "1", features = ["rt", "time"] }

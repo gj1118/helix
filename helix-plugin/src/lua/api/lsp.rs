@@ -6,17 +6,22 @@ pub fn register_lsp_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
 
     // helix.lsp.get_clients() - Get active LSP clients for current buffer
     let get_clients = lua.create_function(|lua, ()| {
-        let editor = crate::lua::get_editor_mut()?;
-        let (_, _doc) = helix_view::current_ref!(editor);
-
-        let clients = lua.create_table()?;
         // This is a bit complex as we need to find which clients are attached to the doc
         // For now, let's just list all active clients in the registry
-        for (i, client) in editor.language_servers.iter_clients().enumerate() {
+        let infos: Vec<(String, String)> = crate::lua::with_editor(|editor| {
+            Ok(editor
+                .language_servers
+                .iter_clients()
+                .map(|client| (client.name().to_string(), client.id().to_string()))
+                .collect())
+        })?;
+
+        let clients = lua.create_table()?;
+        for (i, (name, id)) in infos.into_iter().enumerate() {
             let c = lua.create_table()?;
-            c.set("name", client.name())?;
-            c.set("id", client.id().to_string())?;
-            clients.set(i + 1, c)?;
+            c.raw_set("name", name)?;
+            c.raw_set("id", id)?;
+            clients.raw_set(i + 1, c)?;
         }
         Ok(clients)
     })?;

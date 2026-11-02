@@ -942,21 +942,19 @@ impl Application {
                 plugin_name,
                 callback_id,
             } => {
-                let plugin_manager = self.plugin_manager.clone();
+                // Dropping the prompt (e.g. on abort) releases the pending callback.
+                let pending = crate::plugin_registry::PendingUiCallback::new(
+                    self.plugin_manager.clone(),
+                    plugin_name,
+                    callback_id,
+                );
                 let prompt = crate::ui::Prompt::new(
                     message.into(),
                     None,
                     |_editor, _input| Vec::new(),
                     move |cx, input, event| {
                         if event == crate::ui::PromptEvent::Validate {
-                            let _ = plugin_manager.handle_ui_callback(
-                                cx.editor,
-                                plugin_name.clone(),
-                                callback_id,
-                                serde_json::Value::String(input.to_string()),
-                            );
-                        } else if event == crate::ui::PromptEvent::Abort {
-                            // Optionally handle abort
+                            pending.fire(cx.editor, serde_json::Value::String(input.to_string()));
                         }
                     },
                 );
@@ -972,7 +970,11 @@ impl Application {
                 plugin_name,
                 callback_id,
             } => {
-                let plugin_manager = self.plugin_manager.clone();
+                let pending = crate::plugin_registry::PendingUiCallback::new(
+                    self.plugin_manager.clone(),
+                    plugin_name,
+                    callback_id,
+                );
                 let prompt = crate::ui::Prompt::new(
                     format!("{} (y/n) ", message).into(),
                     None,
@@ -981,19 +983,9 @@ impl Application {
                         if event == crate::ui::PromptEvent::Validate {
                             let confirmed =
                                 input.to_lowercase() == "y" || input.to_lowercase() == "yes";
-                            let _ = plugin_manager.handle_ui_callback(
-                                cx.editor,
-                                plugin_name.clone(),
-                                callback_id,
-                                serde_json::Value::Bool(confirmed),
-                            );
+                            pending.fire(cx.editor, serde_json::Value::Bool(confirmed));
                         } else if event == crate::ui::PromptEvent::Abort {
-                            let _ = plugin_manager.handle_ui_callback(
-                                cx.editor,
-                                plugin_name.clone(),
-                                callback_id,
-                                serde_json::Value::Bool(false),
-                            );
+                            pending.fire(cx.editor, serde_json::Value::Bool(false));
                         }
                     },
                 );
@@ -1005,18 +997,18 @@ impl Application {
                 plugin_name,
                 callback_id,
             } => {
-                let plugin_manager = self.plugin_manager.clone();
+                // Dropping the picker (e.g. closed with Esc) releases the pending callback.
+                let pending = crate::plugin_registry::PendingUiCallback::new(
+                    self.plugin_manager.clone(),
+                    plugin_name,
+                    callback_id,
+                );
                 let columns = [ui::PickerColumn::new("item", |item: &String, _data| {
                     item.as_str().into()
                 })];
                 let picker =
                     crate::ui::Picker::new(columns, 0, items, (), move |cx, item, _action| {
-                        let _ = plugin_manager.handle_ui_callback(
-                            cx.editor,
-                            plugin_name.clone(),
-                            callback_id,
-                            serde_json::Value::String(item.clone()),
-                        );
+                        pending.fire(cx.editor, serde_json::Value::String(item.clone()));
                     })
                     .with_title("Plugin");
                 self.compositor.push(Box::new(overlaid(

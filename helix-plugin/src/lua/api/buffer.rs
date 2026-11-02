@@ -15,33 +15,72 @@ impl LuaBuffer {
     }
 }
 
+/// Run `f` with the document of `id`, or error if it no longer exists.
+fn with_doc<F, R>(id: DocumentId, f: F) -> LuaResult<R>
+where
+    F: FnOnce(&helix_view::Document) -> LuaResult<R>,
+{
+    crate::lua::with_editor(|editor| {
+        let doc = editor
+            .document(id)
+            .ok_or_else(|| LuaError::RuntimeError(format!("Buffer {:?} no longer exists", id)))?;
+        f(doc)
+    })
+}
+
+/// Run `f` with the focused view and its document, erroring unless the focused
+/// view shows the document `id`.
+fn with_focused_doc<F, R>(id: DocumentId, what: &str, f: F) -> LuaResult<R>
+where
+    F: FnOnce(&mut helix_view::View, &mut helix_view::Document) -> LuaResult<R>,
+{
+    crate::lua::with_editor(|editor| {
+        let (view, doc) = crate::lua::focused_mut(editor)?;
+        // For now, only support current doc
+        if doc.id() != id {
+            return Err(LuaError::RuntimeError(format!(
+                "{} currently only supported for the active buffer.",
+                what
+            )));
+        }
+        f(view, doc)
+    })
+}
+
+/// Clamp a 1-based line and 0-based column to a char offset inside `text`.
+fn line_col_to_char(text: &helix_core::Rope, line: usize, col: usize) -> usize {
+    let row = (line.saturating_sub(1)).min(text.len_lines().saturating_sub(1));
+    text.line_to_char(row) + col.min(text.line(row).len_chars())
+}
+
+/// Build the `{ {anchor=, head=}, ... }` table returned by the selection getters.
+/// Must be called after the editor borrow has ended (table creation can run Lua finalizers).
+pub(crate) fn selections_to_lua(lua: &Lua, ranges: &[(usize, usize)]) -> LuaResult<LuaTable> {
+    let selections = lua.create_table_with_capacity(ranges.len(), 0)?;
+    for (i, &(anchor, head)) in ranges.iter().enumerate() {
+        let s = lua.create_table_with_capacity(0, 2)?;
+        s.raw_set("anchor", anchor)?;
+        s.raw_set("head", head)?;
+        selections.raw_set(i + 1, s)?;
+    }
+    Ok(selections)
+}
+
 impl LuaUserData for LuaBuffer {
     fn add_methods<'lua, M: LuaUserDataMethods<Self>>(methods: &mut M) {
         // Get buffer text
         methods.add_method("get_text", |_lua, this, ()| {
-            let editor = crate::lua::get_editor_mut()?;
-            let doc = editor.document(this.document_id).ok_or_else(|| {
-                LuaError::RuntimeError(format!("Buffer {:?} no longer exists", this.document_id))
-            })?;
-            Ok(doc.text().to_string())
+            with_doc(this.document_id, |doc| Ok(doc.text().to_string()))
         });
 
         // Get buffer length
         methods.add_method("len", |_lua, this, ()| {
-            let editor = crate::lua::get_editor_mut()?;
-            let doc = editor.document(this.document_id).ok_or_else(|| {
-                LuaError::RuntimeError(format!("Buffer {:?} no longer exists", this.document_id))
-            })?;
-            Ok(doc.text().len_chars())
+            with_doc(this.document_id, |doc| Ok(doc.text().len_chars()))
         });
 
         // Get buffer line count
         methods.add_method("line_count", |_lua, this, ()| {
-            let editor = crate::lua::get_editor_mut()?;
-            let doc = editor.document(this.document_id).ok_or_else(|| {
-                LuaError::RuntimeError(format!("Buffer {:?} no longer exists", this.document_id))
-            })?;
-            Ok(doc.text().len_lines())
+            with_doc(this.document_id, |doc| Ok(doc.text().len_lines()))
         });
 
         // Get line at index (1-based)
@@ -51,30 +90,24 @@ impl LuaUserData for LuaBuffer {
                     "Line numbers are 1-based (must be >= 1)".to_string(),
                 ));
             }
-            let editor = crate::lua::get_editor_mut()?;
-            let doc = editor.document(this.document_id).ok_or_else(|| {
-                LuaError::RuntimeError(format!("Buffer {:?} no longer exists", this.document_id))
-            })?;
-
-            let line_idx = line_num - 1;
-            if line_idx >= doc.text().len_lines() {
-                return Err(LuaError::RuntimeError(format!(
-                    "Line number {} out of bounds (max {})",
-                    line_num,
-                    doc.text().len_lines()
-                )));
-            }
-
-            Ok(doc.text().line(line_idx).to_string())
+            with_doc(this.document_id, |doc| {
+                let line_idx = line_num - 1;
+                if line_idx >= doc.text().len_lines() {
+                    return Err(LuaError::RuntimeError(format!(
+                        "Line number {} out of bounds (max {})",
+                        line_num,
+                        doc.text().len_lines()
+                    )));
+                }
+                Ok(doc.text().line(line_idx).to_string())
+            })
         });
 
         // Get buffer path
         methods.add_method("get_path", |_lua, this, ()| {
-            let editor = crate::lua::get_editor_mut()?;
-            let doc = editor.document(this.document_id).ok_or_else(|| {
-                LuaError::RuntimeError(format!("Buffer {:?} no longer exists", this.document_id))
-            })?;
-            Ok(doc.path().map(|p| p.to_string_lossy().to_string()))
+            with_doc(this.document_id, |doc| {
+                Ok(doc.path().map(|p| p.to_string_lossy().to_string()))
+            })
         });
 
         // Get document ID
@@ -82,49 +115,30 @@ impl LuaUserData for LuaBuffer {
 
         // Check if buffer is modified
         methods.add_method("is_modified", |_lua, this, ()| {
-            let editor = crate::lua::get_editor_mut()?;
-            let doc = editor.document(this.document_id).ok_or_else(|| {
-                LuaError::RuntimeError(format!("Buffer {:?} no longer exists", this.document_id))
-            })?;
-            Ok(doc.is_modified())
+            with_doc(this.document_id, |doc| Ok(doc.is_modified()))
         });
 
         // Get buffer language
         methods.add_method("get_language", |_lua, this, ()| {
-            let editor = crate::lua::get_editor_mut()?;
-            let doc = editor.document(this.document_id).ok_or_else(|| {
-                LuaError::RuntimeError(format!("Buffer {:?} no longer exists", this.document_id))
-            })?;
-            Ok(doc.language_name().map(|s| s.to_string()))
+            with_doc(this.document_id, |doc| {
+                Ok(doc.language_name().map(|s| s.to_string()))
+            })
         });
 
         // Insert text at position
         methods.add_method(
             "insert",
             |_lua, this, (line, col, text): (usize, usize, String)| {
-                let editor = crate::lua::get_editor_mut()?;
-                let (view, doc) = helix_view::current!(editor);
-
-                // For now, only support current doc
-                if doc.id() != this.document_id {
-                    return Err(LuaError::RuntimeError(
-                        "Modifications currently only supported for the active buffer.".to_string(),
-                    ));
-                }
-
-                let text_rope = doc.text();
-                let row = (line.saturating_sub(1)).min(text_rope.len_lines().saturating_sub(1));
-                let line_start = text_rope.line_to_char(row);
-                let line_len = text_rope.line(row).len_chars();
-                let offset = line_start + col.min(line_len);
-
-                let transaction = helix_core::Transaction::change(
-                    text_rope,
-                    std::iter::once((offset, offset, Some(text.into()))),
-                );
-                doc.apply(&transaction, view.id);
-
-                Ok(())
+                with_focused_doc(this.document_id, "Modifications", |view, doc| {
+                    let text_rope = doc.text();
+                    let offset = line_col_to_char(text_rope, line, col);
+                    let transaction = helix_core::Transaction::change(
+                        text_rope,
+                        std::iter::once((offset, offset, Some(text.into()))),
+                    );
+                    doc.apply(&transaction, view.id);
+                    Ok(())
+                })
             },
         );
 
@@ -134,91 +148,64 @@ impl LuaUserData for LuaBuffer {
             |_lua,
              this,
              (start_line, start_col, end_line, end_col): (usize, usize, usize, usize)| {
-                let editor = crate::lua::get_editor_mut()?;
-                let (view, doc) = helix_view::current!(editor);
-
-                // For now, only support current doc
-                if doc.id() != this.document_id {
-                    return Err(LuaError::RuntimeError(
-                        "Modifications currently only supported for the active buffer.".to_string(),
-                    ));
-                }
-
-                let text_rope = doc.text();
-
-                let start_row =
-                    (start_line.saturating_sub(1)).min(text_rope.len_lines().saturating_sub(1));
-                let start_offset = text_rope.line_to_char(start_row)
-                    + start_col.min(text_rope.line(start_row).len_chars());
-
-                let end_row =
-                    (end_line.saturating_sub(1)).min(text_rope.len_lines().saturating_sub(1));
-                let end_offset = text_rope.line_to_char(end_row)
-                    + end_col.min(text_rope.line(end_row).len_chars());
-
-                let transaction = helix_core::Transaction::change(
-                    text_rope,
-                    std::iter::once((start_offset, end_offset, None)),
-                );
-                doc.apply(&transaction, view.id);
-
-                Ok(())
+                with_focused_doc(this.document_id, "Modifications", |view, doc| {
+                    let text_rope = doc.text();
+                    let a = line_col_to_char(text_rope, start_line, start_col);
+                    let b = line_col_to_char(text_rope, end_line, end_col);
+                    // A change must have from <= to; accept reversed ranges.
+                    let (from, to) = (a.min(b), a.max(b).min(text_rope.len_chars()));
+                    if from == to {
+                        return Ok(());
+                    }
+                    let transaction = helix_core::Transaction::change(
+                        text_rope,
+                        std::iter::once((from, to, None)),
+                    );
+                    doc.apply(&transaction, view.id);
+                    Ok(())
+                })
             },
         );
 
         // Get selections
         methods.add_method("get_selections", |lua, this, ()| {
-            let editor = crate::lua::get_editor_mut()?;
-            let doc = editor.document(this.document_id).ok_or_else(|| {
-                LuaError::RuntimeError(format!("Buffer {:?} no longer exists", this.document_id))
+            let ranges = crate::lua::with_editor(|editor| {
+                if editor.document(this.document_id).is_none() {
+                    return Err(LuaError::RuntimeError(format!(
+                        "Buffer {:?} no longer exists",
+                        this.document_id
+                    )));
+                }
+                let (view, doc) = crate::lua::focused_ref(editor)?;
+                if doc.id() != this.document_id {
+                    return Ok(Vec::new());
+                }
+                Ok(doc
+                    .selection(view.id)
+                    .iter()
+                    .map(|range| (range.anchor, range.head))
+                    .collect::<Vec<_>>())
             })?;
-
-            let (view, current_doc): (&helix_view::View, &helix_view::Document) =
-                helix_view::current_ref!(editor);
-            if current_doc.id() != this.document_id {
-                return lua.create_table();
-            }
-
-            let selection = doc.selection(view.id);
-            let selections = lua.create_table()?;
-            for (i, range) in selection.iter().enumerate() {
-                let s = lua.create_table()?;
-                s.set("anchor", range.anchor)?;
-                s.set("head", range.head)?;
-                selections.set(i + 1, s)?;
-            }
-            Ok(selections)
+            selections_to_lua(lua, &ranges)
         });
 
         // Get diagnostics
         methods.add_method("get_diagnostics", |lua, this, ()| {
-            let editor = crate::lua::get_editor_mut()?;
-            let doc = editor.document(this.document_id).ok_or_else(|| {
-                LuaError::RuntimeError(format!("Buffer {:?} no longer exists", this.document_id))
+            let diagnostics: Vec<LuaDiagnostic> = with_doc(this.document_id, |doc| {
+                Ok(doc
+                    .diagnostics()
+                    .iter()
+                    .map(|diag| LuaDiagnostic::from(diag.clone()))
+                    .collect())
             })?;
-
-            let diagnostics = lua.create_table()?;
-            for (i, diag) in doc.diagnostics().iter().enumerate() {
-                diagnostics.set(i + 1, LuaDiagnostic::from(diag.clone()))?;
-            }
-            Ok(diagnostics)
+            lua.create_sequence_from(diagnostics)
         });
 
         // Set annotations
         methods.add_method(
             "set_annotations",
             |_lua, this, annotations: Vec<LuaPluginAnnotation>| {
-                let editor = crate::lua::get_editor_mut()?;
-                let (view, doc) = helix_view::current!(editor);
-
-                // For now, only support current doc
-                if doc.id() != this.document_id {
-                    return Err(LuaError::RuntimeError(
-                        "Annotations currently only supported for the active buffer.".to_string(),
-                    ));
-                }
-
-                let plugin_annots: Vec<helix_view::document::PluginAnnotation> = annotations
+                let mut plugin_annots: Vec<helix_view::document::PluginAnnotation> = annotations
                     .into_iter()
                     .map(|a| helix_view::document::PluginAnnotation {
                         char_idx: a.char_idx,
@@ -232,70 +219,71 @@ impl LuaUserData for LuaBuffer {
                         dropped_text: a.dropped_text,
                     })
                     .collect();
+                // The renderers binary-search annotations by char_idx; the sort is stable
+                // so annotations at the same position keep the plugin's order.
+                plugin_annots.sort_by_key(|a| a.char_idx);
 
-                doc.plugin_annotations.insert(view.id, plugin_annots);
-                Ok(())
+                with_focused_doc(this.document_id, "Annotations", |view, doc| {
+                    doc.plugin_annotations.insert(view.id, plugin_annots);
+                    Ok(())
+                })
             },
         );
 
         // Get cursor position (char index)
         methods.add_method("get_cursor", |_lua, this, ()| {
-            let editor = crate::lua::get_editor_mut()?;
-            let (view, doc) = helix_view::current!(editor);
-            if doc.id() != this.document_id {
-                return Err(LuaError::RuntimeError(
-                    "Current view is not showing this buffer".into(),
-                ));
-            }
-            let cursor = doc
-                .selection(view.id)
-                .primary()
-                .cursor(doc.text().slice(..));
-            Ok(cursor)
+            crate::lua::with_editor(|editor| {
+                let (view, doc) = crate::lua::focused_ref(editor)?;
+                if doc.id() != this.document_id {
+                    return Err(LuaError::RuntimeError(
+                        "Current view is not showing this buffer".into(),
+                    ));
+                }
+                Ok(doc
+                    .selection(view.id)
+                    .primary()
+                    .cursor(doc.text().slice(..)))
+            })
         });
 
         // Convert char index to line index (0-based)
         methods.add_method("char_to_line", |_lua, this, char_idx: usize| {
-            let editor = crate::lua::get_editor_mut()?;
-            let doc = editor.document(this.document_id).ok_or_else(|| {
-                LuaError::RuntimeError(format!("Buffer {:?} no longer exists", this.document_id))
-            })?;
-            Ok(doc
-                .text()
-                .char_to_line(char_idx.min(doc.text().len_chars())))
+            with_doc(this.document_id, |doc| {
+                Ok(doc
+                    .text()
+                    .char_to_line(char_idx.min(doc.text().len_chars())))
+            })
         });
 
         // Convert line index to char index (0-based)
         methods.add_method("line_to_char", |_lua, this, line_idx: usize| {
-            let editor = crate::lua::get_editor_mut()?;
-            let doc = editor.document(this.document_id).ok_or_else(|| {
-                LuaError::RuntimeError(format!("Buffer {:?} no longer exists", this.document_id))
-            })?;
-            Ok(doc
-                .text()
-                .line_to_char(line_idx.min(doc.text().len_lines())))
+            with_doc(this.document_id, |doc| {
+                Ok(doc
+                    .text()
+                    .line_to_char(line_idx.min(doc.text().len_lines())))
+            })
         });
 
         // Get visual column for char index
         methods.add_method("get_visual_column", |_lua, this, char_idx: usize| {
-            let editor = crate::lua::get_editor_mut()?;
-            let doc = editor.document(this.document_id).ok_or_else(|| {
-                LuaError::RuntimeError(format!("Buffer {:?} no longer exists", this.document_id))
-            })?;
-            let text = doc.text();
-            let line_idx = text.char_to_line(char_idx);
-            let line_start = text.line_to_char(line_idx);
-            let tab_width = doc.tab_width();
+            with_doc(this.document_id, |doc| {
+                let text = doc.text();
+                let char_idx = char_idx.min(text.len_chars());
+                let line_idx = text.char_to_line(char_idx);
+                let line_start = text.line_to_char(line_idx);
+                let tab_width = doc.tab_width().max(1);
 
-            let mut column = 0;
-            for ch in text.slice(line_start..char_idx).chars() {
-                if ch == '\t' {
-                    column += tab_width - (column % tab_width);
-                } else {
-                    column += helix_core::unicode::width::UnicodeWidthChar::width(ch).unwrap_or(1);
+                let mut column = 0;
+                for ch in text.slice(line_start..char_idx).chars() {
+                    if ch == '\t' {
+                        column += tab_width - (column % tab_width);
+                    } else {
+                        column +=
+                            helix_core::unicode::width::UnicodeWidthChar::width(ch).unwrap_or(1);
+                    }
                 }
-            }
-            Ok(column)
+                Ok(column)
+            })
         });
     }
 
@@ -467,10 +455,8 @@ pub fn register_buffer_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
 
     // helix.buffer.get_current() - Get current buffer
     let get_current = lua.create_function(|_lua, ()| {
-        let editor = crate::lua::get_editor_mut()?;
-        let (_view, doc): (&helix_view::View, &helix_view::Document) =
-            helix_view::current_ref!(editor);
-        Ok(LuaBuffer::new(doc.id()))
+        let id = crate::lua::with_editor(|editor| Ok(crate::lua::focused_ref(editor)?.1.id()))?;
+        Ok(LuaBuffer::new(id))
     })?;
     buffer_module.set("get_current", get_current)?;
 
@@ -483,12 +469,9 @@ pub fn register_buffer_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
 
     // helix.buffer.list() - List all buffers
     let list = lua.create_function(|lua, ()| {
-        let editor = crate::lua::get_editor_mut()?;
-        let buffers = lua.create_table()?;
-        for (i, (&id, _)) in editor.documents.iter().enumerate() {
-            buffers.set(i + 1, LuaBuffer::new(id))?;
-        }
-        Ok(buffers)
+        let ids: Vec<DocumentId> =
+            crate::lua::with_editor(|editor| Ok(editor.documents.keys().copied().collect()))?;
+        lua.create_sequence_from(ids.into_iter().map(LuaBuffer::new))
     })?;
     buffer_module.set("list", list)?;
 
