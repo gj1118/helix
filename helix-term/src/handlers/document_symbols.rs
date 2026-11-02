@@ -9,8 +9,8 @@ use helix_view::document::ThinDocumentSymbol;
 use helix_view::{
     document::Mode,
     events::{
-        ConfigDidChange, DocumentDidChange, DocumentDidOpen, LanguageServerExited,
-        LanguageServerInitialized, SelectionDidChange,
+        ConfigDidChange, DocumentDidChange, DocumentDidClose, DocumentDidOpen, DocumentFocusLost,
+        LanguageServerExited, LanguageServerInitialized, SelectionDidChange,
     },
     handlers::{lsp::DocumentSymbolsEvent, Handlers},
     DocumentId, Editor,
@@ -42,7 +42,10 @@ impl helix_event::AsyncHook for DocumentSymbolsHandler {
 
         job::dispatch_blocking(move |editor, _compositor| {
             for doc_id in docs {
-                update_document_symbols(editor, doc_id);
+                // A hidden document is brought up to date when it is shown again.
+                if is_visible(editor, doc_id) {
+                    update_document_symbols(editor, doc_id);
+                }
             }
         });
     }
@@ -70,9 +73,48 @@ fn update_document_symbols(editor: &mut Editor, doc_id: DocumentId) {
         .next()
         .is_some()
     {
+        forget_tree_sitter_symbols(editor, doc_id);
         request_document_symbols(editor, doc_id);
     } else {
         compute_tree_sitter_symbols(editor, doc_id);
+    }
+}
+
+fn is_visible(editor: &Editor, doc_id: DocumentId) -> bool {
+    editor.tree.views().any(|(view, _)| view.doc == doc_id)
+}
+
+/// What the tree-sitter symbols of a document were computed from: they are only computed
+/// again when one of these changed.
+#[derive(PartialEq, Eq)]
+struct TreeSitterInput {
+    version: i32,
+    language: Option<String>,
+    has_syntax: bool,
+    /// The address of the syntax loader (its queries), which a config reload replaces.
+    loader: usize,
+}
+
+/// The input of the tree-sitter symbols each document has, by editor (the address of its
+/// syntax loader handle, which tells editors apart in tests) and document.
+#[allow(clippy::type_complexity)]
+static TREE_SITTER_INPUTS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<(usize, DocumentId), TreeSitterInput>>,
+> = std::sync::LazyLock::new(Default::default);
+
+fn tree_sitter_key(editor: &Editor, doc_id: DocumentId) -> (usize, DocumentId) {
+    (
+        std::sync::Arc::as_ptr(&editor.syn_loader) as *const u8 as usize,
+        doc_id,
+    )
+}
+
+/// The document's symbols don't come from tree-sitter (any more): compute them again the next
+/// time they do.
+fn forget_tree_sitter_symbols(editor: &Editor, doc_id: DocumentId) {
+    let key = tree_sitter_key(editor, doc_id);
+    if let Ok(mut inputs) = TREE_SITTER_INPUTS.lock() {
+        inputs.remove(&key);
     }
 }
 
@@ -132,7 +174,32 @@ fn request_document_symbols(editor: &mut Editor, doc_id: DocumentId) {
 
 /// Compute symbols synchronously from tree-sitter tag queries (`tags.scm`).
 /// The resulting tags are flat, so they are nested by range containment.
+///
+/// This runs on the editor's task (`Syntax` can't be moved to another one), so it is skipped
+/// when nothing it depends on changed since the last run.
 fn compute_tree_sitter_symbols(editor: &mut Editor, doc_id: DocumentId) {
+    let key = tree_sitter_key(editor, doc_id);
+    let input = {
+        let Some(doc) = editor.document(doc_id) else {
+            return;
+        };
+        TreeSitterInput {
+            version: doc.version(),
+            language: doc.language_name().map(str::to_owned),
+            has_syntax: doc.syntax().is_some(),
+            loader: std::sync::Arc::as_ptr(&*editor.syn_loader.load()) as *const u8 as usize,
+        }
+    };
+    {
+        let Ok(mut inputs) = TREE_SITTER_INPUTS.lock() else {
+            return;
+        };
+        if inputs.get(&key) == Some(&input) {
+            return;
+        }
+        inputs.insert(key, input);
+    }
+
     let flat = {
         let loader = editor.syn_loader.load();
 
@@ -280,18 +347,46 @@ pub(super) fn register_hooks(handlers: &Handlers) {
     });
 
     register_hook!(move |event: &mut LanguageServerInitialized<'_>| {
-        let doc_ids: Vec<_> = event.editor.documents().map(|doc| doc.id()).collect();
+        // Hidden documents are brought up to date when they are shown.
+        let doc_ids: Vec<_> = event
+            .editor
+            .documents()
+            .map(|doc| doc.id())
+            .filter(|&doc_id| is_visible(event.editor, doc_id))
+            .collect();
         for doc_id in doc_ids {
             update_document_symbols(event.editor, doc_id);
         }
         Ok(())
     });
 
+    register_hook!(move |event: &mut DocumentFocusLost<'_>| {
+        // Another document is shown now: its symbols may not have been updated while it was
+        // hidden. Unchanged tree-sitter symbols are not computed again.
+        let editor = &mut *event.editor;
+        let Some(view) = editor.tree.try_get(editor.tree.focus) else {
+            return Ok(());
+        };
+        let doc_id = view.doc;
+        update_document_symbols(editor, doc_id);
+        Ok(())
+    });
+
+    register_hook!(move |event: &mut DocumentDidClose<'_>| {
+        forget_tree_sitter_symbols(event.editor, event.doc.id());
+        Ok(())
+    });
+
     register_hook!(move |event: &mut LanguageServerExited<'_>| {
+        let mut cleared = Vec::new();
         for doc in event.editor.documents_mut() {
             if doc.supports_language_server(event.server_id) {
                 doc.clear_document_symbols();
+                cleared.push(doc.id());
             }
+        }
+        for doc_id in cleared {
+            forget_tree_sitter_symbols(event.editor, doc_id);
         }
         Ok(())
     });
@@ -306,8 +401,13 @@ pub(super) fn register_hooks(handlers: &Handlers) {
         }
 
         if event.old.breadcrumb.enable && !event.new.breadcrumb.enable {
+            let mut cleared = Vec::new();
             for doc in event.editor.documents_mut() {
                 doc.clear_document_symbols();
+                cleared.push(doc.id());
+            }
+            for doc_id in cleared {
+                forget_tree_sitter_symbols(event.editor, doc_id);
             }
         }
 

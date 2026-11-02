@@ -112,14 +112,15 @@ fn lock(browser: &Shared) -> std::sync::MutexGuard<'_, Browser> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// The future that loads the first page of the children of a variable.
+/// The future that loads the first page of the children of a variable. It resolves to the
+/// children and how many of them are indexed ones of a paged level (see [`new_level`]).
 fn load_children(
     editor: &Editor,
     session: DebugAdapterId,
     reference: usize,
     named: usize,
     indexed: usize,
-) -> anyhow::Result<impl std::future::Future<Output = helix_dap::Result<Vec<Variable>>>> {
+) -> anyhow::Result<impl std::future::Future<Output = helix_dap::Result<(Vec<Variable>, usize)>>> {
     let client = editor
         .debug_adapters
         .get_client(session)
@@ -134,26 +135,28 @@ fn load_children(
                 Some(call) => call.await?,
                 None => Vec::new(),
             };
-            variables.extend(indexed_call.await?);
-            Ok(variables)
+            // Counted from the response: adapters name indexed children "[0]" or "0" or ...
+            let loaded_indexed = indexed_call.await?;
+            let count = loaded_indexed.len();
+            variables.extend(loaded_indexed);
+            Ok((variables, count))
         })
     } else {
-        futures_util::future::Either::Right(client.variables_page(reference, None, None, None))
+        let call = client.variables_page(reference, None, None, None);
+        futures_util::future::Either::Right(async move { Ok((call.await?, 0)) })
     })
 }
 
-fn new_level(reference: usize, named: usize, indexed: usize, variables: Vec<Variable>) -> Level {
+/// A level with the children of a variable. `loaded_indexed` is how many of `variables` are
+/// indexed children loaded by page (the start of the next page).
+fn new_level(
+    reference: usize,
+    indexed: usize,
+    variables: Vec<Variable>,
+    loaded_indexed: usize,
+) -> Level {
     let paged = indexed > PAGE;
-    let loaded_indexed = if paged {
-        variables
-            .iter()
-            .filter(|var| var.name.starts_with('['))
-            .count()
-            .min(PAGE)
-    } else {
-        0
-    };
-    let _ = named;
+    let loaded_indexed = if paged { loaded_indexed } else { 0 };
     Level {
         kind: Kind::Children { reference, indexed },
         items: variables.into_iter().map(Item::Variable).collect(),
@@ -220,9 +223,9 @@ pub fn open_result(editor: &mut Editor, reference: usize, named: usize, indexed:
     };
     tokio::spawn(async move {
         match load.await {
-            Ok(variables) => {
+            Ok((variables, loaded_indexed)) => {
                 crate::job::dispatch(move |editor: &mut Editor, compositor: &mut Compositor| {
-                    let level = new_level(reference, named, indexed, variables);
+                    let level = new_level(reference, indexed, variables, loaded_indexed);
                     let browser = Arc::new(Mutex::new(Browser {
                         session,
                         levels: vec![level],
@@ -345,12 +348,15 @@ fn descend(
     };
     let browser = browser.clone();
     cx.jobs.callback(async move {
-        let variables = load.await?;
+        let (variables, loaded_indexed) = load.await?;
         Ok(Callback::EditorCompositor(Box::new(
             move |editor: &mut Editor, compositor: &mut Compositor| {
-                lock(&browser)
-                    .levels
-                    .push(new_level(reference, named, indexed, variables));
+                lock(&browser).levels.push(new_level(
+                    reference,
+                    indexed,
+                    variables,
+                    loaded_indexed,
+                ));
                 show(editor, compositor, browser);
             },
         )))
@@ -415,7 +421,7 @@ mod tests {
     #[test]
     fn rows_have_back_and_load_more() {
         let variables: Vec<_> = (0..PAGE).map(|i| variable(&format!("[{i}]"), 0)).collect();
-        let level = new_level(4, 0, 250, variables);
+        let level = new_level(4, 250, variables, PAGE);
         assert_eq!(level.loaded_indexed, PAGE);
         let rows = level.rows(1);
         assert!(matches!(rows[0], Item::Back));
@@ -424,12 +430,22 @@ mod tests {
         // the root level has no way back
         assert!(!matches!(level.rows(0)[0], Item::Back));
 
+        // indexed children named "0", "1", ... (debugpy, js-debug) count as loaded too
+        let mut variables = vec![variable("length", 0)];
+        variables.extend((0..PAGE).map(|i| variable(&i.to_string(), 0)));
+        let level = new_level(4, 250, variables, PAGE);
+        assert_eq!(level.loaded_indexed, PAGE);
+        assert!(matches!(
+            level.rows(0).last(),
+            Some(Item::More { remaining: 150 })
+        ));
+
         // everything loaded: no "Load more…"
         let mut full = level.clone();
         full.loaded_indexed = 250;
         assert!(!matches!(full.rows(0).last(), Some(Item::More { .. })));
         // unpaged levels never have one
-        let small = new_level(3, 2, 2, vec![variable("x", 0), variable("y", 0)]);
+        let small = new_level(3, 2, vec![variable("x", 0), variable("y", 0)], 0);
         assert!(!small.paged);
         assert_eq!(small.rows(0).len(), 2);
     }

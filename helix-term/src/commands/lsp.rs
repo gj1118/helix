@@ -251,23 +251,38 @@ fn flatten_diagnostics(
     flat_diag
 }
 
-/// Hashes the diagnostics of `uris` (or of all documents when `None`), to notice changes.
+/// Hashes the diagnostics of `only` (or of all documents when `None`), to notice changes. This
+/// runs on every redraw of a live diagnostics picker, so it hashes no strings: the identity of
+/// each document's list (a publish replaces it), its length and the position, severity and
+/// message length of each diagnostic.
 fn diagnostics_fingerprint(editor: &Editor, only: Option<&Uri>) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    for (uri, diags) in &editor.diagnostics {
-        if only.is_some_and(|only| only != uri) {
-            continue;
-        }
-        format!("{uri:?}").hash(&mut hasher);
+    let lists = editor
+        .diagnostics
+        .iter()
+        .filter(|(uri, _)| only.is_none_or(|only| only == *uri));
+    for (uri, diags) in lists {
+        // `Uri` holds an `Arc`: its address identifies the entry.
+        uri.as_path()
+            .map(|path| path as *const std::path::Path as *const u8 as usize)
+            .hash(&mut hasher);
+        (diags.as_ptr() as usize, diags.len()).hash(&mut hasher);
         for (diag, _) in diags {
+            let severity = match diag.severity {
+                Some(lsp::DiagnosticSeverity::ERROR) => 1u8,
+                Some(lsp::DiagnosticSeverity::WARNING) => 2,
+                Some(lsp::DiagnosticSeverity::INFORMATION) => 3,
+                Some(lsp::DiagnosticSeverity::HINT) => 4,
+                _ => 0,
+            };
             (
                 diag.range.start.line,
                 diag.range.start.character,
                 diag.range.end.line,
                 diag.range.end.character,
-                diag.severity.map(|severity| format!("{severity:?}")),
-                &diag.message,
+                severity,
+                diag.message.len(),
             )
                 .hash(&mut hasher);
         }
@@ -1386,6 +1401,10 @@ pub fn code_action_inner(cx: &mut Context, use_picker: bool) {
             }
         }
 
+        // Sort the gathered actions into a useful order, highest priority first. See
+        // `lsp_code_action_priority` for how LSP actions are ranked.
+        actions.sort_by_key(|action| std::cmp::Reverse(action.priority));
+
         if use_picker {
             code_action_inner_picker(actions)
         } else {
@@ -1411,7 +1430,9 @@ fn code_action_inner_menu(actions: Vec<CodeActionItem>) -> Result<Callback, anyh
         });
         picker.move_down();
 
-        let popup = Popup::new("code-action", picker).with_scrollbar(false);
+        let popup = Popup::new("code-action", picker)
+            .with_scrollbar(false)
+            .auto_close(true);
 
         compositor.replace_or_push("code-action", popup);
     };

@@ -7,12 +7,13 @@
 use std::{borrow::Cow, sync::Arc};
 
 use helix_core::{
-    self as core, chars::char_is_word, completion::CompletionProvider, Rope, Selection,
+    self as core, chars::char_is_word, completion::CompletionProvider, snippets::SnippetRenderCtx,
+    Rope, Selection,
 };
 use helix_view::{
     document::{Mode, SavePoint},
     handlers::completion::ResponseContext,
-    snippets::SnippetDef,
+    snippets::{variables::VariableEnv, SnippetDef},
     Editor,
 };
 
@@ -79,6 +80,40 @@ fn documentation(def: &SnippetDef) -> String {
     doc
 }
 
+/// Variables whose values come from the document or the workspace (see
+/// [`VariableEnv::from_document`]). Snippets that use none of them are rendered without looking
+/// at either.
+const DOCUMENT_VARIABLES: [&str; 6] = [
+    "TM_",
+    "SELECTION",
+    "RELATIVE_FILEPATH",
+    "WORKSPACE_",
+    "LINE_COMMENT",
+    "BLOCK_COMMENT",
+];
+
+/// Where the value of `$CLIPBOARD` comes from.
+enum Clipboard {
+    /// Already known (or there is none).
+    Known(Option<String>),
+    /// Read from this provider in the background: reading runs a command that can take a while.
+    Read(helix_view::clipboard::ClipboardProvider),
+}
+
+impl Clipboard {
+    fn get(self) -> Option<String> {
+        match self {
+            Clipboard::Known(contents) => contents,
+            Clipboard::Read(provider) => provider
+                .get_contents(&helix_view::clipboard::ClipboardType::Clipboard)
+                .ok(),
+        }
+    }
+}
+
+/// Offers the snippets whose prefix is typed before the cursor. The editor is only looked at
+/// here; the snippets are parsed and rendered (and the clipboard read, when a snippet uses it)
+/// in the returned function, which runs in the background.
 pub(super) fn completion(
     editor: &Editor,
     trigger: Trigger,
@@ -97,66 +132,98 @@ pub(super) fn completion(
     let before: Vec<char> = text.slice(start..cursor).chars().collect();
 
     let manual = trigger.kind == TriggerKind::Manual;
-    let found = matches(
+    let found: Vec<(Arc<SnippetDef>, String, usize)> = matches(
         editor.snippets.for_language(doc.language_name()),
         &before,
         manual,
-    );
+    )
+    .into_iter()
+    .map(|(def, prefix, typed_len)| (def.clone(), prefix.to_owned(), typed_len))
+    .collect();
     if found.is_empty() {
         return None;
     }
 
+    // What the snippets need from the editor, captured once for all of them.
+    let uses = |names: &[&str]| {
+        found
+            .iter()
+            .any(|(def, _, _)| names.iter().any(|name| def.body.contains(name)))
+    };
+    let env = if uses(&DOCUMENT_VARIABLES) {
+        VariableEnv::from_document(doc, view.id, Mode::Insert, None)
+    } else {
+        VariableEnv::default()
+    };
+    let clipboard = if uses(&["CLIPBOARD"]) {
+        let provider = editor.config().clipboard_provider.clone();
+        match provider.name().as_ref() {
+            // These can't be read: the value is what was yanked in the editor, no command runs.
+            "termcode" | "none" => {
+                Clipboard::Known(editor.registers.first('+', editor).map(Cow::into_owned))
+            }
+            _ => Clipboard::Read(provider),
+        }
+    } else {
+        Clipboard::Known(None)
+    };
+    let tab_width = doc.tab_width();
+    let indent_style = doc.indent_style;
+    let line_ending = doc.line_ending.as_str();
     let rope: Rope = doc.text().clone();
-    let items = found
-        .into_iter()
-        .filter_map(|(def, prefix, typed_len)| {
-            let snippet = def.parse().ok()?;
-            let typed: Vec<char> = before[before.len() - typed_len..].to_vec();
-            let clipboard = def
-                .body
-                .contains("CLIPBOARD")
-                .then(|| editor.registers.first('+', editor).map(Cow::into_owned))
-                .flatten();
-            let mut ctx = doc.snippet_ctx(view.id, Mode::Insert, clipboard);
-            let slice = rope.slice(..);
-            let (transaction, mapped, rendered) = snippet.render(
-                &rope,
-                &selection,
-                |range| {
-                    let cursor = range.cursor(slice);
-                    // Only cursors that have the same text typed get it replaced.
-                    let start = cursor.saturating_sub(typed_len);
-                    let same = cursor >= typed_len
-                        && slice.slice(start..cursor).chars().eq(typed.iter().copied());
-                    (if same { start } else { cursor }, cursor)
-                },
-                &mut ctx,
-            );
-            let transaction = transaction.with_selection(
-                rendered.first_selection(selection.primary().direction(), mapped.primary_index()),
-            );
-            Some(CompletionItem::Other(core::CompletionItem {
-                transaction,
-                label: prefix.to_owned().into(),
-                kind: Cow::Borrowed(COMPLETION_KIND),
-                documentation: Some(documentation(def)),
-                snippet: Some(rendered),
-                provider: CompletionProvider::Snippet,
-            }))
-        })
-        .collect::<Vec<_>>();
-    if items.is_empty() {
-        return None;
-    }
 
-    Some(move || CompletionResponse {
-        items: CompletionItems::Other(items),
-        provider: CompletionProvider::Snippet,
-        context: ResponseContext {
-            is_incomplete: false,
-            priority: 0,
-            savepoint,
-        },
+    Some(move || {
+        let mut env = env;
+        env.clipboard = clipboard.get();
+        let slice = rope.slice(..);
+        let items = found
+            .into_iter()
+            .filter_map(|(def, prefix, typed_len)| {
+                let snippet = def.parse().ok()?;
+                let typed: Vec<char> = before[before.len() - typed_len..].to_vec();
+                let mut ctx = SnippetRenderCtx {
+                    resolve_var: env.clone().into_resolver(),
+                    tab_width,
+                    indent_style,
+                    line_ending,
+                };
+                let (transaction, mapped, rendered) = snippet.render(
+                    &rope,
+                    &selection,
+                    |range| {
+                        let cursor = range.cursor(slice);
+                        // Only cursors that have the same text typed get it replaced.
+                        let start = cursor.saturating_sub(typed_len);
+                        let same = cursor >= typed_len
+                            && slice.slice(start..cursor).chars().eq(typed.iter().copied());
+                        (if same { start } else { cursor }, cursor)
+                    },
+                    &mut ctx,
+                );
+                let transaction = transaction.with_selection(
+                    rendered
+                        .first_selection(selection.primary().direction(), mapped.primary_index()),
+                );
+                Some(CompletionItem::Other(core::CompletionItem {
+                    transaction,
+                    label: prefix.into(),
+                    kind: Cow::Borrowed(COMPLETION_KIND),
+                    documentation: Some(documentation(&def)),
+                    snippet: Some(rendered),
+                    provider: CompletionProvider::Snippet,
+                }))
+            })
+            .collect::<Vec<_>>();
+
+        CompletionResponse {
+            items: CompletionItems::Other(items),
+            provider: CompletionProvider::Snippet,
+            context: ResponseContext {
+                is_incomplete: false,
+                priority: 0,
+                savepoint,
+            },
+        }
     })
 }
 

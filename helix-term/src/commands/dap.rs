@@ -591,7 +591,7 @@ fn end_session(editor: &mut Editor, id: dap::registry::DebugAdapterId) {
     if was_selected {
         editor.clear_dap_inline_values();
         if editor.debug_adapters.active_id().is_some() {
-            block_on(helix_view::handlers::dap::show_current_frame(editor));
+            helix_view::handlers::dap::show_current_frame(editor);
         }
     }
 }
@@ -660,7 +660,7 @@ pub fn dap_switch_session(cx: &mut Context) {
     let picker = Picker::new(columns, 1, rows, active, |cx, row, _action| {
         cx.editor.debug_adapters.set_active_client(row.id);
         cx.editor.clear_dap_inline_values();
-        block_on(helix_view::handlers::dap::show_current_frame(cx.editor));
+        helix_view::handlers::dap::show_current_frame(cx.editor);
     })
     .with_title("Debug Sessions");
     cx.push_layer(Box::new(picker))
@@ -846,7 +846,7 @@ fn frame_picker(editor: &mut Editor) -> Option<Picker<FrameRow, String>> {
                 let debugger = debugger!(cx.editor);
                 debugger.active_frame = Some(*index);
                 jump_to_stack_frame(cx.editor, frame);
-                block_on(refresh_inline_values(cx.editor));
+                refresh_inline_values(cx.editor);
             }
             FrameRow::More(_) => load_more_frames(cx),
         },

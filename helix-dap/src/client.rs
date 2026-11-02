@@ -1,7 +1,7 @@
 use crate::{
     registry::DebugAdapterId,
     requests::{DisconnectArguments, TerminateArguments},
-    transport::{Payload, Request, Response, Transport},
+    transport::{Event, Payload, Request, Response, Transport},
     Error, ProgressMap, ProgressState, Result,
 };
 use helix_core::syntax::config::{DebugAdapterConfig, DebuggerQuirks};
@@ -16,7 +16,10 @@ use std::{
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::PathBuf,
     process::Stdio,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
 };
 use tokio::{
     io::{AsyncBufRead, AsyncWrite, BufReader, BufWriter},
@@ -31,7 +34,7 @@ pub struct Client {
     id: DebugAdapterId,
     _process: Option<Child>,
     server_tx: UnboundedSender<Payload>,
-    request_counter: AtomicU64,
+    request_counter: Arc<AtomicU64>,
     connection_type: Option<ConnectionType>,
     starting_request_args: Option<Value>,
     /// The socket address of the debugger, if using TCP transport.
@@ -92,7 +95,7 @@ impl Client {
             id,
             _process: process,
             server_tx,
-            request_counter: AtomicU64::new(0),
+            request_counter: Arc::new(AtomicU64::new(0)),
             caps: None,
             connection_type: None,
             starting_request_args: None,
@@ -291,43 +294,15 @@ impl Client {
     where
         R::Arguments: serde::Serialize,
     {
-        let server_tx = self.server_tx.clone();
-        let id = self.next_request_id();
+        call::<R>(self.server_tx.clone(), self.next_request_id(), arguments)
+    }
 
-        async move {
-            use std::time::Duration;
-            use tokio::time::timeout;
-
-            let arguments = Some(serde_json::to_value(arguments)?);
-
-            let (callback_tx, mut callback_rx) = channel(1);
-
-            let req = Request {
-                back_ch: Some(callback_tx),
-                seq: id,
-                command: R::COMMAND.to_string(),
-                arguments,
-            };
-
-            server_tx
-                .send(Payload::Request(req))
-                .map_err(|e| Error::Other(e.into()))?;
-
-            // TODO: specifiable timeout, delay other calls until initialize success
-            let response = timeout(Duration::from_secs(20), callback_rx.recv())
-                .await
-                .map_err(|_| Error::Timeout(id))? // return Timeout
-                .ok_or(Error::StreamClosed)??;
-
-            if !response.success {
-                let message = response
-                    .message
-                    .clone()
-                    .unwrap_or_else(|| "DAP request failed".to_string());
-                return Err(Error::Other(anyhow!(message)));
-            }
-
-            Ok(response.body.unwrap_or_default())
+    /// Something that sends requests to the adapter without borrowing the client, for work
+    /// that needs several requests one after the other in the background.
+    pub fn requester(&self) -> Requester {
+        Requester {
+            server_tx: self.server_tx.clone(),
+            request_counter: self.request_counter.clone(),
         }
     }
 
@@ -350,10 +325,20 @@ impl Client {
         command: &str,
         result: core::result::Result<Value, Error>,
     ) -> impl Future<Output = Result<()>> {
+        let send = self.deferred_reply(request_seq, command);
+        async move { send(result) }
+    }
+
+    /// Like [`Self::reply`] for a reply that is only known later: the returned function doesn't
+    /// borrow the client and sends the reply when it is called.
+    pub fn deferred_reply(
+        &self,
+        request_seq: u64,
+        command: &str,
+    ) -> impl FnOnce(core::result::Result<Value, Error>) -> Result<()> + Send + 'static {
         let server_tx = self.server_tx.clone();
         let command = command.to_string();
-
-        async move {
+        move |result| {
             let response = match result {
                 Ok(result) => Response {
                     request_seq,
@@ -370,13 +355,19 @@ impl Client {
                     body: None,
                 },
             };
-
             server_tx
                 .send(Payload::Response(response))
-                .map_err(|e| Error::Other(e.into()))?;
-
-            Ok(())
+                .map_err(|e| Error::Other(e.into()))
         }
+    }
+
+    /// An event that doesn't come from an adapter: the editor sends itself these to get the
+    /// results of work it does in the background back on its own task.
+    pub fn internal_event(event: &str, body: Value) -> Payload {
+        Payload::Event(Event {
+            event: event.to_owned(),
+            body: Some(body),
+        })
     }
 
     pub fn capabilities(&self) -> &DebuggerCapabilities {
@@ -700,6 +691,99 @@ impl Client {
     }
 }
 
+/// Sends requests to an adapter; see [`Client::requester`].
+#[derive(Debug, Clone)]
+pub struct Requester {
+    server_tx: UnboundedSender<Payload>,
+    request_counter: Arc<AtomicU64>,
+}
+
+impl Requester {
+    pub fn call<R: helix_dap_types::Request>(
+        &self,
+        arguments: R::Arguments,
+    ) -> impl Future<Output = Result<Value>>
+    where
+        R::Arguments: serde::Serialize,
+    {
+        let id = self.request_counter.fetch_add(1, Ordering::Relaxed) + 1;
+        call::<R>(self.server_tx.clone(), id, arguments)
+    }
+
+    pub fn scopes(&self, frame_id: usize) -> impl Future<Output = Result<Vec<Scope>>> {
+        let call = self.call::<requests::Scopes>(requests::ScopesArguments { frame_id });
+        async move {
+            let response: requests::ScopesResponse = serde_json::from_value(call.await?)?;
+            Ok(response.scopes)
+        }
+    }
+
+    pub fn variables(
+        &self,
+        variables_reference: usize,
+    ) -> impl Future<Output = Result<Vec<Variable>>> {
+        let call = self.call::<requests::Variables>(requests::VariablesArguments {
+            variables_reference,
+            filter: None,
+            start: None,
+            count: None,
+            format: None,
+        });
+        async move {
+            let response: requests::VariablesResponse = serde_json::from_value(call.await?)?;
+            Ok(response.variables)
+        }
+    }
+}
+
+/// Sends request `id` to the adapter and waits for its response.
+fn call<R: helix_dap_types::Request>(
+    server_tx: UnboundedSender<Payload>,
+    id: u64,
+    arguments: R::Arguments,
+) -> impl Future<Output = Result<Value>>
+where
+    R::Arguments: serde::Serialize,
+{
+    // Serialize now: the future doesn't borrow the arguments.
+    let arguments = serde_json::to_value(arguments);
+    async move {
+        use std::time::Duration;
+        use tokio::time::timeout;
+
+        let arguments = Some(arguments?);
+
+        let (callback_tx, mut callback_rx) = channel(1);
+
+        let req = Request {
+            back_ch: Some(callback_tx),
+            seq: id,
+            command: R::COMMAND.to_string(),
+            arguments,
+        };
+
+        server_tx
+            .send(Payload::Request(req))
+            .map_err(|e| Error::Other(e.into()))?;
+
+        // TODO: specifiable timeout, delay other calls until initialize success
+        let response = timeout(Duration::from_secs(20), callback_rx.recv())
+            .await
+            .map_err(|_| Error::Timeout(id))? // return Timeout
+            .ok_or(Error::StreamClosed)??;
+
+        if !response.success {
+            let message = response
+                .message
+                .clone()
+                .unwrap_or_else(|| "DAP request failed".to_string());
+            return Err(Error::Other(anyhow!(message)));
+        }
+
+        Ok(response.body.unwrap_or_default())
+    }
+}
+
 /// The directory the directories of all sessions' generated sources are in.
 pub fn adapter_source_dir_root() -> PathBuf {
     std::env::temp_dir().join("helix-dap-sources")
@@ -733,5 +817,50 @@ pub fn adapter_source_path(session: DebugAdapterId, source: &Source) -> PathBuf 
     } else {
         name
     };
-    adapter_source_dir(session).join(name)
+    // Adapters reuse names ("<eval>", "[anonymous]") for different sources: the reference tells
+    // them apart. It is a directory of its own so that the file name (and with it the language
+    // detected from the extension) stays the source's name.
+    adapter_source_dir(session)
+        .join(format!(
+            "ref-{}",
+            source.source_reference.unwrap_or_default()
+        ))
+        .join(name)
+}
+
+#[cfg(test)]
+mod adapter_source_path_tests {
+    use super::*;
+
+    fn source(name: Option<&str>, reference: Option<usize>) -> Source {
+        Source {
+            name: name.map(str::to_owned),
+            path: None,
+            source_reference: reference,
+            presentation_hint: None,
+            origin: None,
+            sources: None,
+            adapter_data: None,
+            checksums: None,
+        }
+    }
+
+    #[test]
+    fn sources_with_the_same_name_get_different_paths() {
+        let session = DebugAdapterId::default();
+        let first = adapter_source_path(session, &source(Some("<eval>"), Some(1)));
+        let second = adapter_source_path(session, &source(Some("<eval>"), Some(2)));
+        assert_ne!(first, second);
+        assert_eq!(first.file_name().unwrap(), "<eval>");
+        assert!(first.starts_with(adapter_source_dir(session)));
+    }
+
+    #[test]
+    fn names_stay_one_path_component() {
+        let session = DebugAdapterId::default();
+        let path = adapter_source_path(session, &source(Some("a/b:c"), Some(3)));
+        assert_eq!(path.file_name().unwrap(), "a_b_c");
+        let path = adapter_source_path(session, &source(Some(".."), Some(4)));
+        assert_eq!(path.file_name().unwrap(), "source-4");
+    }
 }

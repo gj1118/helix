@@ -72,11 +72,11 @@ pub async fn select_thread_id_of(
         return;
     }
 
-    show_current_frame(editor).await;
+    show_current_frame(editor);
 }
 
 /// Jumps to the selected frame of the selected session and shows its inline values.
-pub async fn show_current_frame(editor: &mut Editor) {
+pub fn show_current_frame(editor: &mut Editor) {
     let frame = editor
         .debug_adapters
         .get_active_client()
@@ -84,7 +84,7 @@ pub async fn show_current_frame(editor: &mut Editor) {
     if let Some(frame) = &frame {
         jump_to_stack_frame(editor, frame);
     }
-    refresh_inline_values(editor).await;
+    refresh_inline_values(editor);
 }
 
 /// How many lines above the current line of the stack frame get inline values.
@@ -93,17 +93,24 @@ const INLINE_VALUES_LINES: usize = 40;
 const INLINE_VALUES_PER_LINE: usize = 4;
 /// Values longer than this many characters are cut.
 const INLINE_VALUE_WIDTH: usize = 24;
-/// Asking the adapter for variables must not freeze the editor for long.
+/// An adapter that takes longer than this for the variables gets no inline values.
 const INLINE_VALUES_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Shows the values of the variables the lines around the selected stack frame use at the end
-/// of those lines. Best effort: any problem leaves the lines without values.
-pub async fn refresh_inline_values(editor: &mut Editor) {
+/// of those lines. Best effort: any problem leaves the lines without values. The variables are
+/// requested in the background; values that arrive after the selected frame changed are dropped.
+pub fn refresh_inline_values(editor: &mut Editor) {
     editor.clear_dap_inline_values();
     if !editor.config().debugger.inline_values {
         return;
     }
+    let Some(session) = editor.debug_adapters.active_id() else {
+        return;
+    };
     let Some(debugger) = editor.debug_adapters.get_active_client() else {
+        return;
+    };
+    let Some(thread_id) = debugger.thread_id else {
         return;
     };
     let Some(frame) = debugger.current_stack_frame().cloned() else {
@@ -113,29 +120,92 @@ pub async fn refresh_inline_values(editor: &mut Editor) {
         return;
     };
 
-    let fetch = async {
+    let requester = debugger.requester();
+    let fetch = async move {
         let mut variables = Vec::new();
-        for scope in debugger.scopes(frame.id).await? {
+        for scope in requester.scopes(frame.id).await? {
             // Expensive scopes (globals, registers) are only loaded on request.
             if scope.expensive {
                 continue;
             }
-            variables.extend(debugger.variables(scope.variables_reference).await?);
+            variables.extend(requester.variables(scope.variables_reference).await?);
         }
         Ok::<_, helix_dap::Error>(variables)
     };
-    let Ok(Ok(variables)) = tokio::time::timeout(INLINE_VALUES_TIMEOUT, fetch).await else {
-        return;
-    };
-    let variables: Vec<(String, String)> = variables
-        .into_iter()
-        .map(|variable| (variable.name, variable.value))
-        .collect();
+    spawn_job(editor, session, async move {
+        let Ok(Ok(variables)) = tokio::time::timeout(INLINE_VALUES_TIMEOUT, fetch).await else {
+            return None;
+        };
+        let variables: Vec<(String, String)> = variables
+            .into_iter()
+            .map(|variable| (variable.name, variable.value))
+            .collect();
+        Some(Box::new(move |editor: &mut Editor| {
+            // Stale: another session, thread or frame is shown by now.
+            let current = editor.debug_adapters.active_id() == Some(session)
+                && editor
+                    .debug_adapters
+                    .get_active_client()
+                    .is_some_and(|debugger| {
+                        debugger.thread_id == Some(thread_id)
+                            && debugger
+                                .current_stack_frame()
+                                .is_some_and(|current| current.id == frame.id)
+                    });
+            if !current {
+                return;
+            }
+            if let Some(doc) = editor.document_by_path_mut(&path) {
+                let line = frame.line.saturating_sub(1);
+                doc.dap_inline_values = inline_value_annotations(doc.text(), line, &variables);
+            }
+        }) as Job)
+    });
+}
 
-    if let Some(doc) = editor.document_by_path_mut(&path) {
-        let line = frame.line.saturating_sub(1);
-        doc.dap_inline_values = inline_value_annotations(doc.text(), line, &variables);
-    }
+/// Work the DAP handler finished in the background, applied to the editor on its own task.
+type Job = Box<dyn FnOnce(&mut Editor) + Send>;
+
+/// The name of the events that carry [`Job`]s (see [`spawn_job`]). No adapter sends it.
+const JOB_EVENT: &str = "helix/job";
+
+/// Jobs waiting for their event to be handled, by the number the event carries.
+static JOBS: std::sync::Mutex<Vec<(u64, Job)>> = std::sync::Mutex::new(Vec::new());
+static NEXT_JOB: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Runs `future` in the background and applies the job it returns, if any, to the editor. The
+/// job comes back like the messages of the adapters do (as an event on
+/// `editor.debug_adapters.incoming`), so it runs on the editor's task, in order with them.
+fn spawn_job<F>(editor: &mut Editor, session: DebugAdapterId, future: F)
+where
+    F: std::future::Future<Output = Option<Job>> + Send + 'static,
+{
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    editor
+        .debug_adapters
+        .incoming
+        .push(tokio_stream::wrappers::UnboundedReceiverStream::new(rx));
+    tokio::spawn(async move {
+        // When there is nothing to do the channel closes and the stream goes away.
+        let Some(job) = future.await else {
+            return;
+        };
+        let key = NEXT_JOB.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        JOBS.lock().unwrap().push((key, job));
+        let event = Client::internal_event(JOB_EVENT, json!(key));
+        if tx.send((session, event)).is_err() {
+            // The editor is gone.
+            JOBS.lock().unwrap().retain(|(pending, _)| *pending != key);
+        }
+    });
+}
+
+/// Takes the job an event of [`spawn_job`] carries.
+fn take_job(body: Option<&Value>) -> Option<Job> {
+    let key = body?.as_u64()?;
+    let mut jobs = JOBS.lock().unwrap();
+    let index = jobs.iter().position(|(pending, _)| *pending == key)?;
+    Some(jobs.swap_remove(index).1)
 }
 
 /// The text shown at the end of the lines up to `line` (zero based): `name = value` for the
@@ -283,7 +353,15 @@ pub async fn fetch_stack_trace(debugger: &mut Client, thread_id: ThreadId) {
 /// Makes sure there is a read-only buffer with the text of a source the adapter generated
 /// (it has a `sourceReference` and no path) and returns its path. The text is requested once;
 /// the buffer is kept until the adapter reports that the source changed or the session ends.
-pub fn open_adapter_source(editor: &mut Editor, source: &helix_dap::Source) -> Option<PathBuf> {
+///
+/// When there is no buffer yet, the text is requested in the background and `None` is
+/// returned; once it arrives the buffer is opened and, if `frame` is still the selected frame,
+/// the editor jumps to it.
+pub fn open_adapter_source(
+    editor: &mut Editor,
+    source: &helix_dap::Source,
+    frame: Option<&helix_dap::StackFrame>,
+) -> Option<PathBuf> {
     let id = editor.debug_adapters.active_id()?;
     let path = editor
         .debug_adapters
@@ -297,31 +375,58 @@ pub fn open_adapter_source(editor: &mut Editor, source: &helix_dap::Source) -> O
         .debug_adapters
         .get_client(id)?
         .source_content(source.clone());
-    let content = match block_on(tokio::time::timeout(ADAPTER_SOURCE_TIMEOUT, content)) {
-        Ok(Ok(content)) => content,
-        Ok(Err(err)) => {
-            editor.set_error(format!("Unable to load the source from the adapter: {err}"));
-            return None;
-        }
-        Err(_) => {
-            editor.set_error("The adapter did not send the source in time");
-            return None;
-        }
-    };
-
-    let mut doc = crate::Document::from(
-        helix_core::Rope::from(content),
-        None,
-        editor.config.clone(),
-        editor.syn_loader.clone(),
-    );
-    doc.set_path(Some(&path));
-    // Nothing of it can be saved: it only exists in the adapter.
-    doc.readonly = true;
-    let loader = editor.syn_loader.load();
-    doc.detect_language(&loader);
-    editor.new_file_from_document(Action::Replace, doc);
-    Some(path)
+    let frame = frame.cloned();
+    spawn_job(editor, id, async move {
+        let content = tokio::time::timeout(ADAPTER_SOURCE_TIMEOUT, content).await;
+        Some(Box::new(move |editor: &mut Editor| {
+            let content = match content {
+                Ok(Ok(content)) => content,
+                Ok(Err(err)) => {
+                    editor.set_error(format!("Unable to load the source from the adapter: {err}"));
+                    return;
+                }
+                Err(_) => {
+                    editor.set_error("The adapter did not send the source in time");
+                    return;
+                }
+            };
+            // The session ended or the source changed while it was loading.
+            let known = editor
+                .debug_adapters
+                .get_client(id)
+                .is_some_and(|debugger| debugger.adapter_sources.contains_key(&path));
+            if !known {
+                return;
+            }
+            if editor.document_by_path(&path).is_none() {
+                let mut doc = crate::Document::from(
+                    helix_core::Rope::from(content),
+                    None,
+                    editor.config.clone(),
+                    editor.syn_loader.clone(),
+                );
+                doc.set_path(Some(&path));
+                // Nothing of it can be saved: it only exists in the adapter.
+                doc.readonly = true;
+                let loader = editor.syn_loader.load();
+                doc.detect_language(&loader);
+                editor.new_file_from_document(Action::Load, doc);
+            }
+            let Some(frame) = frame else {
+                return;
+            };
+            let selected = editor.debug_adapters.active_id() == Some(id)
+                && editor
+                    .debug_adapters
+                    .get_active_client()
+                    .and_then(|debugger| debugger.current_stack_frame())
+                    .is_some_and(|current| current.id == frame.id);
+            if selected {
+                jump_to_stack_frame(editor, &frame);
+            }
+        }) as Job)
+    });
+    None
 }
 
 /// Forgets the buffer of a source the adapter generated and the breakpoints set in it, so the
@@ -359,7 +464,7 @@ pub fn forget_session_sources(editor: &mut Editor, session: DebugAdapterId) {
     editor.breakpoints.retain(|path, _| !path.starts_with(&dir));
 }
 
-/// Waiting for a generated source blocks the editor: don't wait long.
+/// An adapter that takes longer than this to send a generated source is given up on.
 const ADAPTER_SOURCE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 pub fn jump_to_stack_frame(editor: &mut Editor, frame: &helix_dap::StackFrame) {
@@ -372,7 +477,7 @@ pub fn jump_to_stack_frame(editor: &mut Editor, frame: &helix_dap::StackFrame) {
                 .source_reference
                 .is_some_and(|reference| reference > 0) =>
         {
-            match open_adapter_source(editor, source) {
+            match open_adapter_source(editor, source, Some(frame)) {
                 Some(path) => path,
                 None => return,
             }
@@ -464,6 +569,11 @@ impl Editor {
         use helix_dap::{events, Event};
 
         match payload {
+            Payload::Event(event) if event.event == JOB_EVENT => {
+                if let Some(job) = take_job(event.body.as_ref()) {
+                    job(self);
+                }
+            }
             Payload::Event(event) => {
                 let event = match Event::parse(&event.event, event.body) {
                     Ok(event) => event,
@@ -745,7 +855,7 @@ impl Editor {
                                 self.clear_dap_inline_values();
                                 if was_selected && self.debug_adapters.active_id().is_some() {
                                     // Another session takes the place of the one that ended.
-                                    show_current_frame(self).await;
+                                    show_current_frame(self);
                                 }
                                 self.set_status(
                                     "Terminated debugging session and disconnected debugger.",
@@ -816,18 +926,46 @@ impl Editor {
                             return true;
                         };
 
-                        let process_id = match run_in_terminal(config, &arguments) {
-                            Ok(process_id) => process_id,
+                        match run_in_terminal(config, &arguments) {
+                            Ok(Terminal::Started(process_id)) => {
+                                Ok(json!(dap::requests::RunInTerminalResponse {
+                                    process_id: Some(process_id),
+                                    shell_process_id: None,
+                                }))
+                            }
+                            Ok(Terminal::Launcher { program, args }) => {
+                                // The launcher may take a while (or ask the user something):
+                                // wait for it in the background and reply from there.
+                                let Some(debugger) = self.debug_adapters.get_client(id) else {
+                                    return true;
+                                };
+                                let reply = debugger.deferred_reply(request.seq, &request.command);
+                                spawn_job(self, id, async move {
+                                    match run_launcher(&program, &args, LAUNCHER_TIMEOUT).await {
+                                        Ok(()) => {
+                                            // The launcher is not the debuggee (it has exited by
+                                            // now): there is no process id to tell.
+                                            let _ = reply(Ok(json!(
+                                                dap::requests::RunInTerminalResponse {
+                                                    process_id: None,
+                                                    shell_process_id: None,
+                                                }
+                                            )));
+                                            None
+                                        }
+                                        Err(err) => Some(Box::new(move |editor: &mut Editor| {
+                                            editor.set_error(err)
+                                        })
+                                            as Job),
+                                    }
+                                });
+                                return true;
+                            }
                             Err(err) => {
                                 self.set_error(err);
                                 return true;
                             }
-                        };
-
-                        Ok(json!(dap::requests::RunInTerminalResponse {
-                            process_id: Some(process_id),
-                            shell_process_id: None,
-                        }))
+                        }
                     }
                     Ok(Request::StartDebugging(arguments)) => {
                         let debugger = match self.debug_adapters.get_client_mut(id) {
@@ -914,11 +1052,22 @@ impl Editor {
 /// How long a launcher gets to open the pane before it is given up on.
 const LAUNCHER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Opens the terminal for a debuggee and returns the id of the process that was started.
+/// What [`run_in_terminal`] did.
+#[derive(Debug)]
+enum Terminal {
+    /// The terminal was started: the id of its process.
+    Started(u32),
+    /// A launcher has to open the pane: run it with [`run_launcher`].
+    Launcher { program: String, args: Vec<String> },
+}
+
+/// Opens the terminal for a debuggee. A configured terminal is started right away; a launcher
+/// (a command that asks a running terminal or multiplexer for a pane) is returned for the
+/// caller to run without blocking.
 fn run_in_terminal(
     config: &crate::editor::TerminalConfig,
     arguments: &dap::requests::RunInTerminalArguments,
-) -> Result<u32, String> {
+) -> Result<Terminal, String> {
     use crate::terminal_launcher::Launch;
     use std::process::Command;
 
@@ -937,7 +1086,7 @@ fn run_in_terminal(
             args: &arguments.args,
             env: arguments.env.as_ref(),
         });
-        return run_launcher(&program, &args, LAUNCHER_TIMEOUT);
+        return Ok(Terminal::Launcher { program, args });
     }
 
     if config.command.is_empty() {
@@ -962,55 +1111,44 @@ fn run_in_terminal(
     std::thread::spawn(move || {
         let _ = child.wait();
     });
-    Ok(process_id)
+    Ok(Terminal::Started(process_id))
 }
 
 /// Runs a command that opens a pane and returns as soon as it exists, so that we can wait for it
 /// and tell the user why there is no pane (kitty without `allow_remote_control`, no zellij
 /// session, ...).
-fn run_launcher(
+async fn run_launcher(
     program: &str,
     args: &[String],
     timeout: std::time::Duration,
-) -> Result<u32, String> {
-    use std::process::{Command, Stdio};
+) -> Result<(), String> {
+    use std::process::Stdio;
 
-    let mut child = Command::new(program)
+    let child = tokio::process::Command::new(program)
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
+        // A launcher that is given up on doesn't stay around.
+        .kill_on_drop(true)
         .spawn()
         .map_err(|err| format!("Error starting {program}: {err}"))?;
-    let process_id = child.id();
 
-    let deadline = std::time::Instant::now() + timeout;
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!("{program} did not open a terminal in time"));
-            }
-            Err(err) => return Err(format!("Error waiting for {program}: {err}")),
-        }
+    // stderr is read while waiting: a launcher that writes a lot of it doesn't block on a full
+    // pipe.
+    let output = match tokio::time::timeout(timeout, child.wait_with_output()).await {
+        Ok(Ok(output)) => output,
+        Ok(Err(err)) => return Err(format!("Error waiting for {program}: {err}")),
+        Err(_) => return Err(format!("{program} did not open a terminal in time")),
     };
-    if status.success() {
-        return Ok(process_id);
+    if output.status.success() {
+        return Ok(());
     }
 
-    let mut stderr = String::new();
-    if let Some(mut pipe) = child.stderr.take() {
-        use std::io::Read;
-        let _ = pipe.read_to_string(&mut stderr);
-    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
     let stderr = stderr.trim();
     Err(if stderr.is_empty() {
-        format!("{program} failed to open a terminal ({status})")
+        format!("{program} failed to open a terminal ({})", output.status)
     } else {
         format!("{program} failed to open a terminal: {stderr}")
     })
@@ -1084,8 +1222,8 @@ mod run_in_terminal_tests {
         assert_eq!(err.unwrap_err(), "No external terminal defined");
     }
 
-    #[test]
-    fn a_failing_launcher_reports_why() {
+    #[tokio::test]
+    async fn a_failing_launcher_reports_why() {
         let err = run_launcher(
             "sh",
             &[
@@ -1094,26 +1232,59 @@ mod run_in_terminal_tests {
             ],
             Duration::from_secs(5),
         )
+        .await
         .unwrap_err();
         assert_eq!(err, "sh failed to open a terminal: remote control is off");
 
-        let err = run_launcher("/definitely/not/installed", &[], Duration::from_secs(5));
+        let err = run_launcher("/definitely/not/installed", &[], Duration::from_secs(5)).await;
         assert!(err.unwrap_err().starts_with("Error starting"));
     }
 
-    #[test]
-    fn a_launcher_that_hangs_is_given_up_on() {
+    #[tokio::test]
+    async fn a_launcher_that_hangs_is_given_up_on() {
         let err = run_launcher(
             "sh",
             &["-c".to_string(), "sleep 30".to_string()],
             Duration::from_millis(100),
-        );
+        )
+        .await;
         assert_eq!(err.unwrap_err(), "sh did not open a terminal in time");
     }
 
+    #[tokio::test]
+    async fn a_launcher_that_writes_a_lot_of_stderr_does_not_block() {
+        // More than a pipe holds (64 KiB), then a failure.
+        let err = run_launcher(
+            "sh",
+            &[
+                "-c".to_string(),
+                "head -c 200000 /dev/zero | tr '\\0' x >&2; exit 1".to_string(),
+            ],
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.starts_with("sh failed to open a terminal: xxx"),
+            "{}",
+            &err[..60]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_launcher_that_succeeds_is_ok() {
+        run_launcher("true", &[], Duration::from_secs(5))
+            .await
+            .unwrap();
+    }
+
     #[test]
-    fn a_launcher_that_succeeds_returns_its_process_id() {
-        let pid = run_launcher("true", &[], Duration::from_secs(5)).unwrap();
-        assert!(pid > 0);
+    fn a_launcher_is_left_to_the_caller() {
+        let config = TerminalConfig {
+            launcher: Some(crate::terminal_launcher::Launcher::Tmux),
+            ..TerminalConfig::default()
+        };
+        let launch = run_in_terminal(&config, &arguments("/", &["app"])).unwrap();
+        assert!(matches!(launch, Terminal::Launcher { .. }), "{launch:?}");
     }
 }
