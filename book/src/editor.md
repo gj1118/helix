@@ -471,8 +471,8 @@ Three theme scopes style the explorer:
 - `ui.explorer.tree.selected` styles the same guide lines on the selected row. Without it, the normal
   guide style over the selection highlight.
 - `ui.explorer.path` styles the path from the root of the tree to the selected row: the root row,
-  every ancestor row, and the guide lines that lead to the selected row. Without it, the selection
-  highlight (`ui.selection`) is used.
+  every ancestor row, and the selected row, with their own guide lines. Sibling rows are not
+  highlighted. Without it, the selection highlight (`ui.selection`) is used.
 
 ```toml
 "ui.explorer.border" = { fg = "#7aa2f7" }

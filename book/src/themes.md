@@ -342,7 +342,7 @@ These scopes are used for theming the editor interface:
 | `ui.explorer.border`              | The separator of a pinned explorer and the frame of the floating explorer. Falls back to `ui.virtual` for the separator and `ui.popup.border` for the frame. Ignored for the frame while `[editor.gradient-borders]` is enabled |
 | `ui.explorer.tree`                | Tree guide lines (`├─ └─ │`) of the explorer on normal rows. Falls back to `ui.virtual` |
 | `ui.explorer.tree.selected`       | Tree guide lines of the explorer on the selected row. Falls back to the normal guide style over the selection highlight |
-| `ui.explorer.path`                | The path from the root of the explorer to the selected row: the root row, the ancestor rows and the guide lines that lead to the selected row. Falls back to the selection highlight (`ui.selection`) |
+| `ui.explorer.path`                | The path from the root of the explorer to the selected row: the root row, the ancestor rows and the selected row, with their own guide lines. Sibling rows are not highlighted. Falls back to the selection highlight (`ui.selection`) |
 | `ui.picker.header`                | Header row area in pickers with multiple columns                                               |
 | `ui.picker.header.column`         | Column names in pickers with multiple columns                                                  |
 | `ui.picker.header.column.active`  | The column name in pickers with multiple columns where the cursor is entering into.            |

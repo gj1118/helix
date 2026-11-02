@@ -1911,20 +1911,15 @@ impl Component for Explorer {
 
             let mut spans: Vec<Span> = Vec::with_capacity(3);
             // The guide prefix is one 3-column block per ancestor level, then the branch of
-            // the entry itself. Blocks on the path to the cursor get the path style.
+            // the entry itself. Only the path rows (the ancestors and the cursor) are
+            // highlighted: sibling rows keep their guide lines even where they share one.
             let prefix = self.prefix(entry, guides);
             let depth = entry.depth as usize;
             if guides {
                 for (block, chunk) in prefix.chars().collect::<Vec<char>>().chunks(3).enumerate() {
-                    let style = if block == depth {
-                        if i == self.cursor {
-                            tree_selected_style
-                        } else if path.is_path_row(i) {
-                            path_style
-                        } else {
-                            tree_style
-                        }
-                    } else if path.is_block_on_path(i, block) {
+                    let style = if block == depth && i == self.cursor {
+                        tree_selected_style
+                    } else if path.is_path_row(i) {
                         path_style
                     } else {
                         tree_style
@@ -2034,8 +2029,6 @@ fn explorer_path_style(
 struct PathInfo {
     /// Index of the ancestor at each depth, the cursor's own row last.
     ancestors: Vec<usize>,
-    /// The cursor's row.
-    cursor: usize,
 }
 
 impl PathInfo {
@@ -2043,7 +2036,6 @@ impl PathInfo {
         let Some(current) = entries.get(cursor) else {
             return Self {
                 ancestors: Vec::new(),
-                cursor,
             };
         };
         let depth = current.depth as usize;
@@ -2059,19 +2051,12 @@ impl PathInfo {
                 ancestors[level] = index;
             }
         }
-        Self { ancestors, cursor }
+        Self { ancestors }
     }
 
     /// Whether row `index` is the cursor's row or one of its ancestors.
     fn is_path_row(&self, index: usize) -> bool {
         self.ancestors.contains(&index)
-    }
-
-    /// Whether the guide block of row `index` at ancestor `level` is on the path. The
-    /// vertical line of an ancestor reaches the cursor from its own row down to the cursor's
-    /// row; the rows below the cursor are not on the path.
-    fn is_block_on_path(&self, index: usize, level: usize) -> bool {
-        level + 1 < self.ancestors.len() && self.ancestors[level] <= index && index <= self.cursor
     }
 }
 
