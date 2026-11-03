@@ -1090,7 +1090,13 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         // -- Render the frame:
         // clear area
         let background = cx.editor.theme.get("ui.background");
-        surface.clear_with(area, background);
+        // Only inside the border (see `clear_bordered`).
+        crate::ui::clear_bordered(
+            surface,
+            area,
+            background,
+            !cx.editor.config().borders_hidden(),
+        );
 
         // calculate the inner area inside the box
         let inner = if cx.editor.config().gradient_borders.enable {
@@ -1340,7 +1346,13 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         let background = cx.editor.theme.get("ui.background");
         let text = cx.editor.theme.get("ui.text");
         let directory = cx.editor.theme.get("ui.text.directory");
-        surface.clear_with(area, background);
+        // Only inside the border (see `clear_bordered`).
+        crate::ui::clear_bordered(
+            surface,
+            area,
+            background,
+            !cx.editor.config().borders_hidden(),
+        );
 
         // calculate the inner area inside the box
         let base_inner = if cx.editor.config().gradient_borders.enable {

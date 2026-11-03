@@ -87,6 +87,38 @@ pub fn border_style(theme: &helix_view::Theme) -> helix_view::graphics::Style {
         .unwrap_or_default()
 }
 
+/// Paints the background of a popup that `bordered` draws a border around: `background`
+/// inside the border only. A border glyph (`│`, `─`, corners) runs through the middle of its
+/// cell, so a cell painted with the popup's background would show half a cell of it beyond
+/// the line, all around the popup (plain to see on light themes). The border cells keep the
+/// background already behind them instead, whatever the theme or the popup. Without a
+/// border, the whole area is painted.
+pub fn clear_bordered(
+    surface: &mut tui::buffer::Buffer,
+    area: helix_view::graphics::Rect,
+    background: Style,
+    bordered: bool,
+) {
+    let area = area.intersection(surface.area);
+    if !bordered || area.width < 3 || area.height < 3 {
+        surface.clear_with(area, background);
+        return;
+    }
+    let ring = (area.left()..area.right())
+        .flat_map(|x| [(x, area.top()), (x, area.bottom() - 1)])
+        .chain(
+            (area.top() + 1..area.bottom() - 1)
+                .flat_map(|y| [(area.left(), y), (area.right() - 1, y)]),
+        );
+    for (x, y) in ring {
+        let cell = &mut surface[(x, y)];
+        let behind = cell.bg;
+        cell.reset();
+        cell.bg = behind;
+    }
+    surface.clear_with(area.inner(helix_view::graphics::Margin::all(1)), background);
+}
+
 /// The border type of the separator lines inside a panel. Hidden borders keep
 /// their separators, which would otherwise merge the sections they divide.
 pub fn separator_type(config: &helix_view::editor::Config) -> tui::widgets::BorderType {
@@ -978,5 +1010,56 @@ pub(crate) fn component_key(
         Translated::Unchanged => Some(key),
         Translated::Key(key) => Some(key),
         Translated::Disabled => None,
+    }
+}
+
+#[cfg(test)]
+mod clear_bordered_tests {
+    use super::*;
+    use helix_view::graphics::{Color, Rect};
+
+    fn surface(bg: Color) -> tui::buffer::Buffer {
+        let area = Rect::new(0, 0, 10, 6);
+        let mut surface = tui::buffer::Buffer::empty(area);
+        surface.set_stringn(0, 0, "editortext", 10, Style::default().fg(Color::Red));
+        surface.set_style(area, Style::default().bg(bg));
+        surface
+    }
+
+    #[test]
+    fn border_cells_keep_the_background_behind_the_popup() {
+        let (editor, popup) = (Color::Rgb(255, 255, 255), Color::Rgb(240, 230, 210));
+        let mut surface = surface(editor);
+        let area = Rect::new(1, 0, 6, 4);
+        clear_bordered(&mut surface, area, Style::default().bg(popup), true);
+        for y in 0..4 {
+            for x in 1..7 {
+                let cell = &surface[(x, y)];
+                let on_border = x == 1 || x == 6 || y == 0 || y == 3;
+                let want = if on_border { editor } else { popup };
+                assert_eq!(cell.bg, want, "({x}, {y})");
+                if on_border {
+                    // the text behind is gone, only its background is kept
+                    assert_eq!(cell.symbol.as_str(), " ", "({x}, {y})");
+                    assert_eq!(cell.fg, Color::Reset, "({x}, {y})");
+                }
+            }
+        }
+        // outside the popup nothing changed
+        assert_eq!(surface[(0, 0)].symbol.as_str(), "e");
+        assert_eq!(surface[(7, 0)].bg, editor);
+    }
+
+    #[test]
+    fn without_a_border_the_whole_area_is_painted() {
+        let (editor, popup) = (Color::Rgb(255, 255, 255), Color::Rgb(240, 230, 210));
+        let mut surface = surface(editor);
+        let area = Rect::new(1, 0, 6, 4);
+        clear_bordered(&mut surface, area, Style::default().bg(popup), false);
+        for y in 0..4 {
+            for x in 1..7 {
+                assert_eq!(surface[(x, y)].bg, popup, "({x}, {y})");
+            }
+        }
     }
 }

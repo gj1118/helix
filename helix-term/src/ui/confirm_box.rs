@@ -187,7 +187,13 @@ impl Component for ConfirmBox {
             height,
         );
 
-        surface.clear_with(rect, background);
+        // Only inside the border (see `clear_bordered`).
+        crate::ui::clear_bordered(
+            surface,
+            rect,
+            background,
+            !cx.editor.config().borders_hidden(),
+        );
         self.border.render(rect, surface, cx.editor);
         let inner = rect.inner(helix_view::graphics::Margin::all(1));
         if inner.width < 3 || inner.height == 0 {

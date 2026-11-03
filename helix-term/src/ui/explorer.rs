@@ -1827,8 +1827,14 @@ impl Component for Explorer {
                 // Floating: paint the backdrop, then the frame.
                 // Clear, not just restyle: the editor's text underneath would
                 // otherwise show through every cell this panel does not write.
-                surface.clear_with(frame, background_style);
                 let config = cx.editor.config();
+                // Only inside the border (see `clear_bordered`).
+                crate::ui::clear_bordered(
+                    surface,
+                    frame,
+                    background_style,
+                    !config.borders_hidden(),
+                );
                 if config.gradient_borders.enable {
                     // `[editor.gradient-borders]` wins whenever it is enabled.
                     let stale = self

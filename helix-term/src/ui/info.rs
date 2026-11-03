@@ -21,12 +21,21 @@ impl Component for Info {
             width,
             height,
         ));
-        surface.clear_with(area, popup_style);
+        // Only inside the border (see `clear_bordered`); the border takes the popup's
+        // colors but not its background.
+        crate::ui::clear_bordered(
+            surface,
+            area,
+            popup_style,
+            !cx.editor.config().borders_hidden(),
+        );
+        let mut border_style = popup_style;
+        border_style.bg = None;
 
         let border_type = crate::ui::border_type(&cx.editor.config());
         let block = Block::bordered()
             .title(self.title.as_ref())
-            .border_style(popup_style)
+            .border_style(border_style)
             .border_type(border_type);
 
         let margin = Margin::horizontal(1);

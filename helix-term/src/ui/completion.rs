@@ -656,7 +656,13 @@ impl Component for Completion {
 
         // clear area
         let background = cx.editor.theme.get("ui.popup");
-        surface.clear_with(doc_area, background);
+        // Only inside the border (see `clear_bordered`).
+        crate::ui::clear_bordered(
+            surface,
+            doc_area,
+            background,
+            !cx.editor.config().borders_hidden(),
+        );
 
         // Always boxed like the menu; a gradient when `gradient-borders` is on.
         self.doc_border.render(doc_area, surface, cx.editor);

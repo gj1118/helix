@@ -100,8 +100,13 @@ impl CmdlinePopup {
         let theme = &cx.editor.theme;
         let config = &cx.editor.config().gradient_borders;
 
-        // Clear the area
-        surface.clear_with(popup_area, theme.get("ui.popup"));
+        // Only inside the border (see `clear_bordered`).
+        crate::ui::clear_bordered(
+            surface,
+            popup_area,
+            theme.get("ui.popup"),
+            !cx.editor.config().borders_hidden(),
+        );
 
         // Use gradient border if enabled, otherwise use default border
         let inner_area = if config.enable && self.style == CmdlineStyle::Popup {
@@ -132,14 +137,13 @@ impl CmdlinePopup {
         } else {
             // Use traditional border
             let border_style = crate::ui::border_style(theme);
-            let background_style = theme.get("ui.popup");
 
             let border_type = crate::ui::border_type(&cx.editor.config());
             let block = Block::default()
                 .borders(tui::widgets::Borders::ALL)
                 .border_type(border_type)
-                .border_style(border_style)
-                .style(background_style);
+                .border_style(border_style);
+            // The background is painted inside the border above (see `clear_bordered`).
             // `ui.popup.title` when the theme sets it; otherwise the border's style.
             let block = match theme.try_get("ui.popup.title") {
                 Some(style) => block.title(tui::text::Span::styled(self.prompt.prompt(), style)),
@@ -234,8 +238,14 @@ impl CmdlinePopup {
             comp_height,
         );
 
-        // Clear and render completion background (match global autocomplete)
-        surface.clear_with(comp_area, completion_bg);
+        // Clear and render completion background (match global autocomplete), only
+        // inside the border (see `clear_bordered`).
+        crate::ui::clear_bordered(
+            surface,
+            comp_area,
+            completion_bg,
+            !cx.editor.config().borders_hidden(),
+        );
 
         let config = &cx.editor.config().gradient_borders;
 
@@ -260,8 +270,7 @@ impl CmdlinePopup {
             let block = Block::default()
                 .borders(tui::widgets::Borders::ALL)
                 .border_type(border_type)
-                .border_style(crate::ui::border_style(theme))
-                .style(completion_bg);
+                .border_style(crate::ui::border_style(theme));
 
             let inner_area = block.inner(comp_area);
             block.render(comp_area, surface);

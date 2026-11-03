@@ -355,7 +355,13 @@ impl<T: Component> Component for Popup<T> {
         } else {
             cx.editor.theme.get("ui.popup")
         };
-        surface.clear_with(area, background);
+        // Only inside the border, when there is one (see `clear_bordered`).
+        crate::ui::clear_bordered(
+            surface,
+            area,
+            background,
+            render_borders && !cx.editor.config().borders_hidden(),
+        );
 
         let mut inner = area;
         if render_borders {
