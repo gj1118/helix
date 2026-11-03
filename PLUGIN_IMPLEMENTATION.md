@@ -4,6 +4,11 @@
 
 This document outlines the plan to implement a Lua-based plugin system for Helix, replacing or providing an alternative to the Steel (Scheme) implementation from the mattwparas/helix fork.
 
+> **Note**: this is the original plan. The implemented API differs in places (for example
+> `helix.buffer.get_current()` instead of `helix.get_buffer()`, `helix.get_config()` instead of
+> `helix.get_plugin_config(name)`, `buffer_post_save` instead of `buffer_save`, and there is no
+> `helix.lsp.format()`); `helix-plugin/README.md` documents what exists.
+
 ## Architecture
 
 ### High-Level Design
@@ -344,10 +349,13 @@ option2 = 42
 ### 6.2 Runtime Configuration Access
 
 ```lua
--- Access plugin config from Lua
-config = helix.get_plugin_config("my-plugin")
-print(config.option1)
+-- Access the calling plugin's config from Lua
+local config = helix.get_config()
+helix.log.info(tostring(config and config.option1))
 ```
+
+(Implemented in Lua; reading the `[plugins]` section of `config.toml` is still to do, so
+`helix.get_config()` returns `nil` for now.)
 
 ## Phase 7: Integration with Helix
 
@@ -355,13 +363,10 @@ print(config.option1)
 
 **File**: `helix-term/Cargo.toml`
 
-Add dependency:
+Add dependency (as implemented, the plugin system is always built in; there is no
+`lua-plugins` feature):
 ```toml
-helix-plugin = { path = "../helix-plugin", optional = true }
-
-[features]
-default = ["git", "lua-plugins"]
-lua-plugins = ["helix-plugin"]
+helix-plugin = { path = "../helix-plugin" }
 ```
 
 **File**: `helix-term/src/application.rs`
@@ -491,7 +496,7 @@ impl ScriptingEngine {
 - [x] Update event hooks to pass real editor context
 
 ### Phase 9: Polish & Documentation (Week 8)
-- [ ] Write user documentation for the Lua API
+- [x] Write user documentation for the Lua API (`helix-plugin/README.md`)
 - [ ] Create example plugins (auto-format, key-bindings, etc.)
 - [ ] Performance optimization & bench-marking
 - [ ] Final integration testing and bug fixes
@@ -518,7 +523,9 @@ impl ScriptingEngine {
 
 1. **Sandboxing**: Limit Lua's access to system resources
 2. **API Safety**: Carefully validate all data crossing Rust-Lua boundary
-3. **Resource Limits**: Prevent infinite loops or excessive memory usage
+3. **Resource Limits**: Prevent infinite loops or excessive memory usage (implemented: 2 s
+   per call into plugin code, which `pcall` and friends cannot catch, and 512 MiB for the
+   Lua state)
 4. **Plugin Isolation**: Prevent plugins from interfering with each other
 
 ## Open Questions

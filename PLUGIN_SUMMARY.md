@@ -4,11 +4,13 @@
 
 Successfully created the foundation for a Lua-based plugin system in your Helix fork. The system is designed to replace/complement the Steel (Scheme) plugin system from mattwparas/helix.
 
+The user-facing API reference is `helix-plugin/README.md`; this file is a history of the work.
+
 ## What Has Been Created
 
 ### 1. New Crate: `helix-plugin`
 
-Created at `/Users/gjanjua/sandbox/personal/helix/helix-plugin/` with the following structure:
+Created at `helix-plugin/` with the following structure:
 
 ```
 helix-plugin/
@@ -19,8 +21,11 @@ helix-plugin/
     ├── error.rs        # Error types and Result alias
     ├── types.rs        # Core types (EventType, Plugin, PluginConfig, etc.)
     └── lua/
-        ├── mod.rs      # LuaEngine implementation
-        └── loader.rs   # Plugin discovery and loading
+        ├── mod.rs      # LuaEngine implementation, editor access, time limit
+        ├── sandbox.rs  # Library restrictions, memory limit
+        ├── patterns.rs # Time-limited string pattern functions
+        ├── loader.rs   # Plugin discovery and loading
+        └── api/        # helix.buffer, editor, ui, window, lsp, log
 ```
 
 ### 2. Core Components
@@ -34,7 +39,7 @@ helix-plugin/
 #### **LuaEngine** (`src/lua/mod.rs`)
 - Lua runtime wrapper using `mlua` crate
 - Event handler registration and execution
-- Sandboxed environment (removes dangerous functions)
+- Sandboxed environment (no `io`, process or file system functions; time and memory limits)
 - Plugin loading and execution
 
 #### **PluginLoader** (`src/lua/loader.rs`)
@@ -44,7 +49,7 @@ helix-plugin/
 - Supports default and custom plugin paths
 
 #### **Event System** (`src/types.rs`)
-- 14 event types defined (buffer_open, buffer_save, mode_change, etc.)
+- 14 event types defined (buffer_open, buffer_post_save, mode_change, etc.; not all are emitted yet)
 - EventData enum for different event payloads
 - Type-safe event handling
 
@@ -55,7 +60,7 @@ helix-plugin/
 
 ### 3. Example Plugin
 
-Created `/Users/gjanjua/sandbox/personal/helix/contrib/plugins/auto-save/`:
+Created `contrib/plugins/auto-save/`:
 - `plugin.toml` - Plugin metadata
 - `init.lua` - Example Lua plugin with event handlers
 
@@ -132,21 +137,11 @@ User-facing documentation with:
 
 ## Test Results
 
-```
-running 10 tests
-test tests::test_disabled_plugin_system ... ok
-test lua::tests::test_api_registration ... ok
-test lua::tests::test_event_registration ... ok
-test tests::test_plugin_manager_creation ... ok
-test lua::tests::test_sandbox ... ok
-test lua::tests::test_engine_creation ... ok
-test lua::loader::tests::test_discover_empty_directory ... ok
-test lua::loader::tests::test_load_plugin_without_metadata ... ok
-test lua::loader::tests::test_missing_entry_point ... ok
-test lua::loader::tests::test_load_plugin_with_metadata ... ok
-
-test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured
-```
+Run `cargo test -p helix-plugin`. Besides the original unit tests, the suite drives the API
+against a headless `Editor` (`src/lua/editor_tests.rs`): re-entrancy, bounds checks, the time
+limit (including `pcall`/`xpcall`/coroutines/`load`/`__close`, string patterns and table
+functions), the sandbox and the memory limit, and plugin loading. `src/lua/patterns.rs`
+compares the ported pattern functions with stock Lua.
 
 ## Lua API (Current)
 
@@ -185,19 +180,19 @@ entry = "init.lua"
 **init.lua:**
 ```lua
 -- Simple plugin
-helix.on("buffer_save", function(event)
-    print("Saving buffer!")
+helix.on("buffer_post_save", function(event)
+    helix.log.info("Saved " .. tostring(event.path))
 end)
 ```
 
 ## Security Features
 
-The Lua environment is sandboxed with the following restrictions:
-- `os.execute` - Removed
-- `os.exit` - Removed
-- `io.*` - Removed
-- `loadfile` - Removed
-- `dofile` - Removed
+The Lua environment is sandboxed (see "Sandbox" in `helix-plugin/README.md`):
+- `io` is not loaded; `os.execute`, `os.exit`, `os.remove`, `os.rename`, `os.tmpname`,
+  `os.setlocale`, `loadfile`, `dofile` and `debug` are not available
+- `load` accepts source text only; `require` searches the plugin directories only
+- Each call into plugin code is limited to 2 seconds, and the Lua state to 512 MiB
+- `print`/`warn` go to the log instead of the terminal
 
 ## Dependencies Added
 
@@ -209,59 +204,35 @@ The Lua environment is sandboxed with the following restrictions:
 1. **Modular Design**: Separate crate for clean separation of concerns
 2. **Type-Safe**: Strong typing between Rust and Lua
 3. **Thread-Safe**: Uses Arc<RwLock> for concurrent access
-4. **Event-Driven**: Non-blocking event system
+4. **Event-Driven**: Handlers run on the editor thread, each call limited to 2 seconds
 5. **Sandboxed**: Security-first approach
 6. **Extensible**: Easy to add new APIs and event types
 
-## Next Implementation Phase
+## Not Done Yet
 
-Based on the implementation plan, the next phase should focus on:
-
-### Phase 2: Lua API Implementation
-
-1. **Buffer API** (`src/lua/api/buffer.rs`)
-   - LuaBuffer UserData type
-   - get_text, insert, delete operations
-   - Selection manipulation
-
-2. **Editor API** (`src/lua/api/editor.rs`)
-   - Execute commands
-   - Mode switching
-   - Cursor movement
-
-3. **UI API** (`src/lua/api/picker.rs`)
-   - Custom pickers
-   - Notifications
-   - Status line integration
-
-4. **LSP API** (`src/lua/api/lsp.rs`)
-   - Format document
-   - Go to definition
-   - Document symbols
-
-### Phase 3: helix-term Integration
-
-1. Add `helix-plugin` dependency to `helix-term/Cargo.toml`
-2. Initialize PluginManager in `Application::new()`
-3. Add event hooks throughout the codebase
-4. Add plugin configuration support to config.toml
+- The `[plugins]` section of `config.toml` is not read: every discovered plugin is loaded
+  and `helix.get_config()` returns `nil`
+- The `ready`, `buffer_pre_save`, `buffer_close`, `buffer_changed`, `lsp_attach` and
+  `lsp_initialized` events are never emitted
+- The LSP API only lists clients; `helix.ui.show_help` is not implemented
+- The picker's `prompt` option is not shown
 
 ## Files Created/Modified
 
 ### Created:
-- `/Users/gjanjua/sandbox/personal/helix/PLUGIN_IMPLEMENTATION.md`
-- `/Users/gjanjua/sandbox/personal/helix/helix-plugin/Cargo.toml`
-- `/Users/gjanjua/sandbox/personal/helix/helix-plugin/README.md`
-- `/Users/gjanjua/sandbox/personal/helix/helix-plugin/src/lib.rs`
-- `/Users/gjanjua/sandbox/personal/helix/helix-plugin/src/error.rs`
-- `/Users/gjanjua/sandbox/personal/helix/helix-plugin/src/types.rs`
-- `/Users/gjanjua/sandbox/personal/helix/helix-plugin/src/lua/mod.rs`
-- `/Users/gjanjua/sandbox/personal/helix/helix-plugin/src/lua/loader.rs`
-- `/Users/gjanjua/sandbox/personal/helix/contrib/plugins/auto-save/init.lua`
-- `/Users/gjanjua/sandbox/personal/helix/contrib/plugins/auto-save/plugin.toml`
+- `PLUGIN_IMPLEMENTATION.md`
+- `helix-plugin/Cargo.toml`
+- `helix-plugin/README.md`
+- `helix-plugin/src/lib.rs`
+- `helix-plugin/src/error.rs`
+- `helix-plugin/src/types.rs`
+- `helix-plugin/src/lua/mod.rs`
+- `helix-plugin/src/lua/loader.rs`
+- `contrib/plugins/auto-save/init.lua`
+- `contrib/plugins/auto-save/plugin.toml`
 
 ### Modified:
-- `/Users/gjanjua/sandbox/personal/helix/Cargo.toml` (added helix-plugin to workspace)
+- `Cargo.toml` (added helix-plugin to workspace)
 
 ## How to Build
 

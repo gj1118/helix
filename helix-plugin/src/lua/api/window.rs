@@ -27,7 +27,9 @@ impl LuaUserData for LuaWindow {
         methods.add_method("focus", |_lua, this, ()| {
             crate::lua::with_editor(|editor| {
                 if editor.tree.try_get(this.view_id).is_some() {
-                    editor.tree.focus = this.view_id;
+                    // Like a window switch by the user: commits pending changes, leaves
+                    // insert mode, keeps the cursor in view and dispatches focus events.
+                    editor.focus(this.view_id);
                     Ok(())
                 } else {
                     Err(LuaError::RuntimeError(format!(

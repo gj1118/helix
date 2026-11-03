@@ -104,7 +104,7 @@ impl EditorCommandRegistry for TermCommandRegistry {
             plugin_manager: None,
         };
 
-        let line = args.join(" ");
+        let line = command_line(args, cmd.signature.raw_after);
         let args_struct = Args::parse(&line, cmd.signature, true, |token| Ok(token.content))
             .map_err(|e| anyhow::anyhow!("Failed to parse arguments: {}", e))?;
 
@@ -125,6 +125,32 @@ impl EditorCommandRegistry for TermCommandRegistry {
         result?;
         Ok(())
     }
+}
+
+/// The command line for `args` given one argument per element by a plugin: each is quoted
+/// so that spaces or quotes inside it do not split it (`{"my file.txt"}` is one path).
+/// Arguments past the command's `raw_after` positionals are read raw by the parser, so
+/// they are passed as they are.
+fn command_line(args: &[String], raw_after: Option<u8>) -> String {
+    let mut positionals = 0;
+    let mut line = String::new();
+    for arg in args {
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        if raw_after.is_some_and(|max| positionals >= max as usize) {
+            line.push_str(arg);
+            continue;
+        }
+        if !arg.starts_with('-') {
+            positionals += 1;
+        }
+        // In single quotes everything is literal; a quote is escaped by doubling it.
+        line.push('\'');
+        line.push_str(&arg.replace('\'', "''"));
+        line.push('\'');
+    }
+    line
 }
 
 /// A UI callback a plugin is waiting on. Owned by the prompt/picker that will
@@ -173,4 +199,40 @@ pub fn get_registry() -> Arc<dyn EditorCommandRegistry> {
 pub fn get_ui_handler() -> (Arc<dyn UiHandler>, UnboundedReceiver<UiRequest>) {
     let (tx, rx) = unbounded_channel();
     (Arc::new(TermUiHandler { sender: tx }), rx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::command_line;
+    use helix_core::command_line::{Args, Signature};
+
+    fn parse(args: &[&str], raw_after: Option<u8>) -> Vec<String> {
+        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        let line = command_line(&args, raw_after);
+        let signature = Signature {
+            positionals: (0, None),
+            raw_after,
+            ..Signature::DEFAULT
+        };
+        Args::parse(&line, signature, true, |token| Ok(token.content))
+            .unwrap()
+            .iter()
+            .map(|arg| arg.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn plugin_arguments_are_not_split_or_unquoted() {
+        let args = ["my file.txt", "it's", "\"q\"", "", "%{x}", "a\\'b", "`c`"];
+        assert_eq!(parse(&args, None), args);
+    }
+
+    #[test]
+    fn arguments_after_raw_after_are_passed_raw() {
+        // e.g. `:set-option key value`: the value is read raw
+        assert_eq!(
+            parse(&["key", "[1, 2]"], Some(1)),
+            vec!["key".to_string(), "[1, 2]".to_string()]
+        );
+    }
 }

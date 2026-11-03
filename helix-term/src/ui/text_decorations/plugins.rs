@@ -1,47 +1,35 @@
 use crate::ui::document::{LinePos, TextRenderer};
 use crate::ui::text_decorations::Decoration;
-use helix_core::doc_formatter::{DocumentFormatter, FormattedGrapheme, TextFormat};
+use helix_core::doc_formatter::{DocumentFormatter, TextFormat};
 use helix_core::text_annotations::TextAnnotations;
 use helix_core::Position;
 use helix_core::RopeSlice;
-use helix_view::annotations::plugins::plugin_annotations_on_line;
+use helix_view::annotations::plugins::{
+    annotation_text, annotation_text_format, inline_annotations, inline_annotations_drop,
+    inline_start_col, plugin_annotations_on_line, virtual_line_rows,
+};
+use helix_view::document::PluginAnnotation;
 use helix_view::{Document, Theme, ViewId};
-use std::collections::BTreeMap;
 
+/// Draws the annotations plugins set with `buffer:set_annotations`. The rows they take are
+/// reserved by `helix_view::annotations::plugins::PluginLineAnnotations`, whose layout
+/// helpers this uses so that both agree.
 pub struct PluginDecoration<'a> {
     doc: &'a Document,
     theme: &'a Theme,
     view_id: ViewId,
-    anchor_idx: usize,
-    anchors: Vec<usize>,
 }
 
 impl<'a> PluginDecoration<'a> {
     pub fn new(doc: &'a Document, theme: &'a Theme, view_id: ViewId) -> Self {
-        let mut anchors = Vec::new();
-        if let Some(annots) = doc.plugin_annotations.get(&view_id) {
-            for annot in annots {
-                if annot.is_line {
-                    anchors.push(annot.char_idx);
-                }
-            }
-        }
-        anchors.sort_unstable();
-        anchors.dedup();
-
         Self {
             doc,
             theme,
             view_id,
-            anchor_idx: 0,
-            anchors,
         }
     }
 
-    fn build_style(
-        &self,
-        annot: &helix_view::document::PluginAnnotation,
-    ) -> helix_view::theme::Style {
+    fn build_style(&self, annot: &PluginAnnotation) -> helix_view::theme::Style {
         let mut style = annot
             .style
             .as_deref()
@@ -64,6 +52,45 @@ impl<'a> PluginDecoration<'a> {
     }
 }
 
+/// Lay out `text` with `text_fmt` and draw it (when `draw` is set) with its first row at
+/// `first_row` (rows after it at `next_rows`, `next_rows + 1`, ...) and its first column
+/// at `col`. Returns the number of rows the text takes, counting only up to the bottom of
+/// the view: nothing below it is visible.
+#[allow(clippy::too_many_arguments)]
+fn draw_text(
+    renderer: &mut TextRenderer,
+    text: &str,
+    text_fmt: &TextFormat,
+    style: helix_view::theme::Style,
+    first_row: usize,
+    next_rows: usize,
+    col: usize,
+    draw: bool,
+) -> usize {
+    let annotations = TextAnnotations::default();
+    // Format straight from the string slice, no per-frame Rope allocation.
+    let formatter =
+        DocumentFormatter::new_at_prev_checkpoint(RopeSlice::from(text), text_fmt, &annotations, 0);
+    let mut last_row = 0;
+    for grapheme in formatter {
+        last_row = grapheme.visual_pos.row;
+        let row = match grapheme.visual_pos.row {
+            0 => first_row,
+            row => next_rows.saturating_add(row - 1),
+        };
+        if row >= renderer.viewport.height as usize {
+            break;
+        }
+        if draw {
+            let col = col.saturating_add(grapheme.visual_pos.col);
+            if let (Ok(row), Ok(col)) = (u16::try_from(row), u16::try_from(col)) {
+                renderer.draw_decoration_grapheme(grapheme.raw, style, row, col);
+            }
+        }
+    }
+    last_row + 1
+}
+
 impl Decoration for PluginDecoration<'_> {
     fn render_virt_lines(
         &mut self,
@@ -76,250 +103,86 @@ impl Decoration for PluginDecoration<'_> {
         if !pos.is_last_visual_line {
             return Position::new(0, 0);
         }
+        let Some(annots) = self.doc.plugin_annotations.get(&self.view_id) else {
+            return Position::new(0, 0);
+        };
+        let line_annots =
+            plugin_annotations_on_line(annots, self.doc.text().slice(..), pos.doc_line);
+        if line_annots.is_empty() {
+            return Position::new(0, 0);
+        }
 
-        let mut virt_lines_drawn = 0;
-        let mut inline_col_used: u16 = 0;
+        let width = renderer.viewport.width;
+        let tab_width = self.doc.tab_width();
+        let code_row = pos.visual_line as usize;
+        let first_virt_row = code_row.saturating_add(virt_off.row);
 
-        if let Some(annots) = self.doc.plugin_annotations.get(&self.view_id) {
-            let line_annots: &[helix_view::document::PluginAnnotation] =
-                plugin_annotations_on_line(annots, self.doc.text().slice(..), pos.doc_line);
-
-            // Track overflow inline annotations separately (matches PluginLineAnnotations logic)
-            let mut inline_extra_rows: u16 = 0;
-
-            // Collect inline annotations
-            let inline_annots: Vec<_> = line_annots.iter().filter(|a| !a.is_line).collect();
-
-            // First pass: determine if ANY inline annotation needs to drop
-            // If any needs to drop, ALL should drop together for consistent rendering
-            // Calculate total width by summing all annotation character counts
-            let mut should_drop_all = false;
-            if let Some(first_annot) = inline_annots.first() {
-                let start_col = virt_off.col + first_annot.offset as usize;
-                let available_width = renderer.viewport.width.saturating_sub(start_col as u16);
-                // Drop if less than 40 columns available for the first annotation
-                if available_width < 40 {
-                    should_drop_all = true;
-                }
-            }
-            // Check if all annotations fit - use conservative estimate for visual width
-            // (chars * 2 accounts for potentially wide characters like arrows/bullets)
-            if !should_drop_all {
-                let total_chars: usize = inline_annots.iter().map(|a| a.text.chars().count()).sum();
-                let start_col = virt_off.col
-                    + inline_annots
-                        .first()
-                        .map(|a| a.offset as usize)
-                        .unwrap_or(0);
-                // Conservative estimate: some chars may be 2 columns wide
-                let estimated_end_col = start_col + total_chars + total_chars / 4;
-                // If estimated total extends beyond viewport, drop all
-                if estimated_end_col > renderer.viewport.width as usize {
-                    should_drop_all = true;
-                }
-            }
-
-            // Second pass: render all inline annotations with consistent drop decision
-            for annot in &inline_annots {
-                let style = self.build_style(annot);
-                let dropped = should_drop_all;
-
-                // Use dropped_text if available and annotation is dropped, otherwise use text
-                let display_text = if dropped {
-                    annot.dropped_text.as_ref().unwrap_or(&annot.text)
-                } else {
-                    &annot.text
-                };
-
-                // Use plugin's offset directly for positioning
-                let abs_start_col = if dropped {
-                    // For dropped: use annotation's offset directly
-                    annot.offset as usize
-                } else {
-                    // For inline: add to line content width
-                    virt_off.col + annot.offset as usize
-                };
-
-                // Calculate available width, minimum 1 to allow single-char annotations like caps
-                let available_width = renderer
-                    .viewport
-                    .width
-                    .saturating_sub(abs_start_col as u16)
-                    .max(1);
-
-                // Check if the annotation start is within the visible viewport (skip if scrolled past)
-                if !renderer.column_in_bounds(abs_start_col, 1) && !dropped {
-                    continue;
-                }
-
-                // Calculate viewport-relative drawing position (subtract horizontal scroll offset)
-                let draw_col = abs_start_col.saturating_sub(renderer.offset.col) as u16;
-
-                // TextFormat must match space reservation for consistent height calculation
-                let text_fmt = TextFormat {
-                    soft_wrap: true,
-                    tab_width: self.doc.tab_width() as u16,
-                    max_wrap: available_width.saturating_div(4).max(20),
-                    max_indent_retain: 0,
-                    wrap_indicator_highlight: None,
-                    viewport_width: available_width,
-                    soft_wrap_at_text_width: true,
-                };
-
-                let annotations = TextAnnotations::default();
-                // Format straight from the string slice, no per-frame Rope allocation.
-                let formatter = DocumentFormatter::new_at_prev_checkpoint(
-                    RopeSlice::from(display_text.as_str()),
-                    &text_fmt,
-                    &annotations,
-                    0,
+        // Inline annotations: on the code line (rows they wrap onto go to virtual lines),
+        // or all together on the first virtual line when they do not fit ("dropped").
+        let dropped = inline_annotations_drop(line_annots, virt_off.col, width);
+        let mut rows = 0usize;
+        let mut inline_col_used = 0usize;
+        for annot in inline_annotations(line_annots) {
+            let start_col = inline_start_col(annot, dropped, virt_off.col);
+            let Some(text_fmt) = annotation_text_format(width, start_col, tab_width) else {
+                continue;
+            };
+            // Skip drawing (but not the rows) when scrolled out of view horizontally.
+            let visible = dropped || renderer.column_in_bounds(start_col, 1);
+            let draw_col = start_col.saturating_sub(renderer.offset.col);
+            let text = annotation_text(annot, dropped);
+            let (first_row, next_rows) = if dropped {
+                (first_virt_row, first_virt_row.saturating_add(1))
+            } else {
+                (code_row, first_virt_row)
+            };
+            let height = draw_text(
+                renderer,
+                text,
+                &text_fmt,
+                self.build_style(annot),
+                first_row,
+                next_rows,
+                draw_col,
+                visible,
+            );
+            if dropped {
+                rows = rows.max(height);
+            } else {
+                rows = rows.max(height - 1);
+                inline_col_used = inline_col_used.max(
+                    (annot.offset as usize)
+                        .saturating_add(annot.text.chars().count())
+                        .saturating_add(2),
                 );
-
-                // All inline annotations (dropped or not) render on the same row
-                // base_row is always 0 - they share the same starting line
-                let mut last_row = 0;
-                for grapheme in formatter {
-                    last_row = grapheme.visual_pos.row;
-                    let render_row = if dropped {
-                        // Dropped: render on first virtual line (row 0 = first virtual line)
-                        pos.visual_line + virt_off.row as u16 + grapheme.visual_pos.row as u16
-                    } else if grapheme.visual_pos.row == 0 {
-                        // Non-dropped row 0: render on code line
-                        pos.visual_line
-                    } else {
-                        // Non-dropped rows 1+: render on virtual lines
-                        pos.visual_line + virt_off.row as u16 + (grapheme.visual_pos.row as u16 - 1)
-                    };
-                    renderer.draw_decoration_grapheme(
-                        grapheme.raw,
-                        style,
-                        render_row,
-                        draw_col + grapheme.visual_pos.col as u16,
-                    );
-                }
-
-                // Track max height among all inline annotations
-                if dropped {
-                    // Dropped: all annotations share virtual line, track max wrapped height
-                    inline_extra_rows = inline_extra_rows.max(last_row as u16 + 1);
-                } else {
-                    // Non-dropped: row 0 on code line, wrapped rows on virtual lines
-                    inline_extra_rows = inline_extra_rows.max(last_row as u16);
-                    inline_col_used =
-                        inline_col_used.max(annot.offset + annot.text.len() as u16 + 2);
-                }
             }
+        }
 
-            // Second pass: draw virtual lines (is_line = true)
-            // Group by logical row so multiple annotations can share the same starting row
-            let mut virt_annots_by_row: BTreeMap<
-                u16,
-                Vec<&helix_view::document::PluginAnnotation>,
-            > = BTreeMap::new();
-            let mut max_virt_idx: i32 = -1;
-            let mut next_auto_idx: u16 = 0;
-
-            // Collect all virtual line annotations
-            let virt_annots: Vec<_> = line_annots.iter().filter(|a| a.is_line).collect();
-
-            // Find the max explicit virt_line_idx
-            for annot in &virt_annots {
-                if let Some(idx) = annot.virt_line_idx {
-                    max_virt_idx = max_virt_idx.max(idx as i32);
-                }
-            }
-
-            // Add virtual line annotations to the map
-            for annot in &virt_annots {
-                let row_idx = if let Some(idx) = annot.virt_line_idx {
-                    idx
-                } else {
-                    let idx = (max_virt_idx + 1) as u16 + next_auto_idx;
-                    next_auto_idx += 1;
-                    idx
+        // Virtual line annotations, one group of rows after the other; annotations with
+        // the same `virt_line_idx` share their first row.
+        for annots_in_row in virtual_line_rows(line_annots).values() {
+            let row = first_virt_row.saturating_add(rows);
+            let mut height = 0;
+            for annot in annots_in_row {
+                let start_col = annot.offset as usize;
+                let Some(text_fmt) = annotation_text_format(width, start_col, tab_width) else {
+                    continue;
                 };
-                virt_annots_by_row.entry(row_idx).or_default().push(annot);
+                let draw_col = start_col.saturating_sub(renderer.offset.col);
+                height = height.max(draw_text(
+                    renderer,
+                    &annot.text,
+                    &text_fmt,
+                    self.build_style(annot),
+                    row,
+                    row.saturating_add(1),
+                    draw_col,
+                    true,
+                ));
             }
-
-            // Virtual lines start after inline_extra_rows
-            let mut cumulative_row_offset: u16 = inline_extra_rows;
-            for (_logical_row, annots_in_row) in virt_annots_by_row {
-                let mut max_height_in_row: u16 = 0;
-
-                for annot in annots_in_row {
-                    let style = self.build_style(annot);
-                    let abs_text_col = annot.offset as usize;
-                    let available_width = renderer.viewport.width.saturating_sub(annot.offset);
-
-                    // Skip rendering if viewport is too narrow (match space reservation: available_width > 0)
-                    if available_width == 0 {
-                        continue;
-                    }
-
-                    // Calculate viewport-relative drawing position
-                    let draw_col = abs_text_col.saturating_sub(renderer.offset.col) as u16;
-
-                    let text_fmt = TextFormat {
-                        soft_wrap: true,
-                        tab_width: self.doc.tab_width() as u16,
-                        max_wrap: available_width.saturating_div(4).max(20), // Match space reservation
-                        max_indent_retain: 0,
-                        wrap_indicator_highlight: None,
-                        viewport_width: available_width,
-                        soft_wrap_at_text_width: true,
-                    };
-
-                    let annotations = TextAnnotations::default();
-                    // Format straight from the string slice, no per-frame Rope allocation.
-                    let formatter = DocumentFormatter::new_at_prev_checkpoint(
-                        RopeSlice::from(annot.text.as_str()),
-                        &text_fmt,
-                        &annotations,
-                        0,
-                    );
-
-                    let mut last_row = 0;
-                    for grapheme in formatter {
-                        last_row = grapheme.visual_pos.row;
-                        renderer.draw_decoration_grapheme(
-                            grapheme.raw,
-                            style,
-                            pos.visual_line
-                                + virt_off.row as u16
-                                + cumulative_row_offset
-                                + grapheme.visual_pos.row as u16,
-                            draw_col + grapheme.visual_pos.col as u16,
-                        );
-                    }
-                    max_height_in_row = max_height_in_row.max(last_row as u16 + 1);
-                }
-                cumulative_row_offset += max_height_in_row;
-            }
-            virt_lines_drawn = cumulative_row_offset as usize;
+            rows = rows.saturating_add(height);
         }
 
-        Position::new(virt_lines_drawn, inline_col_used as usize)
-    }
-
-    fn reset_pos(&mut self, char_idx: usize) -> usize {
-        self.anchor_idx = self.anchors.partition_point(|&a| a < char_idx);
-        self.anchors
-            .get(self.anchor_idx)
-            .cloned()
-            .unwrap_or(usize::MAX)
-    }
-
-    fn decorate_grapheme(
-        &mut self,
-        _renderer: &mut TextRenderer,
-        grapheme: &FormattedGrapheme,
-    ) -> usize {
-        if self.anchors.get(self.anchor_idx) == Some(&grapheme.char_idx) {
-            self.anchor_idx += 1;
-        }
-        self.anchors
-            .get(self.anchor_idx)
-            .cloned()
-            .unwrap_or(usize::MAX)
+        Position::new(rows, inline_col_used)
     }
 }

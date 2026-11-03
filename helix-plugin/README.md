@@ -1,338 +1,216 @@
 # Helix Lua Plugin System
 
-A Lua-based plugin system for the Helix text editor, enabling users to extend functionality through custom scripts.
+A Lua 5.4 plugin system for this Helix fork. Plugins react to editor events, register
+commands, read and edit buffers, draw annotations, and open prompts and pickers.
 
-## Features
+## Quick start
 
-- **Event-driven architecture**: React to editor events like buffer open, save, mode changes, etc.
-- **Custom commands**: Register new commands accessible from the command palette
-- **UI integration**: Create custom pickers and UI components
-- **LSP integration**: Interact with Language Server Protocol features
-- **Safe sandboxing**: Plugins run in a sandboxed Lua environment
-- **Hot reloading**: Reload plugins without restarting the editor (planned)
+Plugins are loaded at startup from these directories (each plugin is a subdirectory):
 
-## Quick Start
-
-### 1. Enable Plugins
-
-Add to your `~/.config/helix/config.toml`:
-
-```toml
-[plugins]
-enabled = true
-plugin-dir = "~/.config/helix/plugins"
-```
-
-### 2. Create Your First Plugin
-
-Create a directory structure:
+- `~/.config/helix/plugins/` (the Helix config directory)
+- `/usr/share/helix/plugins/` and `/usr/local/share/helix/plugins/` (Linux)
+- `/Library/Application Support/helix/plugins/` (macOS)
 
 ```
 ~/.config/helix/plugins/
 └── my-plugin/
     ├── plugin.toml    # Metadata (optional)
-    └── init.lua       # Entry point (required)
+    ├── init.lua       # Entry point (required, unless plugin.toml names another one)
+    └── util.lua       # Loaded with require("my-plugin.util")
 ```
 
-**plugin.toml**:
+**plugin.toml** (all fields but `name` and `version` are optional; without the file the
+plugin is named after its directory):
+
 ```toml
 name = "my-plugin"
 version = "0.1.0"
 description = "My first Helix plugin"
 author = "Your Name"
+entry = "init.lua"
 ```
 
 **init.lua**:
+
 ```lua
--- Simple plugin that logs when buffers are opened
 helix.on("buffer_open", function(event)
-    print("Buffer opened!")
+    helix.log.info("opened " .. tostring(event.path))
 end)
-```
 
-### 3. Restart Helix
-
-Plugins are loaded on startup. Your plugin should now be active!
-
-## API Reference
-
-### Event System
-
-Subscribe to editor events using `helix.on(event_name, callback)`:
-
-```lua
--- Available events:
--- "init"              - Plugin system initialized
--- "ready"             - Editor ready
--- "buffer_open"       - Buffer opened
--- "buffer_pre_save"   - Before buffer save
--- "buffer_post_save"  - After buffer save
--- "buffer_close"      - Buffer closed
--- "buffer_changed"    - Buffer content changed
--- "mode_change"       - Editor mode changed
--- "key_press"         - Key pressed
--- "lsp_attach"        - LSP attached to buffer
--- "lsp_diagnostic"    - LSP diagnostics received
--- "selection_change"  - Selection changed
--- "view_change"       - View/window changed
-
-helix.on("buffer_save", function(event)
-    print("Saving buffer: " .. event.path)
-end)
-```
-
-### Buffer Operations (Planned)
-
-```lua
--- Get current buffer
-local buffer = helix.get_buffer()
-
--- Read buffer content
-local text = buffer:get_text()
-local selection = buffer:get_selection()
-
--- Modify buffer
-buffer:insert(position, "text")
-buffer:delete(range)
-buffer:set_selection(selection)
-```
-
-### Editor Operations (Planned)
-
-```lua
--- Execute commands
-helix.editor.execute_command("open_file")
-
--- Mode operations
-helix.editor.insert_mode()
-helix.editor.normal_mode()
-
--- Cursor movement
-helix.editor.move_cursor("left")
-helix.editor.move_cursor("right")
-```
-
-### UI Components (Planned)
-
-```lua
--- Create a custom picker
-helix.ui.picker({
-    items = {"option1", "option2", "option3"},
-    on_select = function(item)
-        print("Selected: " .. item)
-    end,
-    prompt = "Choose an option:"
-})
-
--- Show a notification
-helix.ui.notify("Hello from plugin!", "info")
-```
-
-### LSP Integration (Planned)
-
-```lua
--- Format current buffer
-helix.lsp.format()
-
--- Get document symbols
-local symbols = helix.lsp.document_symbols()
-
--- Go to definition
-helix.lsp.goto_definition()
-```
-
-### Custom Commands (Planned)
-
-```lua
--- Register a custom command
 helix.register_command({
-    name = "my_command",
-    description = "Does something useful",
-    handler = function()
-        helix.ui.notify("Command executed!")
-    end
+    name = "hello",
+    doc = "Say hello",
+    handler = function(args)
+        helix.ui.notify("Hello " .. (args[1] or "world"))
+    end,
 })
 ```
 
-## Plugin Structure
+Run `:hello` (or bind it to a key like any typable command). `:reload-all-plugins`
+reloads every plugin without restarting.
 
-### Basic Plugin
+The `[plugins]` section of `config.toml` is not read yet: all discovered plugins are
+loaded, and `helix.get_config()` returns `nil`.
 
-Minimal plugin with just an `init.lua`:
+## Running plugin code
 
-```
-my-plugin/
-└── init.lua
-```
+Plugin code runs on the editor's thread: while it runs, the editor does not draw or read
+keys. Keep handlers short, especially for frequent events (`key_press`,
+`selection_change`).
 
-### Advanced Plugin
+- **Time limit**: loading a plugin and each call of an event handler, command or UI
+  callback may run for at most 2 seconds; then it is aborted with the error
+  `plugin code exceeded the execution time limit`. `pcall`, `xpcall`, `coroutine.resume`,
+  `coroutine.close` and `load` cannot catch that error, and the pattern functions of the
+  string library check the limit too.
+- **Memory limit**: the Lua state may use at most 512 MiB; beyond that allocations fail
+  with a `not enough memory` error.
+- **Errors** of a handler are logged (`:log-open`) and do not stop the handlers of other
+  plugins.
+- **Output**: `print` and `warn` write to the Helix log, not to the terminal.
 
-Full-featured plugin with metadata and modules:
+## Sandbox
 
-```
-my-plugin/
-├── plugin.toml     # Metadata
-├── init.lua        # Entry point
-├── config.lua      # Configuration handling
-├── commands.lua    # Custom commands
-└── utils.lua       # Utility functions
-```
+- `io`, `os.execute`, `os.exit`, `os.remove`, `os.rename`, `os.tmpname`, `os.setlocale`,
+  `loadfile`, `dofile` and the `debug` library are not available. `load` only accepts
+  source text (no precompiled chunks).
+- `require` loads Lua modules from the plugin directories only (never from the working
+  directory); C modules cannot be loaded.
+- `setmetatable` refuses metatables with a `__gc` field: finalizers would run outside the
+  time limit.
+- Plugins are still trusted code: `os.getenv`, `os.time`/`clock`/`date` are available, and
+  `helix.editor.execute_command` can run any typable command (`:write`, `:sh`, ...).
 
-### Module System
+## API reference
 
-Use Lua's module system to organize code:
+Positions: buffer **lines are 1-based** in `get_line`, `insert` and `delete`; char indices,
+rows and columns elsewhere are **0-based**. Columns past the end of a line are clamped to
+the end of that line (before its line ending), lines past the end to the last line.
 
-**init.lua**:
-```lua
-local commands = require("my-plugin.commands")
-local config = require("my-plugin.config")
+Functions that need the editor raise an error when called outside of plugin code run by
+the editor; the `helix.ui` messages, `helix.editor.mode`/`*_mode` and the
+`helix.editor` functions that run commands then do nothing instead.
 
-local M = {}
+### Events
 
-function M.setup(user_config)
-    config.setup(user_config)
-    commands.register_all()
-end
+`helix.on(event, function(event) ... end)` registers a handler. The `event` table has a
+`type` field (the event name) and, depending on the event:
 
-M.setup()
-return M
-```
+| Event | Fields | Emitted |
+|-------|--------|---------|
+| `init` | | after all plugins are loaded |
+| `buffer_open` | `document_id`, `path` | when a file is opened |
+| `buffer_post_save` | `document_id`, `path` | after a buffer was written |
+| `selection_change` | `document_id`, `path` | when the selection or cursor moves |
+| `lsp_diagnostic` | `document_id` | when a buffer's diagnostics change |
+| `mode_change` | `old_mode`, `new_mode` (`"normal"`, `"insert"`, `"select"`) | on mode switches |
+| `key_press` | `key` (e.g. `"a"`, `"C-s"`, `"ret"`) | for every key |
+| `view_change` | | when the terminal is resized |
+| `ready`, `buffer_pre_save`, `buffer_close`, `buffer_changed`, `lsp_attach`, `lsp_initialized` | | accepted but not emitted yet |
 
-## Configuration
+`document_id` is the same string `buffer:id()` returns; `helix.buffer.get_by_id(id)` turns
+it into a buffer.
 
-### Global Plugin Configuration
+### Commands and configuration
 
-In `config.toml`:
+- `helix.register_command{ name = ..., doc = ..., args = ..., handler = function(args) end }`
+  registers a typable command. `doc` (or `description`) and `args` are shown in the
+  command palette; `handler` gets the arguments as a table of strings. Built-in commands
+  of the same name take precedence.
+- `helix.get_config()`: the calling plugin's configuration table (nested tables
+  included), or `nil`.
+- `helix.version`: the Helix version string.
 
-```toml
-[plugins]
-enabled = true
-plugin-dir = "~/.config/helix/plugins"
+### `helix.buffer`
 
-# Configure individual plugins
-[[plugins.plugin]]
-name = "auto-save"
-enabled = true
+- `get_current()`: the buffer of the focused window.
+- `get_by_id(id)`: the buffer with that id, or `nil`.
+- `list()`: all open buffers.
+- `annotation{ ... }`: an annotation (see `set_annotations`); a plain table works too.
 
-[plugins.plugin.config]
-delay = 1000
-auto_format = true
-```
+Buffer methods (they raise an error once the buffer is closed):
 
-### Accessing Configuration in Lua
+- `get_text()`, `len()` (in chars), `line_count()`, `get_line(n)` (with its line ending),
+  `get_path()` (or `nil`), `id()`, `is_modified()`, `get_language()` (or `nil`).
+- `char_to_line(char_idx)`, `line_to_char(line)`, `get_visual_column(char_idx)`
+  (0-based; tabs expanded, wide characters counted twice).
+- `get_cursor()`: char index of the primary cursor (focused buffer only).
+- `get_selections()`: `{ {anchor = ..., head = ...}, ... }` (char indices; empty unless
+  the buffer is focused).
+- `get_diagnostics()`: diagnostics with `range.start`, `range["end"]`, `line` (0-based),
+  `message` and `severity` (`"error"`, `"warning"`, `"info"`, `"hint"` or `nil`).
+- `insert(line, col, text)`, `delete(start_line, start_col, end_line, end_col)` (focused
+  buffer only; a reversed range is accepted).
+- `set_annotations(list)` (focused buffer only): replaces the annotations drawn in the
+  focused window for this buffer (they are shared by all plugins). Each annotation has `char_idx` (anchor; it picks the line),
+  `text`, and optionally `fg`/`bg` (`"#rrggbb"`), `style` (a theme key), `offset`
+  (columns, 0-65535), `is_line` (a virtual line below the anchor's line instead of text
+  after the end of the line), `virt_line_idx` (virtual lines with the same index share a
+  row) and `dropped_text` (shown instead of `text` when inline annotations do not fit and
+  move to a line below). A field of the wrong type is an error. Annotations are not moved
+  by edits: set them again when the text changes. `set_annotations({})` clears them.
 
-```lua
-local config = helix.get_plugin_config("my-plugin")
-if config then
-    local delay = config.delay or 1000
-    print("Delay: " .. delay)
-end
-```
+### `helix.editor`
 
-## Example Plugins
+- `mode()`: `"normal"`, `"insert"` or `"select"`; `normal_mode()`, `insert_mode()`,
+  `select_mode()` switch modes.
+- `get_cursor()`: `{row, col}` of the primary cursor (0-based); `set_cursor(row, col)`.
+- `move_cursor(direction, count)`: `"left"`, `"right"`, `"up"` or `"down"`, like `h`/`l`/
+  `k`/`j` (extends the selections in select mode).
+- `get_selections()`, `set_selections(list)`: `{anchor, head}` char indices (clamped to the
+  text); `select_all()`.
+- `undo()`, `redo()`: return whether anything changed.
+- `execute_command(name, args)`: runs a typable command (`"write"`, `"vsplit"`, ...) with
+  `args`, a table with one string per argument.
+- `save(force)`, `save_all(force)`, `quit(force)`: `:write`, `:write-all` and `:quit`
+  (with `!` when `force` is true). `quit` closes the focused window and exits Helix when
+  it was the last one, unless buffers have unsaved changes and `force` is not set.
+- `open(path, action)`: opens a file and returns its buffer; `action` is `"replace"`,
+  `"split"`, `"vsplit"`, or omitted to load it in the background.
+- `close()`: closes the focused window (not the last one: use `quit`).
+- `focus()`: the focused window.
+- `get_config()`: some editor settings (`scrolloff`, `mouse`, `cursorline`, ...).
+- `get_register(name)`, `set_register(name, values)`: register contents as a table of
+  strings.
+- `set_status(message, level)`: like `helix.ui.notify`.
 
-See `contrib/plugins/` for example plugins:
+### `helix.ui`
 
-- **auto-save**: Automatically save buffers
-- **git-blame**: Show git blame in statusline (planned)
-- **project-files**: Quick file navigation (planned)
-- **scratch-buffer**: Create temporary buffers (planned)
+- `notify(message, level)`: status line message; `level` is `"info"` (default),
+  `"warning"` or `"error"`. `info(message)`, `warn(message)`, `error(message)`,
+  `set_status(message)`.
+- `prompt(message, default, function(input) end)`: asks for a line of text; the callback
+  is not called when the prompt is cancelled.
+- `confirm(message, function(confirmed) end)`: a yes/no question (`false` when cancelled).
+- `picker{ items = {...}, prompt = "...", on_select = function(item) end }` and
+  `menu(items, function(item) end)`: pick one of `items` (the `prompt` is not shown yet).
+- `get_theme()`, `set_theme(name)`, `get_terminal_size()` (`{width, height}` of the
+  editor area), `redraw()`.
+- `show_help()` is not implemented (raises an error).
 
-## Best Practices
+Callbacks run later, after the current plugin code has returned.
 
-1. **Error Handling**: Always use `pcall` for operations that might fail:
-   ```lua
-   helix.on("buffer_save", function(event)
-       local success, err = pcall(function()
-           -- Your code here
-       end)
-       if not success then
-           print("Error: " .. tostring(err))
-       end
-   end)
-   ```
+### `helix.window`
 
-2. **Performance**: Minimize work in event handlers, especially for frequent events like `buffer_changed`
+- `get_current()`, `list()`: windows; methods `id()`, `get_buffer()`, `focus()`.
 
-3. **Naming**: Use descriptive names for your plugins and commands to avoid conflicts
+### `helix.lsp`
 
-4. **Documentation**: Include a README.md in your plugin directory
+- `get_clients()`: `{ {name = ..., id = ...}, ... }` for all running language servers.
 
-5. **Testing**: Test your plugin with different editor states and configurations
+### `helix.log`
 
-## Security
+- `info(msg)`, `warn(msg)`, `error(msg)`, `debug(msg)`, `trace(msg)`: write to the Helix
+  log (`:log-open`; `hx -v` for debug messages).
 
-Plugins run in a sandboxed Lua environment with restricted access:
+## Example plugins
 
-- **Disabled functions**: `os.execute`, `os.exit`, `io.*`, `loadfile`, `dofile`
-- **File system**: Only specific API calls can access files
-- **Network**: No network access (currently)
-
-## Troubleshooting
-
-### Plugin Not Loading
-
-1. Check that `plugins.enabled = true` in config.toml
-2. Verify plugin directory path is correct
-3. Ensure `init.lua` exists in the plugin directory
-4. Check Helix logs for error messages
-
-### Event Handlers Not Firing
-
-1. Verify event name is correct (see API Reference)
-2. Check that the event is being triggered (add debug prints)
-3. Ensure no errors in the handler callback
-
-### Performance Issues
-
-1. Profile your event handlers
-2. Avoid heavy computations in frequent events
-3. Use debouncing for expensive operations
+`contrib/plugins/` has an `auto-save` skeleton and `inline-diagnostic`, which draws the
+diagnostics of the cursor line with annotations.
 
 ## Development
 
-### Building
-
-The plugin system is integrated into Helix. Build with:
-
-```bash
-cargo build --release --features lua-plugins
-```
-
-### Testing
-
-Run plugin system tests:
-
 ```bash
 cargo test -p helix-plugin
+RUST_LOG=helix_plugin=debug hx   # or hx -v
 ```
-
-### Debugging
-
-Enable debug logging:
-
-```bash
-RUST_LOG=helix_plugin=debug hx
-```
-
-## Roadmap
-
-- [x] Basic event system
-- [x] Plugin loading and discovery
-- [x] Sandboxed Lua environment
-- [ ] Buffer API
-- [ ] Editor API
-- [ ] UI components  
-- [ ] Custom commands
-- [ ] LSP integration
-- [ ] Hot reloading
-- [ ] Plugin marketplace
-- [ ] Debug adapter for Lua
-
-## Contributing
-
-Contributions are welcome! Please see the main [Helix contributing guide](../CONTRIBUTING.md).
-
-## License
-
-Licensed under the Mozilla Public License 2.0. See [LICENSE](../LICENSE) for details.

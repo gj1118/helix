@@ -4,7 +4,7 @@ use helix_view::{Document, Editor, View};
 use mlua::prelude::*;
 use mlua::{ffi, RegistryKey};
 use parking_lot::RwLock;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ptr::NonNull;
 use std::str::FromStr;
@@ -49,6 +49,39 @@ thread_local! {
     static CURRENT_EDITOR: Cell<EditorSlot> = const { Cell::new(EMPTY_SLOT) };
     /// Point in time after which running plugin code is aborted (see `install_timeout_hook`).
     static DEADLINE: Cell<Option<Instant>> = const { Cell::new(None) };
+    /// The plugin whose code is running (loading, event handler, command, UI callback).
+    static CURRENT_PLUGIN: RefCell<Option<Arc<str>>> = const { RefCell::new(None) };
+}
+
+/// Restores the current plugin on drop (panic safe).
+struct PluginRestore(Option<Arc<str>>);
+
+impl Drop for PluginRestore {
+    fn drop(&mut self) {
+        let prev = self.0.take();
+        CURRENT_PLUGIN.with(|p| *p.borrow_mut() = prev);
+    }
+}
+
+/// Run `f` as code of the plugin `name`: what it registers (handlers, commands, UI
+/// callbacks) belongs to that plugin and `helix.get_config()` returns its configuration.
+///
+/// This is tracked on the Rust side: the global `_current_plugin_name` used before was
+/// only set while a plugin was loading, and any plugin could overwrite it.
+pub(crate) fn with_plugin<F, R>(name: &Arc<str>, f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    let prev = CURRENT_PLUGIN.with(|p| p.borrow_mut().replace(Arc::clone(name)));
+    let _restore = PluginRestore(prev);
+    f()
+}
+
+/// The name of the plugin whose code is running, or `"unknown"`.
+pub(crate) fn current_plugin_name() -> Arc<str> {
+    CURRENT_PLUGIN
+        .with(|p| p.borrow().clone())
+        .unwrap_or_else(|| Arc::from("unknown"))
 }
 
 /// Restores the editor slot on drop (panic safe).
@@ -75,6 +108,10 @@ pub const PLUGIN_EXECUTION_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// How many VM instructions run between two deadline checks.
 const HOOK_INSTRUCTION_INTERVAL: u32 = 10_000;
+
+/// Maximum memory the plugin Lua state may allocate. Beyond it allocations fail with a Lua
+/// "not enough memory" error instead of exhausting the machine (`("x"):rep(2^34)`).
+pub const PLUGIN_MEMORY_LIMIT: usize = 512 * 1024 * 1024;
 
 /// Run `f` with an execution deadline. Nested calls keep the outer deadline.
 pub(crate) fn with_deadline<F, R>(f: F) -> R
@@ -128,23 +165,18 @@ fn install_timeout_hook(lua: &Lua) -> Result<()> {
 }
 
 /// Create a sandboxed Lua state with the execution time limit hook installed.
+///
+/// Besides the instruction hook, the time limit needs: wrappers for every standard
+/// function that catches errors (see `make_timeout_uncatchable`), the pattern functions
+/// of the string library ported so they check the deadline (`patterns`), and guards for
+/// the C loops of `string.rep`/`table.insert`/`table.remove`/`table.move` and for `__gc`
+/// finalizers, which run with the hook switched off (`sandbox`).
 fn new_sandboxed_lua() -> Result<Lua> {
-    let lua = Lua::new();
-
-    // Set up sandboxing - remove dangerous functions
-    lua.load(
-        r#"
-        -- Remove dangerous functions
-        os.execute = nil
-        os.exit = nil
-        io = nil
-        loadfile = nil
-        dofile = nil
-        "#,
-    )
-    .exec()
-    .map_err(|e| PluginError::InitializationFailed(format!("Failed to setup sandbox: {}", e)))?;
-
+    let setup =
+        |e: LuaError| PluginError::InitializationFailed(format!("Failed to setup sandbox: {}", e));
+    let lua = Lua::new_with(sandbox::libs(), LuaOptions::new()).map_err(setup)?;
+    sandbox::restrict(&lua).map_err(setup)?;
+    patterns::install(&lua).map_err(setup)?;
     install_timeout_hook(&lua)?;
     make_timeout_uncatchable(&lua)?;
     Ok(lua)
@@ -157,13 +189,21 @@ fn deadline_passed() -> bool {
         .is_some_and(|deadline| Instant::now() >= deadline)
 }
 
-/// The timeout hook raises an ordinary Lua error, which `pcall`, `xpcall` and
-/// `coroutine.resume` would catch: `while true do pcall(spin) end` would never end. Once
-/// the deadline has passed, these wrappers raise the error again instead of returning it,
-/// so the abort reaches the Rust caller however deeply the plugin catches errors. Before
-/// the deadline they behave exactly like the originals. The originals are kept only in
-/// upvalues, and the debug library (which could reach them or remove the hook) is not
-/// loaded.
+/// The error raised by Rust code that notices the deadline has passed.
+fn timeout_error() -> LuaError {
+    LuaError::RuntimeError(TIMEOUT_MESSAGE.to_string_lossy().into_owned())
+}
+
+/// The timeout hook raises an ordinary Lua error, which `pcall`, `xpcall`,
+/// `coroutine.resume`, `coroutine.close` and `load` (for errors of a reader function)
+/// would catch: `while true do pcall(spin) end` would never end. Once the deadline has
+/// passed, these wrappers raise the error again instead of returning it, so the abort
+/// reaches the Rust caller however deeply the plugin catches errors. Before the deadline
+/// they behave like the originals. The originals are kept only in upvalues, and the debug
+/// library (which could reach them or remove the hook) is not loaded.
+///
+/// `load` also only accepts source text: Lua does not verify binary chunks, and a crafted
+/// one corrupts memory.
 fn make_timeout_uncatchable(lua: &Lua) -> Result<()> {
     let passed = lua
         .create_function(|_, ()| Ok(deadline_passed()))
@@ -171,10 +211,11 @@ fn make_timeout_uncatchable(lua: &Lua) -> Result<()> {
             PluginError::InitializationFailed(format!("Failed to setup sandbox: {}", e))
         })?;
     lua.load(
-        r#"
+        r##"
         local deadline_passed = ...
-        local raw_pcall, raw_xpcall, raw_error = pcall, xpcall, error
-        local raw_resume = coroutine.resume
+        local raw_pcall, raw_xpcall, raw_error, raw_load = pcall, xpcall, error, load
+        local raw_resume, raw_close = coroutine.resume, coroutine.close
+        local select = select
 
         -- Re-raise a caught error once the deadline has passed.
         local function check(ok, ...)
@@ -202,8 +243,31 @@ fn make_timeout_uncatchable(lua: &Lua) -> Result<()> {
         coroutine.resume = function(...)
             return check(raw_resume(...))
         end
-        "#,
+
+        coroutine.close = function(...)
+            return check(raw_close(...))
+        end
+
+        load = function(...)
+            local chunk, chunkname, _, env = ...
+            local f, err
+            -- An explicit `env` (even nil) must be passed on as such.
+            if select("#", ...) >= 4 then
+                f, err = raw_load(chunk, chunkname, "t", env)
+            else
+                f, err = raw_load(chunk, chunkname, "t")
+            end
+            if f == nil then
+                if deadline_passed() then
+                    raw_error(err, 0)
+                end
+                return nil, err
+            end
+            return f
+        end
+        "##,
     )
+    .set_name("=sandbox")
     .call::<()>(passed)
     .map_err(|e| PluginError::InitializationFailed(format!("Failed to setup sandbox: {}", e)))
 }
@@ -301,9 +365,13 @@ pub mod api;
 #[cfg(test)]
 mod editor_tests;
 pub mod loader;
+mod patterns;
+mod sandbox;
 
-type EventHandlers = HashMap<EventType, Vec<(String, Arc<RegistryKey>)>>;
-type Commands = HashMap<String, (crate::types::CommandMetadata, Arc<RegistryKey>)>;
+/// Event handlers: event -> [(plugin name, callback)].
+type EventHandlers = HashMap<EventType, Vec<(Arc<str>, Arc<RegistryKey>)>>;
+/// Commands: name -> (metadata, plugin name, callback).
+type Commands = HashMap<String, (crate::types::CommandMetadata, Arc<str>, Arc<RegistryKey>)>;
 
 /// Lua scripting engine for Helix plugins
 pub struct LuaEngine {
@@ -433,11 +501,7 @@ impl LuaEngine {
                     LuaError::RuntimeError(format!("Invalid event type: {}", event_name))
                 })?;
 
-                let plugin_name = lua
-                    .globals()
-                    .get::<String>("_current_plugin_name")
-                    .unwrap_or_else(|_| "unknown".to_string());
-
+                let plugin_name = current_plugin_name();
                 let callback_ref = Arc::new(lua.create_registry_value(callback)?);
 
                 // Add to event handlers (no Lua code runs while the lock is held)
@@ -460,38 +524,28 @@ impl LuaEngine {
     fn register_config_api(&self, helix: &LuaTable) -> Result<()> {
         // helix.get_config() - Get configuration for the current plugin
         let get_config = self.lua.create_function(move |lua, ()| {
-            let plugin_name = lua
-                .globals()
-                .get::<String>("_current_plugin_name")
-                .unwrap_or_else(|_| "unknown".to_string());
-
-            if let Some(config) = lua.app_data_ref::<crate::types::PluginConfig>() {
-                if let Some(plugin_config) = config.plugins.iter().find(|p| p.name == plugin_name) {
-                    // Convert serde_json::Value to LuaValue
-                    let val = match &plugin_config.config {
-                        serde_json::Value::Object(map) => {
-                            let table = lua.create_table()?;
-                            for (k, v) in map {
-                                // Simple conversion for common types
-                                match v {
-                                    serde_json::Value::String(s) => {
-                                        table.set(k.clone(), s.clone())?
-                                    }
-                                    serde_json::Value::Number(n) => {
-                                        table.set(k.clone(), n.as_f64().unwrap_or(0.0))?
-                                    }
-                                    serde_json::Value::Bool(b) => table.set(k.clone(), *b)?,
-                                    _ => {} // Skip complex types for now
-                                }
-                            }
-                            Some(table)
-                        }
-                        _ => None,
-                    };
-                    return Ok(val);
-                }
+            let plugin_name = current_plugin_name();
+            // Clone the value out so no app data borrow is held while creating Lua values.
+            let config = lua
+                .app_data_ref::<crate::types::PluginConfig>()
+                .and_then(|config| {
+                    config
+                        .plugins
+                        .iter()
+                        .find(|p| *p.name == *plugin_name)
+                        .map(|p| p.config.clone())
+                });
+            match config {
+                // Nested tables and arrays included; JSON null becomes nil.
+                Some(config @ serde_json::Value::Object(_)) => lua.to_value_with(
+                    &config,
+                    LuaSerializeOptions::new()
+                        .serialize_none_to_null(false)
+                        .serialize_unit_to_null(false)
+                        .set_array_metatable(false),
+                ),
+                _ => Ok(LuaValue::Nil),
             }
-            Ok(None)
         })?;
 
         helix.set("get_config", get_config)?;
@@ -505,14 +559,26 @@ impl LuaEngine {
 
         // helix.register_command({ ... })
         let reg_fn = self.lua.create_function(move |lua, table: LuaTable| {
+            // Errors are propagated, not replaced by defaults: one may be the time limit
+            // aborting an `__index` metamethod.
             let name: String = table
-                .get("name")
-                .map_err(|_| LuaError::RuntimeError("Command name required".into()))?;
-            let doc: String = table.get("doc").unwrap_or_else(|_| "".into());
-            let args: Option<String> = table.get("args").ok();
-            let handler: LuaFunction = table
-                .get("handler")
-                .map_err(|_| LuaError::RuntimeError("Command handler function required".into()))?;
+                .get::<Option<String>>("name")?
+                .filter(|name| !name.is_empty())
+                .ok_or_else(|| LuaError::RuntimeError("Command name required".into()))?;
+            // `description` is accepted as an alias of `doc`.
+            let doc: String = match table.get::<Option<String>>("doc")? {
+                Some(doc) => doc,
+                None => table
+                    .get::<Option<String>>("description")?
+                    .unwrap_or_default(),
+            };
+            let args: Option<String> = table.get("args")?;
+            let handler: LuaFunction =
+                table
+                    .get::<Option<LuaFunction>>("handler")?
+                    .ok_or_else(|| {
+                        LuaError::RuntimeError("Command handler function required".into())
+                    })?;
 
             let callback_ref = Arc::new(lua.create_registry_value(handler)?);
 
@@ -522,7 +588,9 @@ impl LuaEngine {
                 args,
             };
 
-            commands.write().insert(name, (meta, callback_ref));
+            commands
+                .write()
+                .insert(name, (meta, current_plugin_name(), callback_ref));
             Ok(())
         })?;
 
@@ -540,11 +608,11 @@ impl LuaEngine {
     ) -> Result<()> {
         // Clone the key out so the lock is not held while Lua runs (the command
         // may call `helix.register_command`, which takes the write lock).
-        let callback_ref = self
+        let (plugin_name, callback_ref) = self
             .commands
             .read()
             .get(name)
-            .map(|(_, key)| Arc::clone(key))
+            .map(|(_, plugin, key)| (Arc::clone(plugin), Arc::clone(key)))
             .ok_or_else(|| {
                 PluginError::CommandExecutionFailed(format!("Command not found: {}", name))
             })?;
@@ -553,9 +621,11 @@ impl LuaEngine {
             PluginError::CommandExecutionFailed(format!("Failed to retrieve callback: {}", e))
         })?;
 
-        with_editor_context(editor, || {
-            callback.call::<()>(args).map_err(|e| {
-                PluginError::CommandExecutionFailed(format!("Execution failed: {}", e))
+        with_plugin(&plugin_name, || {
+            with_editor_context(editor, || {
+                callback.call::<()>(args).map_err(|e| {
+                    PluginError::CommandExecutionFailed(format!("Execution failed: {}", e))
+                })
             })
         })
     }
@@ -565,7 +635,7 @@ impl LuaEngine {
         self.commands
             .read()
             .values()
-            .map(|(meta, _)| meta.clone())
+            .map(|(meta, _, _)| meta.clone())
             .collect()
     }
     /// Handle a UI/Picker callback from the editor
@@ -581,7 +651,7 @@ impl LuaEngine {
         let callback_ref = self
             .ui_callbacks
             .write()
-            .remove(&(plugin_name, callback_id));
+            .remove(&(plugin_name.clone(), callback_id));
         if let Some(callback_ref) = callback_ref {
             let callback: LuaFunction = self
                 .lua
@@ -590,10 +660,12 @@ impl LuaEngine {
 
             let lua_value = self.lua.to_value(&value).map_err(PluginError::LuaError)?;
 
-            with_editor_context(editor, || {
-                callback
-                    .call::<()>(lua_value)
-                    .map_err(PluginError::LuaError)
+            with_plugin(&Arc::from(plugin_name), || {
+                with_editor_context(editor, || {
+                    callback
+                        .call::<()>(lua_value)
+                        .map_err(PluginError::LuaError)
+                })
             })?;
         }
         Ok(())
@@ -620,17 +692,23 @@ impl LuaEngine {
             )));
         }
 
-        // Set the current plugin name in globals so event handlers know which plugin they belong to
-        let globals = self.lua.globals();
-        globals.set("_current_plugin_name", plugin.metadata.name.clone())?;
+        // `require("<plugin>.<module>")` finds the plugin's other files.
+        if let Some(dir) = plugin.path.parent() {
+            sandbox::add_module_dir(&self.lua, dir)?;
+        }
 
-        // Load and execute the plugin
+        // Load and execute the plugin; what it registers belongs to it.
         let code = std::fs::read_to_string(&entry_file)?;
-        let result = with_deadline(|| self.lua.load(&code).set_name(&plugin.metadata.name).exec());
-
-        // Clear the current plugin name (also when loading failed)
-        globals.set("_current_plugin_name", LuaValue::Nil)?;
-        result.map_err(PluginError::LuaError)?;
+        let name: Arc<str> = Arc::from(plugin.metadata.name.as_str());
+        with_plugin(&name, || {
+            with_deadline(|| {
+                self.lua
+                    .load(&code)
+                    .set_name(format!("@{}", entry_file.display()))
+                    .exec()
+            })
+        })
+        .map_err(PluginError::LuaError)?;
 
         self.plugins.insert(plugin.metadata.name.clone(), plugin);
 
@@ -641,74 +719,90 @@ impl LuaEngine {
     pub fn call_event_handlers(&self, editor: &mut Editor, event: &PluginEvent) -> Result<()> {
         // Snapshot the handlers and release the lock before running Lua: handlers
         // may call `helix.on`, which takes the write lock.
-        let callbacks: Vec<(String, Arc<RegistryKey>)> = self
-            .event_handlers
-            .read()
-            .get(&event.event_type)
-            .cloned()
-            .unwrap_or_default();
+        let callbacks: Vec<(Arc<str>, Arc<RegistryKey>)> =
+            match self.event_handlers.read().get(&event.event_type) {
+                Some(callbacks) if !callbacks.is_empty() => callbacks.clone(),
+                _ => return Ok(()),
+            };
 
-        {
-            for (plugin_name, callback_ref) in &callbacks {
-                // Get the callback from the registry
-                let callback: LuaFunction = self.lua.registry_value(callback_ref).map_err(|e| {
-                    PluginError::EventHandlerError {
-                        plugin: plugin_name.clone(),
-                        error: format!("Failed to retrieve callback: {}", e),
-                    }
-                })?;
-
-                // Call the callback with event data
-                let event_data = self.lua.create_table().map_err(PluginError::LuaError)?;
-                event_data
-                    .set("type", event.event_type.as_str())
-                    .map_err(PluginError::LuaError)?;
-
-                // Set event-specific data
-                match &event.data {
-                    crate::types::EventData::Buffer { document_id, path } => {
-                        event_data
-                            .set("document_id", format!("{:?}", document_id))
-                            .ok();
-                        event_data
-                            .set(
-                                "path",
-                                path.as_ref().map(|p| p.to_string_lossy().to_string()),
-                            )
-                            .ok();
-                    }
-                    crate::types::EventData::ModeChange { old_mode, new_mode } => {
-                        event_data.set("old_mode", old_mode.clone()).ok();
-                        event_data.set("new_mode", new_mode.clone()).ok();
-                    }
-                    crate::types::EventData::KeyPress { key } => {
-                        event_data.set("key", key.clone()).ok();
-                    }
-                    crate::types::EventData::LspDiagnostic {
-                        document_id,
-                        diagnostic_count,
-                    } => {
-                        event_data
-                            .set("document_id", format!("{:?}", document_id))
-                            .ok();
-                        event_data.set("diagnostic_count", *diagnostic_count).ok();
-                    }
-                    _ => {}
+        // A failing handler does not keep the others (often of other plugins) from running.
+        let mut first_error = None;
+        for (plugin_name, callback_ref) in &callbacks {
+            if let Err(e) = self.call_event_handler(editor, event, plugin_name, callback_ref) {
+                if first_error.is_none() {
+                    first_error = Some(e);
+                } else {
+                    log::error!("{}", e);
                 }
-
-                let plugin_name_captured = plugin_name.clone();
-                with_editor_context(editor, || {
-                    callback
-                        .call::<()>(event_data)
-                        .map_err(|e| PluginError::EventHandlerError {
-                            plugin: plugin_name_captured,
-                            error: format!("Handler execution failed: {}", e),
-                        })
-                })?;
             }
         }
+        first_error.map_or(Ok(()), Err)
+    }
 
-        Ok(())
+    fn call_event_handler(
+        &self,
+        editor: &mut Editor,
+        event: &PluginEvent,
+        plugin_name: &Arc<str>,
+        callback_ref: &RegistryKey,
+    ) -> Result<()> {
+        let handler_error = |error: String| PluginError::EventHandlerError {
+            plugin: plugin_name.to_string(),
+            error,
+        };
+        let callback: LuaFunction = self
+            .lua
+            .registry_value(callback_ref)
+            .map_err(|e| handler_error(format!("Failed to retrieve callback: {}", e)))?;
+
+        // A fresh table per handler: a handler may modify it.
+        let event_data = self.event_table(event).map_err(PluginError::LuaError)?;
+
+        with_plugin(plugin_name, || {
+            with_editor_context(editor, || {
+                callback
+                    .call::<()>(event_data)
+                    .map_err(|e| handler_error(format!("Handler execution failed: {}", e)))
+            })
+        })
+    }
+
+    /// The table passed to event handlers.
+    fn event_table(&self, event: &PluginEvent) -> LuaResult<LuaTable> {
+        use crate::types::EventData;
+        let data = self.lua.create_table()?;
+        data.raw_set("type", event.event_type.as_str())?;
+        match &event.data {
+            EventData::None => {}
+            EventData::Buffer { document_id, path } => {
+                data.raw_set("document_id", format!("{:?}", document_id))?;
+                data.raw_set(
+                    "path",
+                    path.as_ref().map(|p| p.to_string_lossy().into_owned()),
+                )?;
+            }
+            EventData::ModeChange { old_mode, new_mode } => {
+                // Spelled like `helix.editor.mode()` returns them ("normal", "insert", ...).
+                data.raw_set("old_mode", old_mode.to_ascii_lowercase())?;
+                data.raw_set("new_mode", new_mode.to_ascii_lowercase())?;
+            }
+            EventData::KeyPress { key } => data.raw_set("key", key.as_str())?,
+            EventData::LspAttach {
+                document_id,
+                language_server_id,
+            } => {
+                data.raw_set("document_id", format!("{:?}", document_id))?;
+                data.raw_set("language_server_id", *language_server_id)?;
+            }
+            EventData::LspDiagnostic {
+                document_id,
+                diagnostic_count,
+            } => {
+                data.raw_set("document_id", format!("{:?}", document_id))?;
+                data.raw_set("diagnostic_count", *diagnostic_count)?;
+            }
+        }
+        Ok(data)
     }
 
     /// Get the Lua runtime (for advanced operations)

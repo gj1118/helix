@@ -47,10 +47,15 @@ where
     })
 }
 
-/// Clamp a 1-based line and 0-based column to a char offset inside `text`.
+/// Clamp a 1-based line and 0-based column to a char offset inside `text`. A column past
+/// the end of the line is the end of that line (before its line ending), not a position
+/// on the next line.
 fn line_col_to_char(text: &helix_core::Rope, line: usize, col: usize) -> usize {
+    let text = text.slice(..);
     let row = (line.saturating_sub(1)).min(text.len_lines().saturating_sub(1));
-    text.line_to_char(row) + col.min(text.line(row).len_chars())
+    let start = text.line_to_char(row);
+    let end = helix_core::line_ending::line_end_char_index(&text, row);
+    start + col.min(end - start)
 }
 
 /// Build the `{ {anchor=, head=}, ... }` table returned by the selection getters.
@@ -325,20 +330,29 @@ impl LuaUserData for LuaPluginAnnotation {
     fn add_methods<'lua, M: LuaUserDataMethods<Self>>(_methods: &mut M) {}
 }
 
+impl LuaPluginAnnotation {
+    /// Read an annotation from a table. A field of the wrong type (or out of range, like
+    /// a negative `offset`) is an error rather than silently ignored, and so is an error
+    /// raised by a metamethod (which may be the time limit aborting it).
+    fn from_table(table: &LuaTable) -> LuaResult<Self> {
+        Ok(LuaPluginAnnotation {
+            char_idx: table.get("char_idx")?,
+            text: table.get("text")?,
+            style: table.get("style")?,
+            fg: table.get("fg")?,
+            bg: table.get("bg")?,
+            offset: table.get::<Option<u16>>("offset")?.unwrap_or(0),
+            is_line: table.get::<Option<bool>>("is_line")?.unwrap_or(false),
+            virt_line_idx: table.get("virt_line_idx")?,
+            dropped_text: table.get("dropped_text")?,
+        })
+    }
+}
+
 impl FromLua for LuaPluginAnnotation {
     fn from_lua(lua_value: LuaValue, _lua: &Lua) -> LuaResult<Self> {
         match lua_value {
-            LuaValue::Table(table) => Ok(LuaPluginAnnotation {
-                char_idx: table.get("char_idx")?,
-                text: table.get("text")?,
-                style: table.get("style").ok(),
-                fg: table.get("fg").ok(),
-                bg: table.get("bg").ok(),
-                offset: table.get("offset").unwrap_or(0),
-                is_line: table.get("is_line").unwrap_or(false),
-                virt_line_idx: table.get("virt_line_idx").ok(),
-                dropped_text: table.get("dropped_text").ok(),
-            }),
+            LuaValue::Table(table) => Self::from_table(&table),
             LuaValue::UserData(ud) => ud.borrow::<Self>().map(|s| s.clone()),
             _ => Err(LuaError::FromLuaConversionError {
                 from: "LuaValue",
@@ -460,10 +474,17 @@ pub fn register_buffer_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     })?;
     buffer_module.set("get_current", get_current)?;
 
-    // helix.buffer.get_by_id(id) - Get buffer by ID
-    let get_by_id = lua.create_function(|_lua, _id: String| {
-        // TODO: Implement actual buffer lookup
-        Ok(LuaValue::Nil)
+    // helix.buffer.get_by_id(id) - The buffer with the id given by `buffer:id()` or an
+    // event's `document_id`, or nil if there is none
+    let get_by_id = lua.create_function(|_lua, id: String| {
+        let id = crate::lua::with_editor(|editor| {
+            Ok(editor
+                .documents
+                .keys()
+                .copied()
+                .find(|doc_id| format!("{:?}", doc_id) == id))
+        })?;
+        Ok(id.map(LuaBuffer::new))
     })?;
     buffer_module.set("get_by_id", get_by_id)?;
 
@@ -476,19 +497,8 @@ pub fn register_buffer_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     buffer_module.set("list", list)?;
 
     // helix.buffer.annotation(table) - Create a new annotation
-    let annotation = lua.create_function(|_lua, table: LuaTable| {
-        Ok(LuaPluginAnnotation {
-            char_idx: table.get("char_idx")?,
-            text: table.get("text")?,
-            style: table.get("style").ok(),
-            fg: table.get("fg").ok(),
-            bg: table.get("bg").ok(),
-            offset: table.get("offset").unwrap_or(0),
-            is_line: table.get("is_line").unwrap_or(false),
-            virt_line_idx: table.get("virt_line_idx").ok(),
-            dropped_text: table.get("dropped_text").ok(),
-        })
-    })?;
+    let annotation =
+        lua.create_function(|_lua, table: LuaTable| LuaPluginAnnotation::from_table(&table))?;
     buffer_module.set("annotation", annotation)?;
 
     helix_table.set("buffer", buffer_module)?;

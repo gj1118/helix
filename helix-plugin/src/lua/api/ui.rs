@@ -6,10 +6,10 @@ use std::sync::Arc;
 pub fn register_ui_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     let ui_module = lua.create_table()?;
 
-    // helix.ui.notify(message, level) - Show notification
-    let notify = lua.create_function(|_lua, (message, _level): (String, Option<String>)| {
+    // helix.ui.notify(message, level) - level: "info" (default), "warning", "error"
+    let notify = lua.create_function(|_lua, (message, level): (String, Option<String>)| {
         crate::lua::try_with_editor(|editor| {
-            editor.set_status(message);
+            show_message(editor, message, level.as_deref());
             Ok(())
         })?;
         Ok(())
@@ -29,7 +29,7 @@ pub fn register_ui_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     // helix.ui.warn(message) - Show warning message
     let warn = lua.create_function(|_lua, message: String| {
         crate::lua::try_with_editor(|editor| {
-            editor.set_status(format!("Warning: {}", message));
+            editor.set_warning(message);
             Ok(())
         })?;
         Ok(())
@@ -83,13 +83,12 @@ pub fn register_ui_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     })?;
     ui_module.set("picker", picker)?;
 
-    // helix.ui.menu(items, callback) - Show menu
-    let menu = lua.create_function(
-        |_lua, (items, _callback): (Vec<String>, Option<LuaFunction>)| {
-            // TODO: Implement actual menu
-            Ok(format!("Would show menu with {} items", items.len()))
-        },
-    )?;
+    // helix.ui.menu(items, callback) - Pick one of `items` (a picker without a prompt)
+    let menu = lua.create_function(|lua, (items, callback): (Vec<String>, LuaFunction)| {
+        open_ui(lua, callback, move |handler, editor, plugin_name, id| {
+            handler.picker(editor, items, "Select:".to_string(), plugin_name, id)
+        })
+    })?;
     ui_module.set("menu", menu)?;
 
     // helix.ui.set_status(message) - Set status line message
@@ -140,10 +139,11 @@ pub fn register_ui_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     })?;
     ui_module.set("redraw", redraw)?;
 
-    // helix.ui.show_help(topic) - Show help
-    let show_help = lua.create_function(|_lua, topic: Option<String>| {
-        // TODO: Implement actual help display
-        Ok(format!("Would show help for: {:?}", topic))
+    // helix.ui.show_help(topic) - Not available: raise instead of silently doing nothing
+    let show_help = lua.create_function(|_lua, _topic: Option<String>| -> LuaResult<()> {
+        Err(LuaError::RuntimeError(
+            "helix.ui.show_help is not implemented".to_string(),
+        ))
     })?;
     ui_module.set("show_help", show_help)?;
 
@@ -152,16 +152,23 @@ pub fn register_ui_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     Ok(())
 }
 
+/// Show `message` in the status line with the severity `level` ("info" by default,
+/// "warn"/"warning", "error").
+pub(crate) fn show_message(editor: &mut helix_view::Editor, message: String, level: Option<&str>) {
+    match level {
+        Some("error") => editor.set_error(message),
+        Some("warn" | "warning") => editor.set_warning(message),
+        _ => editor.set_status(message),
+    }
+}
+
 /// Register `callback` as a pending UI callback and ask the UI handler to open
 /// the prompt/picker. Does nothing when there is no editor context or no UI handler.
 fn open_ui<F>(lua: &Lua, callback: LuaFunction, open: F) -> LuaResult<()>
 where
     F: FnOnce(&dyn crate::types::UiHandler, &mut helix_view::Editor, String, u64),
 {
-    let plugin_name = lua
-        .globals()
-        .get::<String>("_current_plugin_name")
-        .unwrap_or_else(|_| "unknown".to_string());
+    let plugin_name = crate::lua::current_plugin_name().to_string();
 
     // Clone the shared state out of the app data so no borrow is held below.
     let handler = lua

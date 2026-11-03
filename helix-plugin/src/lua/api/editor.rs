@@ -21,7 +21,13 @@ pub fn register_editor_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     // Mode switching functions
     let normal_mode = lua.create_function(|_lua, ()| {
         crate::lua::try_with_editor(|editor| {
-            editor.mode = Mode::Normal;
+            // Leave insert/select mode like Helix does (restores the cursor, trailing
+            // indentation); that needs a focused window.
+            if editor.tree.try_get(editor.tree.focus).is_some() {
+                editor.enter_normal_mode();
+            } else {
+                editor.mode = Mode::Normal;
+            }
             Ok(())
         })?;
         Ok(())
@@ -49,29 +55,58 @@ pub fn register_editor_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     // helix.editor.execute_command(cmd, args) - Execute a typed command
     let execute_command =
         lua.create_function(|lua, (cmd, args): (String, Option<Vec<String>>)| {
-            let args = args.unwrap_or_default();
-            let registry = lua
-                .app_data_ref::<crate::types::CommandRegistryWrapper>()
-                .map(|wrapper| std::sync::Arc::clone(&wrapper.0));
-
-            crate::lua::try_with_editor(|editor| {
-                let registry = registry.ok_or_else(|| {
-                    LuaError::RuntimeError("Builtin command registry not available".to_string())
-                })?;
-                registry
-                    .execute(editor, &cmd, &args)
-                    .map_err(|e| LuaError::RuntimeError(format!("Command '{}' failed: {}", cmd, e)))
-            })?;
-            Ok(())
+            run_typable(lua, &cmd, &args.unwrap_or_default())
         })?;
     editor_module.set("execute_command", execute_command)?;
 
-    // helix.editor.move_cursor(direction, count) - Move cursor
+    // helix.editor.move_cursor(direction, count) - Move the cursors like h/j/k/l
     let move_cursor =
         lua.create_function(|_lua, (direction, count): (String, Option<usize>)| {
-            let count = count.unwrap_or(1);
-            // TODO: Implement actual cursor movement
-            Ok(format!("Would move cursor {} {} times", direction, count))
+            use helix_core::movement::{move_horizontally, move_vertically, Direction, Movement};
+            let (vertical, dir) = match direction.as_str() {
+                "left" => (false, Direction::Backward),
+                "right" => (false, Direction::Forward),
+                "up" => (true, Direction::Backward),
+                "down" => (true, Direction::Forward),
+                _ => {
+                    return Err(LuaError::RuntimeError(format!(
+                        "Invalid direction '{}' (expected left, right, up or down)",
+                        direction
+                    )))
+                }
+            };
+            crate::lua::with_editor(|editor| {
+                let behaviour = if editor.mode == Mode::Select {
+                    Movement::Extend
+                } else {
+                    Movement::Move
+                };
+                let (view, doc) = crate::lua::focused_mut(editor)?;
+                let text = doc.text().slice(..);
+                // Movements stop at the end of the text anyway.
+                let count = count.unwrap_or(1).min(text.len_chars() + 1);
+                let text_fmt = doc.text_format(view.inner_area(doc).width, None);
+                let mut annotations = view.text_annotations(doc, None);
+                let selection = doc.selection(view.id).clone().transform(|range| {
+                    let move_fn = if vertical {
+                        move_vertically
+                    } else {
+                        move_horizontally
+                    };
+                    move_fn(
+                        text,
+                        range,
+                        dir,
+                        count,
+                        behaviour,
+                        &text_fmt,
+                        &mut annotations,
+                    )
+                });
+                drop(annotations);
+                doc.set_selection(view.id, selection);
+                Ok(())
+            })
         })?;
     editor_module.set("move_cursor", move_cursor)?;
 
@@ -93,9 +128,13 @@ pub fn register_editor_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
         crate::lua::with_editor(|editor| {
             let (view, doc) = crate::lua::focused_mut(editor)?;
 
-            let text = doc.text();
+            let text = doc.text().slice(..);
             let row = row.min(text.len_lines().saturating_sub(1));
-            let offset = text.line_to_char(row) + col.min(text.line(row).len_chars());
+            // A column past the end of the line stays on the line (at its line ending)
+            // instead of landing on the next one.
+            let start = text.line_to_char(row);
+            let end = helix_core::line_ending::line_end_char_index(&text, row);
+            let offset = start + col.min(end - start);
 
             let selection = helix_core::Selection::point(offset);
             doc.set_selection(view.id, selection);
@@ -179,44 +218,53 @@ pub fn register_editor_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
         })
     })?;
     editor_module.set("set_selections", set_selections)?;
-    let set_status = lua.create_function(|_lua, (message, _level): (String, Option<String>)| {
+    // helix.editor.set_status(message, level) - level: "info" (default), "warning", "error"
+    let set_status = lua.create_function(|_lua, (message, level): (String, Option<String>)| {
         crate::lua::with_editor(|editor| {
-            editor.set_status(message);
+            super::ui::show_message(editor, message, level.as_deref());
             Ok(())
         })
     })?;
     editor_module.set("set_status", set_status)?;
 
-    // helix.editor.focus() - Get focused view/buffer
+    // helix.editor.focus() - The focused window
     let focus = lua.create_function(|_lua, ()| {
-        // TODO: Implement actual focus retrieval
-        Ok("current_view_id")
+        let view_id = crate::lua::with_editor(|editor| Ok(editor.tree.focus))?;
+        Ok(super::window::LuaWindow { view_id })
     })?;
     editor_module.set("focus", focus)?;
 
-    // helix.editor.save() - Save current buffer
-    let save = lua.create_function(|_lua, force: Option<bool>| {
-        let force = force.unwrap_or(false);
-        crate::lua::with_editor(|_editor| Ok(()))?;
-        // This usually triggers an async save, but for now we'll use the sync command approach
-        // if possible, or just log.
-        // Actually, helix has typed commands for this.
-        Ok(format!("Would save buffer (force: {})", force))
+    // helix.editor.save(force) - Save the current buffer (`:write` / `:write!`)
+    let save = lua.create_function(|lua, force: Option<bool>| {
+        let cmd = if force.unwrap_or(false) {
+            "write!"
+        } else {
+            "write"
+        };
+        run_typable(lua, cmd, &[])
     })?;
     editor_module.set("save", save)?;
 
-    // helix.editor.save_all() - Save all buffers
-    let save_all = lua.create_function(|_lua, ()| {
-        // TODO: Implement actual save all
-        Ok("Would save all buffers")
+    // helix.editor.save_all(force) - Save all buffers (`:write-all` / `:write-all!`)
+    let save_all = lua.create_function(|lua, force: Option<bool>| {
+        let cmd = if force.unwrap_or(false) {
+            "write-all!"
+        } else {
+            "write-all"
+        };
+        run_typable(lua, cmd, &[])
     })?;
     editor_module.set("save_all", save_all)?;
 
-    // helix.editor.quit() - Quit editor
-    let quit = lua.create_function(|_lua, force: Option<bool>| {
-        let force = force.unwrap_or(false);
-        // TODO: Implement actual quit (this needs careful handling!)
-        Ok(format!("Would quit (force: {})", force))
+    // helix.editor.quit(force) - Close the focused window like `:quit` / `:quit!` (Helix
+    // exits when it was the last one; without `force` unsaved changes prevent that)
+    let quit = lua.create_function(|lua, force: Option<bool>| {
+        let cmd = if force.unwrap_or(false) {
+            "quit!"
+        } else {
+            "quit"
+        };
+        run_typable(lua, cmd, &[])
     })?;
     editor_module.set("quit", quit)?;
 
@@ -232,6 +280,9 @@ pub fn register_editor_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
         };
 
         let doc_id = crate::lua::with_editor(|editor| {
+            // `Editor::open` assumes a focused window (there is none once `quit` closed
+            // the last one).
+            crate::lua::focused_ref(editor)?;
             editor
                 .open(&path, action)
                 .map_err(|e| LuaError::RuntimeError(format!("Failed to open file: {}", e)))
@@ -296,6 +347,8 @@ pub fn register_editor_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
             LuaError::RuntimeError("Register name must be a single character".to_string())
         })?;
         let values: Vec<String> = crate::lua::with_editor(|editor| {
+            // Some registers ('#', '.', '%') read the focused window.
+            crate::lua::focused_ref(editor)?;
             Ok(editor
                 .registers
                 .read(name, editor)
@@ -321,6 +374,24 @@ pub fn register_editor_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
 
     helix_table.set("editor", editor_module)?;
 
+    Ok(())
+}
+
+/// Run the typable command `cmd` (e.g. `"write"`) with `args`, one argument per element.
+/// Does nothing outside of an editor context.
+fn run_typable(lua: &Lua, cmd: &str, args: &[String]) -> LuaResult<()> {
+    let registry = lua
+        .app_data_ref::<crate::types::CommandRegistryWrapper>()
+        .map(|wrapper| std::sync::Arc::clone(&wrapper.0));
+
+    crate::lua::try_with_editor(|editor| {
+        let registry = registry.ok_or_else(|| {
+            LuaError::RuntimeError("Builtin command registry not available".to_string())
+        })?;
+        registry
+            .execute(editor, cmd, args)
+            .map_err(|e| LuaError::RuntimeError(format!("Command '{}' failed: {}", cmd, e)))
+    })?;
     Ok(())
 }
 

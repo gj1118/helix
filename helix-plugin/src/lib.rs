@@ -9,13 +9,11 @@
 //! ```lua
 //! -- init.lua
 //! helix.on("buffer_open", function(event)
-//!     print("Buffer opened!")
+//!     helix.log.info("Buffer opened: " .. tostring(event.path))
 //! end)
 //!
-//! helix.on("buffer_save", function(event)
-//!     print("Saving buffer...")
-//!     -- Auto-format on save
-//!     helix.lsp.format()
+//! helix.on("buffer_post_save", function(event)
+//!     helix.ui.notify("Saved " .. tostring(event.path))
 //! end)
 //! ```
 
@@ -89,7 +87,8 @@ impl PluginManager {
             }
 
             info!("Loading plugin: {}", plugin.metadata.name);
-            if let Err(e) = engine.load_plugin(plugin) {
+            // The editor API works while a plugin loads too (e.g. `helix.ui.notify`).
+            if let Err(e) = lua::with_editor_context(editor, || engine.load_plugin(plugin)) {
                 log::error!("Failed to load plugin: {}", e);
             }
         }
