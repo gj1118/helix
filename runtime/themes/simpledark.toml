@@ -15,21 +15,21 @@
 "string" = "gray-6"
 "string.regexp" = "gray-7"
 "string.special" = "gray-8"
-"comment" = { fg = "gray-1", modifiers = ["italic"] }
-"comment.block.documentation" = { fg = "gray-3", modifiers = ["italic"] }
+"comment" = { fg = "gray-5", modifiers = ["italic"] }
+"comment.block.documentation" = { fg = "gray-6", modifiers = ["italic"] }
 "variable" = "fg"
 "variable.builtin" = { fg = "light-0", modifiers = ["italic"] }
 "variable.parameter" = "light-0"
 "variable.other.member" = "gray-9"
 "label" = "gray-7"
-"punctuation" = "gray-4"
-"punctuation.bracket" = "gray-5"
+"punctuation" = "gray-6"
+"punctuation.bracket" = "gray-8"
 "punctuation.special" = "gray-7"
 "keyword" = { fg = "white", modifiers = ["bold"] }
 "keyword.control" = { fg = "white", modifiers = ["bold"] }
 "keyword.directive" = "light-2"
 "keyword.storage.modifier" = "light-2"
-"operator" = "gray-5"
+"operator" = "gray-7"
 "function" = "light-2"
 "function.builtin" = { fg = "light-2", modifiers = ["italic"] }
 "function.macro" = { fg = "light-0", modifiers = ["bold"] }
@@ -83,7 +83,7 @@
 
 "ui.gutter" = { bg = "bg" }
 "ui.gutter.selected" = { bg = "bg-1" }
-"ui.linenr" = "gray-1"
+"ui.linenr" = "gray-6"
 "ui.linenr.selected" = { fg = "light-1", modifiers = ["bold"] }
 "ui.debug.breakpoint" = "white"
 "ui.debug.active" = "light-1"
@@ -122,7 +122,7 @@
 "ui.virtual.ruler" = { bg = "bg-1" }
 "ui.virtual.whitespace" = "bg-3"
 "ui.virtual.indent-guide" = "bg-3"
-"ui.virtual.wrap" = "gray-1"
+"ui.virtual.wrap" = "gray-4"
 "ui.virtual.inlay-hint" = { fg = "gray-2", modifiers = ["italic"] }
 "ui.virtual.inline-value" = { fg = "gray-4", modifiers = ["italic"] }
 "ui.virtual.code-lens" = { fg = "gray-3", modifiers = ["italic"] }
