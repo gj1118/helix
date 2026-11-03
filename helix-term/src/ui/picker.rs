@@ -31,7 +31,7 @@ use tui::widgets::Widget;
 
 use std::{
     borrow::Cow,
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     io::Read,
     path::Path,
     sync::{
@@ -63,6 +63,12 @@ pub const MIN_AREA_WIDTH_FOR_PREVIEW: u16 = 72;
 pub const MIN_AREA_HEIGHT_FOR_PREVIEW: u16 = 24;
 /// Biggest file size to preview in bytes
 pub const MAX_FILE_SIZE_FOR_PREVIEW: u64 = 10 * 1024 * 1024;
+/// Files bigger than this (in bytes) are read on a blocking thread, so that moving through big
+/// files doesn't stall the picker. Smaller ones are read right away.
+const MAX_FILE_SIZE_FOR_SYNC_PREVIEW: u64 = 256 * 1024;
+/// How many previews a picker keeps. Going back and forth between results stays instant, but
+/// walking through thousands of files doesn't keep all of them in memory.
+const PREVIEW_CACHE_CAPACITY: usize = 64;
 
 #[derive(PartialEq, Eq, Hash)]
 pub enum PathOrId<'a> {
@@ -94,6 +100,8 @@ pub enum CachedPreview {
     LargeFile,
     NotFound,
     Image(super::image_preview::ImagePreview),
+    /// The file is being read in the background, see [`MAX_FILE_SIZE_FOR_SYNC_PREVIEW`].
+    Loading,
 }
 
 // We don't store this enum in the cache so as to avoid lifetime constraints
@@ -137,6 +145,7 @@ impl Preview<'_, '_> {
                 CachedPreview::LargeFile => "<File too large to preview>",
                 CachedPreview::NotFound => "<File not found>",
                 CachedPreview::Image(_) => "<Image>",
+                CachedPreview::Loading => "<Loading…>",
             },
         }
     }
@@ -326,11 +335,15 @@ pub struct Picker<T: 'static + Send + Sync, D: 'static> {
     widths: Vec<Constraint>,
 
     callback_fn: PickerCallback<T>,
+    /// The action of `Enter` and `Alt-Enter`, see [`Picker::with_default_action`].
+    default_action: Action,
     custom_key_handlers: PickerKeyHandlers<T, D>,
 
     pub truncate_start: bool,
     /// Caches paths to documents
     preview_cache: HashMap<Arc<Path>, CachedPreview>,
+    /// The paths of `preview_cache`, oldest first, to evict beyond [`PREVIEW_CACHE_CAPACITY`].
+    preview_cache_order: VecDeque<Arc<Path>>,
     read_buffer: Vec<u8>,
     /// Given an item in the picker, return the file path and line number to display.
     file_fn: Option<FileCallback<T>>,
@@ -474,6 +487,8 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             completion_height: 0,
             widths,
             preview_cache: HashMap::new(),
+            preview_cache_order: VecDeque::new(),
+            default_action: Action::Replace,
             custom_key_handlers: HashMap::new(),
             read_buffer: Vec::with_capacity(1024),
             file_fn: None,
@@ -706,6 +721,13 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         self
     }
 
+    /// The action an item is opened with on `Enter` (and `Alt-Enter`), `Action::Replace` by
+    /// default; e.g. `:vsplit <dir>` opens the picked file in a vertical split.
+    pub fn with_default_action(mut self, action: Action) -> Self {
+        self.default_action = action;
+        self
+    }
+
     pub fn injector(&self) -> Injector<T, D> {
         Injector {
             dst: self.matcher.injector(),
@@ -735,6 +757,21 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
 
     pub fn with_history_register(mut self, history_register: Option<char>) -> Self {
         self.prompt.with_history_register(history_register);
+        self
+    }
+
+    /// Labels the query input with `prompt` (e.g. `"Choose:"`), drawn before the typed text;
+    /// pickers have none by default. Call it before [`Self::with_query`], whose text it drops.
+    pub fn with_prompt(mut self, prompt: impl Into<Cow<'static, str>>) -> Self {
+        let history_register = self.prompt.history_register();
+        let mut prompt = Prompt::new(
+            prompt.into(),
+            None,
+            ui::completers::none,
+            |_editor: &mut Context, _pattern: &str, _event: PromptEvent| {},
+        );
+        prompt.with_history_register(history_register);
+        self.prompt = prompt;
         self
     }
 
@@ -965,7 +1002,11 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                     // retrieve the `Arc<Path>` key. The `path` in scope here is a `&Path` and
                     // we can cheaply clone the key for the preview highlight handler.
                     let (path, preview) = self.preview_cache.get_key_value(path).unwrap();
-                    if matches!(preview, CachedPreview::Document(doc) if doc.language_config().is_none())
+                    // A document whose highlighting was skipped (the handler only highlights
+                    // the last of several quickly previewed files) asks again. One without a
+                    // language never gets a syntax: asking for it on every frame would wake
+                    // the editor up again and again.
+                    if matches!(preview, CachedPreview::Document(doc) if doc.language_config().is_some() && doc.syntax().is_none())
                     {
                         helix_event::send_blocking(&self.preview_highlight_handler, path.clone());
                     }
@@ -973,6 +1014,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                 }
 
                 let path: Arc<Path> = path.into();
+                let read_editor_config = editor.config().editor_config;
                 let preview = std::fs::metadata(&path)
                     .and_then(|metadata| {
                         if metadata.is_dir() {
@@ -1013,6 +1055,9 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                             if is_binary {
                                 return Ok(CachedPreview::Binary);
                             }
+                            if metadata.len() > MAX_FILE_SIZE_FOR_SYNC_PREVIEW {
+                                return Ok(CachedPreview::Loading);
+                            }
                             Document::open(
                                 &path,
                                 None,
@@ -1049,14 +1094,80 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                         }
                     })
                     .unwrap_or(CachedPreview::NotFound);
-                self.preview_cache.insert(path.clone(), preview);
+                if matches!(preview, CachedPreview::Loading) {
+                    Self::load_preview_in_background(path.clone(), read_editor_config);
+                }
+                self.cache_preview(path.clone(), preview);
                 Some((Preview::Cached(&self.preview_cache[&path]), range))
             }
             PathOrId::Id(id) => {
-                let doc = editor.documents.get(&id).unwrap();
+                // The buffer may have been closed since the item was made.
+                let doc = editor.documents.get(&id)?;
                 Some((Preview::EditorDocument(doc), range))
             }
         }
+    }
+
+    /// Adds a preview to the cache, dropping the oldest ones beyond [`PREVIEW_CACHE_CAPACITY`].
+    fn cache_preview(&mut self, path: Arc<Path>, preview: CachedPreview) {
+        while self.preview_cache.len() >= PREVIEW_CACHE_CAPACITY {
+            let Some(oldest) = self.preview_cache_order.pop_front() else {
+                break;
+            };
+            self.preview_cache.remove(&oldest);
+        }
+        if self.preview_cache.insert(path.clone(), preview).is_none() {
+            self.preview_cache_order.push_back(path);
+        }
+    }
+
+    /// Reads a file too big to read on the UI thread (see [`MAX_FILE_SIZE_FOR_SYNC_PREVIEW`])
+    /// on a blocking thread, then puts its preview in place of the [`CachedPreview::Loading`]
+    /// one, if the picker is still open and the preview is still wanted.
+    fn load_preview_in_background(path: Arc<Path>, read_editor_config: bool) {
+        tokio::task::spawn_blocking(move || {
+            let encoding = if read_editor_config {
+                helix_core::editor_config::EditorConfig::find(&path).encoding
+            } else {
+                None
+            };
+            let loaded = std::fs::File::open(&path)
+                .and_then(|mut file| helix_view::document::from_reader(&mut file, encoding));
+            crate::job::dispatch_blocking(move |editor, compositor| {
+                let Some(picker) = find_picker::<T, D>(compositor) else {
+                    return;
+                };
+                let Some(entry @ CachedPreview::Loading) = picker.preview_cache.get_mut(&path)
+                else {
+                    return;
+                };
+                *entry = match loaded {
+                    Ok((rope, encoding, has_bom)) => {
+                        let mut doc = Document::from(
+                            rope,
+                            Some((encoding, has_bom)),
+                            editor.config.clone(),
+                            editor.syn_loader.clone(),
+                        );
+                        doc.set_path(Some(&path));
+                        doc.detect_indent_and_line_ending();
+                        let loader = editor.syn_loader.load();
+                        if let Some(language_config) = doc.detect_language_config(&loader) {
+                            doc.language = Some(language_config);
+                            helix_event::send_blocking(
+                                &picker.preview_highlight_handler,
+                                path.clone(),
+                            );
+                        }
+                        CachedPreview::Document(Box::new(doc))
+                    }
+                    Err(err) => {
+                        log::info!("previewing {} failed: {err}", path.display());
+                        CachedPreview::NotFound
+                    }
+                };
+            });
+        });
     }
 
     fn render_picker(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
@@ -1731,6 +1842,9 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
         let close_fn = |picker: &mut Self| {
             // A closed picker no longer follows the editor (this also stops its file watcher).
             picker.live = None;
+            // Nor keeps its previews (whole documents) while it waits to be reopened.
+            picker.preview_cache.clear();
+            picker.preview_cache_order.clear();
             // if the picker is very large don't store it as last_picker to avoid
             // excessive memory consumption
             let callback: compositor::Callback = if picker.matcher.snapshot().item_count() > 100_000
@@ -1818,7 +1932,7 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
             key!(Esc) | ctrl!('c') => return close_fn(self),
             alt!(Enter) => {
                 if let Some(option) = self.selection() {
-                    (self.callback_fn)(ctx, option, Action::Replace);
+                    (self.callback_fn)(ctx, option, self.default_action);
                 }
             }
             key!(Enter) => {
@@ -1842,7 +1956,7 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
                     self.handle_prompt_change(true);
                 } else {
                     if let Some(option) = self.selection() {
-                        (self.callback_fn)(ctx, option, Action::Replace);
+                        (self.callback_fn)(ctx, option, self.default_action);
                     }
                     if let Some(history_register) = self.prompt.history_register() {
                         if let Err(err) = ctx
@@ -1948,6 +2062,22 @@ impl<T: 'static + Send + Sync, D> Drop for Picker<T, D> {
         // ensure we cancel any ongoing background threads streaming into the picker
         self.version.fetch_add(1, atomic::Ordering::Relaxed);
     }
+}
+
+/// The open picker with items `T` and data `D`, shown in an overlay (most pickers) or on its
+/// own (some debugger pickers).
+pub(super) fn find_picker<T: 'static + Send + Sync, D: 'static + Send + Sync>(
+    compositor: &mut Compositor,
+) -> Option<&mut Picker<T, D>> {
+    if compositor
+        .find::<ui::overlay::Overlay<Picker<T, D>>>()
+        .is_some()
+    {
+        return compositor
+            .find::<ui::overlay::Overlay<Picker<T, D>>>()
+            .map(|overlay| &mut overlay.content);
+    }
+    compositor.find::<Picker<T, D>>()
 }
 
 type PickerCallback<T> = Box<dyn Fn(&mut Context, &T, Action)>;
@@ -2318,5 +2448,30 @@ mod tests {
         let picker: Picker<String, ()> =
             Picker::new(columns, 0, vec![], (), |_cx, _item, _action| {});
         assert_eq!(picker.preview_scroll_cursor, 0);
+    }
+
+    #[test]
+    fn with_prompt_labels_the_query_and_keeps_the_history() {
+        let columns = [Column::new("test", |item: &String, _: &()| {
+            item.as_str().into()
+        })];
+        let picker: Picker<String, ()> =
+            Picker::new(columns, 0, vec![], (), |_cx, _item, _action| {})
+                .with_history_register(Some('x'))
+                .with_prompt("Choose:");
+        assert_eq!(picker.prompt.prompt(), "Choose:");
+        assert_eq!(picker.prompt.history_register(), Some('x'));
+    }
+
+    #[test]
+    fn the_default_action_replaces_unless_told_otherwise() {
+        let columns = [Column::new("test", |item: &String, _: &()| {
+            item.as_str().into()
+        })];
+        let picker: Picker<String, ()> =
+            Picker::new(columns, 0, vec![], (), |_cx, _item, _action| {});
+        assert!(matches!(picker.default_action, Action::Replace));
+        let picker = picker.with_default_action(Action::VerticalSplit);
+        assert!(matches!(picker.default_action, Action::VerticalSplit));
     }
 }

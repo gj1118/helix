@@ -7,9 +7,9 @@ use std::{
 use helix_event::AsyncHook;
 use tokio::time::Instant;
 
-use crate::{job, ui::overlay::Overlay};
+use crate::job;
 
-use super::{CachedPreview, DynQueryCallback, Picker};
+use super::{find_picker, CachedPreview, DynQueryCallback};
 
 pub(super) struct PreviewHighlightHandler<T: 'static + Send + Sync, D: 'static + Send + Sync> {
     trigger: Option<Arc<Path>>,
@@ -54,10 +54,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> AsyncHook
         };
 
         job::dispatch_blocking(move |editor, compositor| {
-            let Some(Overlay {
-                content: picker, ..
-            }) = compositor.find::<Overlay<Picker<T, D>>>()
-            else {
+            let Some(picker) = find_picker::<T, D>(compositor) else {
                 return;
             };
 
@@ -82,15 +79,22 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> AsyncHook
                     Ok(syntax) => syntax,
                     Err(err) => {
                         log::info!("highlighting picker preview failed: {err}");
+                        // Show the preview as plain text, rather than asking for the
+                        // highlighting (and failing) again on every frame.
+                        job::dispatch_blocking(move |_editor, compositor| {
+                            if let Some(CachedPreview::Document(doc)) =
+                                find_picker::<T, D>(compositor)
+                                    .and_then(|picker| picker.preview_cache.get_mut(&path))
+                            {
+                                doc.language = None;
+                            }
+                        });
                         return;
                     }
                 };
 
                 job::dispatch_blocking(move |editor, compositor| {
-                    let Some(Overlay {
-                        content: picker, ..
-                    }) = compositor.find::<Overlay<Picker<T, D>>>()
-                    else {
+                    let Some(picker) = find_picker::<T, D>(compositor) else {
                         log::info!("picker closed before syntax highlighting finished");
                         return;
                     };
@@ -174,10 +178,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> AsyncHook for DynamicQu
         let callback = self.callback.clone();
 
         job::dispatch_blocking(move |editor, compositor| {
-            let Some(Overlay {
-                content: picker, ..
-            }) = compositor.find::<Overlay<Picker<T, D>>>()
-            else {
+            let Some(picker) = find_picker::<T, D>(compositor) else {
                 return;
             };
             // Increment the version number to cancel any ongoing requests.

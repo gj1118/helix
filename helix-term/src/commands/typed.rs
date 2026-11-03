@@ -204,7 +204,8 @@ fn open_impl(cx: &mut compositor::Context, args: Args, action: Action) -> anyhow
             let callback = async move {
                 let call: job::Callback = job::Callback::EditorCompositor(Box::new(
                     move |editor: &mut Editor, compositor: &mut Compositor| {
-                        let picker = ui::file_picker(editor, path.into_owned());
+                        let picker =
+                            ui::file_picker(editor, path.into_owned()).with_default_action(action);
                         compositor.push(Box::new(overlaid(
                             picker,
                             editor.config().fullscreen_overlay,

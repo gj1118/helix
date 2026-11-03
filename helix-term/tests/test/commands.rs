@@ -4,6 +4,7 @@ use super::*;
 
 mod insert;
 mod movement;
+mod picker;
 mod reverse_selection_contents;
 mod rotate_selection_contents;
 mod text_folding;

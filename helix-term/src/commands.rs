@@ -1102,6 +1102,9 @@ fn goto_previous_buffer(cx: &mut Context) {
 
 fn goto_buffer(editor: &mut Editor, direction: Direction, count: usize) {
     let current = view!(editor).doc;
+    // Going around the buffers whole times changes nothing: a huge count (`99999999gn`)
+    // would otherwise walk the cycle that many times.
+    let count = count % editor.documents.len();
 
     let id = match direction {
         Direction::Forward => {
@@ -4680,7 +4683,8 @@ pub fn command_palette(cx: &mut Context) {
                 .reverse_map();
 
             let mut commands: Vec<MappableCommand> = MappableCommand::STATIC_COMMAND_LIST.to_vec();
-            commands.extend(typed::TYPABLE_COMMAND_MAP.values().map(|cmd| {
+            // The list, not the map: the map has an entry per alias (and no order).
+            commands.extend(typed::TYPABLE_COMMAND_LIST.iter().map(|cmd| {
                 MappableCommand::Typable {
                     name: cmd.name.to_owned(),
                     args: String::new(),
@@ -4742,6 +4746,18 @@ pub fn command_palette(cx: &mut Context) {
                 let focus = view!(ctx.editor).id;
 
                 command.execute(&mut ctx);
+
+                // What the command asked of the compositor (a picker or a prompt to open,
+                // ...), done once the palette is closed.
+                for callback in std::mem::take(&mut ctx.callback) {
+                    compositor::defer(callback);
+                }
+                if ctx.on_next_key_callback.is_some() {
+                    ctx.editor.set_error(format!(
+                        "'{}' waits for another key and can't run from the command palette",
+                        command.name()
+                    ));
+                }
 
                 if ctx.editor.tree.contains(focus) {
                     let config = ctx.editor.config();
@@ -7756,7 +7772,12 @@ fn select_all_word_textobject_ranges(
         let object_range = textobject::textobject_word(text, Range::point(pos), objtype, 1, long)
             .with_direction(range.direction());
 
-        if !object_range.is_empty() && range_contains_range(range, object_range) {
+        // An object that ends at `pos` (a WORD found from the whitespace after it) was
+        // taken already: taking it again would not move on, forever.
+        if !object_range.is_empty()
+            && object_range.to() > pos
+            && range_contains_range(range, object_range)
+        {
             ranges.push(object_range);
             pos = object_range.to();
         } else {
@@ -7779,7 +7800,11 @@ fn select_all_paragraph_textobject_ranges(
         let object_range = textobject::textobject_paragraph(text, Range::point(pos), objtype, 1)
             .with_direction(range.direction());
 
-        if !object_range.is_empty() && range_contains_range(range, object_range) {
+        // As for words: only an object past `pos` moves on.
+        if !object_range.is_empty()
+            && object_range.to() > pos
+            && range_contains_range(range, object_range)
+        {
             ranges.push(object_range);
             pos = object_range.to();
         } else {
@@ -9459,5 +9484,51 @@ mod global_search_selection_tests {
         assert!(selection_for_global_search_match(text.slice(..), 5, 0, 1).is_none());
         assert!(selection_for_global_search_match(text.slice(..), 0, 0, 99).is_none());
         assert!(selection_for_global_search_match(text.slice(..), 0, 3, 1).is_none());
+    }
+}
+
+#[cfg(test)]
+mod select_all_textobject_tests {
+    use super::{select_all_paragraph_textobject_ranges, select_all_word_textobject_ranges};
+    use helix_core::{textobject::TextObject, Range, Rope};
+
+    fn fragments(text: &Rope, ranges: &[Range]) -> Vec<String> {
+        ranges
+            .iter()
+            .map(|range| range.fragment(text.slice(..)).into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn every_word_once() {
+        let text = Rope::from("foo bar.baz qux");
+        let all = Range::new(0, text.len_chars());
+        let words =
+            select_all_word_textobject_ranges(text.slice(..), all, TextObject::Inside, false);
+        assert_eq!(fragments(&text, &words), ["foo", "bar", ".", "baz", "qux"]);
+    }
+
+    /// A WORD found from the whitespace after it ends where the search is: it must not be
+    /// taken again (which never moved on).
+    #[test]
+    fn every_long_word_once() {
+        let text = Rope::from("foo bar.baz  qux\n");
+        let all = Range::new(0, text.len_chars());
+        let inside =
+            select_all_word_textobject_ranges(text.slice(..), all, TextObject::Inside, true);
+        assert_eq!(fragments(&text, &inside), ["foo", "bar.baz", "qux"]);
+        let around =
+            select_all_word_textobject_ranges(text.slice(..), all, TextObject::Around, true);
+        // the last one takes the whitespace on its left, there is none on its right
+        assert_eq!(fragments(&text, &around), ["foo ", "bar.baz  ", "  qux"]);
+    }
+
+    #[test]
+    fn every_paragraph_once() {
+        let text = Rope::from("a\nb\n\nc\n\n\nd\n");
+        let all = Range::new(0, text.len_chars());
+        let inside =
+            select_all_paragraph_textobject_ranges(text.slice(..), all, TextObject::Inside);
+        assert_eq!(fragments(&text, &inside), ["a\nb\n", "c\n", "d\n"]);
     }
 }
