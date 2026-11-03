@@ -30,6 +30,18 @@ keys are listed below.
 | Document / workspace symbols | `Space-s` / `Space-S` |
 | Format document | `:format`, or set `auto-format` to format on save |
 | Inlay hints | enable with `display-inlay-hints` (see below) |
+| Inline completion (ghost text) | see [`[editor.inline-completion]`](./editor.md#editorinline-completion-section) |
+
+## Waiting for servers
+
+Requests that can take a server a while do not block the editor: you can keep typing and
+moving while the server works.
+
+- **Rename** (`Space-r`): the rename request runs in the background. If the document is
+  edited before the server answers, the answer is not applied, because its positions would be
+  wrong; the status line says `The document changed while renaming, rename again`.
+- Inlay hints and document symbols computed for the text before an edit are dropped when they
+  arrive, instead of being shown at stale positions; the ones requested after the edit replace them.
 
 ## Code lenses
 

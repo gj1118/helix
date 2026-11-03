@@ -23,13 +23,24 @@ function or block of code.
 | `a`                    | Argument/parameter       |
 | `c`                    | Comment                  |
 | `T`                    | Test                     |
+| `e`                    | Entry (of a list, map, ...) |
 | `g`                    | Change                   |
-| `x`                    | (X)HTML element          |
+| `x`                    | (X)HTML element, with `mA` / `mI` only: `mix` / `max` select inside / around a pair of `x` characters, like any other character |
 
 > 💡 `f`, `t`, etc. need a tree-sitter grammar active for the current
 document and a special tree-sitter query file to work properly. [Only
 some grammars](./lang-support.md) currently have the query file implemented.
 Contributions are welcome!
+
+`mi` and `ma` are submodes in this fork: the keys above each run their own command
+(`select_textobject_inside_function`, ...), and any other key selects inside or around the
+pair of that character. `mA` / `mI` select all the textobjects of a kind around or inside the
+selections.
+
+`]` and `[` followed by a pair character select inside the **next** / **previous** pair of it,
+without the cursor being inside one: `](` selects the inside of the next `(...)`, `["` the
+inside of the previous `"..."`. A count picks the n-th pair. Keys that are bound under `]` and
+`[` (`]f`, `[d`, ...) keep their meaning.
 
 ## Navigating using tree-sitter textobjects
 

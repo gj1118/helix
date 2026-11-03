@@ -272,7 +272,41 @@ The list of supported features is:
 - `call-hierarchy`
 - `inline-completion`
 
-## Tree-sitter grammar configuration
+## Debugger configuration
+
+A language's debug adapter (see [Debugging](./debugging.md)) is set in its
+`[language.debugger]` table, with one `[[language.debugger.templates]]` entry per way of
+starting a session:
+
+```toml
+[language.debugger]
+name = "lldb-dap"
+transport = "stdio"
+command = "lldb-dap"
+
+[[language.debugger.templates]]
+name = "binary"
+request = "launch"
+completion = [ { name = "binary", completion = "filename" } ]
+args = { program = "{0}" }
+
+[[language.debugger.templates]]
+name = "attach"
+request = "attach"
+completion = [ "pid" ]
+args = { pid = "{0}" }
+```
+
+| Key | Description |
+| --- | --- |
+| `name` | Name of the adapter |
+| `transport` | `"stdio"` (Helix talks to the adapter over its standard input and output) or `"tcp"` (Helix starts the adapter with `port-arg` and connects to it) |
+| `command`, `args` | The adapter's command line |
+| `port-arg` | With `"tcp"`: the argument that passes the port, with `{}` for the port number (e.g. `"-p {}"`) |
+| `quirks` | `{ absolute_paths = true }` (with an underscore) for adapters that need absolute paths |
+| `templates` | The templates offered by `:debug-start` and `Space G l`: `name`, `request` (`"launch"` or `"attach"`), `completion` (one entry per parameter asked for when the template is chosen: a name such as `"pid"` or `"filename"`, or `{ name, completion, default }`), and `args`, the arguments of the request, where `{0}`, `{1}`, ... are the parameters |
+
+
 
 The source for a language's tree-sitter grammar is specified in a `[[grammar]]`
 section in `languages.toml`. For example:

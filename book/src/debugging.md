@@ -5,6 +5,30 @@ language, see [languages.md](./languages.md#debugger-configuration). Everything 
 `Space G` (see the [keymap](./keymap.md#space-mode)); the commands that take arguments are
 typable (`:debug-start`, `:debug-eval`, ...).
 
+## Starting and restarting
+
+`:debug-start` (and `Space G l`) returns at once: the adapter is started, and
+answers `initialize`, in the background, so the editor keeps responding while a slow adapter
+starts. Errors, such as an adapter that cannot be started or a launch request it refuses,
+appear in the status line afterwards (`Failed to start debug client: ...`,
+`Failed to launch the debug target: ...`).
+
+`Debugged application started` is shown when the adapter is ready and Helix sends it the
+breakpoints and the end of the configuration (`configurationDone`).
+
+When the adapter ends a session with a `terminated` event that asks for a restart (its
+`restart` field), Helix starts the session again with the same request (`launch` or `attach`)
+and the value the adapter gave. Otherwise the session ends and its breakpoints are shown as
+unverified.
+
+## Breakpoints
+
+`Space G b` toggles a breakpoint on the line of every cursor. The gutter shows `●` for a
+breakpoint the adapter placed (verified) and `◯` for one it did not (yet), for example before
+the session starts or when the code at that line was not loaded. A breakpoint the adapter could
+not place stays on the line it was set on, unverified; when the adapter moves one to another
+line, the gutter follows. The glyphs come from `[icons.dap]` (`verified`, `unverified`).
+
 ## Variables
 
 `Space G v` opens the variables of the selected stack frame in a picker. Scopes and variables

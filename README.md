@@ -32,11 +32,13 @@ directory-open = " "  # expanded folder icon (default: open-folder glyph, or 
    <img width="1916" height="980" alt="image" src="https://github.com/user-attachments/assets/abfeef4a-e633-489f-9236-3e9adbad05bb" />
 
 4. Show function name in the status bar
-   Add this following to your editor.statusline config 
+   Add the `function-name` element to your editor.statusline config, e.g. `right = ["function-name", "diagnostics", "position"]`
    <img width="428" height="220" alt="image" src="https://github.com/user-attachments/assets/dea63278-a649-4561-a29a-b1c0eddacf9f" />
 
 5. Explorer file tree panel — toggle with `<space>x`, pinned or floating, with file operations (see [Explorer](#explorer) below)
 6. LSP code lenses — `Run`, `Debug`, `12 references` labels at the end of lines, off by default (see [Code Lenses](#code-lenses) below)
+7. Lua plugins — event handlers, commands, buffer edits, annotations, prompts and pickers (see [Plugins](#plugins) below)
+8. Live-updating pickers — the file picker, global search, changed files, buffers, diagnostics and quicklist pickers follow changes while open; big previews load in the background
 
 
    
@@ -99,6 +101,7 @@ Default settings (`[editor.explorer]` in your `config.toml`):
 |`width` | Width of the pinned panel in columns | `30` |
 |`floating-width` | Width of the floating window in columns. Unset: as wide as the file picker without its preview (75% of the screen), so it follows the screen size | unset |
 |`floating-height` | Height of the floating window in lines. Unset: as high as the file picker (90% of the screen) | unset |
+|`floating-x`, `floating-y` | No longer used: the floating window is always centered. Still accepted, so older configs keep loading | unset |
 |`icons` | Show per-file-type icons (honors the global `[icons.mime]` settings, see below) | `true` |
 |`auto-reveal` | Select the current buffer's file when the panel opens | `false` |
 |`show-hidden` | Show dotfiles (hidden files) | `false` |
@@ -122,8 +125,8 @@ to an open panel.
 
 ### Overriding the icons
 
-The tree uses the same icon configuration as the file pickers (nothing
-explorer-specific to set up). The folder glyph comes from the `directory`
+The tree uses the global `[icons]` configuration, shared with the buffer picker and the
+bufferline (nothing explorer-specific to set up; see Icons in the book's Configuration page). The folder glyph comes from the `directory`
 override in `[icons.mime]`; file icons are keyed by **exact file name**
 (`README.md`, `Cargo.toml`) or **file extension** (`rs`, `toml`) — language
 names like `rust` are not matched, use the extension instead:
@@ -132,8 +135,8 @@ names like `rust` are not matched, use the extension instead:
 [icons.mime]
 enabled = true
 directory = "📁"  # collapsed folder icon in the tree (default: built-in nerd-font folder)
-directory-open = "📂"
-directory-empty = "🗀"  # folder with nothing in it (default: outline folder glyph)  # expanded folder icon (default: open-folder glyph, or `directory` if that is customised)
+directory-open = "📂"  # expanded folder icon (default: open-folder glyph, or `directory` if that is customised)
+directory-empty = "🗀"  # folder with nothing in it (default: outline folder glyph, or `directory` if that is customised)
 rs = "🦀"
 toml = "⚙"
 ```
@@ -172,7 +175,8 @@ tree's own (open, rename, delete, ...) take precedence over the keymap.
 |`gg`/`ge` | Jump to the top/bottom of the tree (`10gg`: the tenth row) |
 |`C-d`/`C-u`, `C-f`/`C-b`, PageDown/PageUp | Move by half a page / a page |
 |`gt`/`gc`/`gb` | Jump to the top/middle/bottom of the visible rows |
-|`G`, Home/End | Jump to the bottom (`G`), or the top/bottom (Home/End) |
+|`G`, `5G` | Jump to the last row; with a count, to that row (`5G`: the fifth row) |
+|Home/End | Jump to the first/last row |
 |`h`, left | Collapse the directory under the cursor, or ascend to its parent |
 |`-` | Move the cursor to the parent directory row |
 |`l`/Enter, right | Expand the directory under the cursor, or open the file |
@@ -185,11 +189,11 @@ tree's own (open, rename, delete, ...) take precedence over the keymap.
 |`/` | Focus the filter box at the top of the panel (see below) |
 |`a` | Create a file (or a directory when the name ends in `/`) in the selected directory, or beside the selected file; at the root when nothing is selected |
 |`A` | Create a directory in the same place |
-|`r` | Rename the entry under the cursor (the popup is titled `Rename file <name>` / `Rename folder <name>` and prefilled) |
+|`r` | Rename the entry under the cursor (the popup is titled `Rename file <name>` / `Rename folder <name>` and prefilled). Open buffers of the file follow it. Changing only the case of the name (`readme.md` to `README.md`) also works on case-insensitive file systems (macOS, Windows) |
 |`d` | Delete the entry under the cursor; a confirmation box opens first and defaults to Cancel |
 |`x` | Cut the entry under the cursor |
 |`c` | Copy the entry under the cursor |
-|`p` | Paste from the explorer clipboard into the directory under the cursor |
+|`p` | Paste from the explorer clipboard into the directory under the cursor. FIFOs, sockets and devices inside a copied folder are skipped |
 |`q` | Close the panel |
 |`Esc` | Clear an active filter first; otherwise hand keyboard focus back to the editor (panel keeps its tree; a floating panel closes instead) |
 
@@ -202,10 +206,12 @@ renamed, added, untracked). The marks use the glyphs of the `[icons.vcs]` set (l
 `diff.minus`, `diff.delta.moved` and `diff.delta.conflict` theme keys, the same as the
 `changed_file_picker`. A file that is only staged shows its staged change.
 
-The status is read when the panel opens, after file operations and `R`, and again when
-it is older than three seconds while the panel is drawn. In a trusted workspace
-it comes from `git status`; otherwise from the built-in listing (no staged state). Turn
-it off with `git-status = false`.
+The status is read when the panel opens, after file operations and `R`, and again while
+the panel is drawn (a hidden panel costs nothing) once it is three seconds old. In a large
+repository where `git status` is slow it is read less often: the wait is ten times as long as
+the last `git status` took, at most 30 seconds (also the wait after `git status` failed, for
+example outside a repository). In a trusted workspace it comes from `git status`; otherwise
+from the built-in listing (no staged state). Turn it off with `git-status = false`.
 
 ### The first row and the lines
 
@@ -230,7 +236,8 @@ tree shows only matching entries and the directories leading to them, searching
 the whole tree (capped at 100,000 entries, `.git` skipped). Up/Down move through the results while you keep typing (then Right expands and Left collapses the selected folder, until you type again); Enter opens
 the selected row (the best matching file if you haven't moved); Tab leaves the box and
 keeps the filter to browse the results with the tree keys; Esc (or clearing the box) restores the
-full tree and reveals the selected entry.
+full tree and reveals the selected entry. `C-h` and `C-l` stop typing (the filter stays applied)
+and move focus as usual.
 
 ### Moving focus between the tree and the buffers
 
@@ -277,8 +284,9 @@ The floating window opens centered on the screen and is sized like the file
 picker without its preview (`hide-preview`), as the tree is a list too: 75% of
 the editor's width and 90% of its height (without the status line and the
 command line). So it grows and shrinks with the terminal. Setting
-`floating-width` / `floating-height` gives it a fixed size instead, at most
-that size and still centered. Its size and position are not saved.
+`floating-width` / `floating-height` gives it that size instead (still centered),
+but never more than those 75% and 90%. The size and position it gets from the mouse are
+not saved, not even in the config; `floating-x` / `floating-y` are ignored.
 
 While it is open, it can be moved and resized with the mouse: drag the top
 border to move it, any other border (or a corner) to resize it. The next time
@@ -292,6 +300,26 @@ With mouse support enabled (`[editor] mouse = true`, the default), left click
 selects and acts on the row under the pointer — a folder expands/collapses, a
 file opens in the buffer — and the scroll wheel moves the selection. Clicks
 outside the panel keep working as usual.
+
+## Plugins
+
+Plugins are written in Lua 5.4 and live in `~/.config/helix/plugins/<name>/init.lua`. They
+are set up in the `[plugins]` section of the global `config.toml` (a workspace's
+`.helix/config.toml` cannot set it), and changes to that section need a restart:
+
+```toml
+[plugins]
+enabled = true
+
+[[plugins.plugins]]
+name = "greeter"
+config = { greeting = "hi" }   # read by the plugin with helix.get_config()
+```
+
+Plugin code runs in a sandbox (no `io`, no `os.execute`, `require` only from the plugin
+directories) with a 2 second limit per call and 512 MiB of memory. `:reload-all-plugins`
+reloads them. See the book's Plugins chapter (`book/src/plugins.md`) for the events and the
+API, and [helix-plugin/README.md](helix-plugin/README.md).
 
 ## Zenbones Themes
 
@@ -746,11 +774,14 @@ animation-speed = 0
 ```
 
 **Border Thickness Styles:**
-- **1**: Thin Unicode lines (─│┌┐└┘ square, ─│╭╮╰╯ rounded)
+The border is always one cell wide; the thickness picks its glyphs:
+- **1**: Thin lines. Square corners hug the outer edge of the cells like a `plain` border (▏▔▕▁ with 🭽🭾🭼🭿); rounded: ─│╭╮╰╯
 - **2**: Thick Unicode lines (━┃┏┓┗┛)
 - **3**: Double Unicode lines (═║╔╗╚╝)
-- **4**: Block characters (█ style)
-- **5**: Full block characters
+- **4**: Half blocks on the inner side of the top and bottom (▄ above, ▀ below), full blocks (█) at the sides and corners
+- **5**: Full blocks (█) all around
+
+Titles too long for the border are cut and end in `…`. Title colors: see `ui.popup.title` in the themes documentation.
 
 **Rounded Corners Support:**
 Gradient borders automatically respect your existing `rounded_corners` setting (and `border-style`: `"rounded"` rounds them, `"none"` hides them):
@@ -898,6 +929,7 @@ periodic.interval = 5000
 focus-gained = true
 periodic.enable = true
 periodic.interval = 5000
+```
 
 ## File Picker Configuration
 

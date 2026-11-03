@@ -326,6 +326,7 @@ These scopes are used for theming the editor interface:
 | `ui.gutter.selected`              | Gutter for the line the cursor is on                                                           |
 | `ui.linenr`                       | Line numbers                                                                                   |
 | `ui.linenr.selected`              | Line number for the line the cursor is on                                                      |
+| `ui.linenr.normal`, `ui.linenr.insert`, `ui.linenr.select` | Line numbers in each mode, used instead of `ui.linenr` and `ui.linenr.selected` with [`gutters.line-numbers.same-color`](./editor.md#editorguttersline-numbers-section). Without them, `ui.linenr` |
 | `ui.statusline`                   | Statusline                                                                                     |
 | `ui.statusline.inactive`          | Statusline (unfocused document)                                                                |
 | `ui.statusline.normal`            | Statusline mode during normal mode ([only if `editor.color-modes` is enabled][editor-section]) |
@@ -335,6 +336,8 @@ These scopes are used for theming the editor interface:
 | `ui.bufferline`                   | Style for the buffer line                                                                      |
 | `ui.bufferline.active`            | Style for the active buffer in buffer line                                                     |
 | `ui.bufferline.background`        | Style for bufferline background                                                                |
+| `ui.breadcrumb`                   | The [breadcrumb bar](./editor.md#editorbreadcrumb-section) (falls back to `ui.text`)           |
+| `ui.breadcrumb.separator`         | The ` > ` separators and the `…` of the breadcrumb bar                                         |
 | `ui.popup`                        | Documentation popups (e.g. Space + k), notification popups, and cmdline popup background       |
 | `ui.popup.explorer`               | File tree panel background (falls back to `ui.popup`)                                           |
 | `ui.popup.info`                   | Prompt for multiple key options                                                                |
@@ -366,6 +369,8 @@ These scopes are used for theming the editor interface:
 | `ui.virtual.wrap`                 | Soft-wrap indicator (see the [`editor.soft-wrap` config][editor-section])                      |
 | `ui.virtual.jump-label`           | Style for virtual jump labels                                                                  |
 | `ui.virtual.inline-blame`         | Inline blame indicator (see the [`editor.inline-blame` config][editor-section])                |
+| `ui.virtual.inline-completion`    | Inline completion suggestions (ghost text, see [`editor.inline-completion`](./editor.md#editorinline-completion-section)); falls back to `ui.virtual.inlay-hint` |
+| `ui.virtual.fold-decoration`      | The `...+N function lines` label shown for a [fold](./textobjects.md#folding-text-objects) in place of its hidden lines |
 | `ui.menu`                         | Code and command completion menus                                                              |
 | `ui.menu.selected`                | Selected autocomplete item                                                                     |
 | `ui.menu.scroll`                  | `fg` sets thumb color, `bg` sets track color of scrollbar                                      |
@@ -422,5 +427,5 @@ inherits = "your-base-theme"
 "hint" = { fg = "#888888" }
 ```
 
-[editor-section]: ./configuration.md#editor-section
+[editor-section]: ./editor.md#editor-section
 [#2380]: https://github.com/helix-editor/helix/issues/2380

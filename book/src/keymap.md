@@ -3,6 +3,7 @@
 - [Normal mode](#normal-mode)
   - [Movement](#movement)
   - [Changes](#changes)
+    - [Case submode](#case-submode)
     - [Shell](#shell)
   - [Selection manipulation](#selection-manipulation)
   - [Search](#search)
@@ -72,9 +73,8 @@ Normal mode is the default mode when you launch helix. You can return to it from
 | `r`         | Replace with a character                                             | `replace`                 |
 | `R`         | Replace with yanked text                                             | `replace_with_yanked`     |
 | `Alt-r`     | Replace every selection with typed text (repeat with `.`)            | `replace_selections_with_text` |
-| `~`         | Switch case of the selected text                                     | `switch_case`             |
-| `` ` ``     | Set the selected text to lower case                                  | `switch_to_lowercase`     |
-| `` Alt-` `` | Set the selected text to upper case                                  | `switch_to_uppercase`     |
+| `~`         | Switch the case of each character of the selected text (aLTERNATE cASE) | `switch_to_alternate_case` |
+| `` ` ``     | Enter the [case submode](#case-submode)                              | N/A                       |
 | `i`         | Insert before selection                                              | `insert_mode`             |
 | `a`         | Insert after selection (append)                                      | `append_mode`             |
 | `I`         | Insert at the start of the line                                      | `insert_at_line_start`    |
@@ -103,6 +103,25 @@ Normal mode is the default mode when you launch helix. You can return to it from
 | `q`         | Play back a recorded macro from the selected register (experimental) | `replay_macro`            |
 | `Alt-q`     | Add the current location to the [quicklist](./quicklist.md)          | `add_to_quicklist`        |
 | `Ctrl-z`    | Suspend Helix and return to the shell (resume with `fg`)             | `suspend`                 |
+
+#### Case submode
+
+Accessed by typing `` ` `` in [normal mode](#normal-mode). Converts the selected text.
+
+| Key | Converts to                 | Command                    |
+| --- | ---                         | ---                        |
+| `a` | aLTERNATE cASE (switch case) | `switch_to_alternate_case` |
+| `l` | lower case                  | `switch_to_lowercase`      |
+| `u` | UPPER CASE                  | `switch_to_uppercase`      |
+| `p` | PascalCase                  | `switch_to_pascal_case`    |
+| `c` | camelCase                   | `switch_to_camel_case`     |
+| `t` | Title Case                  | `switch_to_title_case`     |
+| `S` | Sentence case               | `switch_to_sentence_case`  |
+| `s` | snake_case                  | `switch_to_snake_case`     |
+| `k` | kebab-case                  | `switch_to_kebab_case`     |
+
+Upstream Helix binds `` ` `` to lower case and `` Alt-` `` to upper case; here they are
+`` `l `` and `` `u ``, and `` Alt-` `` is unbound.
 
 #### Shell
 
@@ -208,6 +227,11 @@ useful when you're simply looking over text and not actively editing it.
 | `Ctrl-b`, `PageUp`   | Move page up                                              | `page_up`               |
 | `Ctrl-u`             | Move cursor and page half page up                         | `page_cursor_half_up`   |
 | `Ctrl-d`             | Move cursor and page half page down                       | `page_cursor_half_down` |
+| `f`                  | Fold the text object under the cursor                     | `fold`                  |
+| `F`                  | Unfold the text object under the cursor                   | `unfold`                |
+| `Alt-f`              | Fold or unfold the text object at the primary cursor      | `toggle_fold`           |
+
+See [Folding text objects](./textobjects.md#folding-text-objects).
 
 #### Goto mode
 
@@ -255,10 +279,15 @@ Please refer to the relevant sections for detailed explanations about [surround]
 | `s` `<char>`     | Surround current selection with `<char>`        | `surround_add`             |
 | `r` `<from><to>` | Replace surround character `<from>` with `<to>` | `surround_replace`         |
 | `d` `<char>`     | Delete surround character `<char>`              | `surround_delete`          |
-| `a` `<object>`   | Select around textobject                        | `select_textobject_around` |
-| `i` `<object>`   | Select inside textobject                        | `select_textobject_inner`  |
+| `a` `<object>`   | Select around textobject                        | `select_textobject_around_*` (a submode) |
+| `i` `<object>`   | Select inside textobject                        | `select_textobject_inside_*` (a submode) |
 | `A` `<object>`   | Select all textobjects around selections        | `select_all_textobjects_around` |
 | `I` `<object>`   | Select all textobjects inside selections        | `select_all_textobjects_inner`  |
+
+`mi` and `ma` are submodes: each textobject key runs its own command
+(`select_textobject_inside_function`, `select_textobject_around_word`, ...), so they can be
+remapped one by one. Any key that is not a textobject (`(`, `"`, ...) selects inside or around
+that pair, see [textobjects](./textobjects.md).
 
 TODO: Mappings for selecting syntax nodes (a superset of `[`).
 
@@ -288,6 +317,7 @@ This layer is similar to Vim keybindings as Kakoune does not support windows.
 | `L`, `Shift-Right`     | Swap window to the right                             | `swap_view_right` |
 | `ns`, `nCtrl-s`        | New horizontal split with a scratch buffer           | `hsplit_new`      |
 | `nv`, `nCtrl-v`        | New vertical split with a scratch buffer             | `vsplit_new`      |
+| `x`                    | Move focus to the [explorer](./editor.md#editorexplorer-section), opening it if hidden | `explorer_focus` |
 
 #### Space mode
 
@@ -343,7 +373,7 @@ Lines with uncommitted changes report "Not committed yet".
 
 ##### Popup
 
-Displays documentation for item under cursor. Remapping currently not supported.
+Displays documentation for item under cursor. Remap its keys in `[keys.popup]` (see [Remapping](./remapping.md#keys-of-pickers-menus-popups-and-prompts)).
 
 | Key      | Description |
 | ----     | ----------- |
@@ -352,7 +382,7 @@ Displays documentation for item under cursor. Remapping currently not supported.
 
 ##### Completion Menu
 
-Displays documentation for the selected completion item. Remapping currently not supported.
+Displays documentation for the selected completion item. Remap its keys in `[keys.menu]` (see [Remapping](./remapping.md#keys-of-pickers-menus-popups-and-prompts)).
 
 | Key                         | Description                      |
 | ----                        | -----------                      |
@@ -404,6 +434,8 @@ These mappings are in the style of [vim-unimpaired](https://github.com/tpope/vim
 | `]x`     | Go to previous (X)HTML element               | `goto_prev_xml_element` |
 | `]Space` | Add newline below                            | `add_newline_below`     |
 | `[Space` | Add newline above                            | `add_newline_above`     |
+| `]` `<char>` | Select inside the next `<char>` pair (`](`, `]"`, ...), with a count the n-th one | `select_textobject_inside_next_pair` |
+| `[` `<char>` | Select inside the previous `<char>` pair        | `select_textobject_inside_prev_pair` |
 | `]q`     | Go to the next quicklist entry               | `quicklist_next`        |
 | `[q`     | Go to the previous quicklist entry           | `quicklist_prev`        |
 | `]l`     | Go to the next quicklist entry in this file  | `quicklist_next_in_file` |
@@ -430,6 +462,16 @@ keymap (see [Remapping](./remapping.md)).
 | `Alt w h/j/k/l` | normal | `shrink_buffer_width`, … | Resize the window (see [Window resizing](./editor.md#window-resizing-and-focus-mode)) |
 | `Alt w f` | normal | `toggle_focus_window` | Toggle focus mode |
 | `Alt W` | normal | | Enter sticky resize mode |
+| `Alt-r` | normal | `replace_selections_with_text` | Replace every selection with typed text |
+| `` ` `` … | normal | `switch_to_*_case` | The [case submode](#case-submode) |
+| `Alt-q` | normal | `add_to_quicklist` | Add the location to the [quicklist](./quicklist.md) |
+| `]q` `[q` `]l` `[l`, `Space q` | normal | `quicklist_*` | Walk and pick the quicklist |
+| `z f`, `z F`, `z Alt-f` | normal | `fold`, `unfold`, `toggle_fold` | [Folding](./textobjects.md#folding-text-objects) |
+| `] <char>`, `[ <char>` | normal | `select_textobject_inside_next_pair`, `..._prev_pair` | Select inside the next / previous pair |
+| `Space A`, `Space o` | normal | `code_lens`, `code_lens_picker` | [Code lenses](./lsp.md#code-lenses) |
+| `Space i` | normal | `snippet_picker` | [Snippets](./snippets.md) |
+| `Space G b` | normal | `dap_toggle_breakpoints` | Toggle breakpoints on the lines of all cursors |
+| `Space G s s` | normal | `dap_switch_session` | Pick a [debug session](./debugging.md#several-sessions) |
 
 Inside the explorer panel, `x` cuts the entry under the cursor and `Esc` gives the keyboard back to
 the editor. See [the explorer keys](./editor.md#editorexplorer-section) for the full list.
@@ -510,7 +552,7 @@ you to selectively add search terms to your selections.
 
 ## Picker
 
-Keys to use within picker. Remapping currently not supported.
+Keys to use within picker. Remap them in `[keys.picker]` (see [Remapping](./remapping.md#keys-of-pickers-menus-popups-and-prompts)).
 See the documentation page on [pickers](./pickers.md) for more info.
 [Prompt](#prompt) keybinds also work in pickers, except where they conflict with picker keybinds.
 
@@ -593,7 +635,7 @@ There are additional keys accessible when using the File Explorer (`Space-e` and
 
 ## Prompt
 
-Keys to use within prompt, Remapping currently not supported.
+Keys to use within prompt. Remap them in `[keys.prompt]` (see [Remapping](./remapping.md#keys-of-pickers-menus-popups-and-prompts)).
 
 | Key                                         | Description                                                             |
 | -----                                       | -------------                                                           |

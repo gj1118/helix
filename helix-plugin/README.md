@@ -49,8 +49,26 @@ helix.register_command({
 Run `:hello` (or bind it to a key like any typable command). `:reload-all-plugins`
 reloads every plugin without restarting.
 
-The `[plugins]` section of `config.toml` is not read yet: all discovered plugins are
-loaded, and `helix.get_config()` returns `nil`.
+## Configuration
+
+The `[plugins]` section of the **global** `config.toml` (a workspace's `.helix/config.toml`
+cannot set it: it is ignored there, with a warning in the log):
+
+```toml
+[plugins]
+enabled = true                                 # false: no plugin is loaded
+plugin_dirs = ["/home/me/src/helix-plugins"]   # replaces the default directories
+
+[[plugins.plugins]]
+name = "greeter"
+enabled = true                                 # false: skip this plugin
+config = { greeting = "hi", nested = { level = 2 } }   # helix.get_config() in the plugin
+```
+
+Plugins without an entry are loaded. The section is read at startup only: changes need a
+restart (`:reload-all-plugins` reloads the plugins' code, not this section).
+
+The user documentation is the book's [Plugins](../book/src/plugins.md) chapter.
 
 ## Running plugin code
 
@@ -98,15 +116,20 @@ the editor; the `helix.ui` messages, `helix.editor.mode`/`*_mode` and the
 
 | Event | Fields | Emitted |
 |-------|--------|---------|
-| `init` | | after all plugins are loaded |
+| `init` | | after all plugins are loaded (also after `:reload-all-plugins`) |
+| `ready` | | once at startup, after `buffer_open` of the files given on the command line |
 | `buffer_open` | `document_id`, `path` | when a file is opened |
+| `buffer_changed` | `document_id`, `path` | when a buffer's text changes; coalesced to one per buffer per frame |
+| `buffer_pre_save` | `document_id`, `path` | before a buffer is written: the handler's edits are saved |
 | `buffer_post_save` | `document_id`, `path` | after a buffer was written |
-| `selection_change` | `document_id`, `path` | when the selection or cursor moves |
+| `buffer_close` | `document_id`, `path` | when a buffer is closed |
+| `selection_change` | `document_id`, `path` | when the selection or cursor moves; one per buffer per frame |
+| `lsp_initialized` | | when a language server has finished initializing |
+| `lsp_attach` | `document_id`, `language_server_id` | when a language server is attached to a buffer |
 | `lsp_diagnostic` | `document_id` | when a buffer's diagnostics change |
 | `mode_change` | `old_mode`, `new_mode` (`"normal"`, `"insert"`, `"select"`) | on mode switches |
 | `key_press` | `key` (e.g. `"a"`, `"C-s"`, `"ret"`) | for every key |
 | `view_change` | | when the terminal is resized |
-| `ready`, `buffer_pre_save`, `buffer_close`, `buffer_changed`, `lsp_attach`, `lsp_initialized` | | accepted but not emitted yet |
 
 `document_id` is the same string `buffer:id()` returns; `helix.buffer.get_by_id(id)` turns
 it into a buffer.
@@ -117,8 +140,8 @@ it into a buffer.
   registers a typable command. `doc` (or `description`) and `args` are shown in the
   command palette; `handler` gets the arguments as a table of strings. Built-in commands
   of the same name take precedence.
-- `helix.get_config()`: the calling plugin's configuration table (nested tables
-  included), or `nil`.
+- `helix.get_config()`: the `config` table of the calling plugin's `[[plugins.plugins]]`
+  entry (nested tables included), or `nil`.
 - `helix.version`: the Helix version string.
 
 ### `helix.buffer`
@@ -182,8 +205,9 @@ Buffer methods (they raise an error once the buffer is closed):
 - `prompt(message, default, function(input) end)`: asks for a line of text; the callback
   is not called when the prompt is cancelled.
 - `confirm(message, function(confirmed) end)`: a yes/no question (`false` when cancelled).
-- `picker{ items = {...}, prompt = "...", on_select = function(item) end }` and
-  `menu(items, function(item) end)`: pick one of `items` (the `prompt` is not shown yet).
+- `picker{ items = {...}, prompt = "...", on_select = function(item) end }`: a picker
+  over `items`; `prompt` is the label of its input line (`"Select:"` by default).
+  `menu(items, function(item) end)`: the same with the default label.
 - `get_theme()`, `set_theme(name)`, `get_terminal_size()` (`{width, height}` of the
   editor area), `redraw()`.
 - `show_help()` is not implemented (raises an error).

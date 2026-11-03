@@ -1,14 +1,20 @@
 ## Editor
 
 - [`[editor]` Section](#editor-section)
-- [`[editor.breadcrumb]` Section](#editorbreadcrumb-section)
+- [`[editor.bufferline]` Section](#editorbufferline-section)
 - [`[editor.inline-completion]` Section](#editorinline-completion-section)
+- [`[editor.breadcrumb]` Section](#editorbreadcrumb-section)
 - [`[editor.clipboard-provider]` Section](#editorclipboard-provider-section)
 - [`[editor.statusline]` Section](#editorstatusline-section)
 - [`[editor.lsp]` Section](#editorlsp-section)
 - [`[editor.cursor-shape]` Section](#editorcursor-shape-section)
 - [`[editor.file-picker]` Section](#editorfile-picker-section)
 - [`[editor.file-explorer]` Section](#editorfile-explorer-section)
+- [`[editor.explorer]` Section](#editorexplorer-section)
+- [`[editor.cmdline]` Section](#editorcmdline-section)
+- [`[editor.notifications]` Section](#editornotifications-section)
+- [`[editor.inline-blame]` Section](#editorinline-blame-section)
+- [`[editor.gradient-borders]` Section](#editorgradient-borders-section)
 - [`[editor.buffer-picker]` Section](#editorbuffer-picker-section)
 - [`[editor.auto-pairs]` Section](#editorauto-pairs-section)
 - [`[editor.auto-reload]` Section](#editorauto-reload-section)
@@ -23,6 +29,7 @@
   - [`[editor.gutters.spacer]` Section](#editorguttersspacer-section)
   - [`[editor.gutters.code-action-hint]` Section](#editorgutterscode-action-hint-section)
 - [`[editor.debugger]` Section](#editordebugger-section)
+- [`[editor.image-preview]` Section](#editorimage-preview-section)
 - [`[editor.soft-wrap]` Section](#editorsoft-wrap-section)
 - [`[editor.smart-tab]` Section](#editorsmart-tab-section)
 - [`[editor.inline-diagnostics]` Section](#editorinline-diagnostics-section)
@@ -30,6 +37,10 @@
 - [`[editor.completion-highlight]` Section](#editorcompletion-highlight-section)
 - [`[editor.scrolloff]` Section](#editorscrolloff-section)
 - [`[editor.workspace-trust]` Section](#editorworkspace-trust-section)
+- [`[editor.persistence]` Section](#editorpersistence-section)
+- [Window resizing and focus mode](#window-resizing-and-focus-mode)
+- [Welcome screen](#welcome-screen)
+- [Ruler character](#ruler-character)
 
 ### `[editor]` Section
 
@@ -59,7 +70,7 @@
 | `true-color` | Whether to override automatic detection of terminal truecolor support in the event of a false negative | `false` |
 | `undercurl` | Whether to override automatic detection of terminal undercurl support in the event of a false negative | `false` |
 | `rulers` | List of column positions at which to display the rulers. Can be overridden by language specific `rulers` in `languages.toml` file | `[]` |
-| `bufferline` | Renders a line at the top of the editor displaying open buffers. Can be `always`, `never` or `multiple` (only shown if more than one buffer is in use) | `"never"` |
+| `bufferline` | A line at the top of the editor showing the open buffers. A table, see [`[editor.bufferline]`](#editorbufferline-section) | |
 | `color-modes` | Whether to color the mode indicator with different colors depending on the mode itself | `false` |
 | `text-width` | Maximum line length. Used for the `:reflow` command and soft-wrapping if `soft-wrap.wrap-at-text-width` is set | `80` |
 | `fold-textobjects` | Text objects folded automatically when a document is opened, such as `["comment"]`. See [Folding](./textobjects.md#folding-text-objects) | `[]` |
@@ -69,7 +80,8 @@
 | `atomic-save` | Whether to use atomic operations to write documents to disk. This prevents data loss if the editor is interrupted while writing the file, but may confuse some file watching/hot reloading programs. | `true` |
 | `trim-final-newlines` | Whether to automatically remove line-endings after the final one on write | `false` |
 | `trim-trailing-whitespace` | Whether to automatically remove whitespace preceding line endings on write | `false` |
-| `popup-border` | Draw border around `popup`, `menu`, `all`, or `none` | `"none"` |
+| `popup-border` | Draw border around `popup`, `menu`, `all`, or `none`. Hover, signature help, the completion menu (and its documentation) and the blame popup always have a border | `"none"` |
+| `rounded-corners` | Draw borders with rounded corners. Superseded by `border-style`: when that is set, this is ignored (`rounded-corners = true` is the same as `border-style = "rounded"`) | `false` |
 | `border-style` | Glyphs of panel, popup, menu and notification borders and of the separators inside panels: `"none"`, `"plain"`, `"rounded"`, `"double"`, `"thick"`, `"quadrant-inside"` or `"quadrant-outside"`. `"none"` draws nothing but keeps the space of the border, and separators stay plain lines. `"plain"` draws thin lines along the outer edge of the border cells (`▏ ▔ ▕ ▁` with the square corners `🭽 🭾 🭼 🭿`), so the popup's background reaches right up to the line, with no gap inside it and nothing beyond it; the corners need a font or terminal that draws Unicode's "Symbols for Legacy Computing". The other styles run through the middle of their cells, which then keep the background behind the popup. Takes priority over `rounded-corners` (`rounded-corners = true` is the same as `border-style = "rounded"`). Gradient borders follow `"none"` and `"rounded"` only; their line weight comes from `gradient-borders.thickness`. Without gradient borders, all of these borders have the same color, see `ui.popup.border` in [themes](./themes.md). | `"plain"` |
 | `indent-heuristic` | How the indentation for a newly inserted line is computed: `simple` just copies the indentation level from the previous line, `tree-sitter` computes the indentation based on the syntax tree and `hybrid` combines both approaches. If the chosen heuristic is not available, a different one will be used as a fallback (the fallback order being `hybrid` -> `tree-sitter` -> `simple`). | `"hybrid"` |
 | `jump-label-alphabet` | The characters that are used to generate two character jump labels. Characters at the start of the alphabet are used first. | `"abcdefghijklmnopqrstuvwxyz"` |
@@ -78,8 +90,34 @@
 | `editor-config` | Whether to read settings from [EditorConfig](https://editorconfig.org) files | `true` |
 | `rainbow-brackets` | Whether to render rainbow colors for matching brackets. Requires tree-sitter `rainbows.scm` queries for the language. | `false` |
 | `kitty-keyboard-protocol` | Whether to enable Kitty Keyboard Protocol. Can be `enabled`, `disabled` or `auto` | `"auto"` |
+| `terminal` | Where a debuggee that asks for a terminal is started: `launcher` or `command`/`args`, see [The terminal of the debuggee](./debugging.md#the-terminal-of-the-debuggee) | detected |
+| `picker-symbol` | Drawn before the selected row of pickers and of the command line popup's completions | `">"` |
+| `fullscreen-overlay` | Pickers (and the command palette) take the whole screen on terminals narrower than 200 columns, instead of 90% of it. The file picker with [`file-picker.hide-preview`](#editorfile-picker-section) keeps its own size | `false` |
+| `welcome-screen` | Show the [welcome screen](#welcome-screen) when Helix starts without a file | `true` |
+| `ruler-char` | Character used to draw the rulers, see [Ruler character](#ruler-character) | `""` |
+| `max-panel-width`, `max-panel-height`, `max-panel-width-percent`, `max-panel-height-percent` | Limits of window resizing, see [Window resizing](#window-resizing-and-focus-mode) | `50`, `50`, `0.8`, `0.8` |
 
 [^3]: In most cases, you also need to enable the `auto-format` setting under `languages.toml`. You can find the reasoning [here](https://github.com/helix-editor/helix/discussions/9043#discussioncomment-7811497).
+
+### `[editor.bufferline]` Section
+
+The buffer line is a line at the top of the editor with a label per open buffer. It scrolls
+to keep the current buffer in view, and buffers with the same file name are told apart by
+their path.
+
+| Key | Description | Default |
+|--|--|---------|
+| `render-mode` | When to show it: `"always"`, `"never"` or `"multiple"` (only when more than one buffer is open) | `"never"` |
+| `separator` | Text drawn between two labels | `"│"` |
+
+```toml
+[editor.bufferline]
+render-mode = "multiple"
+separator = "│"
+```
+
+> ⚠️ In this fork `bufferline` is a table: the upstream form `bufferline = "multiple"` is
+> rejected when the config is loaded. Use `render-mode` instead.
 
 ### `[editor.inline-completion]` Section
 
@@ -191,7 +229,7 @@ The `[editor.statusline]` key takes the following sub-keys:
 | ---           | ---         | ---     |
 | `left`        | A list of elements aligned to the left of the statusline | `["mode", "spinner", "file-name", "read-only-indicator", "file-modification-indicator"]` |
 | `center`      | A list of elements aligned to the middle of the statusline | `[]` |
-| `right`       | A list of elements aligned to the right of the statusline | `["diagnostics", "selections", "register", "position", "file-encoding"]` |
+| `right`       | A list of elements aligned to the right of the statusline | `["debug-session", "diagnostics", "selections", "register", "position", "file-encoding"]` |
 | `separator`   | The character used to separate elements in the statusline | `"│"` |
 | `mode.normal` | The text shown in the `mode` element for normal mode | `"NOR"` |
 | `mode.insert` | The text shown in the `mode` element for insert mode | `"INS"` |
@@ -227,6 +265,7 @@ The following statusline elements can be configured:
 | `version-control` | The current branch name or detached commit hash of the opened workspace |
 | `register` | The current selected register |
 | `code-action-hint` | Indicator for when code actions are available |
+| `function-name` | The name of the function, method or closure the cursor is in, found with tree-sitter (with the `function` icon of `[icons.kind]` when enabled, see [Icons](./configuration.md#icons)) |
 | `debug-session` | The selected [debug session](./debugging.md#several-sessions): its name, whether it is stopped, and the number of sessions |
 
 ### `[editor.lsp]` Section
@@ -338,6 +377,7 @@ children are read from disk on first expansion only.
 |`width` | Width of the pinned panel in columns | `30` |
 |`floating-width` | Width of the floating window in columns. Unset: as wide as the file picker without its preview (75% of the screen), so it follows the screen size | unset |
 |`floating-height` | Height of the floating window in lines. Unset: as high as the file picker (90% of the screen) | unset |
+|`floating-x`, `floating-y` | No longer used: the floating window is always centered. Still accepted, so older configs keep loading | unset |
 |`icons` | Show per-file-type icons (honors the global `[icons.mime]` settings) | `true` |
 |`auto-reveal` | Select the current buffer's file when the panel opens | `false` |
 |`show-hidden` | Show dotfiles (hidden files) | `false` |
@@ -367,8 +407,8 @@ the panel entirely. When the panel floats, anything that hands focus back
 into an opened buffer (`l`/Enter, a split with `v`/`s`) — or plain `Esc`
 — also closes the float, since it would otherwise cover the editor.
 
-The tree uses the global `[icons]` configuration, shared with the file
-pickers. The folder glyph is the `directory` override in `[icons.mime]`,
+The tree uses the global [`[icons]`](./configuration.md#icons) configuration, shared with
+the buffer picker and the bufferline; icons are shown when `[icons.mime] enabled = true`. The folder glyph is the `directory` override in `[icons.mime]`,
 and file icons are keyed by exact file name (`README.md`) or file
 extension (`rs`) — not by language name:
 
@@ -395,7 +435,8 @@ tree's own (open, rename, delete, ...) take precedence over the keymap.
 |`gg`/`ge` | Jump to the top/bottom of the tree (`10gg`: the tenth row) |
 |`C-d`/`C-u`, `C-f`/`C-b`, PageDown/PageUp | Move by half a page / a page |
 |`gt`/`gc`/`gb` | Jump to the top/middle/bottom of the visible rows |
-|`G`, Home/End | Jump to the bottom (`G`), or the top/bottom (Home/End) |
+|`G`, `5G` | Jump to the last row; with a count, to that row (`5G`: the fifth row) |
+|Home/End | Jump to the first/last row |
 |`h`, left | Collapse the directory under the cursor, or ascend to its parent |
 |`-` | Move the cursor to the parent directory row |
 |`l`/Enter, right | Expand the directory under the cursor, or open the file |
@@ -408,11 +449,11 @@ tree's own (open, rename, delete, ...) take precedence over the keymap.
 |`/` | Focus the filter box at the top of the panel (see below) |
 |`a` | Create a file (or a directory when the name ends in `/`) in the selected directory, or beside the selected file; at the root when nothing is selected |
 |`A` | Create a directory in the same place |
-|`r` | Rename the entry under the cursor (the popup is titled `Rename file <name>` / `Rename folder <name>` and prefilled) |
+|`r` | Rename the entry under the cursor (the popup is titled `Rename file <name>` / `Rename folder <name>` and prefilled). Open buffers of the file follow it. Changing only the case of the name (`readme.md` to `README.md`) also works on case-insensitive file systems (macOS, Windows) |
 |`d` | Delete the entry under the cursor; a confirmation box opens first and defaults to Cancel |
 |`x` | Cut the entry under the cursor |
 |`c` | Copy the entry under the cursor |
-|`p` | Paste from the explorer clipboard into the directory under the cursor |
+|`p` | Paste from the explorer clipboard into the directory under the cursor. FIFOs, sockets and devices inside a copied folder are skipped |
 |`q` | Close the panel |
 |`Esc` | Clear an active filter first; otherwise hand keyboard focus back to the editor (panel keeps its tree; a floating panel closes instead) |
 
@@ -425,10 +466,12 @@ renamed, added, untracked). The marks use the glyphs of the `[icons.vcs]` set (l
 `diff.minus`, `diff.delta.moved` and `diff.delta.conflict` theme keys, the same as the
 `changed_file_picker`. A file that is only staged shows its staged change.
 
-The status is read when the panel opens, after file operations and `R`, and again when
-it is older than three seconds while the panel is drawn. In a trusted workspace it comes
-from `git status`; otherwise from the built-in listing (no staged state). Turn it off
-with `git-status = false`.
+The status is read when the panel opens, after file operations and `R`, and again while
+the panel is drawn (a hidden panel costs nothing) once it is three seconds old. In a large
+repository where `git status` is slow it is read less often: the wait is ten times as long as
+the last `git status` took, at most 30 seconds (also the wait after `git status` failed, for
+example outside a repository). In a trusted workspace it comes from `git status`; otherwise
+from the built-in listing (no staged state). Turn it off with `git-status = false`.
 
 ### The first row and the lines
 
@@ -453,7 +496,8 @@ tree shows only matching entries and the directories leading to them, searching
 the whole tree (capped at 100,000 entries, `.git` skipped). Up/Down move through the results while you keep typing (then Right expands and Left collapses the selected folder, until you type again); Enter opens
 the selected row (the best matching file if you haven't moved); Tab leaves the box and
 keeps the filter to browse the results with the tree keys; Esc (or clearing the box) restores the
-full tree and reveals the selected entry.
+full tree and reveals the selected entry. `C-h` and `C-l` stop typing (the filter stays applied)
+and move focus as usual.
 
 ### Moving focus between the tree and the buffers
 
@@ -513,8 +557,9 @@ The floating window opens centered on the screen and is sized like the file
 picker without its preview (`hide-preview`), as the tree is a list too: 75% of
 the editor's width and 90% of its height (without the status line and the
 command line). So it grows and shrinks with the terminal. Setting
-`floating-width` / `floating-height` gives it a fixed size instead, at most
-that size and still centered. Its size and position are not saved.
+`floating-width` / `floating-height` gives it that size instead (still centered),
+but never more than those 75% and 90%. The size and position it gets from the mouse are
+not saved, not even in the config; `floating-x` / `floating-y` are ignored.
 
 While it is open, it can be moved and resized with the mouse: drag the top
 border to move it, any other border (or a corner) to resize it. The next time
@@ -559,7 +604,8 @@ max-panel-height-percent = 0.8  # used when max-panel-height is 0 (0.0-1.0)
 ### Welcome screen
 
 When Helix starts without a file to open, the editor shows a welcome screen in the empty buffer.
-It disappears as soon as you type or open a file. Turn it off with the `[editor]` key
+It is drawn in every split that shows this buffer (after `:vsplit`, say), not only the first
+one, and disappears as soon as you type in it or open a file in its place. Turn it off with the `[editor]` key
 `welcome-screen`:
 
 ```toml
@@ -618,25 +664,31 @@ available with `:notifications-history`, `:notifications-clear` clears it and
 |--|--|--|
 | `enable` | Turn the notification system on | `true` |
 | `style` | `"popup"` (noice-style popups) or `"statusline"` | `"popup"` |
-| `position` | `"top-right"`, `"top-left"`, `"bottom-right"` or `"bottom-left"` | `"top-right"` |
+| `position` | `"top-right"`, `"top-center"`, `"top-left"`, `"bottom-right"`, `"bottom-center"` or `"bottom-left"` | `"top-right"` |
 | `max-width` | Maximum width of a popup, in columns | `60` |
 | `max-height` | Maximum height of a popup, in lines | `10` |
 | `default-timeout` | Time before a popup fades out, in milliseconds. `0` keeps it until dismissed | `5000` |
-| `show-icons` | Show an icon for the severity | `true` |
-| `show-emojis` | Show an emoji for the severity | `true` |
+| `show-icons` | Show an icon for the severity (only when `show-emojis` is off) | `true` |
+| `show-emojis` | Show an emoji for the severity; takes the place of the icon | `true` |
 | `padding` | Blank space inside the popup, in cells | `1` |
 | `max-history` | Number of notifications kept for `:notifications-history` | `100` |
 | `enable-history` | Keep the history at all | `true` |
 | `border.enable` | Draw a border around each popup | `true` |
-| `border.width` | Border width | `1` |
-| `border.radius` | Corner radius (`0` for square corners) | `2` |
+| `border.width` | Number of nested border frames (ignored with gradient borders, which are one cell wide) | `1` |
+| `border.radius` | Above `0`, a `plain` border gets rounded corners (`╭╮╰╯`), so by default notifications are rounded. `0` keeps the glyphs of `border-style` | `2` |
+| `border.gradient`, `border.gradient-start`, `border.gradient-end`, `border.style` | Accepted, but not used: notifications use [`gradient-borders`](#editorgradient-borders-section) and `border-style` like every popup | |
 | `shadow.enable` | Draw a shadow behind each popup | `true` |
 | `shadow.offset-x`, `shadow.offset-y` | Offset of the shadow, in cells | `1`, `1` |
 | `icons.info`, `icons.warning`, `icons.error`, `icons.success` | Icon text for each severity | `ℹ`, `⚠`, `✗`, `✓` |
 | `emojis.info`, `emojis.warning`, `emojis.error`, `emojis.success` | Emoji text for each severity | `💡`, `⚠️`, `❌`, `✅` |
 
 The colors come from the theme: `ui.popup` for the background and the `error`, `warning`,
-`info` and `hint` scopes for the text. See [Notification and cmdline popup
+`info` and `hint` scopes for the text; the border uses `ui.popup.border`, or the gradient when
+`[editor.gradient-borders]` is enabled. The border cells follow the same rule as the other
+popups (see `border-style`): with `"none"`, `"plain"` and `"quadrant-outside"` (and without a
+border) they take the notification's background; with the styles drawn through the middle of
+their cells (rounded, double, thick, `"quadrant-inside"`) they keep what is behind the
+notification. With `border-style = "none"` no border is drawn, but its space is kept. See [Notification and cmdline popup
 styling](./themes.md#notification-and-cmdline-popup-styling).
 
 ### `[editor.inline-blame]` Section
@@ -682,7 +734,7 @@ explorer as a gradient, instead of a solid line. It is off by default.
 | Key | Description | Default |
 |--|--|--|
 | `enable` | Turn gradient borders on | `false` |
-| `thickness` | Line weight, from `1` (thin, rounded corners possible) to `5` (full blocks) | `1` |
+| `thickness` | Glyphs of the line, from `1` (thin) to `5` (full blocks), see below. Other values draw a thin line | `1` |
 | `direction` | `"horizontal"`, `"vertical"`, `"diagonal"` or `"radial"` | `"horizontal"` |
 | `start-color` | Hex color at the start of the gradient | `"#8A2BE2"` |
 | `end-color` | Hex color at the end of the gradient | `"#00BFFF"` |
@@ -700,8 +752,26 @@ end-color = "#FF69B4"
 animation-speed = 1
 ```
 
+The border is always one cell wide; `thickness` only picks its glyphs:
+
+| `thickness` | Glyphs |
+|--|--|
+| `1` | Thin. With square corners it is drawn along the outer edge of its cells like a `plain` border (`▏ ▔ ▕ ▁`, corners `🭽 🭾 🭼 🭿`), so the popup's background reaches the line. With rounded corners: `─ │ ╭ ╮ ╰ ╯` |
+| `2` | Thick: `━ ┃ ┏ ┓ ┗ ┛` |
+| `3` | Double: `═ ║ ╔ ╗ ╚ ╝` |
+| `4` | Half blocks on the inner side of the top and bottom (`▄` above, `▀` below), full blocks (`█`) for the sides and corners |
+| `5` | Full blocks (`█`) all around |
+
 Rounded corners follow `rounded-corners` and `border-style`: `"rounded"` rounds the corners of a
-thickness `1` border; thicker borders and the block styles keep square corners. When gradient
+thickness `1` border; thicker borders and the block styles keep square corners. With
+`border-style = "none"` no gradient is drawn (the space of the border is kept). Borders other
+than the thin square one keep the background behind the popup in their cells, so nothing shows
+between the line and the popup, nor beyond it.
+
+Titles in a gradient border (the picker's title, the command line popup's) are drawn in the
+gradient's colors when those have enough contrast (3:1) with the background under the title,
+otherwise in `ui.text`; the `ui.popup.title` theme key sets their style explicitly. A title too
+long for the border is cut and ends in `…`. When gradient
 borders are on, they replace the solid border of every component, including the floating explorer,
 which also overrides `ui.explorer.border` (see [Theming the explorer](#theming-the-explorer)).
 

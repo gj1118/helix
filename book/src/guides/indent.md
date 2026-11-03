@@ -77,21 +77,26 @@ describe the adjustments.
   `@outdent` contributes nothing (its level is cancelled) — used e.g. for a
   nested `else if` that should not stack a second level.
   By default the scope opens at the node's own first line; see the
-  [`header`](#scope-header) scope to open it at the parent (header) line instead.
+  [`header`](#scope-header) scope to open it at the parent (header) line instead,
+  and the [`all`](#scope-all) scope to include the node's own first line.
 - `@outdent`:
   Decrease by 1 the indent of the line on which this (usually a closing token
-  like `}`/`)`/`]`, or a keyword like `else`) begins.
+  like `}`/`)`/`]`, or a keyword like `else`) begins. With the
+  [`all`](#scope-all) scope, every line of the node is decreased instead.
 - `@indent.always`:
   Like `@indent` but does *not* collapse — multiple on the same line each add a
   level. The net level contribution is `@indent.always` − `@outdent.always`.
 - `@outdent.always`:
   Like `@outdent` but stacks, the counterpart to `@indent.always`.
-- `@align` (default scope `all`):
+- `@align`:
   Align everything inside this node to some anchor. The anchor is given
   by the start of the node captured by `@anchor` in the same pattern.
   Every pattern with an `@align` should contain exactly one `@anchor`.
-  Indent (and outdent) for nodes below (in terms of their starting line)
-  the `@align` node is added to the indentation required for alignment.
+  The anchor's column replaces the indent levels of the aligning node and of
+  its ancestors (they are already part of that column). Scopes nested inside
+  the `@align` node keep their levels, which are added to the column: a
+  struct pattern among aligned closure parameters is still indented relative
+  to the alignment. Outdents still apply.
 - `@extend`:
   Extend the range of this node to the end of the line and to lines that are
   indented more than the line that this node starts on. This is useful for
@@ -421,9 +426,37 @@ header) line instead of the node's own line, so the body's first line is
 contained and indented. The query selects exactly the body, so the engine just
 honours the annotation — it does not match on node kinds or field names itself.
 
-(Older queries used `tail` / `all` scopes to control whether a node's first line
-was included; under the containment model those are no longer needed and have
-been removed. `header` is the one scope the engine reads.)
+### <a name="scope-all"></a>The `all` scope
+
+`(#set! "scope" "all")` on an `@indent` (or `@indent.always`) makes the scope
+also cover the captured node's **own first line**, but only when the node is the
+first thing on that line. A node that starts in the middle of a line covers only
+the lines after it, exactly like the default scope.
+
+```scm
+(let_declaration
+  "let" @expr-start
+  value: (_) @indent
+  (#not-same-line? @indent @expr-start)
+  (#set! "scope" "all"))
+```
+
+```rust
+let x =
+    value; // the value begins its own line: that line is indented too
+```
+
+On an `@outdent` (or `@outdent.always`), `all` dedents **every line the node
+covers** instead of only the line its token begins on. This is used, for
+example, for the arguments of a call chained off a multi-line receiver.
+
+An `all` capture and a default one on the same node count as two scopes (one
+level for the node, one for its continuation lines); the same-line rule merges
+them when the node starts mid-line. A node captured by both `@indent` and
+`@outdent` normally cancels itself, but not when one of the captures has the
+`all` scope.
+
+Any other value of `scope` is an error when the query is loaded.
 
 ## Testing
 
