@@ -338,6 +338,7 @@ These scopes are used for theming the editor interface:
 | `ui.popup`                        | Documentation popups (e.g. Space + k), notification popups, and cmdline popup background       |
 | `ui.popup.explorer`               | File tree panel background (falls back to `ui.popup`)                                           |
 | `ui.popup.info`                   | Prompt for multiple key options                                                                |
+| `ui.popup.title`                  | The title in the border of pickers and the command line popup. Without it, plain borders draw the title in the border's style; gradient borders in the gradient's colors, or in `ui.text` where those would be hard to read on the background (light themes) |
 | `ui.popup.border`                 | Border color of pickers, previews, the explorer, popups (hover, signature help, completion documentation), notifications and the cmdline when `gradient-borders` is off. Falls back to the foreground of `ui.window`, then `ui.text`; only the foreground is used |
 | `ui.explorer.border`              | The separator of a pinned explorer and the frame of the floating explorer. Falls back to `ui.virtual` for the separator and `ui.popup.border` for the frame. Ignored for the frame while `[editor.gradient-borders]` is enabled |
 | `ui.explorer.tree`                | Tree guide lines (`├─ └─ │`) of the explorer on normal rows. Falls back to `ui.virtual` |

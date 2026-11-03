@@ -139,8 +139,12 @@ impl CmdlinePopup {
                 .borders(tui::widgets::Borders::ALL)
                 .border_type(border_type)
                 .border_style(border_style)
-                .style(background_style)
-                .title(self.prompt.prompt());
+                .style(background_style);
+            // `ui.popup.title` when the theme sets it; otherwise the border's style.
+            let block = match theme.try_get("ui.popup.title") {
+                Some(style) => block.title(tui::text::Span::styled(self.prompt.prompt(), style)),
+                None => block.title(self.prompt.prompt()),
+            };
 
             let inner_area = block.inner(popup_area);
             block.render(popup_area, surface);

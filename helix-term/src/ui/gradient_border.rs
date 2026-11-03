@@ -318,23 +318,46 @@ impl GradientBorder {
 
                 // Position title near the left side (after corner + some space)
                 let title_start = area.x + 2;
+                let columns: Vec<(u16, char)> = padded_title
+                    .chars()
+                    .enumerate()
+                    .map(|(i, ch)| (title_start + i as u16, ch))
+                    .filter(|&(x, _)| x < area.right() - 1)
+                    .collect();
 
-                // Render each character of the padded title
-                for (i, ch) in padded_title.chars().enumerate() {
-                    let x = title_start + i as u16;
-                    if x < area.right() - 1 {
-                        let title_color = self.get_gradient_color(x, area.y, area);
-                        let title_style = Style::default()
-                            .fg(title_color)
-                            .add_modifier(Modifier::BOLD);
+                // `ui.popup.title` decides when the theme sets it. Otherwise the title takes
+                // the gradient's colors, as long as they stand out from the background they
+                // are drawn on: gradient colors chosen for a dark theme can be all but
+                // invisible on a light one, and then the title is drawn as text. The
+                // background is the one already in the cells (whatever the popup or theme
+                // painted there), or the theme's when the terminal's default shows through.
+                let explicit = theme.try_get("ui.popup.title");
+                let theme_background = theme.get("ui.background").bg;
+                let background_at = |x: u16| match surface.get(x, area.top()).map(|cell| cell.bg) {
+                    Some(Color::Reset) | None => theme_background,
+                    Some(bg) => Some(bg),
+                };
+                let gradient_readable = columns.iter().all(|&(x, _)| {
+                    readable_on(self.get_gradient_color(x, area.y, area), background_at(x))
+                });
+                let text = theme.get("ui.text");
 
-                        if let Some(cell) = surface.get_mut(x, area.top()) {
-                            // Reset the cell first to clear any previous content
-                            cell.reset();
-                            // Use a string slice to properly set the character
-                            let ch_str: String = ch.to_string();
-                            cell.set_symbol(&ch_str).set_style(title_style);
+                for (x, ch) in columns {
+                    let title_style = match explicit {
+                        Some(style) => style,
+                        None if gradient_readable => {
+                            Style::default().fg(self.get_gradient_color(x, area.y, area))
                         }
+                        None => match text.fg {
+                            Some(fg) => Style::default().fg(fg),
+                            None => Style::default(),
+                        },
+                    }
+                    .add_modifier(Modifier::BOLD);
+
+                    if let Some(cell) = surface.get_mut(x, area.top()) {
+                        // Over the border glyph, keeping the popup's background.
+                        cell.set_symbol(&ch.to_string()).set_style(title_style);
                     }
                 }
             }
@@ -357,9 +380,102 @@ impl GradientBorder {
     }
 }
 
+/// The WCAG relative luminance of an RGB color; `None` for named and indexed colors, whose
+/// actual RGB value depends on the terminal.
+fn relative_luminance(color: Color) -> Option<f64> {
+    let Color::Rgb(r, g, b) = color else {
+        return None;
+    };
+    let channel = |c: u8| {
+        let c = c as f64 / 255.0;
+        if c <= 0.03928 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    Some(0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b))
+}
+
+/// Whether text in `fg` can be read on `bg`: a contrast ratio of at least 3:1 (WCAG, for
+/// bold text). When either color isn't known as RGB, it is assumed to be readable.
+fn readable_on(fg: Color, bg: Option<Color>) -> bool {
+    match (relative_luminance(fg), bg.and_then(relative_luminance)) {
+        (Some(fg), Some(bg)) => {
+            let (light, dark) = if fg > bg { (fg, bg) } else { (bg, fg) };
+            (light + 0.05) / (dark + 0.05) >= 3.0
+        }
+        _ => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The title cells' (fg, bg) after rendering `title` with a pale pink gradient over
+    /// a surface filled with `bg`, in a theme whose text is dark.
+    fn rendered_title(bg: Color, theme_toml: &str) -> Vec<(Color, Color)> {
+        let theme = Theme::from(toml::from_str::<toml::Value>(theme_toml).unwrap());
+        let config = GradientBorderConfig {
+            enable: true,
+            start_color: "#f5c2e7".into(),
+            middle_color: "#f5c2e7".into(),
+            end_color: "#f5c2e7".into(),
+            ..Default::default()
+        };
+        let mut border = GradientBorder::from_theme(&theme, &config);
+        let area = Rect::new(0, 0, 30, 5);
+        let mut surface = Surface::empty(area);
+        surface.set_style(area, Style::default().bg(bg));
+        border.render_with_title(area, &mut surface, &theme, Some("Files"), false);
+        // " Files " starts at column 2
+        (2..9)
+            .map(|x| {
+                let cell = surface.get(x, 0).unwrap();
+                (cell.fg, cell.bg)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn titles_stay_readable_on_any_background() {
+        let theme = r##""ui.text" = { fg = "#586e75" }"##;
+        let cream = Color::Rgb(0xfd, 0xf6, 0xe3);
+        // Light background: the pale gradient can't be read, the title is drawn as text,
+        // on the background that was there.
+        for (fg, bg) in rendered_title(cream, theme) {
+            assert_eq!(fg, Color::Rgb(0x58, 0x6e, 0x75));
+            assert_eq!(bg, cream);
+        }
+        // Dark background: the gradient colors stand out, so they are kept.
+        let dark = Color::Rgb(0x1e, 0x1e, 0x2e);
+        for (fg, bg) in rendered_title(dark, theme) {
+            assert_eq!(fg, Color::Rgb(0xf5, 0xc2, 0xe7));
+            assert_eq!(bg, dark);
+        }
+        // The theme's own title style always wins.
+        let themed = r##""ui.popup.title" = { fg = "#ff0000" }"##;
+        for (fg, _) in rendered_title(dark, themed) {
+            assert_eq!(fg, Color::Rgb(0xff, 0, 0));
+        }
+    }
+
+    #[test]
+    fn title_contrast() {
+        let cream = Some(Color::Rgb(0xfd, 0xf6, 0xe3));
+        let dark = Some(Color::Rgb(0x1e, 0x1e, 0x2e));
+        let pale_pink = Color::Rgb(0xf5, 0xc2, 0xe7);
+        assert!(!readable_on(pale_pink, cream), "pale pink on cream");
+        assert!(readable_on(pale_pink, dark), "pale pink on a dark theme");
+        assert!(
+            readable_on(Color::Rgb(0x58, 0x6e, 0x75), cream),
+            "dark text on cream"
+        );
+        // unknown colors are left alone
+        assert!(readable_on(Color::Magenta, cream));
+        assert!(readable_on(pale_pink, None));
+    }
 
     fn default_config() -> GradientBorderConfig {
         GradientBorderConfig {

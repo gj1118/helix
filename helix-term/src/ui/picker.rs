@@ -1118,7 +1118,12 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             crate::ui::gradient_border::GradientBorder::inner_area(area)
         } else {
             let block = if let Some(title) = self.title {
-                Block::bordered().title(title)
+                // `ui.popup.title` when the theme sets it; otherwise the title takes the
+                // border's style, as upstream.
+                match cx.editor.theme.try_get("ui.popup.title") {
+                    Some(style) => Block::bordered().title(tui::text::Span::styled(title, style)),
+                    None => Block::bordered().title(title),
+                }
             } else {
                 Block::bordered()
             }
