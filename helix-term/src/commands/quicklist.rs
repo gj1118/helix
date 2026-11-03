@@ -26,12 +26,15 @@ fn line_text(text: helix_core::RopeSlice, line: usize) -> String {
     if line >= text.len_lines() {
         return String::new();
     }
-    text.line(line)
-        .to_string()
-        .trim()
+    // Only the kept part of the line is read: a picker over a huge minified file
+    // turns into many entries on one very long line.
+    let kept: String = text
+        .line(line)
         .chars()
+        .skip_while(|c| c.is_whitespace())
         .take(MAX_TEXT_CHARS)
-        .collect()
+        .collect();
+    kept.trim_end().to_owned()
 }
 
 /// The target that stands for the document `id`: its file if it has one.
@@ -325,4 +328,21 @@ pub fn quicklist_picker(cx: &mut Context) {
         picker,
         cx.editor.config().fullscreen_overlay,
     )));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use helix_core::Rope;
+
+    #[test]
+    fn line_text_is_trimmed_and_bounded() {
+        let long = "x".repeat(MAX_TEXT_CHARS * 10);
+        let rope = Rope::from(format!("  \tab c  \r\n{long}\n"));
+        let text = rope.slice(..);
+        assert_eq!(line_text(text, 0), "ab c");
+        assert_eq!(line_text(text, 1), "x".repeat(MAX_TEXT_CHARS));
+        assert_eq!(line_text(text, 2), "");
+        assert_eq!(line_text(text, 99), "");
+    }
 }

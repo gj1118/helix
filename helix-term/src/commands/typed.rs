@@ -9,7 +9,7 @@ use super::*;
 use helix_core::command_line::{Args, Flag, Signature, Token, TokenKind};
 use helix_core::fuzzy::fuzzy_match;
 use helix_core::indent::MAX_INDENT;
-use helix_core::syntax::Loader;
+use helix_core::syntax::{CapturedNode, Loader};
 use helix_core::text_folding;
 use helix_core::{line_ending, SmartString};
 use helix_plugin::PluginManager;
@@ -2635,7 +2635,7 @@ fn index_impl(
     let selection = doc.selection(view.id);
 
     if selection.len() == 1 {
-        bail!("Sorting requires multiple selections. Hint: split selection first");
+        bail!("Indexing requires multiple selections. Hint: split selection first");
     }
 
     let mut fragments: Vec<_> = selection
@@ -3436,9 +3436,9 @@ pub fn fold_textobjects(
                 (start..end) == range
             };
 
-            (overlapped && nested).then_some((cap, range))
+            (overlapped && nested).then_some((cap, cap_node, range))
         })
-        .filter_map(|(cap, range)| {
+        .filter_map(|(cap, cap_node, range)| {
             let capture_name = cap.name(textobject_query.query());
             match capture_name {
                 "class.around" | "function.around" => {
@@ -3447,12 +3447,19 @@ pub fn fold_textobjects(
                         "function.around" => ("function.inside", "function"),
                         _ => unreachable!(),
                     };
-                    let node = syntax
-                        .descendant_for_byte_range(range.start as u32, range.end as u32)
-                        .expect("The range must belong to the captured node.");
+                    // A grouped capture (`(attribute_item)* @function.around .
+                    // (function_item) @function.around`) ends with the object itself;
+                    // looking a node up by the group's range would find the common
+                    // parent and fold the first body found anywhere inside it.
+                    let node = match cap_node {
+                        CapturedNode::Single(node) => node,
+                        CapturedNode::Grouped(nodes) => nodes.last()?.clone(),
+                    };
                     textobject_query
                         .capture_nodes(capture, &node, text)?
                         .next()
+                        // an empty (missing) body has nothing to fold
+                        .filter(|cap_node| cap_node.start_byte() < cap_node.end_byte())
                         .map(|cap_node| {
                             let header = text.byte_to_char(range.start);
                             let target = {
@@ -6044,6 +6051,10 @@ fn explorer_typable(
         plugin_manager: cx.plugin_manager.clone(),
     };
     f(&mut cx);
+    // what the command asks of the compositor happens after the current event
+    for callback in cx.callback {
+        compositor::defer(callback);
+    }
     Ok(())
 }
 

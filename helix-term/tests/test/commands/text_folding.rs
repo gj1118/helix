@@ -1720,3 +1720,56 @@ async fn toggle_fold() -> anyhow::Result<()> {
     )
     .await
 }
+
+/// Functions with attributes are captured as a group (`(attribute_item)* @function.around .
+/// (function_item) @function.around`): each one folds its own body. Looking the body up by
+/// the group's range found the enclosing node, folded the first body in it for every
+/// attributed function and panicked on the duplicates.
+#[tokio::test(flavor = "multi_thread")]
+async fn fold_functions_with_attributes() -> anyhow::Result<()> {
+    let file = tempfile::NamedTempFile::with_suffix(".rs")?;
+    std::fs::write(
+        file.path(),
+        "\
+mod tests {
+    #[test]
+    fn a() {
+        let a = 1;
+    }
+
+    #[test]
+    #[ignore]
+    fn b() {
+        let b = 2;
+    }
+}
+",
+    )?;
+
+    let app = &mut AppBuilder::new()
+        .with_file(file.path(), None)
+        .with_lang_loader(helpers::test_syntax_loader(None))
+        .build()?;
+
+    test_key_sequence(
+        app,
+        Some(":fold --document function<ret>"),
+        Some(&|app| {
+            assert!(!app.editor.is_err(), "{:?}", app.editor.get_status());
+            // the bodies are folded, down to their closing braces
+            let expected = "\
+mod tests {
+    #[test]
+    fn a() {
+
+    #[test]
+    #[ignore]
+    fn b() {
+}
+";
+            assert_eq!(fold_text(app), Rope::from(expected));
+        }),
+        false,
+    )
+    .await
+}

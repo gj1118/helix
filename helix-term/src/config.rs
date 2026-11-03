@@ -253,6 +253,12 @@ impl Config {
         let phony_config = ConfigLoadError::Error(IOError::other("hacky placeholder"));
         let global_parsed = Config::load(Ok(&global_config), Err(phony_config))?;
 
+        // Without a workspace config (the usual case) there is nothing to merge: skip
+        // the trust check and parsing the global config a second time.
+        if local_config.is_err() {
+            return Ok(global_parsed);
+        }
+
         // We need to build a transient `WorkspaceTrust` just to ask whether the workspace is
         // trusted enough to load its `.helix/config.toml`. The persisted-trust file on disk is the
         // source of truth either way; this transient instance has an empty cache and is dropped

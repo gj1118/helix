@@ -187,8 +187,11 @@ pub fn find_nth_pairs_pos(
             Some(next_pos) => (next_pos + 1, 1),
             None => return Err(Error::PairNotFound),
         },
-        FindType::Prev => match search::find_nth_prev(text, close, pos, n) {
-            Some(next_pos) => (next_pos - 1, 1),
+        // a closing char at the very start has no pair before it
+        FindType::Prev => match search::find_nth_prev(text, close, pos, n)
+            .and_then(|prev_pos| prev_pos.checked_sub(1))
+        {
+            Some(prev_pos) => (prev_pos, 1),
             None => return Err(Error::PairNotFound),
         },
     };
@@ -486,6 +489,26 @@ mod test {
             .expect("find should succeed"),
             (expectations[0], expectations[1])
         )
+    }
+
+    #[test]
+    fn test_find_prev_and_next_pair_at_the_text_edges() {
+        for (text, ch) in [(")abc", '('), ("'abc", '\''), ("abc(", '('), ("abc'", '\'')] {
+            let doc = Rope::from(text);
+            for find_type in [FindType::Prev, FindType::Next] {
+                for pos in 0..=doc.len_chars() {
+                    let result = find_nth_pairs_pos(
+                        None,
+                        doc.slice(..),
+                        ch,
+                        Range::point(pos),
+                        find_type.clone(),
+                        1,
+                    );
+                    assert!(result.is_err(), "{text:?} {find_type:?} {pos}: {result:?}");
+                }
+            }
+        }
     }
 
     #[test]

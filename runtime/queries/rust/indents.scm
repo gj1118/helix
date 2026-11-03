@@ -40,49 +40,49 @@
   (_) @expr-start
   right: (_) @indent
   (#not-same-line? @indent @expr-start)
-
+  (#set! "scope" "all")
 )
 (compound_assignment_expr
   .
   (_) @expr-start
   right: (_) @indent
   (#not-same-line? @indent @expr-start)
-
+  (#set! "scope" "all")
 )
 (let_declaration
   "let" @expr-start
   value: (_) @indent
   alternative: (_)? @indent
   (#not-same-line? @indent @expr-start)
-
+  (#set! "scope" "all")
 )
 (let_condition
   .
   (_) @expr-start
   value: (_) @indent
   (#not-same-line? @indent @expr-start)
-
+  (#set! "scope" "all")
 )
 (if_expression
   .
   (_) @expr-start
   condition: (_) @indent
   (#not-same-line? @indent @expr-start)
-
+  (#set! "scope" "all")
 )
 (static_item
   .
   (_) @expr-start
   value: (_) @indent
   (#not-same-line? @indent @expr-start)
-
+  (#set! "scope" "all")
 )
 (field_pattern
   .
   (_) @expr-start
   pattern: (_) @indent
   (#not-same-line? @indent @expr-start)
-
+  (#set! "scope" "all")
 )
 ; Indent type aliases that span multiple lines, similar to
 ; regular assignment expressions
@@ -91,7 +91,7 @@
   (_) @expr-start
   type: (_) @indent
   (#not-same-line? @indent @expr-start)
-
+  (#set! "scope" "all")
 )
 
 ; Some field expressions where the left part is a multiline expression are not
@@ -113,6 +113,7 @@
     (#match? @val "(\\A[^\\n\\r]+(\\(|\\{|\\[)[\\t ]*(\\n|\\r))")
   )
   arguments: (_) @outdent
+  (#set! "scope" "all")
 )
 ; Same again for `.await` off a multiline receiver, so it lines up with the
 ; other links in the chain instead of indenting a level deeper.
@@ -149,7 +150,7 @@
   .
   (_) @indent
   (#not-same-line? @in @indent)
-
+  (#set! "scope" "all")
 )
 
 ; Multi-line string / raw-string bodies are literal content: preserve them.

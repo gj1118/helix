@@ -75,6 +75,7 @@
 
 use std::cell::Cell;
 use std::cmp::{max, min, Ordering};
+use std::collections::HashSet;
 use std::fmt;
 use std::iter::once;
 use std::ops;
@@ -101,7 +102,7 @@ pub(crate) mod test_utils;
 mod test;
 
 /// A kind of fold.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FoldObject {
     /// Indicates an arbitrary folded text
     Selection,
@@ -348,7 +349,21 @@ impl FoldContainer {
     pub fn add(&mut self, text: RopeSlice, points: Vec<(StartFoldPoint, EndFoldPoint)>) {
         self.reserve(points.len());
 
-        for (mut sfp, mut efp) in points.into_iter() {
+        // Folds are identified by their target and object: a fold that is already
+        // present (or given twice) is skipped, since the sorting relies on uniqueness.
+        let mut known: HashSet<_> = self
+            .start_points
+            .iter()
+            .map(|sfp| {
+                let efp = &self.end_points[sfp.link];
+                (sfp.target, efp.target, sfp.object.clone())
+            })
+            .collect();
+        let points = points
+            .into_iter()
+            .filter(|(sfp, efp)| known.insert((sfp.target, efp.target, sfp.object.clone())));
+
+        for (mut sfp, mut efp) in points {
             sfp.link = self.len();
             efp.link = self.len();
             self.start_points.push(sfp);

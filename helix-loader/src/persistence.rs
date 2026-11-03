@@ -1,4 +1,4 @@
-use bincode::{deserialize_from, serialize_into};
+use bincode::{serialize_into, Options};
 use log::warn;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -57,6 +57,11 @@ pub fn push_history<T: Serialize>(filepath: PathBuf, entry: &T) {
 }
 
 pub fn read_history<T: for<'a> Deserialize<'a>>(filepath: &Path) -> Vec<T> {
+    read_history_impl(filepath).0
+}
+
+/// Reads the entries of a state file, and whether all of it could be read.
+fn read_history_impl<T: for<'a> Deserialize<'a>>(filepath: &Path) -> (Vec<T>, bool) {
     let file = match File::open(filepath) {
         Ok(file) => file,
         Err(err) => {
@@ -66,21 +71,31 @@ pub fn read_history<T: for<'a> Deserialize<'a>>(filepath: &Path) -> Vec<T> {
                     filepath.display()
                 );
             }
-            return Vec::new();
+            return (Vec::new(), true);
         }
     };
+    // The format `serialize_into` writes (fixed-size integers, little endian), with
+    // a size limit: a corrupt length prefix would otherwise make bincode allocate a
+    // buffer of that length before reading it. No entry is larger than the file.
+    let limit = file.metadata().map_or(u64::MAX, |metadata| metadata.len());
+    let options = bincode::DefaultOptions::new()
+        .with_fixint_encoding()
+        .allow_trailing_bytes()
+        .with_limit(limit);
     let mut reader = BufReader::new(file);
     let mut entries = Vec::new();
+    let mut complete = true;
     loop {
         match reader.fill_buf() {
             Ok([]) => break,
-            Ok(_) => match deserialize_from(&mut reader) {
+            Ok(_) => match options.deserialize_from(&mut reader) {
                 Ok(entry) => entries.push(entry),
                 Err(err) => {
                     warn!(
                         "Ignoring corrupt trailing data in persistent state file {}: {err}",
                         filepath.display()
                     );
+                    complete = false;
                     break;
                 }
             },
@@ -89,21 +104,53 @@ pub fn read_history<T: for<'a> Deserialize<'a>>(filepath: &Path) -> Vec<T> {
                     "Failed to read persistent state file {}: {err}",
                     filepath.display()
                 );
+                complete = false;
                 break;
             }
         }
     }
-    entries
+    (entries, complete)
 }
 
 pub fn trim_history<T: Clone + Serialize + for<'a> Deserialize<'a>>(
     filepath: PathBuf,
     limit: usize,
 ) {
-    let history: Vec<T> = read_history(&filepath);
-    if history.len() > limit {
-        let trim_start = history.len() - limit;
-        let trimmed_history = history[trim_start..].to_vec();
-        write_history(filepath, &trimmed_history);
+    let (history, complete): (Vec<T>, _) = read_history_impl(&filepath);
+    // A file with corrupt data is rewritten too: entries appended after the corrupt
+    // part could never be read.
+    if history.len() > limit || !complete {
+        let trim_start = history.len().saturating_sub(limit);
+        write_history(filepath, &history[trim_start..]);
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn history_round_trips_and_survives_corruption() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history");
+
+        write_history(path.clone(), &["a".to_string(), "bc".to_string()]);
+        push_history(path.clone(), &"def".to_string());
+        assert_eq!(read_history::<String>(&path), ["a", "bc", "def"]);
+
+        // A length prefix far beyond the file size (as from a corrupt file or another
+        // format) must not be allocated; the entries before it are kept.
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes.extend_from_slice(&(u64::MAX / 2).to_le_bytes());
+        bytes.extend_from_slice(b"xyz");
+        std::fs::write(&path, bytes).unwrap();
+        assert_eq!(read_history::<String>(&path), ["a", "bc", "def"]);
+
+        // trimming drops the corrupt data, so later entries can be read again
+        trim_history::<String>(path.clone(), 2);
+        push_history(path.clone(), &"g".to_string());
+        assert_eq!(read_history::<String>(&path), ["bc", "def", "g"]);
+
+        assert!(read_history::<String>(&dir.path().join("missing")).is_empty());
     }
 }

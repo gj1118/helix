@@ -415,9 +415,33 @@ impl From<Range> for helix_stdx::Range {
 /// A selection consists of one or more selection ranges.
 /// invariant: A selection can never be empty (always contains at least primary range).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "SerializedSelection")]
 pub struct Selection {
     ranges: SmallVec<[Range; 1]>,
     primary_index: usize,
+}
+
+/// The serialized form of a [`Selection`] (the same fields), checked on the way in:
+/// persisted selections come from files that may be corrupt or from another version,
+/// and an empty selection or an out of range primary index would panic later.
+#[derive(Deserialize)]
+struct SerializedSelection {
+    ranges: SmallVec<[Range; 1]>,
+    primary_index: usize,
+}
+
+impl TryFrom<SerializedSelection> for Selection {
+    type Error = &'static str;
+
+    fn try_from(selection: SerializedSelection) -> Result<Self, Self::Error> {
+        if selection.ranges.is_empty() {
+            return Err("a selection must contain at least one range");
+        }
+        if selection.primary_index >= selection.ranges.len() {
+            return Err("the primary index of a selection is out of range");
+        }
+        Ok(Self::new(selection.ranges, selection.primary_index))
+    }
 }
 
 #[allow(clippy::len_without_is_empty)] // a Selection is never empty
@@ -889,6 +913,19 @@ mod test {
     #[should_panic]
     fn test_new_empty() {
         let _ = Selection::new(smallvec![], 0);
+    }
+
+    #[test]
+    fn test_deserialize_rejects_invalid_selections() {
+        let selection = Selection::new(smallvec![Range::new(4, 5), Range::new(0, 1)], 1);
+        let json = serde_json::to_string(&selection).unwrap();
+        assert_eq!(serde_json::from_str::<Selection>(&json).unwrap(), selection);
+
+        let empty = r#"{"ranges":[],"primary_index":0}"#;
+        assert!(serde_json::from_str::<Selection>(empty).is_err());
+        let out_of_range =
+            r#"{"ranges":[{"anchor":0,"head":1,"old_visual_position":null}],"primary_index":3}"#;
+        assert!(serde_json::from_str::<Selection>(out_of_range).is_err());
     }
 
     #[test]

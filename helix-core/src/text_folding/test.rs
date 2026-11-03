@@ -558,3 +558,19 @@ fn partially_overlapping_folds_do_not_both_survive() {
 
     assert_eq!(container.len(), 1);
 }
+
+/// Adding a fold that is already present, or the same fold twice, keeps one copy
+/// instead of panicking on the duplicate while sorting.
+#[test]
+fn duplicate_folds_are_added_once() {
+    let mut container = FoldContainer::from(*TEXT_SAMPLE, fold_points());
+    let expected = container.clone();
+
+    container.add(*TEXT_SAMPLE, fold_points());
+    assert!(folds_eq(&container, &expected));
+
+    let mut doubled = fold_points();
+    doubled.extend(fold_points());
+    let container = FoldContainer::from(*TEXT_SAMPLE, doubled);
+    assert!(folds_eq(&container, &expected));
+}
