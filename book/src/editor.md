@@ -1106,6 +1106,18 @@ fn main() {
 }
 ```
 
+With both `cursor-line = "disable"` and `end-of-line-diagnostics = "disable"`, the diagnostics under the cursor are shown in the top right corner of the view instead, so the text never moves and no diagnostic is lost:
+
+```toml
+[editor]
+end-of-line-diagnostics = "disable"
+
+[editor.inline-diagnostics]
+cursor-line = "disable"
+```
+
+The corner is not used in a view where a plugin draws annotations (such as the `inline-diagnostic` plugin in `contrib/plugins`, which shows its own panel), so diagnostics are not shown twice.
+
 ### `[editor.word-completion]` Section
 
 Options for controlling completion of words from open buffers.

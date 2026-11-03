@@ -428,3 +428,111 @@ async fn end_of_line_diagnostics_scroll_horizontally() -> anyhow::Result<()> {
     send_keys(&mut app, ":q!<ret>").await?;
     Ok(())
 }
+
+/// With inline diagnostics on the cursor line and end-of-line diagnostics both disabled, the
+/// diagnostic under the cursor is shown in the top right corner of the view (as upstream does),
+/// but not when another way of showing it is on, nor where a plugin draws annotations.
+#[tokio::test(flavor = "multi_thread")]
+async fn diagnostics_are_shown_in_the_corner_when_inline_and_end_of_line_are_off(
+) -> anyhow::Result<()> {
+    use helix_core::diagnostic::{
+        Diagnostic, DiagnosticProvider, LanguageServerId, Range, Severity,
+    };
+    use helix_view::annotations::diagnostics::DiagnosticFilter;
+    use helix_view::document::PluginAnnotation;
+
+    let text = "let first = 1;\nlet second = 2;\n";
+    let file = helpers::temp_file_with_contents(text)?;
+    let hint = Diagnostic {
+        range: Range { start: 4, end: 9 },
+        ends_at_word: false,
+        starts_at_word: false,
+        zero_width: false,
+        line: 0,
+        message: "CORNERHINT".to_string(),
+        severity: Some(Severity::Hint),
+        code: None,
+        provider: DiagnosticProvider::Lsp {
+            server_id: LanguageServerId::default(),
+            identifier: None,
+        },
+        tags: Vec::new(),
+        source: None,
+        data: None,
+    };
+
+    let in_corner = |cursor_line: DiagnosticFilter, end_of_line: DiagnosticFilter, plugin: bool| {
+        let file = &file;
+        let hint = hint.clone();
+        async move {
+            let mut config = helpers::test_config();
+            config.editor.end_of_line_diagnostics = end_of_line;
+            config.editor.inline_diagnostics.cursor_line = cursor_line;
+            config.editor.inline_diagnostics.other_lines = DiagnosticFilter::Disable;
+            // notification popups sit in the same corner
+            config.editor.notifications.enable = false;
+            let mut app = helpers::AppBuilder::new()
+                .with_file(file.path(), None)
+                .with_config(config)
+                .build()?;
+            {
+                let (view, doc) = helix_view::current!(app.editor);
+                doc.replace_diagnostics([hint], &[], None);
+                if plugin {
+                    doc.plugin_annotations.insert(
+                        view.id,
+                        vec![PluginAnnotation {
+                            char_idx: 0,
+                            text: "PANEL".to_string(),
+                            style: None,
+                            fg: None,
+                            bg: None,
+                            offset: 1,
+                            is_line: false,
+                            virt_line_idx: None,
+                            dropped_text: None,
+                        }],
+                    );
+                }
+            }
+            app.resize_terminal(80, 10).await;
+            // onto the diagnostic
+            send_keys(&mut app, "wl").await?;
+            let rows = app.rendered_rows();
+            // the second row of the view, right aligned
+            let shown = rows[1].trim_end().ends_with("CORNERHINT");
+            let anywhere = rows.iter().any(|row| row.contains("CORNERHINT"));
+            send_keys(&mut app, ":q!<ret>").await?;
+            anyhow::Ok((shown, anywhere, rows))
+        }
+    };
+
+    let (shown, _, rows) =
+        in_corner(DiagnosticFilter::Disable, DiagnosticFilter::Disable, false).await?;
+    assert!(shown, "{rows:#?}");
+
+    // end-of-line diagnostics show it (at the end of its line, not in the corner)
+    let (_, anywhere, rows) = in_corner(
+        DiagnosticFilter::Disable,
+        DiagnosticFilter::Enable(Severity::Hint),
+        false,
+    )
+    .await?;
+    let in_corner_too = rows[1].trim_end().ends_with("CORNERHINT") && !rows[1].contains("second");
+    assert!(anywhere && !in_corner_too, "{rows:#?}");
+
+    // inline diagnostics on the cursor line are on: no corner
+    let (shown, _, rows) = in_corner(
+        DiagnosticFilter::Enable(Severity::Warning),
+        DiagnosticFilter::Disable,
+        false,
+    )
+    .await?;
+    assert!(!shown, "{rows:#?}");
+
+    // a plugin draws its own panel: no corner
+    let (_, anywhere, rows) =
+        in_corner(DiagnosticFilter::Disable, DiagnosticFilter::Disable, true).await?;
+    assert!(!anywhere, "{rows:#?}");
+    Ok(())
+}

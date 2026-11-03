@@ -639,11 +639,22 @@ impl EditorView {
             }
         }
 
-        // if config.inline_diagnostics.disabled()
-        //     && config.end_of_line_diagnostics == DiagnosticFilter::Disable
-        // {
-        //     Self::render_diagnostics(doc, view, inner, surface, theme);
-        // }
+        // With neither inline diagnostics on the cursor line nor end-of-line diagnostics, the
+        // diagnostics under the cursor are shown in the top right corner of the view, as
+        // upstream does. Not while a plugin draws annotations in this view (the
+        // inline-diagnostic plugin turns the others off to draw its own panel): they would be
+        // shown twice.
+        use helix_view::annotations::diagnostics::DiagnosticFilter;
+        let plugin_annotations = doc
+            .plugin_annotations
+            .get(&view.id)
+            .is_some_and(|annotations| !annotations.is_empty());
+        if config.inline_diagnostics.cursor_line == DiagnosticFilter::Disable
+            && config.end_of_line_diagnostics == DiagnosticFilter::Disable
+            && !plugin_annotations
+        {
+            Self::render_diagnostics(doc, view, inner, surface, theme);
+        }
 
         // Statusline on the last row of the view area.
         // The cmdline space reservation is handled at the top level in EditorView::render.
@@ -1774,7 +1785,11 @@ impl EditorView {
             .alignment(Alignment::Right)
             .wrap(Wrap { trim: true });
         let width = 100.min(viewport.width);
-        let height = 15.min(viewport.height);
+        // below the first row, and inside the view
+        let height = 15.min(viewport.height.saturating_sub(1));
+        if width == 0 || height == 0 {
+            return;
+        }
         paragraph.render(
             Rect::new(viewport.right() - width, viewport.y + 1, width, height),
             surface,
