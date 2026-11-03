@@ -27,7 +27,7 @@ impl Component for Info {
             surface,
             area,
             popup_style,
-            !cx.editor.config().borders_hidden(),
+            !crate::ui::border_cells_take_background(&cx.editor.config()),
         );
         let mut border_style = popup_style;
         border_style.bg = None;

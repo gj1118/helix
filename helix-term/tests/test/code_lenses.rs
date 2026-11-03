@@ -146,7 +146,7 @@ async fn lenses_are_shown_resolved_and_run() -> anyhow::Result<()> {
                     assert!(screen.contains("Code Lenses"), "{screen}");
                     assert!(screen.contains("2 references"), "{screen}");
                     // ... in the frame the other pickers have
-                    assert!(screen.contains('┌') && screen.contains('┘'), "{screen}");
+                    assert!(screen.contains('🭽') && screen.contains('🭿'), "{screen}");
                 }),
             ),
             // the lens of the first line is the first entry; choosing it runs it again

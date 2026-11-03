@@ -185,6 +185,12 @@ impl GradientBorder {
         Self::interpolate_color(start_color, end_color, ratio)
     }
 
+    /// Whether a border of this thickness and corners is drawn along the outer edge of its
+    /// cells (`▏ ▔ ▕ ▁`): thin and square, the plain border.
+    pub fn hugs_the_edge(thickness: u8, rounded: bool) -> bool {
+        !rounded && thickness <= 1
+    }
+
     /// Get the appropriate border characters based on thickness and rounded corners setting
     fn get_border_chars(thickness: u8, rounded: bool) -> Vec<&'static str> {
         match (thickness, rounded) {
@@ -230,15 +236,26 @@ impl GradientBorder {
             return;
         }
 
-        let border_chars = Self::get_border_chars(self.config.thickness, rounded);
-        let [horizontal, vertical, top_left, top_right, bottom_left, bottom_right] = [
-            border_chars[0],
-            border_chars[1],
-            border_chars[2],
-            border_chars[3],
-            border_chars[4],
-            border_chars[5],
-        ];
+        // (top, bottom, left, right, top-left, top-right, bottom-left, bottom-right)
+        let (top, bottom, left, right, top_left, top_right, bottom_left, bottom_right) =
+            if Self::hugs_the_edge(self.config.thickness, rounded) {
+                // Along the outer edge of the cells, as plain borders (see
+                // `ui::border_cells_take_background`).
+                let e = tui::symbols::line::EDGE;
+                (
+                    e.horizontal,
+                    e.bottom,
+                    e.vertical,
+                    e.right,
+                    e.top_left,
+                    e.top_right,
+                    e.bottom_left,
+                    e.bottom_right,
+                )
+            } else {
+                let c = Self::get_border_chars(self.config.thickness, rounded);
+                (c[0], c[0], c[1], c[1], c[2], c[3], c[4], c[5])
+            };
 
         // Render top border
         for x in area.left()..area.right() {
@@ -249,7 +266,7 @@ impl GradientBorder {
             } else if x == area.right() - 1 {
                 top_right
             } else {
-                horizontal
+                top
             };
 
             if let Some(cell) = surface.get_mut(x, area.top()) {
@@ -267,7 +284,7 @@ impl GradientBorder {
             } else if x == area.right() - 1 {
                 bottom_right
             } else {
-                horizontal
+                bottom
             };
 
             if let Some(cell) = surface.get_mut(x, bottom_y) {
@@ -281,7 +298,7 @@ impl GradientBorder {
             let color = self.get_gradient_color(area.left(), y, area);
             let style = Style::default().fg(color);
             if let Some(cell) = surface.get_mut(area.left(), y) {
-                cell.set_symbol(vertical).set_style(style);
+                cell.set_symbol(left).set_style(style);
             }
 
             // Right border
@@ -289,7 +306,7 @@ impl GradientBorder {
             let color = self.get_gradient_color(right_x, y, area);
             let style = Style::default().fg(color);
             if let Some(cell) = surface.get_mut(right_x, y) {
-                cell.set_symbol(vertical).set_style(style);
+                cell.set_symbol(right).set_style(style);
             }
         }
 

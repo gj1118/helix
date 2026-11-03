@@ -436,7 +436,7 @@ async fn floating_window_is_centered_and_sized_like_the_pickers() -> anyhow::Res
                 Some("k"),
                 Some(&|app| {
                     let rows = app.rendered_rows();
-                    let corners = ['┌', '╭', '┏', '╔'];
+                    let corners = ['┌', '╭', '┏', '╔', '🭽'];
                     let grid: Vec<Vec<char>> =
                         rows.iter().map(|row| row.chars().collect()).collect();
                     let at = |y: usize, x: usize| grid.get(y).and_then(|row| row.get(x)).copied();
@@ -448,9 +448,9 @@ async fn floating_window_is_centered_and_sized_like_the_pickers() -> anyhow::Res
                         // window can touch its border
                         .filter_map(|(y, x)| {
                             let right = (x + 1..grid[y].len())
-                                .find(|&i| at(y, i).is_some_and(|c| "┐╮┓╗".contains(c)))?;
+                                .find(|&i| at(y, i).is_some_and(|c| "┐╮┓╗🭾".contains(c)))?;
                             let bottom = (y + 1..grid.len())
-                                .find(|&j| at(j, x).is_some_and(|c| "└╰┗╚".contains(c)))?;
+                                .find(|&j| at(j, x).is_some_and(|c| "└╰┗╚🭼".contains(c)))?;
                             Some((y, x, right - x + 1, bottom - y + 1))
                         })
                         .find(|&(y, x, width, height)| {

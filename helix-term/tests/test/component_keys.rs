@@ -68,7 +68,7 @@ async fn no_op_takes_a_key_away_from_a_prompt() -> anyhow::Result<()> {
 fn selected_row(app: &Application) -> usize {
     app.rendered_rows()
         .iter()
-        .position(|row| row.contains("│>"))
+        .position(|row| row.contains("▏>"))
         .unwrap_or_else(|| panic!("no selection:\n{}", app.rendered_rows().join("\n")))
 }
 

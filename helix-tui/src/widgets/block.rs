@@ -18,6 +18,8 @@ pub enum BorderType {
     QuadrantInside,
     /// Quadrant blocks, filled on the outer side.
     QuadrantOutside,
+    /// Thin lines along the outer edge of the border cells (see [`line::EDGE`]).
+    Edge,
     /// Blank: keeps the space of a border but draws nothing.
     Hidden,
 }
@@ -39,6 +41,7 @@ impl BorderType {
             Self::Thick => line::THICK,
             Self::QuadrantInside => line::QUADRANT_INSIDE,
             Self::QuadrantOutside => line::QUADRANT_OUTSIDE,
+            Self::Edge => line::EDGE,
             Self::Hidden => line::HIDDEN,
         }
     }

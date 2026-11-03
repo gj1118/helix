@@ -661,7 +661,7 @@ impl Component for Completion {
             surface,
             doc_area,
             background,
-            !cx.editor.config().borders_hidden(),
+            !crate::ui::border_cells_take_background(&cx.editor.config()),
         );
 
         // Always boxed like the menu; a gradient when `gradient-borders` is on.

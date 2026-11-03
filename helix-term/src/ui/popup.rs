@@ -360,7 +360,7 @@ impl<T: Component> Component for Popup<T> {
             surface,
             area,
             background,
-            render_borders && !cx.editor.config().borders_hidden(),
+            render_borders && !crate::ui::border_cells_take_background(&cx.editor.config()),
         );
 
         let mut inner = area;

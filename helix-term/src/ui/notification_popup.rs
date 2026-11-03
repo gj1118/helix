@@ -487,6 +487,9 @@ impl NotificationPopup {
             .corner_radius
             .unwrap_or(config.border.radius);
 
+        // Whether the border is drawn along the outer edge of its cells: they then take the
+        // card's background too (see `ui::border_cells_take_background`).
+        let mut border_hugs_edge = false;
         // Render border based on configuration
         let inner_area = if config.border.enable {
             if cx.editor.config().gradient_borders.enable {
@@ -504,6 +507,10 @@ impl NotificationPopup {
                     let rounded = cx.editor.config().border_rounded() || corner_radius > 0;
                     if !cx.editor.config().borders_hidden() {
                         gradient_border.render(item.area, surface, theme, rounded);
+                        border_hugs_edge = GradientBorder::hugs_the_edge(
+                            cx.editor.config().gradient_borders.thickness,
+                            rounded,
+                        );
                     }
                 }
 
@@ -514,9 +521,11 @@ impl NotificationPopup {
                 // Render simple border without filling background
                 let mut border_type = crate::ui::border_type(&cx.editor.config());
                 // a corner radius asks for rounded corners on an otherwise plain border
-                if corner_radius > 0 && border_type == tui::widgets::BorderType::Plain {
+                if corner_radius > 0 && border_type == tui::widgets::BorderType::Edge {
                     border_type = tui::widgets::BorderType::Rounded;
                 }
+                border_hugs_edge =
+                    border_type == tui::widgets::BorderType::Edge && config.border.width <= 1;
                 self.render_simple_border(
                     item.area,
                     surface,
@@ -562,6 +571,22 @@ impl NotificationPopup {
         // Fill the entire inner area (card background). Overlay outside remains transparent.
         if inner_area.width > 0 && inner_area.height > 0 {
             surface.clear_with(inner_area, background_style);
+        }
+        if border_hugs_edge {
+            if let Some(bg) = background_style.bg {
+                let area = item.area.intersection(surface.area);
+                for y in area.top()..area.bottom() {
+                    for x in area.left()..area.right() {
+                        let on_border = x == area.left()
+                            || x + 1 == area.right()
+                            || y == area.top()
+                            || y + 1 == area.bottom();
+                        if on_border {
+                            surface[(x, y)].bg = bg;
+                        }
+                    }
+                }
+            }
         }
 
         // Render notification content inside the content_area

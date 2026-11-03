@@ -192,7 +192,7 @@ impl Component for ConfirmBox {
             surface,
             rect,
             background,
-            !cx.editor.config().borders_hidden(),
+            !crate::ui::border_cells_take_background(&cx.editor.config()),
         );
         self.border.render(rect, surface, cx.editor);
         let inner = rect.inner(helix_view::graphics::Margin::all(1));

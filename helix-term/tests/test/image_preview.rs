@@ -205,7 +205,7 @@ async fn a_broken_image_says_why() -> anyhow::Result<()> {
                 Some(&|app| {
                     let screen = screen(app);
                     assert!(!screen.contains('▀'), "{screen}");
-                    assert!(screen.contains("│ <"), "no message:\n{screen}");
+                    assert!(screen.contains("▏ <"), "no message:\n{screen}");
                 }),
             ),
             (Some("<esc>"), None),

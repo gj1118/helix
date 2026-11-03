@@ -67,7 +67,8 @@ pub fn border_type(config: &helix_view::editor::Config) -> tui::widgets::BorderT
     use tui::widgets::BorderType;
     match config.effective_border_style() {
         BorderStyle::None => BorderType::Hidden,
-        BorderStyle::Plain => BorderType::Plain,
+        // Plain borders hug the outer edge of their cells (see `border_cells_take_background`).
+        BorderStyle::Plain => BorderType::Edge,
         BorderStyle::Rounded => BorderType::Rounded,
         BorderStyle::Double => BorderType::Double,
         BorderStyle::Thick => BorderType::Thick,
@@ -87,20 +88,46 @@ pub fn border_style(theme: &helix_view::Theme) -> helix_view::graphics::Style {
         .unwrap_or_default()
 }
 
-/// Paints the background of a popup that `bordered` draws a border around: `background`
-/// inside the border only. A border glyph (`│`, `─`, corners) runs through the middle of its
-/// cell, so a cell painted with the popup's background would show half a cell of it beyond
-/// the line, all around the popup (plain to see on light themes). The border cells keep the
-/// background already behind them instead, whatever the theme or the popup. Without a
-/// border, the whole area is painted.
+/// Whether the border cells of a popup are to take the popup's background. A terminal cell
+/// has one background, and a border's glyph decides which side of it the popup is on:
+/// - plain borders are drawn along the outer edge of their cells (`▏ ▔ ▕ ▁`), and the
+///   `quadrant-outside` blocks fill their outer half: the rest of the cell is inside the
+///   popup, so it takes the popup's background (no gap inside, nothing beyond the line);
+/// - the other styles (rounded, double, thick, `quadrant-inside`, and gradient borders
+///   thicker than one cell) run through the middle of the cell or fill its inner half: the
+///   cell keeps the background behind the popup, so nothing shows beyond the line.
+///
+/// Without border glyphs the popup simply covers its whole area.
+pub fn border_cells_take_background(config: &helix_view::editor::Config) -> bool {
+    use helix_view::editor::BorderStyle;
+    if config.borders_hidden() {
+        return true;
+    }
+    if config.gradient_borders.enable {
+        // Gradient borders are rounded or square; square and thin is the plain edge.
+        return gradient_border::GradientBorder::hugs_the_edge(
+            config.gradient_borders.thickness,
+            config.border_rounded(),
+        );
+    }
+    matches!(
+        config.effective_border_style(),
+        BorderStyle::Plain | BorderStyle::QuadrantOutside
+    )
+}
+
+/// Paints the background of a popup inside its border. With `keep_border_background` the
+/// border cells keep the background already behind the popup (for border glyphs through the
+/// middle of their cells, see [`border_cells_take_background`]); otherwise the whole area,
+/// border cells included, takes `background`.
 pub fn clear_bordered(
     surface: &mut tui::buffer::Buffer,
     area: helix_view::graphics::Rect,
     background: Style,
-    bordered: bool,
+    keep_border_background: bool,
 ) {
     let area = area.intersection(surface.area);
-    if !bordered || area.width < 3 || area.height < 3 {
+    if !keep_border_background || area.width < 3 || area.height < 3 {
         surface.clear_with(area, background);
         return;
     }
@@ -123,7 +150,11 @@ pub fn clear_bordered(
 /// their separators, which would otherwise merge the sections they divide.
 pub fn separator_type(config: &helix_view::editor::Config) -> tui::widgets::BorderType {
     match border_type(config) {
-        tui::widgets::BorderType::Hidden => tui::widgets::BorderType::Plain,
+        // A separator runs through the content, so it stays a line through the middle of its
+        // cells.
+        tui::widgets::BorderType::Hidden | tui::widgets::BorderType::Edge => {
+            tui::widgets::BorderType::Plain
+        }
         other => other,
     }
 }
@@ -1048,6 +1079,60 @@ mod clear_bordered_tests {
         // outside the popup nothing changed
         assert_eq!(surface[(0, 0)].symbol.as_str(), "e");
         assert_eq!(surface[(7, 0)].bg, editor);
+    }
+
+    #[test]
+    fn which_borders_take_the_popup_background() {
+        use helix_view::editor::{BorderStyle, Config};
+        let with = |style: BorderStyle, gradient: Option<u8>| {
+            let mut config = Config {
+                border_style: Some(style),
+                ..Config::default()
+            };
+            if let Some(thickness) = gradient {
+                config.gradient_borders.enable = true;
+                config.gradient_borders.thickness = thickness;
+            }
+            border_cells_take_background(&config)
+        };
+        // drawn along the outer edge of the cell, or filling its outer half
+        assert!(with(BorderStyle::Plain, None));
+        assert!(with(BorderStyle::QuadrantOutside, None));
+        assert!(with(BorderStyle::Plain, Some(1)));
+        // through the middle of the cell, or filling its inner half
+        for style in [
+            BorderStyle::Rounded,
+            BorderStyle::Double,
+            BorderStyle::Thick,
+            BorderStyle::QuadrantInside,
+        ] {
+            assert!(!with(style, None), "{style:?}");
+        }
+        assert!(!with(BorderStyle::Rounded, Some(1)));
+        assert!(!with(BorderStyle::Plain, Some(2)));
+        // no glyphs: the popup covers its area
+        assert!(with(BorderStyle::None, None));
+    }
+
+    #[test]
+    fn plain_borders_hug_the_edge_and_separators_stay_lines() {
+        use helix_view::editor::{BorderStyle, Config};
+        let config = Config {
+            border_style: Some(BorderStyle::Plain),
+            ..Config::default()
+        };
+        let border = tui::widgets::BorderType::line_symbols(border_type(&config));
+        assert_eq!(
+            [
+                border.vertical,
+                border.horizontal,
+                border.right,
+                border.bottom
+            ],
+            ["▏", "▔", "▕", "▁"]
+        );
+        let separator = tui::widgets::BorderType::line_symbols(separator_type(&config));
+        assert_eq!(separator.horizontal, "─");
     }
 
     #[test]

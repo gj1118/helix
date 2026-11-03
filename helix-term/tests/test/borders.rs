@@ -39,10 +39,11 @@ async fn picker_screen(config: Config) -> anyhow::Result<String> {
 #[tokio::test(flavor = "multi_thread")]
 async fn border_style_changes_the_picker_frame() -> anyhow::Result<()> {
     let plain = picker_screen(Config::default()).await?;
-    assert!(plain.contains('┌') && plain.contains('┘'), "{plain}");
+    // plain borders run along the outer edge of their cells
+    assert!(plain.contains('🭽') && plain.contains('🭿'), "{plain}");
 
     for (style, corner, edge) in [
-        ("plain", '┌', '│'),
+        ("plain", '🭽', '▏'),
         ("rounded", '╭', '│'),
         ("double", '╔', '║'),
         ("thick", '┏', '┃'),
@@ -62,7 +63,8 @@ async fn border_style_changes_the_picker_frame() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn border_style_none_hides_the_frame_but_keeps_the_separator() -> anyhow::Result<()> {
     let screen = picker_screen(config("none")).await?;
-    for glyph in ['┌', '┐', '└', '┘', '╭', '╮', '╰', '╯', '╔', '▛'] {
+    for glyph in ['┌', '┐', '└', '┘', '╭', '╮', '╰', '╯', '╔', '▛', '🭽', '🭿']
+    {
         assert!(!screen.contains(glyph), "found {glyph}\n{screen}");
     }
     // the line under the prompt still divides the input from the results
@@ -155,7 +157,7 @@ async fn confirm_box_corners(config: Config) -> anyhow::Result<(Color, Color, Co
                     let row: Vec<char> = app.rendered_rows()[y as usize].chars().collect();
                     let right_x = row
                         .iter()
-                        .rposition(|c| "┐╮╗┓▖▜".contains(*c))
+                        .rposition(|c| "┐╮╗┓▖▜🭾".contains(*c))
                         .expect("the right corner") as u16;
                     out.lock().unwrap().push(app.rendered_fg(right_x, y));
                     out.lock().unwrap().push(left);

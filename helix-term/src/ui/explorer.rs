@@ -1833,7 +1833,7 @@ impl Component for Explorer {
                     surface,
                     frame,
                     background_style,
-                    !config.borders_hidden(),
+                    !crate::ui::border_cells_take_background(&config),
                 );
                 if config.gradient_borders.enable {
                     // `[editor.gradient-borders]` wins whenever it is enabled.

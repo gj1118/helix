@@ -1095,7 +1095,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             surface,
             area,
             background,
-            !cx.editor.config().borders_hidden(),
+            !crate::ui::border_cells_take_background(&cx.editor.config()),
         );
 
         // calculate the inner area inside the box
@@ -1351,7 +1351,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             surface,
             area,
             background,
-            !cx.editor.config().borders_hidden(),
+            !crate::ui::border_cells_take_background(&cx.editor.config()),
         );
 
         // calculate the inner area inside the box

@@ -256,6 +256,25 @@ pub mod line {
     };
 
     /// A frame of quadrant blocks that is filled on the outer side of the area.
+    /// Thin lines along the outer edge of the border cells, so that the cells can take the
+    /// background of the content they surround: a line through the middle of the cell would
+    /// leave half a cell of one background or the other on its far side.
+    pub const EDGE: Set = Set {
+        vertical: "▏",
+        horizontal: "▔",
+        right: "▕",
+        bottom: "▁",
+        top_right: "🭾",
+        top_left: "🭽",
+        bottom_right: "🭿",
+        bottom_left: "🭼",
+        vertical_left: "▕",
+        vertical_right: "▏",
+        horizontal_down: "▔",
+        horizontal_up: "▁",
+        cross: "┼",
+    };
+
     pub const QUADRANT_OUTSIDE: Set = Set {
         vertical: "▌",
         horizontal: "▀",

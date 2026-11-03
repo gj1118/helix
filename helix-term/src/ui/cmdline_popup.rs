@@ -105,7 +105,7 @@ impl CmdlinePopup {
             surface,
             popup_area,
             theme.get("ui.popup"),
-            !cx.editor.config().borders_hidden(),
+            !crate::ui::border_cells_take_background(&cx.editor.config()),
         );
 
         // Use gradient border if enabled, otherwise use default border
@@ -244,7 +244,7 @@ impl CmdlinePopup {
             surface,
             comp_area,
             completion_bg,
-            !cx.editor.config().borders_hidden(),
+            !crate::ui::border_cells_take_background(&cx.editor.config()),
         );
 
         let config = &cx.editor.config().gradient_borders;
