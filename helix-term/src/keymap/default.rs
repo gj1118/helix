@@ -143,6 +143,7 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
                 "e" => select_textobject_inside_entry,
                 "m" => select_textobject_inside_closest_surrounding_pair,
                 "g" => select_textobject_inside_change,
+                "x" => select_textobject_inside_xml_element,
             },
             "a" => { "Match around" fallback=select_textobject_around_surrounding_pair
                 "w" => select_textobject_around_word,
@@ -156,6 +157,7 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
                 "e" => select_textobject_around_entry,
                 "m" => select_textobject_around_closest_surrounding_pair,
                 "g" => select_textobject_around_change,
+                "x" => select_textobject_around_xml_element,
             },
             "A" => select_all_textobjects_around,
             "I" => select_all_textobjects_inner,

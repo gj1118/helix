@@ -654,6 +654,8 @@ impl MappableCommand {
         select_textobject_around_test, "Select around test (tree-sitter)",
         select_textobject_inside_entry, "Select inside data structure entry (tree-sitter)",
         select_textobject_around_entry, "Select around data structure entry (tree-sitter)",
+        select_textobject_inside_xml_element, "Select inside (X)HTML element (tree-sitter)",
+        select_textobject_around_xml_element, "Select around (X)HTML element (tree-sitter)",
         select_textobject_inside_paragraph, "Select inside paragraph",
         select_textobject_around_paragraph, "Select around paragraph",
         select_textobject_inside_closest_surrounding_pair, "Select inside closest surrounding pair (tree-sitter)",
@@ -7710,6 +7712,14 @@ fn select_textobject_inside_entry(cx: &mut Context) {
 
 fn select_textobject_around_entry(cx: &mut Context) {
     textobject_treesitter(cx, textobject::TextObject::Around, "entry");
+}
+
+fn select_textobject_inside_xml_element(cx: &mut Context) {
+    textobject_treesitter(cx, textobject::TextObject::Inside, "xml-element");
+}
+
+fn select_textobject_around_xml_element(cx: &mut Context) {
+    textobject_treesitter(cx, textobject::TextObject::Around, "xml-element");
 }
 
 fn range_contains_range(range: Range, other: Range) -> bool {

@@ -2235,6 +2235,67 @@ pub fn compute_inlay_hints_for_all_views(editor: &mut Editor, jobs: &mut crate::
     }
 }
 
+/// The version of a document each view last asked its inlay hints again for, after an answer
+/// came for an older version, see [`retry_stale_inlay_hints`].
+static INLAY_HINT_RETRIES: std::sync::Mutex<
+    Option<HashMap<(helix_view::ViewId, DocumentId), i32>>,
+> = std::sync::Mutex::new(None);
+
+/// Whether hints dropped as stale should be asked again for `version`: once per version of a
+/// document in a view, so that the answers to several requests made before an edit (or an
+/// answer to the retry itself) don't each send a request for the same text.
+fn first_retry_for_version(
+    retries: &mut HashMap<(helix_view::ViewId, DocumentId), i32>,
+    view_id: helix_view::ViewId,
+    doc_id: DocumentId,
+    version: i32,
+) -> bool {
+    retries.insert((view_id, doc_id), version) != Some(version)
+}
+
+/// Asks the inlay hints of `doc_id` in `view_id` again after an answer was dropped because the
+/// document had changed in the meantime. Only while the view still shows the document, and
+/// once per version (see [`first_retry_for_version`]).
+fn retry_stale_inlay_hints(
+    editor: &Editor,
+    view_id: helix_view::ViewId,
+    doc_id: DocumentId,
+    version: i32,
+) {
+    let Some(view) = editor
+        .tree
+        .try_get(view_id)
+        .filter(|view| view.doc == doc_id)
+    else {
+        return;
+    };
+    let Some(doc) = editor.documents.get(&doc_id) else {
+        return;
+    };
+    {
+        let mut retries = INLAY_HINT_RETRIES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let retries = retries.get_or_insert_with(HashMap::new);
+        // forget the views and documents that are gone
+        retries.retain(|(view, doc), _| {
+            editor.tree.contains(*view) && editor.documents.contains_key(doc)
+        });
+        if !first_retry_for_version(retries, view_id, doc_id, version) {
+            return;
+        }
+    }
+    let Some(request) = compute_inlay_hints_for_view(view, doc) else {
+        return;
+    };
+    tokio::spawn(async move {
+        match request.await {
+            Ok(callback) => crate::job::dispatch_callback(callback).await,
+            Err(err) => log::error!("Inlay hints: {err}"),
+        }
+    });
+}
+
 fn compute_inlay_hints_for_view(
     view: &View,
     doc: &Document,
@@ -2302,9 +2363,12 @@ fn compute_inlay_hints_for_view(
                 Some(doc) => doc,
                 None => return,
             };
-            // Edited since: the positions are for the old text. The hints stay outdated, so
-            // the next idle timeout asks again.
+            // Edited since: the positions are for the old text. Waiting for the next idle
+            // timeout is not enough, it only comes after input and the edit may not have come
+            // from input (a formatter, a workspace edit, a reload): ask again for the new text.
             if doc.version() != version {
+                let current = doc.version();
+                retry_stale_inlay_hints(editor, view_id, doc_id, current);
                 return;
             }
 
@@ -2412,4 +2476,24 @@ fn compute_inlay_hints_for_view(
     );
 
     Some(callback)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stale_inlay_hints_are_asked_again_once_per_version() {
+        let view = helix_view::ViewId::default();
+        let doc = DocumentId::default();
+        let mut retries = HashMap::new();
+        // the answer for version 1 came after an edit to version 2: ask again
+        assert!(first_retry_for_version(&mut retries, view, doc, 2));
+        // another answer for an older version (or the retry's own, stale again before the
+        // edit was seen) does not ask a second time for the same text
+        assert!(!first_retry_for_version(&mut retries, view, doc, 2));
+        // the document changed once more: one more request, for the new text
+        assert!(first_retry_for_version(&mut retries, view, doc, 3));
+        assert!(!first_retry_for_version(&mut retries, view, doc, 3));
+    }
 }

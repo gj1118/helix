@@ -897,3 +897,35 @@ async fn tree_sitter_motions_work_across_injections() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+/// `mix` / `max` select inside / around the (X)HTML element (`x` is a textobject key in `mi`
+/// and `ma`, not a pair character), and the other keys still fall back to pairs.
+#[tokio::test(flavor = "multi_thread")]
+async fn match_inside_and_around_select_xml_elements() -> anyhow::Result<()> {
+    for (input, keys, output) in [
+        (
+            "<div><p>#[h|]#ello</p></div>",
+            "mix",
+            "<div><p>#[hello|]#</p></div>",
+        ),
+        (
+            "<div><p>#[h|]#ello</p></div>",
+            "max",
+            "<div>#[<p>hello</p>|]#</div>",
+        ),
+        (
+            "<div><p>hello</p>#[<|]#br/></div>",
+            "max",
+            "<div><p>hello</p>#[<br/>|]#</div>",
+        ),
+        ("<div>(#[h|]#ello)</div>", "mi(", "<div>(#[hello|]#)</div>"),
+    ] {
+        test_with_config(
+            AppBuilder::new().with_file("foo.html", None),
+            (input, keys, output),
+        )
+        .await?;
+    }
+
+    Ok(())
+}

@@ -215,13 +215,20 @@ impl Compositor {
     pub fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
         // The terminal cursor goes where the top-most layer with a cursor puts it. When that
         // is a layer above the editor (a prompt, the command line popup, a picker, ...) the
-        // editor draws its primary cursor itself, or it would not be seen at all.
+        // editor draws its primary cursor itself, or it would not be seen at all. A layer that
+        // places a hidden cursor (the focused explorer tree) does so to make the editor's
+        // cursor disappear, so it does not count.
         let cursor_above_editor = self
             .layers
             .iter()
             .rev()
             .take_while(|layer| !layer.as_any().is::<crate::ui::EditorView>())
-            .any(|layer| layer.cursor(area, cx.editor).0.is_some());
+            .any(|layer| {
+                matches!(
+                    layer.cursor(area, cx.editor),
+                    (Some(_), kind) if kind != CursorKind::Hidden
+                )
+            });
 
         for layer in &mut self.layers {
             if let Some(editor_view) = layer.as_any_mut().downcast_mut::<crate::ui::EditorView>() {

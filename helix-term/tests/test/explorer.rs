@@ -551,3 +551,70 @@ async fn floating_window_is_centered_and_sized_like_the_pickers() -> anyhow::Res
     }
     Ok(())
 }
+
+/// How many cells of the screen are drawn in the primary cursor's colour (red).
+fn primary_cursor_cells(app: &Application) -> usize {
+    let red = helix_view::graphics::Color::Rgb(255, 0, 0);
+    let height = app.rendered_rows().len() as u16;
+    (0..height)
+        .flat_map(|y| (0..120).map(move |x| (x, y)))
+        .filter(|&(x, y)| app.rendered_fg(x, y) == red)
+        .count()
+}
+
+/// The focused tree hides the terminal cursor so that the editor's cursor disappears: the
+/// editor must not draw its own block cursor then. It still does under the command line (both
+/// styles) and a picker, which take the terminal cursor away from it.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_focused_tree_hides_the_editor_cursor() -> anyhow::Result<()> {
+    let (_dir, root) = repo()?;
+    for style in ["bottom", "popup"] {
+        let raw: helix_term::config::ConfigRaw = toml::from_str(&format!(
+            "[editor.explorer]\ngit-status = false\n[editor.cmdline]\nstyle = \"{style}\"\n"
+        ))?;
+        let mut app = helpers::AppBuilder::new()
+            .with_config(Config {
+                editor: raw.editor.unwrap().try_into().unwrap(),
+                ..Default::default()
+            })
+            .with_input_text("#[h|]#ello\n")
+            .build()?;
+        app.editor.theme = helix_view::Theme::from(toml::from_str::<toml::Value>(
+            r##"
+            "ui.selection" = { bg = "#333333" }
+            "ui.cursor" = { fg = "#00ff00" }
+            "ui.cursor.primary" = { fg = "#ff0000" }
+            "##,
+        )?);
+        open_explorer(&mut app, &root);
+        let drawn = |want: bool, what: &'static str| {
+            move |app: &Application| {
+                let cells = primary_cursor_cells(app);
+                assert_eq!(
+                    cells > 0,
+                    want,
+                    "{what} ({style}): {cells} cells in the cursor colour\n{}",
+                    app.rendered_rows().join("\n")
+                );
+            }
+        };
+        let tree = drawn(false, "focused tree");
+        let buffer = drawn(false, "focused buffer");
+        let command_line = drawn(true, "command line");
+        let picker = drawn(true, "picker");
+        test_key_sequences(
+            &mut app,
+            vec![
+                (None, Some(&tree)),
+                (Some("<C-l>"), Some(&buffer)),
+                (Some(":"), Some(&command_line)),
+                (Some("<esc>"), Some(&buffer)),
+                (Some("<space>b"), Some(&picker)),
+                (Some("<esc><C-h>"), Some(&tree)),
+            ],
+            false,
+        )
+        .await?;
+    }
+    Ok(())
+}

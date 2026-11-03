@@ -3,8 +3,8 @@ use anyhow::Context;
 use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::sync::Arc;
-use std::{collections::HashMap, fmt::Debug};
+use std::sync::{Arc, OnceLock};
+use std::{collections::HashMap, fmt, fmt::Debug};
 use tokio::{
     io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     sync::{
@@ -49,10 +49,35 @@ pub enum Payload {
     Request(Request),
 }
 
+/// The id of a session in the transport's log lines. The registry gives the client its id
+/// only after the adapter was started and initialized (see `Client::set_id`), so the client
+/// fills it in later; until then the lines say `new`.
+#[derive(Debug, Clone, Default)]
+pub struct SessionId(Arc<OnceLock<DebugAdapterId>>);
+
+impl SessionId {
+    /// Sets the id. A session's id never changes: later calls are ignored.
+    pub fn set(&self, id: DebugAdapterId) {
+        let _ = self.0.set(id);
+    }
+
+    pub fn get(&self) -> Option<DebugAdapterId> {
+        self.0.get().copied()
+    }
+}
+
+impl fmt::Display for SessionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.get() {
+            Some(id) => fmt::Display::fmt(&id, f),
+            None => f.write_str("new"),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Transport {
-    #[allow(unused)]
-    id: DebugAdapterId,
+    id: SessionId,
     pending_requests: Mutex<HashMap<u64, Sender<Result<Response>>>>,
 }
 
@@ -61,7 +86,7 @@ impl Transport {
         server_stdout: Box<dyn AsyncBufRead + Unpin + Send>,
         server_stdin: Box<dyn AsyncWrite + Unpin + Send>,
         server_stderr: Option<Box<dyn AsyncBufRead + Unpin + Send>>,
-        id: DebugAdapterId,
+        id: SessionId,
     ) -> (UnboundedReceiver<Payload>, UnboundedSender<Payload>) {
         let (client_tx, rx) = unbounded_channel();
         let (tx, client_rx) = unbounded_channel();
@@ -73,7 +98,7 @@ impl Transport {
 
         let transport = Arc::new(transport);
 
-        tokio::spawn(Self::recv(id, transport.clone(), server_stdout, client_tx));
+        tokio::spawn(Self::recv(transport.clone(), server_stdout, client_tx));
         tokio::spawn(Self::send(transport, server_stdin, client_rx));
         if let Some(stderr) = server_stderr {
             tokio::spawn(Self::err(stderr));
@@ -83,7 +108,7 @@ impl Transport {
     }
 
     async fn recv_server_message(
-        id: DebugAdapterId,
+        id: &SessionId,
         reader: &mut Box<dyn AsyncBufRead + Unpin + Send>,
         buffer: &mut String,
         content: &mut Vec<u8>,
@@ -246,7 +271,6 @@ impl Transport {
     }
 
     async fn recv(
-        id: DebugAdapterId,
         transport: Arc<Self>,
         mut server_stdout: Box<dyn AsyncBufRead + Unpin + Send>,
         client_tx: UnboundedSender<Payload>,
@@ -255,7 +279,7 @@ impl Transport {
         let mut content_buffer = Vec::new();
         loop {
             match Self::recv_server_message(
-                id,
+                &transport.id,
                 &mut server_stdout,
                 &mut recv_buffer,
                 &mut content_buffer,
@@ -265,7 +289,7 @@ impl Transport {
                 Ok(msg) => match transport.process_server_message(&client_tx, msg).await {
                     Ok(_) => (),
                     Err(err) => {
-                        error!(" [{id}] err: <- {err:?}");
+                        error!(" [{}] err: <- {err:?}", transport.id);
                         break;
                     }
                 },

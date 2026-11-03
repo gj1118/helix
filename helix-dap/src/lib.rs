@@ -4,7 +4,7 @@ mod transport;
 
 pub use client::{adapter_source_dir, adapter_source_dir_root, adapter_source_path, Client};
 pub use helix_dap_types::*;
-pub use transport::{Payload, Response, Transport};
+pub use transport::{Payload, Response, SessionId, Transport};
 
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;

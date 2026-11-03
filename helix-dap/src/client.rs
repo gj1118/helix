@@ -1,7 +1,7 @@
 use crate::{
     registry::DebugAdapterId,
     requests::{DisconnectArguments, TerminateArguments},
-    transport::{Event, Payload, Request, Response, Transport},
+    transport::{Event, Payload, Request, Response, SessionId, Transport},
     Error, ProgressMap, ProgressState, Result,
 };
 use helix_core::syntax::config::{DebugAdapterConfig, DebuggerQuirks};
@@ -38,6 +38,8 @@ pub struct Client {
     /// Hands the id the registry gives the client to the task that forwards its messages,
     /// see [`Self::set_id`].
     id_tx: Option<oneshot::Sender<DebugAdapterId>>,
+    /// The id in the transport's log lines, also filled in by [`Self::set_id`].
+    transport_id: SessionId,
     _process: Option<Child>,
     server_tx: UnboundedSender<Payload>,
     request_counter: Arc<AtomicU64>,
@@ -100,13 +102,15 @@ impl Client {
         err: Option<Box<dyn AsyncBufRead + Unpin + Send>>,
         process: Option<Child>,
     ) -> Result<(Self, UnboundedReceiver<(DebugAdapterId, Payload)>)> {
-        let (server_rx, server_tx) = Transport::start(rx, tx, err, DebugAdapterId::default());
+        let transport_id = SessionId::default();
+        let (server_rx, server_tx) = Transport::start(rx, tx, err, transport_id.clone());
         let (client_tx, client_rx) = unbounded_channel();
         let (id_tx, id_rx) = oneshot::channel();
 
         let client = Self {
             id: DebugAdapterId::default(),
             id_tx: Some(id_tx),
+            transport_id,
             _process: process,
             server_tx,
             request_counter: Arc::new(AtomicU64::new(0)),
@@ -262,6 +266,7 @@ impl Client {
     /// until now, are tagged with it from here on.
     pub fn set_id(&mut self, id: DebugAdapterId) {
         self.id = id;
+        self.transport_id.set(id);
         if let Some(id_tx) = self.id_tx.take() {
             let _ = id_tx.send(id);
         }
@@ -1003,7 +1008,11 @@ mod transport_tests {
 
         let mut ids = slotmap::SlotMap::<DebugAdapterId, ()>::with_key();
         let id = ids.insert(());
+        assert_eq!(client.transport_id.to_string(), "new");
         client.set_id(id);
+        // the transport logs the session under its id, not a null one
+        assert_eq!(client.transport_id.get(), Some(id));
+        assert_eq!(client.transport_id.to_string(), id.to_string());
         let (from, payload) = time::timeout(time::Duration::from_secs(5), receiver.recv())
             .await
             .unwrap()

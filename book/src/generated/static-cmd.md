@@ -312,6 +312,8 @@
 | `select_textobject_around_test` | Select around test (tree-sitter) | normal: `` maT ``, select: `` maT `` |
 | `select_textobject_inside_entry` | Select inside data structure entry (tree-sitter) | normal: `` mie ``, select: `` mie `` |
 | `select_textobject_around_entry` | Select around data structure entry (tree-sitter) | normal: `` mae ``, select: `` mae `` |
+| `select_textobject_inside_xml_element` | Select inside (X)HTML element (tree-sitter) | normal: `` mix ``, select: `` mix `` |
+| `select_textobject_around_xml_element` | Select around (X)HTML element (tree-sitter) | normal: `` max ``, select: `` max `` |
 | `select_textobject_inside_paragraph` | Select inside paragraph | normal: `` mip ``, select: `` mip `` |
 | `select_textobject_around_paragraph` | Select around paragraph | normal: `` map ``, select: `` map `` |
 | `select_textobject_inside_closest_surrounding_pair` | Select inside closest surrounding pair (tree-sitter) | normal: `` mim ``, select: `` mim `` |

@@ -25,7 +25,7 @@ function or block of code.
 | `T`                    | Test                     |
 | `e`                    | Entry (of a list, map, ...) |
 | `g`                    | Change                   |
-| `x`                    | (X)HTML element, with `mA` / `mI` only: `mix` / `max` select inside / around a pair of `x` characters, like any other character |
+| `x`                    | (X)HTML element          |
 
 > 💡 `f`, `t`, etc. need a tree-sitter grammar active for the current
 document and a special tree-sitter query file to work properly. [Only
