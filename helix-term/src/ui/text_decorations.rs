@@ -218,7 +218,7 @@ impl<'a> Decoration for FoldDecoration<'a> {
 
         let Some(fold) = self
             .annotations
-            .consume_next(pos.doc_line, |fold| fold.start.line - 1)
+            .consume_next(pos.doc_line, |fold| fold.start.line.saturating_sub(1))
         else {
             return Position::new(0, 0);
         };
@@ -251,7 +251,7 @@ impl<'a> Decoration for FoldDecoration<'a> {
     }
 
     fn reset_pos(&mut self, pos: usize) -> usize {
-        self.annotations.reset_pos(pos, |fold| fold.start.char - 1);
+        self.annotations.reset_pos(pos, |fold| fold.start.char.saturating_sub(1));
         usize::MAX
     }
 }

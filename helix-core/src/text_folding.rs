@@ -473,6 +473,10 @@ impl FoldContainer {
             .flatten()
             .collect();
 
+        // Nothing under the selection: leave the folds (and their order) alone.
+        if removables.is_empty() {
+            return;
+        }
         removables.sort();
         removables.dedup();
 
