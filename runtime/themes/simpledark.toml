@@ -83,7 +83,7 @@
 
 "ui.gutter" = { bg = "bg" }
 "ui.gutter.selected" = { bg = "bg-1" }
-"ui.linenr" = "bg-4"
+"ui.linenr" = "gray-1"
 "ui.linenr.selected" = { fg = "light-1", modifiers = ["bold"] }
 "ui.debug.breakpoint" = "white"
 "ui.debug.active" = "light-1"
