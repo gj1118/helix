@@ -31,12 +31,28 @@ pub fn overlaid<T>(content: T, fullscreen: bool) -> Overlay<T> {
 
 /// How much of the screen (`rect`) an [`overlaid`] component takes, each way: 90%, or all
 /// of it in `fullscreen` mode on terminals narrower than [`FULL_OVERLAID_MAX_WIDTH`].
-/// The floating explorer is sized the same way.
 pub fn overlaid_percentage(rect: Rect, fullscreen: bool) -> u8 {
     if fullscreen && rect.width < FULL_OVERLAID_MAX_WIDTH {
         100
     } else {
         90
+    }
+}
+
+/// The share of the screen, (width, height) in percent, that a list without a preview
+/// pane takes: the file picker with `hide-preview`, and the floating explorer. Narrower
+/// than [`overlaid`], as there is only the list to show.
+pub const LIST_ONLY_PERCENTAGE: (u8, u8) = (75, 90);
+
+/// Like [`overlaid`], sized for a list without a preview pane (see
+/// [`LIST_ONLY_PERCENTAGE`]).
+pub fn overlaid_list<T>(content: T) -> Overlay<T> {
+    Overlay {
+        content,
+        calc_child_size: Box::new(|rect: Rect| {
+            let (width, height) = LIST_ONLY_PERCENTAGE;
+            clip_rect_relative(rect.clip_bottom(2), width, height)
+        }),
     }
 }
 

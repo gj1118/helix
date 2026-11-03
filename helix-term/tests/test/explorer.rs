@@ -400,14 +400,16 @@ async fn counts_do_not_leak_and_the_buffer_keeps_its_motions() -> anyhow::Result
 /// How the floating window's size is expected to come out.
 #[derive(Clone, Copy)]
 enum FloatSize {
-    /// No size configured: the pickers' size, 90% of the screen each way.
+    /// No size configured: the size of the file picker without its preview, 75% x 90%
+    /// of the screen.
     Picker,
     /// The configured size.
     Exactly(usize, usize),
 }
 
-/// The floating window is sized like the pickers by default, so it follows the screen; a
-/// configured size is used as is, at most the pickers' size. It is always centered.
+/// The floating window is sized like the file picker without its preview by default, so it
+/// follows the screen; a configured size is used as is, at most that size. It is always
+/// centered.
 #[tokio::test(flavor = "multi_thread")]
 async fn floating_window_is_centered_and_sized_like_the_pickers() -> anyhow::Result<()> {
     for (explorer_toml, size) in [
@@ -478,7 +480,7 @@ async fn floating_window_is_centered_and_sized_like_the_pickers() -> anyhow::Res
                         "not centered: {top} | {bottom}\n{text}"
                     );
                     let want = match size {
-                        FloatSize::Picker => (screen_width * 9 / 10, screen_height * 9 / 10),
+                        FloatSize::Picker => (screen_width * 3 / 4, screen_height * 9 / 10),
                         FloatSize::Exactly(width, height) => (width, height),
                     };
                     assert_eq!((width, height), want, "{explorer_toml:?}\n{text}");

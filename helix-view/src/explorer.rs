@@ -158,13 +158,16 @@ impl ExplorerState {
 
     /// The floating window's frame (border included) inside `area`, the editor without
     /// its status line and command line, sized and centered like the pickers
-    /// (`ui::overlay::overlaid`): `percent` of `area` each way. A `floating-width` /
+    /// (`ui::overlay`): `percent` (width, height) of `area`. A `floating-width` /
     /// `floating-height` in the config sets a fixed size instead, at most that, still
     /// centered. While it is open, a mouse move or resize (`floating_geometry`) takes
     /// over, kept inside `area`.
-    pub fn floating_frame(&self, config: &ExplorerConfig, area: Rect, percent: u8) -> Rect {
-        let scaled = |size: u16| (size as u32 * percent.min(100) as u32 / 100) as u16;
-        let (max_width, max_height) = (scaled(area.width), scaled(area.height));
+    pub fn floating_frame(&self, config: &ExplorerConfig, area: Rect, percent: (u8, u8)) -> Rect {
+        let scaled = |size: u16, percent: u8| (size as u32 * percent.min(100) as u32 / 100) as u16;
+        let (max_width, max_height) = (
+            scaled(area.width, percent.0),
+            scaled(area.height, percent.1),
+        );
         let (x, y, width, height) = match self.floating_geometry {
             Some(g) => (g.x, g.y, g.width.min(area.width), g.height.min(area.height)),
             None => {
@@ -2271,28 +2274,33 @@ mod tests {
         let mut state = ExplorerState::default();
         // By default it follows the screen: 90% each way, centered, like a picker.
         let picker = Rect::new(5 + 5, 2 + 2, 90, 36);
-        assert_eq!(state.floating_frame(&config, area, 90), picker);
+        assert_eq!(state.floating_frame(&config, area, (90, 90)), picker);
         let small = Rect::new(0, 0, 50, 20);
         assert_eq!(
-            state.floating_frame(&config, small, 90),
+            state.floating_frame(&config, small, (90, 90)),
             Rect::new(2, 1, 45, 18)
         );
+        // The share of a list without a preview: narrower than it is high.
+        assert_eq!(
+            state.floating_frame(&config, area, (75, 90)),
+            Rect::new(5 + 12, 2 + 2, 75, 36)
+        );
         // `fullscreen-overlay` pickers: the whole area.
-        assert_eq!(state.floating_frame(&config, area, 100), area);
+        assert_eq!(state.floating_frame(&config, area, (100, 100)), area);
         // A configured size is used as is, centered, at most the picker's size.
         let mut sized = config.clone();
         sized.floating_width = Some(40);
         sized.floating_height = Some(20);
         let centered = Rect::new(5 + 30, 2 + 10, 40, 20);
-        assert_eq!(state.floating_frame(&sized, area, 90), centered);
+        assert_eq!(state.floating_frame(&sized, area, (90, 90)), centered);
         sized.floating_width = Some(500);
         sized.floating_height = Some(500);
-        assert_eq!(state.floating_frame(&sized, area, 90), picker);
+        assert_eq!(state.floating_frame(&sized, area, (90, 90)), picker);
         // `floating-x` / `floating-y` no longer move it.
         let mut positioned = config.clone();
         positioned.floating_x = Some(0);
         positioned.floating_y = Some(0);
-        assert_eq!(state.floating_frame(&positioned, area, 90), picker);
+        assert_eq!(state.floating_frame(&positioned, area, (90, 90)), picker);
         // A mouse move or resize while open takes over, kept inside the area.
         state.floating_geometry = Some(FloatGeometry {
             x: 80,
@@ -2301,12 +2309,12 @@ mod tests {
             height: 12,
         });
         assert_eq!(
-            state.floating_frame(&config, area, 90),
+            state.floating_frame(&config, area, (90, 90)),
             Rect::new(5 + 50, 2 + 28, 50, 12)
         );
         // Closing forgets it: the next window follows the screen again.
         state.hide();
-        assert_eq!(state.floating_frame(&config, area, 90), picker);
+        assert_eq!(state.floating_frame(&config, area, (90, 90)), picker);
     }
 
     #[test]

@@ -1742,15 +1742,16 @@ impl Component for Explorer {
         let bottom = if cmdline_popup_full_height { 0 } else { 1 };
 
         let (rect, frame) = if floating {
-            // Sized and centered like the pickers (`overlaid`): a share of the editor
-            // without the status line and the command line, so it follows the screen.
+            // Sized and centered like the file picker without its preview (the tree is a
+            // list too): a share of the editor without the status line and the command
+            // line, so it follows the screen.
             let bounds = area.clip_bottom(2);
             self.float_bounds = bounds;
-            let percent = super::overlay::overlaid_percentage(area, config.fullscreen_overlay);
-            let frame = cx
-                .editor
-                .explorer_panel
-                .floating_frame(&config.explorer, bounds, percent);
+            let frame = cx.editor.explorer_panel.floating_frame(
+                &config.explorer,
+                bounds,
+                super::overlay::LIST_ONLY_PERCENTAGE,
+            );
             // Gradient borders, when configured, set the border's thickness.
             let gradient = &cx.editor.config().gradient_borders;
             let t = if gradient.enable {
