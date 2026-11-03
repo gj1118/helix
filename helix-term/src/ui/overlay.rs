@@ -23,13 +23,20 @@ pub fn overlaid<T>(content: T, fullscreen: bool) -> Overlay<T> {
     Overlay {
         content,
         calc_child_size: Box::new(move |rect: Rect| {
-            let percentage = if fullscreen && rect.width < FULL_OVERLAID_MAX_WIDTH {
-                100
-            } else {
-                90
-            };
+            let percentage = overlaid_percentage(rect, fullscreen);
             clip_rect_relative(rect.clip_bottom(2), percentage, percentage)
         }),
+    }
+}
+
+/// How much of the screen (`rect`) an [`overlaid`] component takes, each way: 90%, or all
+/// of it in `fullscreen` mode on terminals narrower than [`FULL_OVERLAID_MAX_WIDTH`].
+/// The floating explorer is sized the same way.
+pub fn overlaid_percentage(rect: Rect, fullscreen: bool) -> u8 {
+    if fullscreen && rect.width < FULL_OVERLAID_MAX_WIDTH {
+        100
+    } else {
+        90
     }
 }
 

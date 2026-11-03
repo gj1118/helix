@@ -397,13 +397,29 @@ async fn counts_do_not_leak_and_the_buffer_keeps_its_motions() -> anyhow::Result
     Ok(())
 }
 
-/// The floating window is centered on the screen at its configured size, and shrunk
-/// (still centered) when it is configured bigger than the room there is.
+/// How the floating window's size is expected to come out.
+#[derive(Clone, Copy)]
+enum FloatSize {
+    /// No size configured: the pickers' size, 90% of the screen each way.
+    Picker,
+    /// The configured size.
+    Exactly(usize, usize),
+}
+
+/// The floating window is sized like the pickers by default, so it follows the screen; a
+/// configured size is used as is, at most the pickers' size. It is always centered.
 #[tokio::test(flavor = "multi_thread")]
-async fn floating_window_is_centered_and_fits_the_screen() -> anyhow::Result<()> {
-    for (explorer_toml, fits) in [
-        ("floating-width = 30\nfloating-height = 10", true),
-        ("floating-width = 500\nfloating-height = 500", false),
+async fn floating_window_is_centered_and_sized_like_the_pickers() -> anyhow::Result<()> {
+    for (explorer_toml, size) in [
+        ("", FloatSize::Picker),
+        (
+            "floating-width = 30\nfloating-height = 10",
+            FloatSize::Exactly(30, 10),
+        ),
+        (
+            "floating-width = 500\nfloating-height = 500",
+            FloatSize::Picker,
+        ),
     ] {
         let (_dir, root) = repo()?;
         let mut app = helpers::AppBuilder::new()
@@ -461,13 +477,11 @@ async fn floating_window_is_centered_and_fits_the_screen() -> anyhow::Result<()>
                         top.abs_diff(bottom) <= 1,
                         "not centered: {top} | {bottom}\n{text}"
                     );
-                    if fits {
-                        assert_eq!((width, height), (30, 10), "{text}");
-                    } else {
-                        // the pickers' 90%
-                        assert!(width <= screen_width * 9 / 10, "{width} wide\n{text}");
-                        assert!(height <= screen_height * 9 / 10, "{height} high\n{text}");
-                    }
+                    let want = match size {
+                        FloatSize::Picker => (screen_width * 9 / 10, screen_height * 9 / 10),
+                        FloatSize::Exactly(width, height) => (width, height),
+                    };
+                    assert_eq!((width, height), want, "{explorer_toml:?}\n{text}");
                 }),
             )],
             false,
