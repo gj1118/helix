@@ -29,6 +29,9 @@ pub struct SignatureHelp {
     active_signature: usize,
     lsp_signature: Option<usize>,
     signatures: Vec<Signature>,
+    /// The docs of each signature, built once: a `Markdown` keeps its parsed text, so
+    /// sizing and drawing the popup every frame does not parse and highlight them again.
+    docs: Vec<Option<Markdown>>,
 }
 
 impl SignatureHelp {
@@ -41,13 +44,33 @@ impl SignatureHelp {
         lsp_signature: Option<usize>,
         signatures: Vec<Signature>,
     ) -> Self {
+        let docs = signatures
+            .iter()
+            .map(|signature| {
+                signature
+                    .signature_doc
+                    .as_ref()
+                    .map(|doc| Markdown::new(doc.clone(), Arc::clone(&config_loader)))
+            })
+            .collect();
         Self {
             language,
             config_loader,
             active_signature,
             lsp_signature,
             signatures,
+            docs,
         }
+    }
+
+    /// The docs of the signature shown (the active one, or the first).
+    fn shown_doc(&self) -> Option<&Markdown> {
+        let index = if self.active_signature < self.signatures.len() {
+            self.active_signature
+        } else {
+            0
+        };
+        self.docs.get(index).and_then(Option::as_ref)
     }
 
     pub fn active_signature(&self) -> usize {
@@ -152,9 +175,8 @@ impl Component for SignatureHelp {
             }
         }
 
-        let sig_doc = match &signature.signature_doc {
-            None => return,
-            Some(doc) => Markdown::new(doc.clone(), Arc::clone(&self.config_loader)),
+        let Some(sig_doc) = self.shown_doc() else {
+            return;
         };
         let sig_doc = sig_doc.parse(Some(&cx.editor.theme));
         // right below the separator
@@ -187,9 +209,8 @@ impl Component for SignatureHelp {
         let sig_text_para = Paragraph::new(&signature_text).wrap(Wrap { trim: false });
         let (sig_width, sig_height) = sig_text_para.required_size(max_text_width);
 
-        let (width, height) = match signature.signature_doc {
-            Some(ref doc) => {
-                let doc_md = Markdown::new(doc.clone(), Arc::clone(&self.config_loader));
+        let (width, height) = match self.shown_doc() {
+            Some(doc_md) => {
                 let doc_text = doc_md.parse(None);
                 let (doc_width, doc_height) =
                     crate::ui::text::required_size(&doc_text, max_text_width);
