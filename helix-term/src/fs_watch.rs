@@ -263,15 +263,23 @@ mod tests {
         assert!(!is_noise(Path::new("/repo/src/main.rs")));
     }
 
+    /// The tests that start watchers run one at a time: on macOS each starts an FSEvents
+    /// stream, and several at once in one process delay one another's events.
+    fn one_watcher_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     #[test]
     fn detects_changes() {
+        let _one = one_watcher_at_a_time();
         let dir = tempfile::tempdir().unwrap();
         let Some(watch) = FsWatch::new(dir.path()) else {
             return; // no watcher support in this environment
         };
         let before = watch.generation();
         // The watches are added in the background: write until a change is seen.
-        for i in 0..100 {
+        for i in 0..200 {
             std::fs::write(dir.path().join("a.txt"), i.to_string()).unwrap();
             std::thread::sleep(std::time::Duration::from_millis(50));
             if watch.generation() != before {
@@ -281,11 +289,11 @@ mod tests {
         panic!("no change detected");
     }
 
-    /// Repeats `change` until the watcher sees it, for up to 5 s (FSEvents delivers
+    /// Repeats `change` until the watcher sees it, for up to 10 s (FSEvents delivers
     /// events with some delay, and the watches are set up in the background).
     fn wait_for(watch: &FsWatch, mut change: impl FnMut(usize)) -> bool {
         let before = watch.generation();
-        for i in 0..100 {
+        for i in 0..200 {
             change(i);
             std::thread::sleep(std::time::Duration::from_millis(50));
             if watch.generation() != before {
@@ -298,6 +306,7 @@ mod tests {
     /// Nested and newly created directories are watched with either strategy; with
     /// [`Strategy::PerDirectory`] ignored directories are not.
     fn watches_subdirectories(strategy: Strategy) {
+        let _one = one_watcher_at_a_time();
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         std::fs::create_dir_all(root.join("src/deep")).unwrap();
@@ -310,9 +319,17 @@ mod tests {
             std::fs::write(root.join("src/deep/a.txt"), i.to_string()).unwrap()
         }));
         if strategy == Strategy::PerDirectory {
-            assert!(!wait_for(&watch, |i| {
-                std::fs::write(root.join("ignored/deep/a.txt"), i.to_string()).unwrap()
-            }));
+            // inotify reports at once, so a second without an event is enough here
+            let before = watch.generation();
+            for i in 0..20 {
+                std::fs::write(root.join("ignored/deep/a.txt"), i.to_string()).unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            assert_eq!(
+                watch.generation(),
+                before,
+                "a change in an ignored directory"
+            );
         }
         // Directories created later are watched too.
         std::fs::create_dir(root.join("src/new")).unwrap();
@@ -323,8 +340,14 @@ mod tests {
     }
 
     #[test]
-    fn watches_subdirectories_with_the_platform_strategy() {
-        watches_subdirectories(Strategy::for_platform());
+    fn platforms_with_native_tree_watching_watch_recursively() {
+        let native = cfg!(any(target_os = "macos", target_os = "windows"));
+        let want = if native {
+            Strategy::Recursive
+        } else {
+            Strategy::PerDirectory
+        };
+        assert_eq!(Strategy::for_platform(), want);
     }
 
     #[test]
