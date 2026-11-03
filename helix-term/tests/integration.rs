@@ -31,6 +31,7 @@ mod test {
     mod inline_completion;
     mod movement;
     mod persistence;
+    mod plugins;
     mod quicklist;
     mod snippets;
     mod splits;

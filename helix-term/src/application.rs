@@ -340,8 +340,19 @@ impl Application {
         ])
         .context("build signal handler")?;
 
+        // The integration tests never load plugins: the default directories are the user's
+        // own (`~/.config/helix/plugins`), and every test would run with whatever is there
+        // (an auto-save plugin, say), each one loading them again.
+        let plugin_config = if cfg!(feature = "integration") {
+            PluginConfig {
+                enabled: false,
+                ..PluginConfig::default()
+            }
+        } else {
+            PluginConfig::default()
+        };
         let plugin_manager =
-            PluginManager::new(PluginConfig::default()).expect("Failed to create plugin manager");
+            PluginManager::new(plugin_config).expect("Failed to create plugin manager");
 
         let (ui_handler, ui_receiver) = crate::plugin_registry::get_ui_handler();
 
@@ -452,6 +463,11 @@ impl Application {
         };
 
         Ok(app)
+    }
+
+    /// Whether plugins are loaded (never in the integration tests).
+    pub fn plugins_enabled(&self) -> bool {
+        self.plugin_manager.is_enabled()
     }
 
     fn handle_plugin_events(&mut self) {
