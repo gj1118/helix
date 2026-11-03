@@ -12,7 +12,7 @@ use anyhow::{bail, Context as _};
 use helix_core::{hashmap, Rope};
 use helix_view::{current_ref, doc_mut, document::Document, editor::Action, Editor};
 
-use super::git::{args, git, repo_root, workspace_trusted};
+use super::git::{args, git, path_from_bytes, repo_root, strip_newline, workspace_trusted};
 use crate::{
     alt,
     compositor::{self, Compositor},
@@ -92,27 +92,25 @@ pub struct CommitFile {
 
 /// Parses `git diff-tree --name-status -z`.
 pub fn parse_name_status(output: &[u8]) -> Vec<CommitFile> {
-    let mut parts = output
-        .split(|&b| b == 0)
-        .map(|part| String::from_utf8_lossy(part).into_owned())
-        .filter(|part| !part.is_empty());
+    let mut parts = output.split(|&b| b == 0).filter(|part| !part.is_empty());
     let mut files = Vec::new();
     while let Some(status) = parts.next() {
-        let Some(code) = status.chars().next() else {
+        let Some(&code) = status.first() else {
             continue;
         };
+        let code = char::from(code);
         let Some(first) = parts.next() else { break };
         if matches!(code, 'R' | 'C') {
             let Some(second) = parts.next() else { break };
             files.push(CommitFile {
                 status: code,
-                path: second.into(),
-                from: Some(first.into()),
+                path: path_from_bytes(second),
+                from: Some(path_from_bytes(first)),
             });
         } else {
             files.push(CommitFile {
                 status: code,
-                path: first.into(),
+                path: path_from_bytes(first),
                 from: None,
             });
         }
@@ -176,7 +174,13 @@ async fn commit_diff(root: &Path, commit: &Commit, paths: &[&Path]) -> anyhow::R
 /// The file as it was in `commit`.
 async fn file_at(root: &Path, commit: &Commit, path: &Path) -> anyhow::Result<String> {
     let mut a = args(["show"]);
-    a.push(format!("{}:{}", commit.hash, path.display()).into());
+    // `<commit>:<path>`, the path as it is (not `display`, which is lossy) with git's `/`.
+    let mut spec = std::ffi::OsString::from(format!("{}:", commit.hash));
+    #[cfg(windows)]
+    spec.push(path.to_string_lossy().replace('\\', "/"));
+    #[cfg(not(windows))]
+    spec.push(path);
+    a.push(spec);
     let out = git(root, &a).await?;
     if out.contains(&0) {
         bail!("{} is a binary file at {}", path.display(), commit.short());
@@ -445,9 +449,10 @@ fn spawn_history(jobs: &mut Jobs, dir: PathBuf, file: Option<PathBuf>) {
             Some(file) => {
                 let parent = file.parent().unwrap_or(&dir);
                 let prefix = git(parent, &args(["rev-parse", "--show-prefix"])).await?;
-                let prefix = String::from_utf8_lossy(&prefix).trim().to_owned();
+                // Only the line break goes: a folder's name may start or end in a space.
+                let prefix = path_from_bytes(strip_newline(&prefix));
                 let name = file.file_name().context("the file has no name")?;
-                Some(PathBuf::from(prefix).join(name))
+                Some(prefix.join(name))
             }
             None => None,
         };

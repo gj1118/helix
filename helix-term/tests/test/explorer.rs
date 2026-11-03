@@ -177,6 +177,63 @@ async fn indent_guides_can_be_turned_off() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The guide lines of the selected row are `ui.explorer.tree.selected`, those of its ancestors
+/// `ui.explorer.path` and those of the other rows `ui.explorer.tree`.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_selected_row_has_its_own_guide_style() -> anyhow::Result<()> {
+    use helix_view::graphics::Color;
+    let (_dir, root) = repo()?;
+    let mut app = helpers::AppBuilder::new()
+        .with_config(config("git-status = false"))
+        .build()?;
+    app.editor.theme = helix_view::Theme::from(toml::from_str::<toml::Value>(
+        r##"
+        "ui.selection" = { bg = "#333333" }
+        "ui.explorer.tree" = { fg = "#0000ff" }
+        "ui.explorer.tree.selected" = { fg = "#ff0000" }
+        "ui.explorer.path" = { fg = "#00ff00" }
+        "##,
+    )?);
+    open_explorer(&mut app, &root);
+    let (red, green, blue) = (
+        Color::Rgb(255, 0, 0),
+        Color::Rgb(0, 255, 0),
+        Color::Rgb(0, 0, 255),
+    );
+    test_key_sequences(
+        &mut app,
+        vec![
+            // expand `sub` and select `sub/b.txt`
+            (Some("jl"), None),
+            (
+                Some("j"),
+                Some(&move |app| {
+                    let rows = app.rendered_rows();
+                    let y = |needle: &str| {
+                        rows.iter()
+                            .position(|row| row.contains(needle))
+                            .unwrap_or_else(|| panic!("no {needle}:\n{}", rows.join("\n")))
+                            as u16
+                    };
+                    let x = |row: u16, glyph: char| {
+                        rows[row as usize].chars().position(|c| c == glyph).unwrap() as u16
+                    };
+                    let (selected, parent, sibling) = (y("b.txt"), y("sub"), y("new.txt"));
+                    // the selected row: both of its guide blocks
+                    assert_eq!(app.rendered_fg(x(selected, '│'), selected), red);
+                    assert_eq!(app.rendered_fg(x(selected, '└'), selected), red);
+                    // its folder is on the path, a sibling of the folder is not
+                    assert_eq!(app.rendered_fg(x(parent, '├'), parent), green);
+                    assert_eq!(app.rendered_fg(x(sibling, '└'), sibling), blue);
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}
+
 /// `C-h` and `C-l` move focus between the tree and the buffer, also while the tree's
 /// filter box is being typed into.
 #[tokio::test(flavor = "multi_thread")]
@@ -341,6 +398,8 @@ async fn helix_motions_move_the_tree() -> anyhow::Result<()> {
                     assert_eq!(row, len - 1, "G still goes to the last row");
                 }),
             ),
+            // with a count, `G` goes to that row (`goto_line`), like in a buffer
+            (Some("5G"), Some(&|app| assert_row(app, 4))),
             (Some("<home>"), Some(&|app| assert_row(app, 0))),
             (
                 Some("ge"),

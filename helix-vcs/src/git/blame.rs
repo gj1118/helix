@@ -44,15 +44,21 @@ impl FileBlame {
         // So when our cursor is on the 10th added line or earlier, blame_line will be 0. This means
         // the blame will be incorrect. But that's fine, because when the cursor_line is on some hunk,
         // we can show to the user nothing at all. This is detected in the editor
-        let blame_line = line.saturating_sub(inserted_lines) + removed_lines;
-        let repo = self.repo.to_thread_local();
+        let blame_line = line
+            .saturating_sub(inserted_lines)
+            .saturating_add(removed_lines);
 
         let mut blame = self.blame.lock();
         let line_blame_unit = blame.get_mut(&blame_line);
 
+        // Made only on the slow path: this runs for every visible line at every render.
+        let repo;
         let commit = match line_blame_unit {
             // Slow path: This is the first time we're trying to get the blame for this line
-            Some(LineBlameUnit::Unprocessed(object_id)) => repo.find_commit(*object_id).ok(),
+            Some(LineBlameUnit::Unprocessed(object_id)) => {
+                repo = self.repo.to_thread_local();
+                repo.find_commit(*object_id).ok()
+            }
             // Fast path: We've already processed this line before so we don't need to
             // search all of the repo's commits to compute the blame
             Some(LineBlameUnit::Processed(line_blame)) => return line_blame.clone(),
@@ -92,6 +98,9 @@ impl FileBlame {
     /// `trust_full` is the workspace-trust decision for the file's workspace: without
     /// it the repository is opened with reduced trust.
     pub fn try_new(file: PathBuf, trust_full: bool) -> Result<Self> {
+        // Like the diff base: a file reached through a link is blamed where it really is,
+        // in the repository it belongs to.
+        let file = gix::path::realpath(&file).context("resolve symlinks")?;
         let thread_safe_repo =
             open_repo(get_repo_dir(&file)?, trust_full).context("Failed to open git repo")?;
         let repo = thread_safe_repo.to_thread_local();
@@ -624,6 +633,38 @@ mod test {
                 "]" 7,
                 "  four" 5;
         };
+    }
+
+    /// A link to a tracked file is blamed as the file it points at, like the diff gutter
+    /// does, not as the link (whose content in git is the target's name).
+    #[cfg(unix)]
+    #[test]
+    fn a_link_is_blamed_as_its_target() {
+        let repo = empty_git_repo();
+        std::fs::write(repo.path().join("real.txt"), "one\ntwo\n").unwrap();
+        create_commit_with_message(repo.path(), true, "add real");
+        std::os::unix::fs::symlink("real.txt", repo.path().join("link.txt")).unwrap();
+        create_commit_with_message(repo.path(), true, "add link");
+
+        let blame = FileBlame::try_new(repo.path().join("link.txt"), true).unwrap();
+        assert_eq!(
+            blame.blame_for_line(1, 0, 0).commit_title.as_deref(),
+            Some("add real\n")
+        );
+        // the second time the line comes from the cache
+        assert_eq!(
+            blame.blame_for_line(1, 0, 0).commit_title.as_deref(),
+            Some("add real\n")
+        );
+    }
+
+    /// No commit yet (an unborn `HEAD`): an error, not a panic.
+    #[test]
+    fn a_repository_without_commits_has_no_blame() {
+        let repo = empty_git_repo();
+        std::fs::write(repo.path().join("a.txt"), "a\n").unwrap();
+        assert!(FileBlame::try_new(repo.path().join("a.txt"), true).is_err());
+        assert!(FileBlame::try_new(repo.path().join("missing.txt"), true).is_err());
     }
 
     fn bob() -> LineBlame {

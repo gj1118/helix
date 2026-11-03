@@ -61,7 +61,86 @@ pub struct FsWatch {
     _watcher: Arc<Mutex<RecommendedWatcher>>,
 }
 
-/// Directories whose contents change constantly and never show up in pickers.
+/// The watched tree: what noise is judged against.
+#[derive(Debug, Clone)]
+struct Tree {
+    root: PathBuf,
+    /// The real path of `root`, when it differs: FSEvents reports real paths.
+    real_root: Option<PathBuf>,
+    /// The repository's git directory when it is outside the tree (a linked worktree, a
+    /// submodule): a `.git` file points at it.
+    external_git_dir: Option<PathBuf>,
+}
+
+impl Tree {
+    fn new(root: &Path) -> Self {
+        let real_root = root.canonicalize().ok().filter(|real| real != root);
+        let external_git_dir = git_dir(root).filter(|dir| {
+            !dir.starts_with(root) && real_root.as_ref().is_none_or(|real| !dir.starts_with(real))
+        });
+        Self {
+            root: root.to_path_buf(),
+            real_root,
+            external_git_dir,
+        }
+    }
+
+    /// `path` below the root. Directories above the root don't count: a project inside a
+    /// folder called `target` is not noise.
+    fn relative<'a>(&self, path: &'a Path) -> &'a Path {
+        path.strip_prefix(&self.root)
+            .ok()
+            .or_else(|| {
+                let real = self.real_root.as_ref()?;
+                path.strip_prefix(real).ok()
+            })
+            .unwrap_or(path)
+    }
+
+    fn is_noise(&self, path: &Path) -> bool {
+        if let Some(git_dir) = &self.external_git_dir {
+            if path.starts_with(git_dir) {
+                return !matches!(
+                    path.file_name().and_then(|name| name.to_str()),
+                    Some("index" | "HEAD")
+                );
+            }
+        }
+        is_noise(self.relative(path))
+    }
+
+    fn is_relevant(&self, event: &Event) -> bool {
+        matches!(
+            event.kind,
+            EventKind::Create(_) | EventKind::Remove(_) | EventKind::Modify(_)
+        ) && event.paths.iter().any(|path| !self.is_noise(path))
+    }
+}
+
+/// The git directory of the repository whose work tree is `root`: `root/.git`, or where the
+/// `.git` file of a linked worktree or a submodule points.
+fn git_dir(root: &Path) -> Option<PathBuf> {
+    let dot_git = root.join(".git");
+    let metadata = std::fs::metadata(&dot_git).ok()?;
+    if metadata.is_dir() {
+        return Some(dot_git);
+    }
+    // A `.git` file is a single short line; don't read anything big.
+    if metadata.len() > 4096 {
+        return None;
+    }
+    let content = std::fs::read_to_string(&dot_git).ok()?;
+    let dir = content.lines().next()?.strip_prefix("gitdir:")?.trim();
+    // Usually relative (`../.git/worktrees/name`): resolved, as the paths of its events are.
+    let dir = root.join(dir);
+    Some(
+        dir.canonicalize()
+            .unwrap_or_else(|_| helix_stdx::path::normalize(&dir)),
+    )
+}
+
+/// Directories whose contents change constantly and never show up in pickers. `path` is
+/// relative to the watched root (see [`Tree::relative`]).
 fn is_noise(path: &Path) -> bool {
     let mut components = path.components().rev();
     // Inside `.git` only `index` and `HEAD` matter (staging, commits, checkouts).
@@ -91,13 +170,6 @@ fn is_noise(path: &Path) -> bool {
     )
 }
 
-fn is_relevant(event: &Event) -> bool {
-    matches!(
-        event.kind,
-        EventKind::Create(_) | EventKind::Remove(_) | EventKind::Modify(_)
-    ) && event.paths.iter().any(|path| !is_noise(path))
-}
-
 impl FsWatch {
     /// Starts watching `root` recursively. Returns `None` when the platform
     /// watcher cannot be created (for example when inotify limits are reached),
@@ -113,10 +185,13 @@ impl FsWatch {
         let generation = Arc::new(AtomicU64::new(0));
         let counter = generation.clone();
         let (new_dirs, new_dirs_rx) = mpsc::channel::<PathBuf>();
+        let tree = Arc::new(Tree::new(root));
+        let events_tree = tree.clone();
         let watcher = RecommendedWatcher::new(
             move |event: notify::Result<Event>| {
                 let Ok(event) = event else { return };
-                if !is_relevant(&event) {
+                let tree = &events_tree;
+                if !tree.is_relevant(&event) {
                     return;
                 }
                 counter.fetch_add(1, Ordering::Relaxed);
@@ -132,7 +207,7 @@ impl FsWatch {
                     )
                 {
                     for path in event.paths {
-                        if !is_noise(&path) {
+                        if !tree.is_noise(&path) {
                             let _ = new_dirs.send(path);
                         }
                     }
@@ -144,35 +219,43 @@ impl FsWatch {
         .ok()?;
         let watcher = Arc::new(Mutex::new(watcher));
 
-        let (weak, root) = (Arc::downgrade(&watcher), root.to_path_buf());
+        let weak = Arc::downgrade(&watcher);
         std::thread::Builder::new()
             .name("fs-watch".into())
             .spawn(move || {
+                let root = &tree.root;
                 if strategy == Strategy::Recursive {
                     // One call; the OS covers new and moved directories itself.
                     if let Some(watcher) = weak.upgrade() {
-                        let result = watcher
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .watch(&root, RecursiveMode::Recursive);
-                        if let Err(err) = result {
+                        let mut watcher = watcher.lock().unwrap_or_else(|e| e.into_inner());
+                        if let Err(err) = watcher.watch(root, RecursiveMode::Recursive) {
                             log::debug!("could not watch {}: {err}", root.display());
+                        }
+                        // The `index` and `HEAD` of a worktree or a submodule live outside it.
+                        if let Some(git_dir) = &tree.external_git_dir {
+                            if let Err(err) = watcher.watch(git_dir, RecursiveMode::NonRecursive) {
+                                log::debug!("could not watch {}: {err}", git_dir.display());
+                            }
                         }
                     }
                     return;
                 }
                 let mut watched = 0;
-                // The top level of `.git` holds `index` and `HEAD`.
-                let git = root.join(".git");
-                if git.is_dir() && !watch_dir(&weak, &git, &mut watched) {
-                    return;
+                // The top level of the git directory holds `index` and `HEAD`.
+                if let Some(git_dir) = git_dir(root) {
+                    if git_dir.is_dir() && !watch_dir(&weak, &git_dir, &mut watched) {
+                        return;
+                    }
                 }
-                if !watch_tree(&weak, &root, &mut watched) {
+                if !watch_tree(&weak, &tree, root, &mut watched) {
                     return;
                 }
                 // Runs until the watcher, and with it the sender, is dropped.
                 while let Ok(path) = new_dirs_rx.recv() {
-                    if path.is_dir() && !watch_tree(&weak, &path, &mut watched) {
+                    if path.is_dir()
+                        && !is_ignored(&path)
+                        && !watch_tree(&weak, &tree, &path, &mut watched)
+                    {
                         return;
                     }
                 }
@@ -225,17 +308,41 @@ fn watch_dir(watcher: &Weak<Mutex<RecommendedWatcher>>, dir: &Path, watched: &mu
     true
 }
 
-/// Watches `root` and the directories under it that are not ignored. Returns `false`
-/// when the walk was stopped, see [`watch_dir`].
-fn watch_tree(watcher: &Weak<Mutex<RecommendedWatcher>>, root: &Path, watched: &mut usize) -> bool {
-    let walk = ignore::WalkBuilder::new(root)
+/// Whether the directory `dir`, created after the tree was walked, is one the walk skips
+/// (`.gitignore`, `.ignore`): a walk from `dir` itself would not know, it always lists its
+/// start. So `dir` is looked for in a listing of its parent.
+fn is_ignored(dir: &Path) -> bool {
+    let Some(parent) = dir.parent() else {
+        return false;
+    };
+    let wanted = dir.to_path_buf();
+    !ignore::WalkBuilder::new(parent)
         .hidden(false)
         .follow_links(false)
-        .filter_entry(|entry| {
+        .max_depth(Some(1))
+        .filter_entry(move |entry| entry.depth() == 0 || entry.path() == wanted)
+        .build()
+        .flatten()
+        .any(|entry| entry.depth() == 1)
+}
+
+/// Watches `dir` and the directories under it that are not ignored. Returns `false`
+/// when the walk was stopped, see [`watch_dir`].
+fn watch_tree(
+    watcher: &Weak<Mutex<RecommendedWatcher>>,
+    tree: &Arc<Tree>,
+    dir: &Path,
+    watched: &mut usize,
+) -> bool {
+    let tree = tree.clone();
+    let walk = ignore::WalkBuilder::new(dir)
+        .hidden(false)
+        .follow_links(false)
+        .filter_entry(move |entry| {
             entry.depth() == 0
                 || entry.file_type().is_some_and(|kind| kind.is_dir())
                     && entry.file_name() != ".git"
-                    && !is_noise(entry.path())
+                    && !tree.is_noise(entry.path())
         })
         .build();
     for entry in walk.flatten() {
@@ -261,6 +368,64 @@ mod tests {
         assert!(!is_noise(Path::new("/repo/.git/index")));
         assert!(!is_noise(Path::new("/repo/.git/HEAD")));
         assert!(!is_noise(Path::new("/repo/src/main.rs")));
+    }
+
+    /// Only what is below the root decides: a project in a folder called `target` (or in
+    /// `node_modules`) is watched like any other.
+    #[test]
+    fn folders_above_the_root_are_not_noise() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("target/node_modules/project");
+        std::fs::create_dir_all(&root).unwrap();
+        let tree = Tree::new(&root);
+        assert!(!tree.is_noise(&root.join("src/main.rs")));
+        assert!(tree.is_noise(&root.join("target/debug/foo")));
+        // FSEvents reports real paths
+        let real = root.canonicalize().unwrap();
+        assert!(!tree.is_noise(&real.join("src/main.rs")));
+        assert!(tree.is_noise(&real.join(".git/objects/ab/cdef")));
+    }
+
+    /// A linked worktree (or a submodule) has a `.git` file pointing at its git directory,
+    /// whose `index` and `HEAD` matter and nothing else does.
+    #[test]
+    fn the_git_directory_of_a_worktree_is_followed() {
+        let dir = tempfile::tempdir().unwrap();
+        let worktree_git = dir.path().join("main/.git/worktrees/wt");
+        std::fs::create_dir_all(&worktree_git).unwrap();
+        let root = dir.path().join("wt");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(".git"), "gitdir: ../main/.git/worktrees/wt\n").unwrap();
+
+        assert_eq!(git_dir(&root), Some(worktree_git.canonicalize().unwrap()));
+        let tree = Tree::new(&root);
+        let external = tree.external_git_dir.clone().expect("an external git dir");
+        assert!(!tree.is_noise(&external.join("index")));
+        assert!(!tree.is_noise(&external.join("HEAD")));
+        assert!(tree.is_noise(&external.join("ORIG_HEAD")));
+        assert!(tree.is_noise(&external.join("logs/HEAD.lock")));
+
+        // An ordinary repository's git directory is inside the tree.
+        let plain = dir.path().join("plain");
+        std::fs::create_dir_all(plain.join(".git")).unwrap();
+        assert_eq!(git_dir(&plain), Some(plain.join(".git")));
+        assert_eq!(Tree::new(&plain).external_git_dir, None);
+        assert_eq!(git_dir(dir.path()), None);
+    }
+
+    /// Directories created after the walk are looked up in the ignore files too.
+    #[test]
+    fn new_ignored_directories_are_recognized() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join(".ignore"), "build/\n").unwrap();
+        std::fs::create_dir_all(root.join("build")).unwrap();
+        std::fs::create_dir_all(root.join("src/build")).unwrap();
+        std::fs::create_dir_all(root.join("src/lib")).unwrap();
+        assert!(is_ignored(&root.join("build")));
+        assert!(is_ignored(&root.join("src/build")));
+        assert!(!is_ignored(&root.join("src")));
+        assert!(!is_ignored(&root.join("src/lib")));
     }
 
     /// The tests that start watchers run one at a time: on macOS each starts an FSEvents

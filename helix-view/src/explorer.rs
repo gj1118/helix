@@ -1718,6 +1718,11 @@ fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
         }
         return Ok(());
     }
+    // FIFOs, sockets and devices are skipped: reading a FIFO waits for a writer, forever.
+    if !file_type.is_file() && !file_type.is_symlink() {
+        log::debug!("not copying {}: not a regular file", from.display());
+        return Ok(());
+    }
 
     if let Some(parent) = to.parent() {
         fs::create_dir_all(parent)?;
@@ -2513,6 +2518,34 @@ mod tests {
             .unwrap()
             .file_type()
             .is_symlink());
+    }
+
+    /// A FIFO in a copied folder is skipped: opening it to read would wait for a writer.
+    #[cfg(unix)]
+    #[test]
+    fn copy_skips_fifos_instead_of_blocking() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir(&src).unwrap();
+        std::fs::write(src.join("a.txt"), "a").unwrap();
+        let made = std::process::Command::new("mkfifo")
+            .arg(src.join("pipe"))
+            .status()
+            .is_ok_and(|status| status.success());
+        if !made {
+            return; // no mkfifo here
+        }
+
+        let dest = tmp.path().join("dest");
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (from, to) = (src.clone(), dest.clone());
+        std::thread::spawn(move || tx.send(copy_recursively(&from, &to).map_err(|e| e.kind())));
+        let result = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("copying a folder with a FIFO hangs");
+        assert_eq!(result, Ok(()));
+        assert_eq!(std::fs::read_to_string(dest.join("a.txt")).unwrap(), "a");
+        assert!(std::fs::symlink_metadata(dest.join("pipe")).is_err());
     }
 
     #[test]

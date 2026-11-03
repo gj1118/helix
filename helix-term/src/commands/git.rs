@@ -102,6 +102,20 @@ impl GitChange {
     }
 }
 
+/// A path as git printed it. On Unix paths are bytes and need not be UTF-8: a lossy
+/// conversion would name a file that doesn't exist.
+pub(super) fn path_from_bytes(bytes: &[u8]) -> PathBuf {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        PathBuf::from(std::ffi::OsStr::from_bytes(bytes))
+    }
+    #[cfg(not(unix))]
+    {
+        PathBuf::from(String::from_utf8_lossy(bytes).into_owned())
+    }
+}
+
 /// Parses `git status --porcelain=v1 -z`. Paths are relative to `repo_root`.
 pub fn parse_status(output: &[u8], repo_root: &Path) -> Vec<GitChange> {
     let mut changes = Vec::new();
@@ -111,12 +125,12 @@ pub fn parse_status(output: &[u8], repo_root: &Path) -> Vec<GitChange> {
             continue;
         }
         let (x, y) = (entry[0], entry[1]);
-        let to = repo_root.join(String::from_utf8_lossy(&entry[3..]).as_ref());
+        let to = repo_root.join(path_from_bytes(&entry[3..]));
         // Renames and copies are followed by the path they came from.
         let from = if matches!(x, b'R' | b'C') || matches!(y, b'R' | b'C') {
             entries
                 .next()
-                .map(|from| repo_root.join(String::from_utf8_lossy(from).as_ref()))
+                .map(|from| repo_root.join(path_from_bytes(from)))
         } else {
             None
         };
@@ -176,7 +190,14 @@ pub(super) fn args<const N: usize>(args: [&str; N]) -> Vec<OsString> {
 
 pub(super) async fn repo_root(dir: &Path) -> anyhow::Result<PathBuf> {
     let out = git(dir, &args(["rev-parse", "--show-toplevel"])).await?;
-    Ok(PathBuf::from(String::from_utf8_lossy(&out).trim_end()))
+    // Only the line break goes: a folder's name may end in a space.
+    Ok(path_from_bytes(strip_newline(&out)))
+}
+
+/// `out` without the line break git ends its output with.
+pub(super) fn strip_newline(out: &[u8]) -> &[u8] {
+    let out = out.strip_suffix(b"\n").unwrap_or(out);
+    out.strip_suffix(b"\r").unwrap_or(out)
 }
 
 /// `git status` for `dir` (the whole repository when `whole_repo`).
@@ -942,6 +963,23 @@ mod tests {
         assert!(changes
             .iter()
             .all(|c| c.staged == Some(ChangeKind::Conflict)));
+    }
+
+    /// File names that are not UTF-8 come back as they are on disk.
+    #[cfg(unix)]
+    #[test]
+    fn paths_keep_their_bytes() {
+        use std::os::unix::ffi::OsStrExt;
+        let changes = parse_status(b"?? caf\xe9.rs\0R  n\xff\0o\xfe\0", Path::new("/repo"));
+        assert_eq!(changes.len(), 2);
+        assert_eq!(changes[0].path.as_os_str().as_bytes(), b"/repo/caf\xe9.rs");
+        assert_eq!(changes[1].path.as_os_str().as_bytes(), b"/repo/n\xff");
+        assert_eq!(
+            changes[1].from.as_deref().map(|p| p.as_os_str().as_bytes()),
+            Some(&b"/repo/o\xfe"[..])
+        );
+        assert_eq!(strip_newline(b"/a b \n"), b"/a b ");
+        assert_eq!(strip_newline(b"/a\r\n"), b"/a");
     }
 
     #[test]

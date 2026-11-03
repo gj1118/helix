@@ -114,6 +114,13 @@ const GIT_STATUS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(
 /// The same when `git status` failed, e.g. because the folder is not in a repository.
 const GIT_STATUS_RETRY: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// How long to wait before the next `git status`, after one that took `took`: in a huge
+/// repository, where it takes seconds, git must not be running most of the time.
+fn git_status_interval(took: std::time::Duration) -> std::time::Duration {
+    took.saturating_mul(10)
+        .clamp(GIT_STATUS_INTERVAL, GIT_STATUS_RETRY)
+}
+
 /// `TreeParams` as seen from the current editor state; what the tree ops and
 /// the renderer both use.
 pub fn tree_params(editor: &Editor) -> TreeParams {
@@ -206,6 +213,25 @@ fn remove_path(path: &Path) -> io::Result<()> {
     }
 }
 
+/// Whether `a` and `b` name the same directory entry (not following symlinks), as two
+/// spellings of one name do on a case-insensitive file system.
+fn same_entry(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        match (std::fs::symlink_metadata(a), std::fs::symlink_metadata(b)) {
+            (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+            _ => false,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows file systems are case-insensitive.
+        let lower = |path: &Path| path.as_os_str().to_string_lossy().to_lowercase();
+        a.parent() == b.parent() && lower(a) == lower(b)
+    }
+}
+
 /// A popup asking for one line of text, in the configured cmdline style.
 fn ask(
     editor: &Editor,
@@ -283,6 +309,8 @@ pub struct Explorer {
     git_in_flight: bool,
     /// How long to wait before asking again: longer when there is no repository to ask.
     git_interval: std::time::Duration,
+    /// Highlights the characters a fuzzy filter matched, kept: a matcher is large to make.
+    matcher: nucleo::Matcher,
 }
 
 impl Explorer {
@@ -315,6 +343,7 @@ impl Explorer {
             git_asked: None,
             git_in_flight: false,
             git_interval: GIT_STATUS_INTERVAL,
+            matcher: new_matcher(),
         })
     }
 
@@ -760,6 +789,8 @@ impl Explorer {
                 self.cursor = 0;
                 EventResult::Consumed(None)
             }
+            // With a count, `G` is the keymap's `goto_line` (`5G`, see `Motion::Row`).
+            KeyCode::Char('G') if cx.editor.count.is_some() => EventResult::Ignored(None),
             KeyCode::Char('G') | KeyCode::End => {
                 self.cursor = self.len().saturating_sub(1);
                 EventResult::Consumed(None)
@@ -1268,7 +1299,9 @@ impl Explorer {
                 if dest == from {
                     return;
                 }
-                if dest.exists() {
+                // On a case-insensitive file system (macOS, Windows) a new case of the same
+                // name finds the entry itself: that rename is allowed.
+                if std::fs::symlink_metadata(&dest).is_ok() && !same_entry(&from, &dest) {
                     cx.editor
                         .set_error(format!("Cannot rename: {} already exists", dest.display()));
                     return;
@@ -1406,7 +1439,8 @@ impl Explorer {
             return EventResult::Consumed(None);
         }
 
-        if dest.exists() {
+        // Not `exists`: a dangling link at `dest` is replaced as well.
+        if std::fs::symlink_metadata(&dest).is_ok() {
             let message = format!(
                 "{} already exists.\nIts contents will be overwritten.",
                 self.display_rel(&dest)
@@ -1430,7 +1464,7 @@ impl Explorer {
     /// What comes before an entry. With `guides`, three columns per level: the lines of the
     /// folders that continue (`│  `) and the branch of the entry (`├─ `/`└─ `). Without,
     /// two blank columns per level.
-    fn prefix(&self, entry: &Entry, guides: bool) -> String {
+    fn prefix(tree: &Tree, entry: &Entry, guides: bool) -> String {
         if entry.depth == 0 {
             return String::new();
         }
@@ -1442,7 +1476,7 @@ impl Explorer {
         let mut ancestors: Vec<&Path> = Vec::with_capacity(entry.depth as usize);
         let mut cur = entry.path.parent();
         while let Some(parent) = cur {
-            if self.tree.is_root(parent) {
+            if tree.is_root(parent) {
                 break;
             }
             ancestors.push(parent);
@@ -1450,7 +1484,7 @@ impl Explorer {
         }
         let mut prefix = String::with_capacity((entry.depth as usize + 1) * 3 * 3);
         for ancestor in ancestors.iter().rev() {
-            if self.tree.is_last_child(ancestor) {
+            if tree.is_last_child(ancestor) {
                 prefix.push_str("   "); // ancestor branch ended here
             } else {
                 prefix.push_str("│  "); // vertical guide continues
@@ -1474,6 +1508,7 @@ impl Explorer {
             return;
         }
         self.git_in_flight = true;
+        let started = std::time::Instant::now();
         let root = self.root.clone();
         let trusted = crate::commands::git::workspace_trusted(cx.editor, &root);
         let providers = cx.editor.diff_providers.clone();
@@ -1490,7 +1525,7 @@ impl Explorer {
                 // The panel may have been re-rooted while git was working.
                 match result {
                     Ok(map) if explorer.root == root => {
-                        explorer.git_interval = GIT_STATUS_INTERVAL;
+                        explorer.git_interval = git_status_interval(started.elapsed());
                         if explorer.git != map {
                             explorer.git = map;
                             editor.needs_redraw = true;
@@ -1715,6 +1750,8 @@ impl Component for Explorer {
         if !cx.editor.explorer_panel.visible {
             self.filter_editing = false;
             self.resizing = false;
+            // A drag cut short by closing the window would otherwise grab the next clicks.
+            self.float_drag = None;
             return;
         }
         // Only a shown panel refreshes git status: the layer stays installed while
@@ -1727,6 +1764,12 @@ impl Component for Explorer {
 
         let side = cx.editor.explorer_side();
         let floating = side == ExplorerSide::Floating;
+        // A drag of what the panel no longer has (it switched sides) is over.
+        if floating {
+            self.resizing = false;
+        } else {
+            self.float_drag = None;
+        }
         let panel_width = cx
             .editor
             .explorer_width()
@@ -1972,7 +2015,7 @@ impl Component for Explorer {
         let guides = cx.editor.config().explorer.indent_guides;
         let show_git = cx.editor.config().explorer.git_status;
         let path = PathInfo::new(self.tree.visible(), self.cursor);
-        let mut matcher = new_matcher();
+        let matcher = &mut self.matcher;
         let mut indices: Vec<u32> = Vec::new();
 
         for (i, entry) in self
@@ -2007,7 +2050,7 @@ impl Component for Explorer {
                         .unwrap_or(&entry.path)
                         .to_string_lossy()
                         .replace(std::path::MAIN_SEPARATOR, "/");
-                    filter.match_indices(&entry.name, &relative, &mut matcher, &mut indices);
+                    filter.match_indices(&entry.name, &relative, matcher, &mut indices);
                     !indices.is_empty() && !entry.is_parent
                 }
                 _ => false,
@@ -2024,19 +2067,18 @@ impl Component for Explorer {
             // The guide prefix is one 3-column block per ancestor level, then the branch of
             // the entry itself. Only the path rows (the ancestors and the cursor) are
             // highlighted: sibling rows keep their guide lines even where they share one.
-            let prefix = self.prefix(entry, guides);
-            let depth = entry.depth as usize;
+            let prefix = Self::prefix(&self.tree, entry, guides);
             if guides {
-                for (block, chunk) in prefix.chars().collect::<Vec<char>>().chunks(3).enumerate() {
-                    let style = if block == depth && i == self.cursor {
-                        tree_selected_style
-                    } else if path.is_path_row(i) {
-                        path_style
-                    } else {
-                        tree_style
-                    };
-                    spans.push(Span::styled(chunk.iter().collect::<String>(), style));
-                }
+                // The guides of the selected row are `ui.explorer.tree.selected`, over the
+                // selection: the selected row is one highlight, not the path's.
+                let style = if i == self.cursor {
+                    tree_selected_style
+                } else if path.is_path_row(i) {
+                    path_style
+                } else {
+                    tree_style
+                };
+                spans.push(Span::styled(prefix, style));
             } else {
                 spans.push(Span::styled(prefix, tree_style));
             }
@@ -2318,6 +2360,49 @@ fn root_label(root: &Path, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A rename to another case of the same name is allowed where the file system ignores
+    /// case; elsewhere, and for any other existing entry, the target is taken.
+    #[test]
+    fn only_the_entry_itself_is_the_same_entry() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let (a, b) = (tmp.path().join("a.txt"), tmp.path().join("b.txt"));
+        std::fs::write(&a, "a").unwrap();
+        std::fs::write(&b, "b").unwrap();
+        assert!(same_entry(&a, &a));
+        assert!(same_entry(&a, &tmp.path().join("./a.txt")));
+        assert!(!same_entry(&a, &b));
+        assert!(!same_entry(&a, &tmp.path().join("missing")));
+        // a link is an entry of its own
+        #[cfg(unix)]
+        {
+            let link = tmp.path().join("link");
+            std::os::unix::fs::symlink(&a, &link).unwrap();
+            assert!(!same_entry(&link, &a));
+        }
+        // where case doesn't matter, `A.txt` is `a.txt`
+        let upper = tmp.path().join("A.txt");
+        if upper.exists() {
+            assert!(same_entry(&a, &upper));
+        }
+    }
+
+    #[test]
+    fn slow_git_status_is_asked_for_less_often() {
+        use std::time::Duration;
+        assert_eq!(
+            git_status_interval(Duration::from_millis(20)),
+            GIT_STATUS_INTERVAL
+        );
+        assert_eq!(
+            git_status_interval(Duration::from_secs(1)),
+            Duration::from_secs(10)
+        );
+        assert_eq!(
+            git_status_interval(Duration::from_secs(60)),
+            GIT_STATUS_RETRY
+        );
+    }
 
     #[test]
     fn git_markers_keep_the_row_background() {

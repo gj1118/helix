@@ -128,14 +128,8 @@ fn create_file_operation_prompt<F>(
 fn refresh_file_explorer(cursor: u32, cx: &mut Context, root: PathBuf) {
     let callback = Box::pin(async move {
         let call: Callback = Callback::EditorCompositor(Box::new(move |editor, compositor| {
-            // replace the old file explorer with the new one
-            compositor.pop();
-            if let Ok(picker) = file_explorer(Some(cursor), root, editor) {
-                compositor.push(Box::new(overlay::overlaid(
-                    picker,
-                    editor.config().fullscreen_overlay,
-                )));
-            }
+            // Replace the old file explorer with the new one, but never another layer.
+            refresh_if_on_top(cursor, root, editor, compositor);
         }));
         Ok(call)
     });
@@ -177,6 +171,24 @@ fn refresh_if_on_top(cursor: u32, root: PathBuf, editor: &Editor, compositor: &m
             picker,
             editor.config().fullscreen_overlay,
         )));
+    }
+}
+
+/// Whether `a` and `b` are one file, also through links or another spelling (a different
+/// case on a case-insensitive file system).
+fn is_same_file(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        match (fs::metadata(a), fs::metadata(b)) {
+            (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+            _ => false,
+        }
+    }
+    #[cfg(not(unix))]
+    match (fs::canonicalize(a), fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase(),
+        _ => false,
     }
 }
 
@@ -330,7 +342,8 @@ pub fn file_explorer(
                     return None;
                 }
 
-                if !to_delete.exists() {
+                // Not `exists`, which follows links: a dangling link can be deleted too.
+                if fs::symlink_metadata(to_delete).is_err() {
                     return Some(Err(format!("Path {} does not exist", to_delete.display())));
                 };
 
@@ -388,6 +401,14 @@ pub fn file_explorer(
                         let copy_to = helix_stdx::path::expand_tilde(PathBuf::from(&copy_to_str))
                             .into_owned();
                         let copy_from = copy_from.to_path_buf();
+                        // Copying a file onto itself would truncate it to nothing.
+                        if is_same_file(&copy_from, &copy_to) {
+                            return Some(Err(format!(
+                                "{} and {} are the same file",
+                                copy_from.display(),
+                                copy_to.display()
+                            )));
+                        }
                         let status = format!("Copying {}…", copy_from.display());
                         run_in_background(cx, cursor, picker_root, move || {
                             std::fs::copy(&copy_from, &copy_to).map_err(|err| {
@@ -476,6 +497,23 @@ mod tests {
     // ===========================================
     // Path Validation Tests
     // ===========================================
+
+    #[test]
+    fn a_file_is_the_same_as_itself_through_a_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a.txt");
+        std::fs::write(&file, "a").unwrap();
+        std::fs::write(dir.path().join("b.txt"), "b").unwrap();
+        assert!(is_same_file(&file, &file));
+        assert!(is_same_file(&file, &dir.path().join("./a.txt")));
+        assert!(!is_same_file(&file, &dir.path().join("b.txt")));
+        assert!(!is_same_file(&file, &dir.path().join("missing.txt")));
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(dir.path(), dir.path().join("link")).unwrap();
+            assert!(is_same_file(&file, &dir.path().join("link/a.txt")));
+        }
+    }
 
     #[test]
     fn test_pathbuf_extension() {

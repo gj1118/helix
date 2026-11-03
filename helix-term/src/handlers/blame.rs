@@ -82,7 +82,14 @@ impl helix_event::AsyncHook for BlameHandler {
             let requests: Vec<_> = requests
                 .into_iter()
                 .filter_map(|(doc_id, request, pending)| {
-                    let doc = editor.document(doc_id)?;
+                    let Some(doc) = editor.document(doc_id) else {
+                        // Closed meanwhile: nothing will apply this request, forget it.
+                        let mut latest = latest.lock().unwrap_or_else(|e| e.into_inner());
+                        if latest.get(&doc_id) == Some(&request) {
+                            latest.remove(&doc_id);
+                        }
+                        return None;
+                    };
                     // Untrusted workspaces open the repository with reduced trust, so
                     // its local config (e.g. filter drivers) is not honoured.
                     let trust_full = editor

@@ -154,6 +154,9 @@ pub fn load(path: &Path) -> Result<Image, String> {
 /// longer than `max_side`.
 pub fn load_scaled(path: &Path, max_side: u32) -> Result<Image, String> {
     let (width, height) = dimensions(path)?;
+    if width == 0 || height == 0 {
+        return Err(format!("{width}x{height} pixels is an empty image"));
+    }
     if u64::from(width) * u64::from(height) > MAX_PIXELS {
         return Err(format!("{width}x{height} pixels is too large to preview"));
     }
