@@ -2216,6 +2216,12 @@ impl NotificationManager {
         &self.notifications
     }
 
+    /// The newest notification still shown. Asked for every frame (the statusline), so it does
+    /// not collect the active ones like [`Self::get_active`].
+    pub fn last_active(&self) -> Option<&Notification> {
+        self.notifications.iter().rev().find(|n| n.is_active())
+    }
+
     /// Mark expired notifications as dismissed and trim the history to
     /// `max_history`. Past notifications stay in the history; only
     /// [`Self::get_active`] filters them out.
@@ -2403,9 +2409,16 @@ pub struct Editor {
     pub workspace_trust: WorkspaceTrust,
     /// File positions restored from / written to persistent state.
     pub old_file_locs: HashMap<PathBuf, (ViewPosition, Selection)>,
+    /// Run by [`Editor::save`] before a document is written (the application runs the plugins'
+    /// `buffer_pre_save` handlers with it). It may edit the document: what it leaves is
+    /// written.
+    pub pre_save_hook: Option<PreSaveHook>,
 }
 
 pub type Motion = Box<dyn Fn(&mut Editor)>;
+
+/// See [`Editor::pre_save_hook`].
+pub type PreSaveHook = Box<dyn FnMut(&mut Editor, DocumentId)>;
 
 #[derive(Debug)]
 pub enum EditorEvent {
@@ -2541,6 +2554,7 @@ impl Editor {
             dir_stack: VecDeque::with_capacity(DIR_STACK_CAP),
             workspace_trust,
             old_file_locs,
+            pre_save_hook: None,
         }
     }
 
@@ -2719,8 +2733,7 @@ impl Editor {
             .map(|(status, sev)| (status, sev))
             .or_else(|| {
                 self.notifications
-                    .get_active()
-                    .last()
+                    .last_active()
                     .map(|n| (&n.message, &n.severity))
             })
     }
@@ -2884,6 +2897,42 @@ impl Editor {
         self.launch_language_servers(doc_id)
     }
 
+    /// Applies the edits the language servers ask for before a file operation
+    /// (`workspace/willRenameFiles` and the like).
+    ///
+    /// The protocol has the edits applied before the files are touched, so this waits for the
+    /// answers on the main thread. The wait is bounded: the requests are sent to all servers
+    /// at once and each times out after a few seconds (see `Client::will_rename`), so the
+    /// editor stalls for that long at most, however many servers there are, instead of one
+    /// timeout after the other.
+    fn apply_file_operation_edits<F>(
+        &mut self,
+        request: &str,
+        requests: Vec<(helix_lsp::OffsetEncoding, F)>,
+    ) where
+        F: std::future::Future<Output = helix_lsp::Result<Option<lsp::WorkspaceEdit>>>,
+    {
+        if requests.is_empty() {
+            return;
+        }
+        let responses =
+            helix_lsp::block_on(futures_util::future::join_all(requests.into_iter().map(
+                |(offset_encoding, request)| async move { (offset_encoding, request.await) },
+            )));
+        for (offset_encoding, response) in responses {
+            let edit = match response {
+                Ok(edit) => edit.unwrap_or_default(),
+                Err(err) => {
+                    log::error!("invalid {request} response: {err:?}");
+                    continue;
+                }
+            };
+            if let Err(err) = self.apply_workspace_edit(offset_encoding, &edit) {
+                log::error!("failed to apply workspace edit: {err:?}")
+            }
+        }
+    }
+
     /// moves/renames a path, invoking any event handlers (currently only lsp)
     /// and calling `set_doc_path` if the file is open in the editor
     pub fn move_path(&mut self, old_path: &Path, new_path: &Path) -> io::Result<()> {
@@ -2899,21 +2948,16 @@ impl Editor {
             .filter(|client| client.is_initialized())
             .cloned()
             .collect();
-        for language_server in language_servers {
-            let Some(request) = language_server.will_rename(old_path, &new_path, is_dir) else {
-                continue;
-            };
-            let edit = match helix_lsp::block_on(request) {
-                Ok(edit) => edit.unwrap_or_default(),
-                Err(err) => {
-                    log::error!("invalid willRename response: {err:?}");
-                    continue;
-                }
-            };
-            if let Err(err) = self.apply_workspace_edit(language_server.offset_encoding(), &edit) {
-                log::error!("failed to apply workspace edit: {err:?}")
-            }
-        }
+        let requests = language_servers
+            .iter()
+            .filter_map(|ls| {
+                Some((
+                    ls.offset_encoding(),
+                    ls.will_rename(old_path, &new_path, is_dir)?,
+                ))
+            })
+            .collect();
+        self.apply_file_operation_edits("willRename", requests);
 
         if old_path.exists() {
             fs::rename(old_path, &new_path)?;
@@ -2948,21 +2992,11 @@ impl Editor {
             .filter(|client| client.is_initialized())
             .cloned()
             .collect();
-        for language_server in language_servers {
-            let Some(request) = language_server.will_create(&path, is_dir) else {
-                continue;
-            };
-            let edit = match helix_lsp::block_on(request) {
-                Ok(edit) => edit.unwrap_or_default(),
-                Err(err) => {
-                    log::error!("invalid willCreate response: {err:?}");
-                    continue;
-                }
-            };
-            if let Err(err) = self.apply_workspace_edit(language_server.offset_encoding(), &edit) {
-                log::error!("failed to apply workspace edit: {err:?}")
-            }
-        }
+        let requests = language_servers
+            .iter()
+            .filter_map(|ls| Some((ls.offset_encoding(), ls.will_create(&path, is_dir)?)))
+            .collect();
+        self.apply_file_operation_edits("willCreate", requests);
 
         if let Some(dir) = path.parent() {
             if !dir.is_dir() {
@@ -2994,21 +3028,11 @@ impl Editor {
             .filter(|client| client.is_initialized())
             .cloned()
             .collect();
-        for language_server in language_servers {
-            let Some(request) = language_server.will_delete(&path, is_dir) else {
-                continue;
-            };
-            let edit = match helix_lsp::block_on(request) {
-                Ok(edit) => edit.unwrap_or_default(),
-                Err(err) => {
-                    log::error!("invalid willDelete response: {err:?}");
-                    continue;
-                }
-            };
-            if let Err(err) = self.apply_workspace_edit(language_server.offset_encoding(), &edit) {
-                log::error!("failed to apply workspace edit: {err:?}")
-            }
-        }
+        let requests = language_servers
+            .iter()
+            .filter_map(|ls| Some((ls.offset_encoding(), ls.will_delete(&path, is_dir)?)))
+            .collect();
+        self.apply_file_operation_edits("willDelete", requests);
 
         if is_dir {
             if recursive {
@@ -3448,8 +3472,11 @@ impl Editor {
                 let (view, doc) = current!(self);
 
                 let doc_len = doc.text().len_chars();
-                // Don't restore if selection goes beyond the file's end
-                if !selection.ranges().iter().any(|range| range.to() > doc_len) {
+                // Don't restore if the selection or the view goes beyond the file's end (it
+                // changed since): a view anchored past the end can't be rendered.
+                if view_position.anchor <= doc_len
+                    && !selection.ranges().iter().any(|range| range.to() > doc_len)
+                {
                     doc.set_view_offset(view.id, view_position);
                     doc.set_selection(view.id, selection);
                 }
@@ -3612,8 +3639,17 @@ impl Editor {
         // convert a channel of futures to pipe into main queue one by one
         // via stream.then() ? then push into main future
 
+        // Taken out while it runs, so a save it starts itself doesn't run it again.
+        if let Some(mut hook) = self.pre_save_hook.take() {
+            hook(self, doc_id);
+            self.pre_save_hook.get_or_insert(hook);
+        }
+
         let path = path.map(|path| path.into());
-        let doc = doc_mut!(self, &doc_id);
+        let doc = self
+            .documents
+            .get_mut(&doc_id)
+            .ok_or_else(|| anyhow!("the document was closed before it was saved"))?;
         let doc_save_future = doc.save(path, force)?;
 
         // When a file is written to, notify the file event handler.

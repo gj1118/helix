@@ -96,17 +96,21 @@ impl Renderer<'_, '_> {
         );
     }
 
+    /// Draws `diag` after the end of a line, `col` being the column (of the line) where the line
+    /// ends. Returns how many columns (of the line) after `col` it took.
     fn draw_eol_diagnostic(&mut self, diag: &Diagnostic, row: u16, col: usize) -> u16 {
         let style = self.styles.severity_style(diag.severity());
-        let width = self.renderer.viewport.width;
-        let start_col = (col - self.renderer.offset.col) as u16;
-        let mut end_col = start_col;
-        let mut draw_col = (col + 1) as u16;
+        let viewport = self.renderer.viewport;
+        // `col` and `draw_col` are columns of the line, which is shown from column `offset` on
+        // (scrolled horizontally): only columns `column_in_bounds` accepts are on screen.
+        let offset = self.renderer.offset.col;
+        let mut draw_col = col + 1;
 
         // Draw the diagnostic indicator:
-        if !self.renderer.column_in_bounds(draw_col as usize, 2) {
+        if !self.renderer.column_in_bounds(draw_col, 2) {
             return 0;
         }
+        let screen_x = |col: usize| viewport.x + (col - offset) as u16;
 
         let icons = ICONS.load();
 
@@ -118,28 +122,30 @@ impl Renderer<'_, '_> {
         };
 
         self.renderer
-            .set_string(self.renderer.viewport.x + draw_col, row, symbol, style);
+            .set_stringn(screen_x(draw_col), row, symbol, 2, style);
         draw_col += 2;
+        let mut end_col = draw_col;
 
         for line in diag.message.lines() {
-            if !self.renderer.column_in_bounds(draw_col as usize, 1) {
+            if !self.renderer.column_in_bounds(draw_col, 1) {
                 break;
             }
 
-            (end_col, _) = self.renderer.set_string_truncated(
-                self.renderer.viewport.x + draw_col,
+            let (end_x, _) = self.renderer.set_string_truncated(
+                screen_x(draw_col),
                 row,
                 line,
-                width.saturating_sub(draw_col) as usize,
+                offset + viewport.width as usize - draw_col,
                 |_| style,
                 true,
                 false,
             );
 
-            draw_col = end_col - self.renderer.viewport.x + 2; // double space between lines
+            end_col = (end_x - viewport.x) as usize + offset;
+            draw_col = end_col + 2; // double space between lines
         }
 
-        end_col - start_col
+        (end_col - col) as u16
     }
 
     fn draw_diagnostic(&mut self, diag: &Diagnostic, col: u16, next_severity: Option<Severity>) {

@@ -538,6 +538,9 @@ impl Buffer {
 
         let mut index = self.index_of(x, y);
         let mut x_offset = x as usize;
+        // Never past the end of the row: the ellipsis (and, when truncating the start, the
+        // text laid out from the right) would land on the next row or outside of the buffer.
+        let width = width.min((self.area.right() - x) as usize);
         let width = if ellipsis { width - 1 } else { width };
         let graphemes = string.grapheme_indices(true);
         let max_offset = min(self.area.right() as usize, width.saturating_add(x as usize));
@@ -585,10 +588,12 @@ impl Buffer {
                 if width == 0 {
                     continue;
                 }
-                let start = index - width;
-                if start < start_index {
+                let Some(start) = index
+                    .checked_sub(width)
+                    .filter(|&start| start >= start_index)
+                else {
                     break;
-                }
+                };
                 self.content[start].set_symbol(s);
                 self.content[start].set_style(style(byte_offset));
                 for i in start + 1..index {
@@ -610,6 +615,8 @@ impl Buffer {
         }
 
         let mut x_offset = x as usize;
+        // Never past the end of the row (see `set_string_truncated`).
+        let width = width.min(self.area.right() - x);
         let last_col = x
             .saturating_add(width)
             .saturating_sub(1)
@@ -631,10 +638,12 @@ impl Buffer {
                 if width == 0 {
                     continue;
                 }
-                let start = index - width;
-                if start < start_index {
+                let Some(start) = index
+                    .checked_sub(width)
+                    .filter(|&start| start >= start_index)
+                else {
                     break;
-                }
+                };
                 self.content[start].set_symbol(s);
                 self.content[start].set_style(span.style);
                 for i in start + 1..index {
@@ -690,6 +699,9 @@ impl Buffer {
 
     /// Set all cells in the [area](Rect) to the given [Style]
     pub fn set_style(&mut self, area: Rect, style: Style) {
+        // Clamp to buffer bounds: the rows of a squeezed view (a statusline of height 0, say)
+        // can lie past the bottom of the screen.
+        let area = self.area.intersection(area);
         for y in area.top()..area.bottom() {
             for x in area.left()..area.right() {
                 self[(x, y)].set_style(style);
@@ -890,6 +902,67 @@ mod tests {
             .diff(&next)
             .iter()
             .any(|(x, y, _)| (*x, *y) == (5, 2)));
+    }
+
+    #[test]
+    fn truncated_strings_wider_than_the_row_stay_on_it() {
+        let area = Rect::new(0, 0, 5, 2);
+        for (ellipsis, truncate_start) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
+            for x in 0..5 {
+                for width in [1, 2, 4, 5, 9, 100] {
+                    let mut buffer = Buffer::empty(area);
+                    // the last row: nothing comes after it to absorb a write past its end
+                    buffer.set_string_truncated(
+                        x,
+                        1,
+                        "日本語 text",
+                        width,
+                        |_| Style::default(),
+                        ellipsis,
+                        truncate_start,
+                    );
+                    let mut buffer = Buffer::empty(area);
+                    buffer.set_string_truncated(
+                        x,
+                        0,
+                        "abcdefgh",
+                        width,
+                        |_| Style::default(),
+                        ellipsis,
+                        truncate_start,
+                    );
+                    // the first row is the only one written to
+                    for col in 0..5 {
+                        assert_eq!(buffer[(col, 1)].symbol.as_str(), " ", "x {x} width {width}");
+                    }
+                }
+            }
+        }
+
+        let mut buffer = Buffer::empty(area);
+        buffer.set_string_truncated(2, 0, "abcdefgh", 50, |_| Style::default(), true, false);
+        assert_eq!(buffer, Buffer::with_lines(vec!["  ab…", "     "]));
+        let mut buffer = Buffer::empty(area);
+        buffer.set_string_truncated(2, 0, "abcdefgh", 50, |_| Style::default(), true, true);
+        assert_eq!(buffer, Buffer::with_lines(vec!["  …h ", "     "]));
+    }
+
+    #[test]
+    fn truncated_spans_wider_than_the_row_stay_on_it() {
+        let area = Rect::new(0, 0, 5, 2);
+        for x in 0..5 {
+            for width in [1, 2, 5, 9, 100] {
+                let mut buffer = Buffer::empty(area);
+                buffer.set_spans_truncated(x, 1, &Spans::from("日本語 text"), width);
+                let mut buffer = Buffer::empty(area);
+                buffer.set_spans_truncated(x, 0, &Spans::from("abcdefgh"), width);
+                for col in 0..5 {
+                    assert_eq!(buffer[(col, 1)].symbol.as_str(), " ", "x {x} width {width}");
+                }
+            }
+        }
     }
 
     #[test]

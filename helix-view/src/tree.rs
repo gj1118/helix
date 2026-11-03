@@ -669,8 +669,13 @@ impl Tree {
                             }
 
                             let mut child_x = area.x;
+                            let right = container.area.right();
                             for (i, child) in container.children.iter().enumerate() {
-                                let width = widths[i];
+                                // Narrower than its gaps, the container can't fit every
+                                // child: the ones past its right edge get no columns rather
+                                // than an area outside of it.
+                                child_x = child_x.min(right);
+                                let width = widths[i].min(right - child_x);
                                 let mut area = Rect::new(
                                     child_x,
                                     container.area.y,
@@ -687,7 +692,7 @@ impl Tree {
 
                                 // Ensure last child takes any 1px drift due to rounding
                                 if i == len - 1 {
-                                    area.width = container.area.x + container.area.width - area.x;
+                                    area.width = right - area.x;
                                 }
 
                                 self.stack.push((*child, area));
@@ -1892,5 +1897,28 @@ mod test {
         let area = tree.get(view).area;
         assert_eq!(tree.divider_at(area.bottom() - 1, area.right()), None);
         assert_eq!(tree.divider_at(area.bottom() - 1, 10), None);
+    }
+
+    #[test]
+    fn splits_narrower_than_their_gaps_stay_inside_the_tree() {
+        for width in [0, 1, 2, 3, 5] {
+            let (mut tree, _) = make_tree(Rect::new(0, 0, width, 10), Layout::Vertical, 6);
+            let hsplit = tree.split(
+                View::new(DocumentId::default(), GutterConfig::default()),
+                Layout::Horizontal,
+            );
+            tree.focus = hsplit;
+            tree.split(
+                View::new(DocumentId::default(), GutterConfig::default()),
+                Layout::Vertical,
+            );
+            for (view, _) in tree.views() {
+                assert!(
+                    view.area.right() <= width && view.area.bottom() <= 10,
+                    "width {width}: {:?}",
+                    view.area
+                );
+            }
+        }
     }
 }

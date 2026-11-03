@@ -36,6 +36,7 @@ fn config_with_persistence() -> Config {
         theme: None,
         keys: keymap::default(),
         editor: editor_config,
+        plugins: None,
     }
 }
 

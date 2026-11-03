@@ -42,7 +42,8 @@ use helix_core::{
     indent::{auto_detect_indent_style, IndentStyle},
     line_ending::auto_detect_line_ending,
     syntax::{self, config::LanguageConfiguration},
-    ChangeSet, Diagnostic, LineEnding, Range, Rope, RopeBuilder, Selection, Syntax, Transaction,
+    ChangeSet, Diagnostic, LineEnding, Range, Rope, RopeBuilder, RopeSlice, Selection, Syntax,
+    Transaction,
 };
 
 use crate::{
@@ -972,6 +973,25 @@ pub async fn to_writer<'a, W: tokio::io::AsyncWriteExt + Unpin + ?Sized>(
     Ok(())
 }
 
+/// Unfolds the folds a range of `selection` starts or ends in.
+///
+/// This runs on every selection change (every cursor motion), and unfolding re-normalizes all of
+/// the view's folds: only do it when a range really is in a fold, which a lookup tells cheaply.
+fn unfold_selection(container: &mut FoldContainer, text: RopeSlice, selection: &Selection) {
+    let in_fold = |line: usize| {
+        container
+            .superest_fold_containing(line, |fold| fold.start.line..=fold.end.line)
+            .is_some()
+    };
+    let unfold = selection.iter().any(|range| {
+        let (start, end) = range.line_range(text);
+        in_fold(start) || in_fold(end)
+    });
+    if unfold {
+        container.remove_by_selection(text, selection);
+    }
+}
+
 fn take_with<T, F>(mut_ref: &mut T, f: F)
 where
     T: Default,
@@ -1710,7 +1730,7 @@ impl Document {
             .get_mut(&view_id)
             .zip(self.selections.get(&view_id))
         {
-            container.remove_by_selection(self.text.slice(..), selection)
+            unfold_selection(container, self.text.slice(..), selection)
         }
 
         helix_event::dispatch(SelectionDidChange {
@@ -1821,7 +1841,7 @@ impl Document {
                 .ensure_invariants(self.text.slice(..));
 
             if let Some(container) = self.fold_container.get_mut(id) {
-                container.remove_by_selection(self.text.slice(..), &ensured_selection);
+                unfold_selection(container, self.text.slice(..), &ensured_selection);
             }
 
             *selection = ensured_selection;

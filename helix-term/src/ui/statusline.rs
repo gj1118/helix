@@ -356,7 +356,7 @@ where
                 write(
                     context,
                     Span::styled(
-                        format!(" {} ", icons.diagnostic().info()),
+                        icons.diagnostic().info().to_string(),
                         context.editor.theme.get("info"),
                     ),
                 );
@@ -685,7 +685,10 @@ where
         if let Some(icon) = icons.kind().get("function") {
             let glyph = icon.glyph();
             if let Some(style) = icon.color().map(|color| Style::default().fg(color)) {
-                write(context, Span::styled(format!(" {} {}", glyph, name), style));
+                write(
+                    context,
+                    Span::styled(format!(" {} {} ", glyph, name), style),
+                );
             } else {
                 write(context, format!(" {} {} ", glyph, name).into());
             }

@@ -68,7 +68,6 @@ pub struct EditorView {
     bufferline_info: BufferLineInfo,
     /// Tracks if the terminal window is focused by reaction to terminal focus events
     terminal_focused: bool,
-    bufferline_positions: Vec<usize>,
     /// Tracks if there are prompt layers active (updated by compositor)
     pub prompt_active: bool,
     notification_popup: NotificationPopup,
@@ -88,6 +87,10 @@ struct BufferlineCache {
     doc_paths: Vec<String>,
     names: Vec<(DocumentId, String)>,
     modified: Vec<bool>,
+    /// The language of each document: it picks the icon.
+    languages: Vec<Option<String>>,
+    /// The separator the positions were laid out with.
+    separator: String,
     texts: Vec<String>,
     widths: Vec<usize>,
     positions: Vec<usize>,
@@ -154,7 +157,6 @@ impl EditorView {
             spinners: ProgressSpinners::default(),
             bufferline_info: BufferLineInfo::default(),
             terminal_focused: true,
-            bufferline_positions: Vec::new(),
             prompt_active: false,
             notification_popup: NotificationPopup::new(),
             bufferline_cache: BufferlineCache::default(),
@@ -358,14 +360,19 @@ impl EditorView {
         let start_drawing_left_align_at_x =
             view.area.x + (view.area.width / 2).saturating_sub(len_of_longest_left_align / 2) + 2;
 
-        let are_any_left_aligned_lines_overflowing_x =
-            (start_drawing_left_align_at_x + len_of_longest_left_align) > view.area.width;
-
-        let are_any_center_aligned_lines_overflowing_x =
-            len_of_longest_center_align as u16 > view.area.width;
+        // Whether the help, shifted right by `shift` columns (to make room for the logo), ends
+        // within the view: the block of left aligned lines and the widest centered line. The
+        // view may be any split, not only one at the left edge of the screen.
+        let right = view.area.right() as usize;
+        let help_fits = |shift: u16| {
+            let shift = shift as usize;
+            start_drawing_left_align_at_x as usize + shift + len_of_longest_left_align as usize
+                <= right
+                && x_view_center as usize + len_of_longest_center_align.div_ceil(2) + shift <= right
+        };
 
         let is_help_x_overflowing =
-            are_any_left_aligned_lines_overflowing_x || are_any_center_aligned_lines_overflowing_x;
+            len_of_longest_center_align > view.area.width as usize || !help_fits(0);
 
         // we want `>=` so it does not get drawn over the status line
         // (essentially, it WON'T be marked as "overflowing" if the help
@@ -385,7 +392,8 @@ impl EditorView {
         // If there is not enough space to show LOGO + HELP, then don't show the logo at all
         //
         // If we get here we know that there IS enough space to show just the help
-        let show_logo = width_of_help_with_logo <= view.area.width;
+        let show_logo =
+            width_of_help_with_logo <= view.area.width && help_fits(*HELP_X_LOGO_OFFSET);
 
         // Each "help" line is effectively "chained" with a line of the logo (if present).
         for (lines_drawn, (line, align)) in help_lines.iter().enumerate() {
@@ -718,34 +726,39 @@ impl EditorView {
                 }
             }
             InlineBlameShow::AllLines => {
-                // Only the visible lines: sizing this by the whole file would allocate
-                // per line of the document on every frame.
+                // Only the lines on screen: sizing this by the whole file would allocate per
+                // line of the document on every frame. Folded lines aren't on screen either:
+                // the lines are gathered in runs of consecutive lines, one decoration each.
                 let visible = view.line_range(doc);
-                let first_line = visible.start;
-                let mut blame_lines = vec![None; visible.len()];
-
-                let blame_for_all_lines = visible.filter_map(|line_idx| {
-                    // do not render inline blame for empty lines to reduce visual noise
-                    if text.line(line_idx) != doc.line_ending.as_str() {
-                        doc.line_blame(line_idx as u32, &inline_blame.format)
-                            .ok()
-                            .map(|blame| (line_idx, blame))
-                    } else {
-                        None
+                let folds = view.fold_annotations(doc);
+                let mut runs: Vec<(usize, Vec<Option<String>>)> = Vec::new();
+                let mut line_idx = visible.start;
+                while line_idx < visible.end {
+                    if let Some(fold) = folds
+                        .superest_fold_containing(line_idx, |fold| fold.start.line..=fold.end.line)
+                    {
+                        line_idx = fold.end.line + 1;
+                        continue;
                     }
-                });
-
-                for (line_idx, blame) in blame_for_all_lines {
-                    blame_lines[line_idx - first_line] = Some(blame);
+                    // do not render inline blame for empty lines to reduce visual noise
+                    let blame = (text.line(line_idx) != doc.line_ending.as_str())
+                        .then(|| doc.line_blame(line_idx as u32, &inline_blame.format).ok())
+                        .flatten();
+                    match runs.last_mut() {
+                        Some((first_line, lines)) if *first_line + lines.len() == line_idx => {
+                            lines.push(blame)
+                        }
+                        _ => runs.push((line_idx, vec![blame])),
+                    }
+                    line_idx += 1;
                 }
 
-                decorations.add_decoration(InlineBlame::new(
-                    theme.get(INLINE_BLAME_SCOPE),
-                    text_decorations::blame::LineBlame::ManyLines {
-                        first_line,
-                        lines: blame_lines,
-                    },
-                ));
+                for (first_line, lines) in runs {
+                    decorations.add_decoration(InlineBlame::new(
+                        theme.get(INLINE_BLAME_SCOPE),
+                        text_decorations::blame::LineBlame::ManyLines { first_line, lines },
+                    ));
+                }
             }
         }
     }
@@ -1206,7 +1219,6 @@ impl EditorView {
 
     /// Render bufferline at the top
     pub fn render_bufferline(&mut self, editor: &Editor, viewport: Rect, surface: &mut Surface) {
-        self.bufferline_positions.clear();
         surface.clear_with(
             viewport,
             editor
@@ -1238,7 +1250,7 @@ impl EditorView {
         let total_width = self.bufferline_cache.total_width;
         let buffer_texts = &self.bufferline_cache.texts;
         let buffer_widths = &self.bufferline_cache.widths;
-        self.bufferline_positions = self.bufferline_cache.positions.clone();
+        let positions = &self.bufferline_cache.positions;
 
         let view_width = viewport.width as usize;
 
@@ -1246,7 +1258,7 @@ impl EditorView {
         let scroll_offset = editor
             .documents()
             .position(|d| d.id() == current_doc)
-            .and_then(|current_idx| self.bufferline_positions.get(current_idx))
+            .and_then(|current_idx| positions.get(current_idx))
             .map_or(0, |&target_x| {
                 if target_x >= view_width / 2 {
                     (target_x - view_width / 2).min(total_width.saturating_sub(view_width))
@@ -1261,7 +1273,7 @@ impl EditorView {
 
         // Second pass: render with the calculated offset
         for (idx, doc) in editor.documents().enumerate() {
-            let buffer_x = self.bufferline_positions[idx];
+            let buffer_x = positions[idx];
             let text = &buffer_texts[idx];
 
             // Render separator if not first document (only when fully visible
@@ -1326,7 +1338,38 @@ impl EditorView {
         }
     }
 
+    /// Whether the cached bufferline still matches the documents, compared in place: this runs
+    /// every frame, so it must not allocate.
+    fn bufferline_cache_is_current(&self, editor: &Editor, separator: &str) -> bool {
+        let cache = &self.bufferline_cache;
+        cache.separator == separator
+            && cache.doc_ids.len() == editor.documents.len()
+            && editor
+                .documents()
+                .zip(&cache.doc_ids)
+                .zip(&cache.doc_paths)
+                .zip(&cache.modified)
+                .zip(&cache.languages)
+                .all(|((((doc, id), path), modified), language)| {
+                    doc.id() == *id
+                        && doc.is_modified() == *modified
+                        && doc.language_name() == language.as_deref()
+                        && doc
+                            .path()
+                            .map_or(std::borrow::Cow::Borrowed(SCRATCH_BUFFER_NAME), |path| {
+                                path.to_string_lossy()
+                            })
+                            == path.as_str()
+                })
+    }
+
     fn refresh_bufferline_cache(&mut self, editor: &Editor) {
+        let config = editor.config();
+        let separator = config.bufferline.separator.as_str();
+        if self.bufferline_cache_is_current(editor, separator) {
+            return;
+        }
+
         let scratch = PathBuf::from(SCRATCH_BUFFER_NAME);
 
         let current_ids: Vec<DocumentId> = editor.documents().map(|d| d.id()).collect();
@@ -1340,13 +1383,10 @@ impl EditorView {
             })
             .collect();
 
-        // Cache is fully valid only if doc IDs, paths, and modified states all match
-        if self.bufferline_cache.doc_ids == current_ids
-            && self.bufferline_cache.doc_paths == current_paths
-            && self.bufferline_cache.modified == current_modified
-        {
-            return;
-        }
+        let languages: Vec<Option<String>> = editor
+            .documents()
+            .map(|d| d.language_name().map(String::from))
+            .collect();
 
         let icons = ICONS.load();
 
@@ -1379,7 +1419,7 @@ impl EditorView {
         let mut total_width = 0usize;
         // Widths are measured in display columns (not bytes): the default
         // separator "│" and file icons are multi-byte but one column wide.
-        let sep_width = editor.config().bufferline.separator.width();
+        let sep_width = separator.width();
 
         for (idx, doc) in editor.documents().enumerate() {
             if idx > 0 {
@@ -1410,6 +1450,8 @@ impl EditorView {
             doc_paths: current_paths,
             names,
             modified: current_modified,
+            languages,
+            separator: separator.to_owned(),
             texts,
             widths,
             positions,
@@ -1810,11 +1852,12 @@ impl EditorView {
             if col >= view_offset.horizontal_offset
                 && inner_area.width > (col - view_offset.horizontal_offset) as u16
             {
+                // The text rows only: not over the breadcrumb bar above them.
                 let area = Rect::new(
                     inner_area.x + (col - view_offset.horizontal_offset) as u16,
-                    view.area.y,
+                    inner_area.y,
                     1,
-                    view.area.height,
+                    inner_area.height,
                 );
                 if is_primary {
                     surface.set_style(area, primary_style)
@@ -2634,7 +2677,9 @@ impl Component for EditorView {
 
         for (view, is_focused) in cx.editor.tree.views() {
             let doc = cx.editor.document(view.doc).unwrap();
-            self.render_view(cx.editor, doc, view, area, surface, is_focused);
+            // The views' frame: a view ending short of it has a neighbour (and a divider) on
+            // its right, not a pinned explorer panel.
+            self.render_view(cx.editor, doc, view, editor_area, surface, is_focused);
         }
 
         if config.auto_info {

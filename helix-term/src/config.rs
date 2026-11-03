@@ -20,6 +20,9 @@ pub struct Config {
     pub theme: Option<theme::Config>,
     pub keys: HashMap<Mode, KeyTrie>,
     pub editor: helix_view::editor::Config,
+    /// The `[plugins]` table, checked to be a valid [`helix_plugin::PluginConfig`] when the
+    /// config is loaded: see [`Config::plugin_config`]. Only read from the global config file.
+    pub plugins: Option<toml::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -31,6 +34,8 @@ pub struct ConfigRaw {
     pub icons: Option<toml::Value>,
     /// User-defined command-mode commands.
     pub commands: Option<toml::Value>,
+    /// Plugin settings, see [`helix_plugin::PluginConfig`].
+    pub plugins: Option<toml::Value>,
 }
 
 /// The `[keys]` section: a key trie per mode (`normal`, `select`, `insert`) and the action
@@ -109,6 +114,7 @@ impl Default for Config {
             theme: None,
             keys: keymap::default(),
             editor: helix_view::editor::Config::default(),
+            plugins: None,
         }
     }
 }
@@ -157,7 +163,26 @@ fn load_commands(
     Ok(commands)
 }
 
+/// Checks a `[plugins]` table.
+fn check_plugins(plugins: Option<toml::Value>) -> Result<Option<toml::Value>, ConfigLoadError> {
+    if let Some(plugins) = &plugins {
+        plugins
+            .clone()
+            .try_into::<helix_plugin::PluginConfig>()
+            .map_err(ConfigLoadError::BadConfig)?;
+    }
+    Ok(plugins)
+}
+
 impl Config {
+    /// The plugin settings of the `[plugins]` table (the defaults without one).
+    pub fn plugin_config(&self) -> helix_plugin::PluginConfig {
+        self.plugins
+            .clone()
+            .and_then(|plugins| plugins.try_into().ok())
+            .unwrap_or_default()
+    }
+
     pub fn load(
         global: Result<&String, ConfigLoadError>,
         local: Result<String, ConfigLoadError>,
@@ -200,10 +225,17 @@ impl Config {
                 editor.commands = load_commands(global.commands, local.commands)?;
                 editor.component_keys = component_keys;
 
+                // Plugins run code: a workspace's `.helix/config.toml` must not pick the
+                // directories they are loaded from, so `[plugins]` is global only.
+                if local.plugins.is_some() {
+                    log::warn!("[plugins] is only read from the global config file");
+                }
+
                 Config {
                     theme: local.theme.or(global.theme),
                     keys,
                     editor,
+                    plugins: check_plugins(global.plugins)?,
                 }
             }
             // if any configs are invalid return that first
@@ -234,6 +266,7 @@ impl Config {
                     theme: config.theme,
                     keys,
                     editor,
+                    plugins: check_plugins(config.plugins)?,
                 }
             }
 
@@ -330,6 +363,44 @@ mod tests {
                 ..Default::default()
             }
         );
+    }
+
+    #[test]
+    fn plugins_section_is_read_from_the_global_config_only() {
+        let config = Config::load_test(
+            r#"
+            [plugins]
+            enabled = false
+            plugin_dirs = ["/tmp/plugins"]
+
+            [[plugins.plugins]]
+            name = "greeter"
+            config = { greeting = "hi", nested = { level = 2 } }
+            "#,
+        );
+        let plugins = config.plugin_config();
+        assert!(!plugins.enabled);
+        assert_eq!(
+            plugins.plugin_dirs,
+            [std::path::PathBuf::from("/tmp/plugins")]
+        );
+        assert_eq!(plugins.plugins[0].name, "greeter");
+        assert_eq!(plugins.plugins[0].config["nested"]["level"], 2);
+        assert!(plugins.plugins[0].enabled);
+
+        // without the section: the defaults
+        assert!(Config::load_test("").plugin_config().enabled);
+
+        // a workspace can't enable or point plugins elsewhere
+        let config = Config::load(
+            Ok(&"[plugins]\nenabled = false".to_owned()),
+            Ok("[plugins]\nenabled = true\nplugin_dirs = [\"evil\"]".to_owned()),
+        )
+        .unwrap();
+        assert!(!config.plugin_config().enabled);
+        assert!(config.plugin_config().plugin_dirs.is_empty());
+
+        assert!(load_err("[plugins]\nenabled = 3", "").contains("enabled"));
     }
 
     fn load_err(global: &str, local: &str) -> String {

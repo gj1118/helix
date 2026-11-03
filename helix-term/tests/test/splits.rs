@@ -1,6 +1,7 @@
 use super::*;
 
 use helix_stdx::path;
+use helix_term::application::Application;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_split_write_quit_all() -> anyhow::Result<()> {
@@ -259,5 +260,171 @@ async fn test_reload_all_with_split_jumplist() -> anyhow::Result<()> {
     )
     .await?;
 
+    Ok(())
+}
+
+/// Sends `keys` to the application and runs its event loop until it is idle.
+async fn send_keys(app: &mut Application, keys: &str) -> anyhow::Result<()> {
+    #[cfg(windows)]
+    use crossterm::event::{Event, KeyEvent};
+    #[cfg(not(windows))]
+    use termina::event::{Event, KeyEvent};
+
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    for key in helix_view::input::parse_macro(keys)? {
+        tx.send(Ok(Event::Key(KeyEvent::from(key))))?;
+    }
+    let mut rx = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
+    app.event_loop_until_idle(&mut rx).await;
+    Ok(())
+}
+
+/// Every terminal size, down to nothing, renders without panicking (debug builds check for
+/// arithmetic overflow), with splits, the buffer line, breadcrumbs, rulers, folds and the
+/// cursor column all on.
+#[tokio::test(flavor = "multi_thread")]
+async fn tiny_terminals_render_without_panicking() -> anyhow::Result<()> {
+    use helix_view::editor::{BufferLineRenderMode, LineNumber};
+
+    let mut text = String::new();
+    for i in 0..60 {
+        text.push_str(&format!(
+            "\tline {i} 日本語のテキスト {}\n",
+            "x".repeat(i * 7)
+        ));
+    }
+    let file = helpers::temp_file_with_contents(&text)?;
+    let other = helpers::temp_file_with_contents("other\n")?;
+
+    let mut config = helpers::test_config();
+    config.editor.bufferline.render_mode = BufferLineRenderMode::Always;
+    config.editor.breadcrumb.enable = true;
+    config.editor.rulers = vec![1, 4, 30];
+    config.editor.cursorline = true;
+    config.editor.cursorcolumn = true;
+    config.editor.line_number = LineNumber::Relative;
+
+    let mut app = helpers::AppBuilder::new()
+        .with_file(file.path(), None)
+        .with_config(config)
+        .build()?;
+
+    send_keys(
+        &mut app,
+        &format!(
+            ":o {}<ret>:vs<ret>:bp<ret>:vs<ret>:sp<ret>10ggxxxx:fold --selection<ret>40gg$",
+            other.path().to_string_lossy()
+        ),
+    )
+    .await?;
+    assert_eq!(app.editor.tree.views().count(), 4);
+
+    let sizes = [
+        (0, 0),
+        (1, 1),
+        (2, 2),
+        (3, 3),
+        (4, 2),
+        (2, 4),
+        (5, 5),
+        (7, 3),
+        (3, 40),
+        (40, 3),
+        (13, 9),
+        (200, 2),
+        (2, 200),
+        (80, 24),
+    ];
+    for (width, height) in sizes {
+        app.resize_terminal(width, height).await;
+        // Splits squeezed to nothing must still lie within the screen.
+        for (view, _) in app.editor.tree.views() {
+            assert!(
+                view.area.right() <= width && view.area.bottom() <= height,
+                "{width}x{height}: view area {:?} sticks out",
+                view.area
+            );
+        }
+        // Moving and editing redraws at this size too.
+        send_keys(&mut app, "kl<C-w>w").await?;
+    }
+
+    send_keys(&mut app, ":qa!<ret>").await?;
+    Ok(())
+}
+
+/// End of line diagnostics follow the text when the view is scrolled horizontally.
+#[tokio::test(flavor = "multi_thread")]
+async fn end_of_line_diagnostics_scroll_horizontally() -> anyhow::Result<()> {
+    use helix_core::diagnostic::{
+        Diagnostic, DiagnosticProvider, LanguageServerId, Range, Severity,
+    };
+    use helix_view::annotations::diagnostics::DiagnosticFilter;
+
+    let long = "a".repeat(100);
+    let visible = "v".repeat(60);
+    let text = format!("{long}\n{visible}\nshort\n");
+    let file = helpers::temp_file_with_contents(&text)?;
+
+    let mut config = helpers::test_config();
+    config.editor.end_of_line_diagnostics = DiagnosticFilter::Enable(Severity::Hint);
+    config.editor.inline_diagnostics.cursor_line = DiagnosticFilter::Disable;
+    config.editor.inline_diagnostics.other_lines = DiagnosticFilter::Disable;
+
+    let mut app = helpers::AppBuilder::new()
+        .with_file(file.path(), None)
+        .with_config(config)
+        .build()?;
+
+    let diagnostic = |start: usize, end: usize, line: usize, message: &str| Diagnostic {
+        range: Range { start, end },
+        ends_at_word: false,
+        starts_at_word: false,
+        zero_width: false,
+        line,
+        message: message.to_string(),
+        severity: Some(Severity::Error),
+        code: None,
+        provider: DiagnosticProvider::Lsp {
+            server_id: LanguageServerId::default(),
+            identifier: None,
+        },
+        tags: Vec::new(),
+        source: None,
+        data: None,
+    };
+    {
+        let doc = helix_view::doc_mut!(app.editor);
+        let visible_start = 101;
+        let short_start = visible_start + 61;
+        doc.replace_diagnostics(
+            [
+                // starts on screen: the diagnostics scrolled off to the left aren't drawn
+                diagnostic(visible_start + 50, visible_start + 53, 1, "DIAGA"),
+                diagnostic(short_start + 1, short_start + 3, 2, "DIAGB"),
+            ],
+            &[],
+            None,
+        );
+    }
+    app.resize_terminal(80, 10).await;
+    // the end of the first line: the view scrolls right, past the end of `short`
+    send_keys(&mut app, "gl").await?;
+
+    let (view, doc) = helix_view::current_ref!(app.editor);
+    let offset = doc.view_offset(view.id).horizontal_offset;
+    let text_x = view.inner_area(doc).x as usize;
+    assert!(offset > "short".len() && offset < visible.len(), "{offset}");
+
+    let rows = app.rendered_rows();
+    // past the line and its newline, a column, the icon and a space, then the message
+    let expected = text_x + visible.len() + 1 + 1 + 2 - offset;
+    let found = rows[1]
+        .find("DIAGA")
+        .map(|byte| rows[1][..byte].chars().count());
+    assert_eq!(found, Some(expected), "{:?}", rows[1]);
+    assert!(!rows[2].contains("DIAGB"), "{:?}", rows[2]);
+
+    send_keys(&mut app, ":q!<ret>").await?;
     Ok(())
 }

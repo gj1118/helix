@@ -1,7 +1,8 @@
 use std::fmt::Write;
 
 use helix_core::syntax::config::LanguageServerFeature;
-use helix_core::text_folding::Fold;
+use helix_core::text_annotations::TextAnnotations;
+use helix_core::text_folding::{Fold, FoldAnnotations};
 
 use crate::{
     document::Mode,
@@ -159,7 +160,12 @@ pub fn line_numbers<'doc>(
 ) -> GutterFn<'doc> {
     let text = doc.text().slice(..);
     let width = line_numbers_width(view, doc);
-    let annotations = view.text_annotations(doc, None);
+    // Only the folds matter here: building all of the view's annotations (inlay hints,
+    // diagnostics, ...) once more per frame would be wasted.
+    let mut annotations = TextAnnotations::default();
+    if let Some(container) = doc.fold_container(view.id) {
+        annotations.add_folds(container);
+    }
 
     let last_line_in_view = view.estimate_last_doc_line(&annotations, doc);
 
@@ -209,52 +215,16 @@ pub fn line_numbers<'doc>(
 
     // folded lines between `line` and `current_line`
     let mut folded_lines = None;
-    let folded_lines_of = |fold: Fold| fold.end.line - fold.start.line + 1;
 
     Box::new(
         move |line: usize, selected: bool, first_visual_line: bool, out: &mut String| {
-            let fold_annotations = &annotations.folds;
-
             if line == last_line_in_view && !draw_last {
                 write!(out, "{:>1$}", '~', width).unwrap();
                 Some(linenr)
             } else {
                 use crate::{document::Mode, editor::LineNumber};
-                use std::cmp::Ordering::*;
-                use std::cmp::{max, min};
 
-                // calculate folded lines
-                match current_line.cmp(&line) {
-                    Greater if folded_lines.is_none() => {
-                        fold_annotations.reset_pos(line, |fold| fold.start.line);
-                        let line_range = min(current_line, line)..=max(current_line, line);
-                        folded_lines = Some(fold_annotations.folded_lines_between(&line_range));
-                    }
-                    Greater => match folded_lines {
-                        Some(n) if n > 0 => {
-                            if let Some(fold) =
-                                fold_annotations.consume_next(line, |fold| fold.end.line + 1)
-                            {
-                                folded_lines = Some(n - folded_lines_of(fold))
-                            }
-                        }
-                        _ => (),
-                    },
-                    Equal => {
-                        if folded_lines.is_none() {
-                            fold_annotations.reset_pos(line, |fold| fold.start.line);
-                        }
-                        fold_annotations.consume_next(line, |fold| fold.end.line + 1);
-                        folded_lines = Some(0);
-                    }
-                    Less => {
-                        if let Some(fold) =
-                            fold_annotations.consume_next(line, |fold| fold.end.line + 1)
-                        {
-                            folded_lines = Some(folded_lines.unwrap() + folded_lines_of(fold));
-                        }
-                    }
-                }
+                track_folded_lines(&annotations.folds, &mut folded_lines, current_line, line);
 
                 let relative = line_number == LineNumber::Relative
                     && mode != Mode::Insert
@@ -304,6 +274,50 @@ pub fn line_numbers<'doc>(
             }
         },
     )
+}
+
+/// Keeps `folded_lines` at the number of folded lines between `current_line` (the cursor's)
+/// and `line`, for the lines of a view passed in order (each possibly several times, once per
+/// visual line).
+fn track_folded_lines(
+    folds: &FoldAnnotations,
+    folded_lines: &mut Option<usize>,
+    current_line: usize,
+    line: usize,
+) {
+    use std::cmp::Ordering::*;
+    let folded_lines_of = |fold: Fold| fold.end.line - fold.start.line + 1;
+
+    match (current_line.cmp(&line), *folded_lines) {
+        // The first line shown, with the cursor below or above it (above when the view was
+        // scrolled away from its cursor, e.g. by edits in another view of the document): count
+        // the folds in between, then follow the folds from this line on.
+        (Greater | Less, None) => {
+            folds.reset_pos(line, |fold| fold.start.line);
+            let line_range = current_line.min(line)..=current_line.max(line);
+            *folded_lines = Some(folds.folded_lines_between(&line_range));
+        }
+        // Lines before the cursor: a fold left behind no longer lies in between.
+        (Greater, Some(n)) if n > 0 => {
+            if let Some(fold) = folds.consume_next(line, |fold| fold.end.line + 1) {
+                *folded_lines = Some(n.saturating_sub(folded_lines_of(fold)));
+            }
+        }
+        (Greater, Some(_)) => (),
+        (Equal, _) => {
+            if folded_lines.is_none() {
+                folds.reset_pos(line, |fold| fold.start.line);
+            }
+            folds.consume_next(line, |fold| fold.end.line + 1);
+            *folded_lines = Some(0);
+        }
+        // Lines after the cursor: a fold passed by now lies in between.
+        (Less, Some(n)) => {
+            if let Some(fold) = folds.consume_next(line, |fold| fold.end.line + 1) {
+                *folded_lines = Some(n + folded_lines_of(fold));
+            }
+        }
+    }
 }
 
 /// The width of a "line-numbers" gutter
@@ -572,5 +586,63 @@ mod tests {
         assert_eq!(view.gutters.layout.len(), 2);
         assert_eq!(view.gutters.layout[1].width(&view, &doc_short), 1);
         assert_eq!(view.gutters.layout[1].width(&view, &doc_long), 2);
+    }
+
+    fn folded_lines_seen(
+        text: &str,
+        folds: &[(usize, usize)],
+        cursor: usize,
+        lines: &[usize],
+    ) -> Vec<usize> {
+        use helix_core::text_folding::{FoldContainer, FoldObject};
+        let rope = Rope::from_str(text);
+        let text = rope.slice(..);
+        let points = folds
+            .iter()
+            .map(|&(start, end)| {
+                Fold::new_points(
+                    text,
+                    FoldObject::Selection,
+                    text.line_to_char(start - 1),
+                    &(text.line_to_char(start)..=text.line_to_char(end + 1) - 2),
+                )
+            })
+            .collect();
+        let container = FoldContainer::from(text, points);
+        let annotations = FoldAnnotations::new(Some(&container));
+        let mut folded_lines = None;
+        lines
+            .iter()
+            .map(|&line| {
+                track_folded_lines(&annotations, &mut folded_lines, cursor, line);
+                folded_lines.unwrap()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn folded_lines_with_the_cursor_above_the_view() {
+        let text = "line\n".repeat(30);
+        // lines 5..=9 and 20..=24 are folded; the view starts at line 12, below the cursor
+        let lines = [12, 13, 19, 25, 26];
+        assert_eq!(
+            folded_lines_seen(&text, &[(5, 9), (20, 24)], 2, &lines),
+            [5, 5, 5, 10, 10]
+        );
+        // a fold right above the first line shown
+        assert_eq!(
+            folded_lines_seen(&text, &[(5, 9), (20, 24)], 2, &[10, 11, 25]),
+            [5, 5, 10]
+        );
+    }
+
+    #[test]
+    fn folded_lines_with_the_cursor_in_and_below_the_view() {
+        let text = "line\n".repeat(30);
+        let lines = [0, 4, 10, 19, 25, 27, 28];
+        assert_eq!(
+            folded_lines_seen(&text, &[(5, 9), (20, 24)], 27, &lines),
+            [10, 10, 5, 5, 0, 0, 0]
+        );
     }
 }

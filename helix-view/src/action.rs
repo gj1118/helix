@@ -69,15 +69,28 @@ impl Action {
                     log::debug!("code action: {:?}", code_action);
                     // We support lsp "codeAction/resolve" for `edit` and `command` fields.
                     let resolved;
-                    let code_action = if code_action.edit.is_none() || code_action.command.is_none()
-                    {
-                        resolved = language_server
-                            .resolve_code_action(code_action)
-                            .and_then(|future| helix_lsp::block_on(future).ok());
-                        resolved.as_ref().unwrap_or(code_action)
-                    } else {
-                        code_action
-                    };
+                    let code_action =
+                        if code_action.edit.is_none() || code_action.command.is_none() {
+                            // The action is applied right away, with what the resolve adds, so the
+                            // editor waits for it; but not for the whole request timeout of the
+                            // server (20 seconds by default): without an answer by then the action
+                            // is applied as it is.
+                            resolved = language_server.resolve_code_action(code_action).and_then(
+                                |future| {
+                                    let resolve = tokio::time::timeout(RESOLVE_TIMEOUT, future);
+                                    match helix_lsp::block_on(resolve) {
+                                        Ok(resolved) => resolved.ok(),
+                                        Err(_) => {
+                                            log::warn!("codeAction/resolve timed out");
+                                            None
+                                        }
+                                    }
+                                },
+                            );
+                            resolved.as_ref().unwrap_or(code_action)
+                        } else {
+                            code_action
+                        };
 
                     if let Some(ref workspace_edit) = code_action.edit {
                         let _ = editor.apply_workspace_edit(offset_encoding, workspace_edit);
@@ -93,6 +106,9 @@ impl Action {
         })
     }
 }
+
+/// How long applying a code action waits for `codeAction/resolve`.
+const RESOLVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Computes the sort priority for an LSP code action; higher is shown first.
 ///

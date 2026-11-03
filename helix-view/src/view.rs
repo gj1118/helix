@@ -212,16 +212,19 @@ impl View {
         self.docs_access_history.push(id);
     }
 
-    /// The range of lines in the document that the view sees
+    /// The range of lines in the document that the view sees. Lines in folds within the range
+    /// are hidden: a fold takes no rows, so the range reaches as far as the rows allow.
     pub fn line_range(&self, doc: &Document) -> std::ops::Range<usize> {
-        let text = doc.text();
-        let text_line_count = text.len_lines();
+        let text = doc.text().slice(..);
         let first_line = text.char_to_line(doc.view_offset(self.id).anchor.min(text.len_chars()));
-        let last_line = first_line
-            .saturating_add(self.inner_height(doc))
-            .min(text_line_count);
+        let height = self.inner_height(doc);
+        if height == 0 {
+            return first_line..first_line;
+        }
+        let folds = self.fold_annotations(doc);
+        let last_line = text.nth_next_folded_line(&folds, first_line, height - 1);
 
-        first_line..last_line
+        first_line..(last_line + 1).min(text.len_lines())
     }
 
     pub fn inner_area(&self, doc: &Document) -> Rect {

@@ -35,17 +35,69 @@ use log::{debug, error, info, warn};
 use std::{
     collections::HashMap,
     io::{stdin, IsTerminal},
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc,
 };
 
 use helix_event::register_hook;
 use helix_plugin::{EventData, EventType, PluginConfig, PluginEvent, PluginManager};
-use helix_view::events::{DiagnosticsDidChange, DocumentDidOpen, SelectionDidChange};
+use helix_view::events::{
+    DiagnosticsDidChange, DocumentDidChange, DocumentDidClose, DocumentDidOpen,
+    LanguageServerInitialized, SelectionDidChange,
+};
 use std::sync::Mutex;
 
 helix_event::runtime_local! {
     static PENDING_PLUGIN_EVENTS: Mutex<Vec<PluginEvent>> = Mutex::new(Vec::new());
+}
+
+/// Queues a plugin event, fired before the next frame.
+fn queue_plugin_event(event: PluginEvent) {
+    let mut events = match PENDING_PLUGIN_EVENTS.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    events.push(event);
+}
+
+/// Queues a document event unless one of the same type for the same document is pending
+/// already: a macro or a long command changes a document (or its selections) many thousands
+/// of times between two frames, the plugins hear of it once.
+fn queue_plugin_event_once(
+    event_type: EventType,
+    document_id: helix_view::DocumentId,
+    path: impl FnOnce() -> Option<std::path::PathBuf>,
+) {
+    let mut events = match PENDING_PLUGIN_EVENTS.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let pending = events.iter().any(|pending| {
+        pending.event_type == event_type
+            && matches!(
+                pending.data,
+                EventData::Buffer { document_id: id, .. } if id == document_id
+            )
+    });
+    if !pending {
+        events.push(PluginEvent {
+            event_type,
+            data: EventData::Buffer {
+                document_id,
+                path: path(),
+            },
+        });
+    }
+}
+
+/// A number for a language server, unique among the running ones (its slot).
+fn language_server_number(id: helix_lsp::LanguageServerId) -> usize {
+    // Displayed as `<slot>v<version>`.
+    id.to_string()
+        .split('v')
+        .next()
+        .and_then(|slot| slot.parse().ok())
+        .unwrap_or_default()
 }
 
 #[cfg_attr(windows, allow(unused_imports))]
@@ -92,6 +144,8 @@ pub struct Application {
     jobs: Jobs,
     lsp_progress: LspProgressMap,
     plugin_manager: Arc<PluginManager>,
+    /// The language servers each document was last seen attached to, for `lsp_attach`.
+    plugin_lsp_attached: HashMap<helix_view::DocumentId, Vec<helix_lsp::LanguageServerId>>,
     ui_receiver: tokio::sync::mpsc::UnboundedReceiver<crate::plugin_registry::UiRequest>,
 
     theme_mode: Option<theme::Mode>,
@@ -340,16 +394,17 @@ impl Application {
         ])
         .context("build signal handler")?;
 
-        // The integration tests never load plugins: the default directories are the user's
-        // own (`~/.config/helix/plugins`), and every test would run with whatever is there
-        // (an auto-save plugin, say), each one loading them again.
-        let plugin_config = if cfg!(feature = "integration") {
+        // The `[plugins]` table of the config. The integration tests don't load plugins unless
+        // a test asks for them with its own table: the default directories are the user's own
+        // (`~/.config/helix/plugins`), and every test would run with whatever is there (an
+        // auto-save plugin, say), each one loading them again.
+        let plugin_config = if cfg!(feature = "integration") && config.load().plugins.is_none() {
             PluginConfig {
                 enabled: false,
                 ..PluginConfig::default()
             }
         } else {
-            PluginConfig::default()
+            config.load().plugin_config()
         };
         let plugin_manager =
             PluginManager::new(plugin_config).expect("Failed to create plugin manager");
@@ -374,6 +429,61 @@ impl Application {
         }
         let plugin_manager = Arc::new(plugin_manager);
 
+        // Without plugins nothing would ever take the queued events but the next frame, which
+        // throws them away: don't queue them (a path and a string per selection change and key).
+        if plugin_manager.is_enabled() {
+            Self::register_plugin_hooks();
+            editor.pre_save_hook = Some(Self::plugin_pre_save_hook(plugin_manager.clone()));
+        }
+
+        // Fire OnBufferOpen for already opened documents
+        let docs: Vec<_> = editor
+            .documents()
+            .filter_map(|doc| doc.path().map(|p| (doc.id(), p.to_path_buf())))
+            .collect();
+
+        for (doc_id, path) in docs {
+            if let Err(e) = plugin_manager.fire_event(
+                &mut editor,
+                PluginEvent {
+                    event_type: EventType::OnBufferOpen,
+                    data: EventData::Buffer {
+                        document_id: doc_id,
+                        path: Some(path),
+                    },
+                },
+            ) {
+                log::error!("Failed to fire plugin event for startup doc: {}", e);
+            }
+        }
+        let ready = PluginEvent {
+            event_type: EventType::OnReady,
+            data: EventData::None,
+        };
+        if let Err(e) = plugin_manager.fire_event(&mut editor, ready) {
+            log::error!("Failed to fire plugin event: {}", e);
+        }
+
+        let app = Self {
+            compositor,
+            terminal,
+            pointer_shape: helix_view::editor::PointerShape::Default,
+            editor,
+            config,
+            signals,
+            jobs,
+            lsp_progress: LspProgressMap::new(),
+            plugin_manager,
+            plugin_lsp_attached: HashMap::new(),
+            ui_receiver,
+            theme_mode,
+        };
+
+        Ok(app)
+    }
+
+    /// Queues the editor events plugins subscribe to; they are fired before the next frame.
+    fn register_plugin_hooks() {
         register_hook!(move |event: &mut DocumentDidOpen<'_>| {
             if let Ok(mut events) = PENDING_PLUGIN_EVENTS.lock() {
                 events.push(PluginEvent {
@@ -389,15 +499,42 @@ impl Application {
         });
 
         register_hook!(move |event: &mut SelectionDidChange<'_>| {
-            if let Ok(mut events) = PENDING_PLUGIN_EVENTS.lock() {
-                events.push(PluginEvent {
-                    event_type: EventType::OnSelectionChange,
-                    data: EventData::Buffer {
-                        document_id: event.doc.id(),
-                        path: event.doc.path().map(|p: &std::path::Path| p.to_path_buf()),
-                    },
+            let doc = &event.doc;
+            queue_plugin_event_once(EventType::OnSelectionChange, doc.id(), || {
+                doc.path().map(PathBuf::from)
+            });
+            Ok(())
+        });
+
+        register_hook!(move |event: &mut DocumentDidChange<'_>| {
+            // Previews (of a completion, say) are undone right away.
+            if !event.ghost_transaction {
+                let doc = &event.doc;
+                queue_plugin_event_once(EventType::OnBufferChanged, doc.id(), || {
+                    doc.path().map(PathBuf::from)
                 });
             }
+            Ok(())
+        });
+
+        register_hook!(move |event: &mut DocumentDidClose<'_>| {
+            queue_plugin_event(PluginEvent {
+                event_type: EventType::OnBufferClose,
+                data: EventData::Buffer {
+                    document_id: event.doc.id(),
+                    path: event.doc.path().map(PathBuf::from),
+                },
+            });
+            helix_event::request_redraw();
+            Ok(())
+        });
+
+        register_hook!(move |_event: &mut LanguageServerInitialized<'_>| {
+            queue_plugin_event(PluginEvent {
+                event_type: EventType::OnLspInitialized,
+                data: EventData::None,
+            });
+            helix_event::request_redraw();
             Ok(())
         });
 
@@ -426,43 +563,6 @@ impl Application {
             helix_event::request_redraw();
             Ok(())
         });
-
-        // Fire OnBufferOpen for already opened documents
-        let docs: Vec<_> = editor
-            .documents()
-            .filter_map(|doc| doc.path().map(|p| (doc.id(), p.to_path_buf())))
-            .collect();
-
-        for (doc_id, path) in docs {
-            if let Err(e) = plugin_manager.fire_event(
-                &mut editor,
-                PluginEvent {
-                    event_type: EventType::OnBufferOpen,
-                    data: EventData::Buffer {
-                        document_id: doc_id,
-                        path: Some(path),
-                    },
-                },
-            ) {
-                log::error!("Failed to fire plugin event for startup doc: {}", e);
-            }
-        }
-
-        let app = Self {
-            compositor,
-            terminal,
-            pointer_shape: helix_view::editor::PointerShape::Default,
-            editor,
-            config,
-            signals,
-            jobs,
-            lsp_progress: LspProgressMap::new(),
-            plugin_manager,
-            ui_receiver,
-            theme_mode,
-        };
-
-        Ok(app)
     }
 
     /// Whether plugins are loaded (never in the integration tests).
@@ -470,7 +570,60 @@ impl Application {
         self.plugin_manager.is_enabled()
     }
 
+    /// Runs the plugins' `buffer_pre_save` handlers before [`Editor::save`] writes a document.
+    fn plugin_pre_save_hook(plugin_manager: Arc<PluginManager>) -> helix_view::editor::PreSaveHook {
+        Box::new(move |editor, document_id| {
+            let event = PluginEvent {
+                event_type: EventType::OnBufferPreSave,
+                data: EventData::Buffer {
+                    document_id,
+                    path: editor
+                        .document(document_id)
+                        .and_then(|doc| doc.path().map(PathBuf::from)),
+                },
+            };
+            // Plugin code that is running already (a handler or command that writes) holds the
+            // engine and has the editor: running handlers now would hand the editor out twice.
+            // They hear of the save with the next frame instead.
+            let plugin_code_running = plugin_manager.engine().try_write().is_none();
+            if plugin_code_running {
+                queue_plugin_event(event);
+            } else if let Err(e) = plugin_manager.fire_event(editor, event) {
+                log::error!("Failed to fire plugin event: {}", e);
+            }
+        })
+    }
+
+    /// Queues `lsp_attach` for the language servers that are newly attached to a document.
+    fn queue_lsp_attach_events(&mut self) {
+        let documents = &self.editor.documents;
+        self.plugin_lsp_attached
+            .retain(|id, _| documents.contains_key(id));
+        for doc in self.editor.documents() {
+            let servers: Vec<_> = doc.language_servers().map(|ls| ls.id()).collect();
+            let seen = self.plugin_lsp_attached.entry(doc.id()).or_default();
+            if *seen == servers {
+                continue;
+            }
+            for &server in servers.iter().filter(|server| !seen.contains(server)) {
+                queue_plugin_event(PluginEvent {
+                    event_type: EventType::OnLspAttach,
+                    data: EventData::LspAttach {
+                        document_id: doc.id(),
+                        language_server_id: language_server_number(server),
+                    },
+                });
+            }
+            *seen = servers;
+        }
+    }
+
     fn handle_plugin_events(&mut self) {
+        if !self.plugin_manager.is_enabled() {
+            return;
+        }
+        self.queue_lsp_attach_events();
+
         let events = {
             let mut lock = match PENDING_PLUGIN_EVENTS.lock() {
                 Ok(guard) => guard,
@@ -1006,7 +1159,7 @@ impl Application {
             }
             UiRequest::Picker {
                 items,
-                prompt: _prompt,
+                prompt,
                 plugin_name,
                 callback_id,
             } => {
@@ -1024,6 +1177,11 @@ impl Application {
                         pending.fire(cx.editor, serde_json::Value::String(item.clone()));
                     })
                     .with_title("Plugin");
+                let picker = if prompt.is_empty() {
+                    picker
+                } else {
+                    picker.with_prompt(prompt)
+                };
                 self.compositor.push(Box::new(overlaid(
                     picker,
                     self.editor.config().fullscreen_overlay,
@@ -1167,7 +1325,9 @@ impl Application {
             event if event.is_escape() => false,
             event => {
                 let event: helix_view::input::Event = event.into();
-                if let helix_view::input::Event::Key(key) = &event {
+                if let (helix_view::input::Event::Key(key), true) =
+                    (&event, self.plugin_manager.is_enabled())
+                {
                     if let Ok(mut events) = PENDING_PLUGIN_EVENTS.lock() {
                         events.push(PluginEvent {
                             event_type: EventType::OnKeyPress,
@@ -1823,6 +1983,26 @@ impl Application {
     #[cfg(feature = "integration")]
     pub fn raw_output(&self) -> &[(u16, u16, Vec<u8>)] {
         &self.terminal.backend().raw
+    }
+
+    /// Resizes the (test) terminal as a terminal resize event would, then draws a frame.
+    #[cfg(feature = "integration")]
+    pub async fn resize_terminal(&mut self, width: u16, height: u16) {
+        self.terminal.backend_mut().resize(width, height);
+        let area = Rect::new(0, 0, width, height);
+        self.terminal
+            .resize(area)
+            .expect("Unable to resize the test terminal");
+        self.compositor.resize(area);
+        let mut cx = crate::compositor::Context {
+            editor: &mut self.editor,
+            jobs: &mut self.jobs,
+            scroll: None,
+            plugin_manager: Some(self.plugin_manager.clone()),
+        };
+        self.compositor
+            .handle_event(&Event::Resize(width, height), &mut cx);
+        self.render().await;
     }
 
     /// Sets the pixel size of a cell reported by the (test) terminal.
