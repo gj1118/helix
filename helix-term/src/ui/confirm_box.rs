@@ -177,9 +177,10 @@ impl Component for ConfirmBox {
             .unwrap_or(0);
 
         // border (1) + padding (1) on each side.
-        let width = ((inner_width + 4) as u16).min(area.width);
+        // (clamped before the casts: a size past u16::MAX must not wrap around)
+        let width = (inner_width + 4).min(area.width as usize) as u16;
         // border, message, blank line, buttons, border.
-        let height = ((lines.len() + 4) as u16).min(area.height);
+        let height = (lines.len() + 4).min(area.height as usize) as u16;
         let rect = Rect::new(
             area.x + area.width.saturating_sub(width) / 2,
             area.y + area.height.saturating_sub(height) / 3,

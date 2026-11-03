@@ -5,7 +5,7 @@ use tui::{
     text::{Span, Spans, Text},
 };
 
-use std::sync::Arc;
+use std::{cell::RefCell, sync::Arc};
 
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
@@ -141,10 +141,67 @@ pub struct Markdown {
     pub contents: String,
 
     config_loader: Arc<ArcSwap<syntax::Loader>>,
+
+    /// The last parse without a theme (for sizes) and with one (to render). A popup asks
+    /// for both on every frame, and parsing highlights the code blocks with tree-sitter:
+    /// for a large document that is far too slow to do again and again.
+    cache: RefCell<[Option<Parsed>; 2]>,
 }
 
-// TODO: pre-render and self reference via Pin
-// better yet, just use Tendril + subtendril for references
+/// A parse of a [`Markdown`], valid while what it was made from stays the same.
+struct Parsed {
+    contents: String,
+    theme: Option<ThemeKey>,
+    /// The syntax loader that highlighted the code blocks (by address).
+    loader: usize,
+    text: Arc<Text<'static>>,
+}
+
+/// What a parse takes from the theme: its name, and the styles of the markdown elements (a
+/// theme reloaded under the same name with other markdown styles is parsed again).
+#[derive(PartialEq)]
+struct ThemeKey {
+    name: String,
+    styles: Vec<Style>,
+}
+
+impl ThemeKey {
+    fn new(theme: &Theme) -> Self {
+        let keys = [
+            Markdown::TEXT_STYLE,
+            Markdown::BLOCK_STYLE,
+            Markdown::RULE_STYLE,
+            Markdown::UNNUMBERED_LIST_STYLE,
+            Markdown::NUMBERED_LIST_STYLE,
+        ];
+        Self {
+            name: theme.name().to_owned(),
+            styles: keys
+                .iter()
+                .chain(Markdown::HEADING_STYLES.iter())
+                .map(|key| theme.get(key))
+                .collect(),
+        }
+    }
+}
+
+/// `text` with every span owning its content.
+fn into_owned(text: Text<'_>) -> Text<'static> {
+    let lines = text
+        .lines
+        .into_iter()
+        .map(|spans| {
+            Spans(
+                spans
+                    .0
+                    .into_iter()
+                    .map(|span| Span::styled(span.content.into_owned(), span.style))
+                    .collect(),
+            )
+        })
+        .collect();
+    Text { lines }
+}
 
 impl Markdown {
     const TEXT_STYLE: &'static str = "ui.text";
@@ -166,10 +223,40 @@ impl Markdown {
         Self {
             contents,
             config_loader,
+            cache: RefCell::new([None, None]),
         }
     }
 
-    pub fn parse(&self, theme: Option<&Theme>) -> tui::text::Text<'_> {
+    /// The styled text of the document, with the styles of `theme` (without a theme, for
+    /// its size). The result is kept until the contents, the theme or the syntax loader
+    /// change.
+    pub fn parse(&self, theme: Option<&Theme>) -> Arc<Text<'static>> {
+        let slot = usize::from(theme.is_some());
+        let theme_key = theme.map(ThemeKey::new);
+        // Without a theme code blocks aren't highlighted: the loader doesn't matter.
+        let loader = match theme {
+            Some(_) => Arc::as_ptr(&*self.config_loader.load()) as usize,
+            None => 0,
+        };
+        if let Some(parsed) = &self.cache.borrow()[slot] {
+            if parsed.loader == loader
+                && parsed.theme == theme_key
+                && parsed.contents == self.contents
+            {
+                return Arc::clone(&parsed.text);
+            }
+        }
+        let text = Arc::new(into_owned(self.parse_uncached(theme)));
+        self.cache.borrow_mut()[slot] = Some(Parsed {
+            contents: self.contents.clone(),
+            theme: theme_key,
+            loader,
+            text: Arc::clone(&text),
+        });
+        text
+    }
+
+    fn parse_uncached(&self, theme: Option<&Theme>) -> tui::text::Text<'_> {
         fn push_line<'a>(spans: &mut Vec<Span<'a>>, lines: &mut Vec<Spans<'a>>) {
             let spans = std::mem::take(spans);
             if !spans.is_empty() {
@@ -387,6 +474,41 @@ impl Component for Markdown {
         let max_text_width = (viewport.0.saturating_sub(padding)).min(120);
         let (width, height) = crate::ui::text::required_size(&contents, max_text_width);
 
-        Some((width + padding, height + padding))
+        Some((width + padding, height.saturating_add(padding)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn markdown(contents: &str) -> Markdown {
+        let loader = helix_core::config::default_lang_loader();
+        Markdown::new(contents.to_owned(), Arc::new(ArcSwap::from_pointee(loader)))
+    }
+
+    #[test]
+    fn parses_are_kept_until_something_changes() {
+        let mut md = markdown("# Title\n\nsome `code` here\n\n```rust\nfn main() {}\n```");
+        let theme = Theme::default();
+
+        let plain = md.parse(None);
+        let themed = md.parse(Some(&theme));
+        // the same parse again, for each frame
+        assert!(Arc::ptr_eq(&plain, &md.parse(None)));
+        assert!(Arc::ptr_eq(&themed, &md.parse(Some(&theme))));
+        assert_eq!(*plain, md.parse_uncached(None));
+
+        // a new syntax loader highlights the code blocks again; sizes don't depend on it
+        md.config_loader
+            .store(Arc::new(helix_core::config::default_lang_loader()));
+        assert!(!Arc::ptr_eq(&themed, &md.parse(Some(&theme))));
+        assert!(Arc::ptr_eq(&plain, &md.parse(None)));
+
+        // new contents are parsed again
+        md.contents.push_str("\n\nmore");
+        let changed = md.parse(None);
+        assert!(!Arc::ptr_eq(&plain, &changed));
+        assert_eq!(*changed, md.parse_uncached(None));
     }
 }

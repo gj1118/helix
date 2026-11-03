@@ -77,28 +77,39 @@ impl<T: Item> Component for Select<T> {
             .options
             .required_size((max_width, area.height))
             .unwrap();
-        // + 2 for borders and another + 2 for horizontal padding
-        let width = message_width + 4;
-        let height = message_height + 2 + menu_height;
+        // + 2 for borders and another + 2 for horizontal padding; centered, and never
+        // larger than the screen (a frame past its edge would be drawn outside of it).
+        let width = message_width.saturating_add(4).min(area.width);
+        let height = message_height
+            .saturating_add(2)
+            .saturating_add(menu_height)
+            .min(area.height);
         let area = Rect {
-            x: (area.width / 2) - width / 2,
-            y: (area.height / 2) - height / 2,
+            x: area.x + (area.width - width) / 2,
+            y: area.y + (area.height - height) / 2,
             width,
             height,
-        };
+        }
+        .intersection(surface.area);
 
         // Message
         let background = cx.editor.theme.get("ui.background");
         let text = cx.editor.theme.get("ui.text");
-        let message_box = area.with_height(message_height + 2);
-        surface.clear_with(message_box, background.patch(text));
+        let message_box = area.with_height(message_height.saturating_add(2).min(area.height));
+        // Only inside the border, like the popups (see `clear_bordered`).
+        crate::ui::clear_bordered(
+            surface,
+            message_box,
+            background.patch(text),
+            !crate::ui::border_cells_take_background(&cx.editor.config()),
+        );
         block.clone().render(message_box, surface);
         // Add horizontal padding so the message isn't too close to the border.
         let message_area = block.inner(message_box).clip_left(1).clip_right(1);
         self.message.render(message_area, surface, cx);
 
         // Options menu
-        let menu_area = area.clip_top(message_height + 2);
+        let menu_area = area.clip_top(message_box.height);
         self.options.render(menu_area, surface, cx);
     }
 }

@@ -125,6 +125,13 @@ impl Prompt {
         self.recalculate_completion(editor);
     }
 
+    /// Replaces the line, with the cursor at its end, without computing completions.
+    #[cfg(test)]
+    pub(crate) fn set_line_unchecked(&mut self, line: String) {
+        self.cursor = line.len();
+        self.line = line;
+    }
+
     pub fn with_language(
         mut self,
         language: &'static str,
@@ -423,6 +430,21 @@ impl Prompt {
         &self.prompt
     }
 
+    /// The label drawn before the input on the bottom line: the generic labels of the
+    /// command line and search are shown as the traditional `:` and `/` with the bottom
+    /// command line.
+    fn label(&self, editor: &Editor) -> &str {
+        if editor.config().cmdline.style == CmdlineStyle::Bottom {
+            match &*self.prompt {
+                "Cmdline" => ":",
+                "Search" => "/",
+                prompt => prompt,
+            }
+        } else {
+            &self.prompt
+        }
+    }
+
     /// Get the current anchor position for horizontal scrolling
     pub fn anchor(&self) -> usize {
         self.anchor
@@ -441,6 +463,11 @@ impl Prompt {
     /// Update the anchor position for horizontal scrolling based on cursor and available width.
     /// This should be called before rendering when the popup needs to handle its own scrolling.
     pub fn update_scroll_anchor(&mut self, line_width: usize) {
+        // The line may have been replaced since the anchor was set (history, completion):
+        // an anchor past its end or inside a character would make the slicing below panic.
+        if !self.line.is_char_boundary(self.anchor) {
+            self.anchor = 0;
+        }
         if self.line.width() < line_width {
             self.anchor = 0;
         } else if self.cursor <= self.anchor {
@@ -500,10 +527,14 @@ impl Prompt {
         let background = theme.get("ui.background");
         // completion
 
+        if area.height == 0 {
+            return;
+        }
+
         let max_len = self
             .completion
             .iter()
-            .map(|(_, completion)| completion.content.len() as u16)
+            .map(|(_, completion)| completion.content.width().min(u16::MAX as usize) as u16)
             .max()
             .unwrap_or(BASE_WIDTH)
             .max(BASE_WIDTH);
@@ -582,18 +613,27 @@ impl Prompt {
                 completion_area.x,
                 completion_area
                     .y
-                    .saturating_sub(height + vertical_padding * 2),
+                    .saturating_sub(height.saturating_add(vertical_padding * 2)),
                 max_width,
-                height + vertical_padding * 2,
+                height.saturating_add(vertical_padding * 2),
             ));
 
             let background = theme.get("ui.help");
-            surface.clear_with(area, background);
+            // Only inside the border, like the other popups (see `clear_bordered`): the
+            // border takes the help's colors but not its background.
+            crate::ui::clear_bordered(
+                surface,
+                area,
+                background,
+                !crate::ui::border_cells_take_background(&cx.editor.config()),
+            );
+            let mut border_style = background;
+            border_style.bg = None;
 
             let border_type = crate::ui::border_type(&cx.editor.config());
             let block = Block::bordered()
                 // .title(self.title.as_str())
-                .border_style(background)
+                .border_style(border_style)
                 .border_type(border_type);
 
             let inner = block.inner(area).inner(Margin::horizontal(1));
@@ -605,22 +645,12 @@ impl Prompt {
         let line = area.height - 1;
         surface.clear_with(area.clip_top(line), background);
         // render buffer text
-        // Map generic labels to traditional bottom-style symbols
-        let label = if cx.editor.config().cmdline.style == CmdlineStyle::Bottom {
-            if self.prompt == "Cmdline" {
-                ":"
-            } else if self.prompt == "Search" {
-                "/"
-            } else {
-                &self.prompt
-            }
-        } else {
-            &self.prompt
-        };
+        let label = self.label(cx.editor);
         surface.set_string(area.x, area.y + line, label, prompt_color);
 
-        let label_len = label.len() as u16;
-        self.line_area = area.clip_left(label_len).clip_top(line).clip_right(2);
+        // In columns, as `cursor` counts them.
+        let label_width = label.width().min(u16::MAX as usize) as u16;
+        self.line_area = area.clip_left(label_width).clip_top(line).clip_right(2);
 
         if self.line.is_empty() {
             self.anchor = 0;
@@ -645,51 +675,7 @@ impl Prompt {
             text.render(self.line_area, surface, cx);
         } else {
             let line_width = self.line_area.width as usize;
-
-            if self.line.width() < line_width {
-                self.anchor = 0;
-            } else if self.cursor <= self.anchor {
-                // Ensure the grapheme under the cursor is in view.
-                self.anchor = self.line[..self.cursor]
-                    .grapheme_indices(true)
-                    .next_back()
-                    .map(|(i, _)| i)
-                    .unwrap_or_default();
-            } else if self.line[self.anchor..self.cursor].width() > line_width {
-                // Set the anchor to the last grapheme cluster before the width is exceeded.
-                let mut width = 0;
-                self.anchor = self.line[..self.cursor]
-                    .grapheme_indices(true)
-                    .rev()
-                    .find_map(|(idx, g)| {
-                        width += g.width();
-                        if width > line_width {
-                            Some(idx + g.len())
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap();
-            }
-
-            self.truncate_start = self.anchor > 0;
-            self.truncate_end = self.line[self.anchor..].width() > line_width;
-
-            // if we keep inserting characters just before the end elipsis, we move the anchor
-            // so that those new characters are displayed
-            if self.truncate_end && self.line[self.anchor..self.cursor].width() >= line_width {
-                // Move the anchor forward by one non-zero-width grapheme.
-                self.anchor += self.line[self.anchor..]
-                    .grapheme_indices(true)
-                    .find_map(|(idx, g)| {
-                        if g.width() > 0 {
-                            Some(idx + g.len())
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap();
-            }
+            self.update_scroll_anchor(line_width);
 
             surface.set_string_anchored(
                 self.line_area.x,
@@ -708,8 +694,8 @@ impl Component for Prompt {
     fn handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
         let event = match event {
             Event::Paste(data) => {
+                // (this computes the completions again)
                 self.insert_str(data, cx.editor);
-                self.recalculate_completion(cx.editor);
                 return EventResult::Consumed(None);
             }
             Event::Key(event) => *event,
@@ -884,44 +870,76 @@ impl Component for Prompt {
     }
 
     fn cursor(&self, area: Rect, editor: &Editor) -> (Option<Position>, CursorKind) {
-        // Use the same label logic used in render_prompt so the cursor aligns with what is drawn.
-        // When using the traditional bottom cmdline, we draw ":" for Cmdline and "/" for Search.
-        let effective_label_len: u16 = if editor.config().cmdline.style == CmdlineStyle::Bottom {
-            if self.prompt == "Cmdline" || self.prompt == "Search" {
-                1
-            } else {
-                self.prompt.len() as u16
-            }
-        } else {
-            // Popup style renders no textual label inside the input area.
-            0
-        };
+        // The label `render_prompt` draws, so that the cursor aligns with what is drawn (a
+        // prompt pushed directly has its label whatever the command line style).
+        let label = self.label(editor);
+        let label_width = label.width().min(u16::MAX as usize) as u16;
 
         let area = area
-            .clip_left(effective_label_len)
-            .clip_right(if effective_label_len == 0 { 2 } else { 0 });
+            .clip_left(label_width)
+            .clip_right(if label.is_empty() { 2 } else { 0 });
 
-        let mut col = area.left() as usize + self.line[self.anchor..self.cursor].width();
+        let anchor = if self.anchor <= self.cursor && self.line.is_char_boundary(self.anchor) {
+            self.anchor
+        } else {
+            0
+        };
+        let mut col = area.left() as usize + self.line[anchor..self.cursor].width();
 
         // ensure the cursor does not go beyond elipses
         if self.truncate_end
-            && self.line[self.anchor..self.cursor].width() >= self.line_area.width as usize
+            && self.line[anchor..self.cursor].width() >= self.line_area.width as usize
         {
-            col -= 1;
+            col = col.saturating_sub(1);
         }
 
-        if self.truncate_start && self.cursor == self.anchor {
+        if self.truncate_start && self.cursor == anchor {
             col += self.line[self.cursor..]
                 .graphemes(true)
                 .next()
                 .map_or(0, |g| g.width());
         }
 
-        let line = area.height as usize - 1;
+        let line = (area.height as usize).saturating_sub(1);
 
         (
             Some(Position::new(area.y as usize + line, col)),
             editor.config().cursor_shape.from_mode(Mode::Insert),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn prompt(line: &str) -> Prompt {
+        let mut prompt = Prompt::new("".into(), None, |_, _| Vec::new(), |_, _, _| {});
+        prompt.set_line_unchecked(line.to_owned());
+        prompt
+    }
+
+    #[test]
+    fn scrolling_follows_the_cursor_on_wide_text() {
+        let mut prompt = prompt(&"日本語".repeat(20));
+        prompt.update_scroll_anchor(10);
+        assert!(prompt.truncate_start());
+        let visible = &prompt.line()[prompt.anchor()..];
+        assert!(visible.width() <= 10, "{visible}");
+    }
+
+    #[test]
+    fn a_stale_anchor_is_never_used_to_slice_the_line() {
+        let mut prompt = prompt(&"x".repeat(40));
+        prompt.update_scroll_anchor(10);
+        assert!(prompt.anchor() > 0);
+        // The line is replaced (history, completion) by one where the old anchor falls
+        // inside a character, or past the end.
+        for line in ["é".repeat(40), "y".repeat(3)] {
+            prompt.anchor = 39;
+            prompt.set_line_unchecked(line);
+            prompt.update_scroll_anchor(10);
+            assert!(prompt.line().is_char_boundary(prompt.anchor()));
+        }
     }
 }

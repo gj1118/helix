@@ -32,6 +32,7 @@ mod test {
     mod movement;
     mod persistence;
     mod plugins;
+    mod popups;
     mod quicklist;
     mod snippets;
     mod splits;

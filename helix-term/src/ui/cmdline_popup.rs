@@ -13,6 +13,9 @@ use tui::{
     widgets::{Block, Widget},
 };
 
+/// Most completions the list below the input shows at once.
+const MAX_COMPLETIONS: usize = 10;
+
 pub struct CmdlinePopup {
     prompt: Prompt,
     style: CmdlineStyle,
@@ -58,14 +61,17 @@ impl CmdlinePopup {
         self
     }
 
-    /// Calculate optimal popup dimensions and position
+    /// Calculate optimal popup dimensions and position, inside `viewport`.
     fn calculate_popup_area(&self, viewport: Rect) -> Rect {
         let content_width = self.prompt.line().width().max(self.min_width as usize);
-        let width = (content_width as u16 + self.padding * 2)
-            .min(self.max_width)
-            .min(viewport.width.saturating_sub(4));
+        // In usize: a very long line must not overflow (or wrap around to a narrow popup).
+        let width = content_width
+            .saturating_add(self.padding as usize * 2)
+            .min(self.max_width as usize)
+            .min(viewport.width.saturating_sub(4) as usize) as u16;
 
-        let height = 3; // Base height for single line + borders
+        // Base height for single line + borders, unless the screen is shorter.
+        let height = 3.min(viewport.height);
 
         let x = viewport.x + (viewport.width.saturating_sub(width)) / 2;
         let y = viewport.y + (viewport.height.saturating_sub(height)) / 3; // Position in upper third
@@ -184,12 +190,15 @@ impl CmdlinePopup {
             1,
         );
 
-        // Render input text with syntax highlighting if available
-        self.render_input_text(input_area, surface, cx);
+        // Render input text with syntax highlighting if available (unless the screen is too
+        // short to show it inside the border).
+        if inner_area.height > 0 && input_area.width > 0 {
+            self.render_input_text(input_area, surface, cx);
+        }
 
         // Render completion popup if needed
         if !self.prompt.completions().is_empty() {
-            self.render_completion_popup(popup_area, surface, cx);
+            self.render_completion_popup(popup_area, area, surface, cx);
         }
     }
 
@@ -218,25 +227,43 @@ impl CmdlinePopup {
         );
     }
 
+    /// The area of the completion list: one row below the input popup (`base_area`), as
+    /// tall as the items need (at most `MAX_COMPLETIONS`) and the screen (`viewport`)
+    /// allows; empty when not even one item fits.
+    fn completion_area(base_area: Rect, viewport: Rect, items: usize) -> Rect {
+        let y = base_area.bottom().saturating_add(1);
+        let available = viewport.bottom().saturating_sub(y);
+        // Fixed height based on visible items + borders
+        let height = (items.min(MAX_COMPLETIONS) as u16 + 2).min(available);
+        if height < 3 {
+            return Rect::new(base_area.x, y, 0, 0);
+        }
+        Rect::new(base_area.x, y, base_area.width, height)
+    }
+
     /// Render completion popup
-    fn render_completion_popup(&mut self, base_area: Rect, surface: &mut Surface, cx: &Context) {
+    fn render_completion_popup(
+        &mut self,
+        base_area: Rect,
+        viewport: Rect,
+        surface: &mut Surface,
+        cx: &Context,
+    ) {
         let theme = &cx.editor.theme;
         // Match global autocomplete/picker colors
         let completion_bg = theme.get("ui.menu");
         let selected_row_bg = theme.get("ui.menu.selected");
 
-        // Position completion popup below the main popup
-        let max_display_items = 10; // Fixed maximum items to display
+        // Position completion popup below the main popup, inside the screen: on a short
+        // terminal fewer items are shown (a frame drawn past the bottom of the screen
+        // would write outside of it).
         let total_items = self.prompt.completions().len();
-        let visible_items = total_items.min(max_display_items);
-        let comp_height = visible_items as u16 + 2; // Fixed height based on visible items + borders
-        let comp_width = base_area.width;
-        let comp_area = Rect::new(
-            base_area.x,
-            base_area.y + base_area.height + 1,
-            comp_width,
-            comp_height,
-        );
+        let comp_area = Self::completion_area(base_area, viewport, total_items);
+        if comp_area.width < 2 {
+            return;
+        }
+        // as many items as there are rows inside the border
+        let max_display_items = (comp_area.height - 2) as usize;
 
         // Clear and render completion background (match global autocomplete), only
         // inside the border (see `clear_bordered`).
@@ -303,15 +330,10 @@ impl CmdlinePopup {
             let y = inner_area.y + display_idx as u16;
             let is_selected = self.prompt.selection() == Some(completion_idx);
             let item_style = if is_selected {
-                // Fill the whole selected row across the popup width.
-                let spaces = " ".repeat(inner_area.width as usize);
-                surface.set_stringn(
-                    inner_area.x,
-                    y,
-                    &spaces,
-                    inner_area.width as usize,
-                    selected_row_bg,
-                );
+                // Fill the whole selected row across the popup width (the row is blank:
+                // the list was cleared above).
+                let row = Rect::new(inner_area.x, y, inner_area.width, 1);
+                surface.set_style(row.intersection(surface.area), selected_row_bg);
                 // Use the theme's selected style for text (fg+bg from ui.menu.selected)
                 selected_row_bg
             } else {
@@ -534,6 +556,52 @@ mod tests {
 
         // Width should be constrained by viewport
         assert!(area.width <= viewport.width.saturating_sub(4));
+    }
+
+    #[test]
+    fn popup_and_completions_stay_on_screen() {
+        let mut popup = CmdlinePopup::new(
+            ":".into(),
+            None,
+            |_editor, _input| vec![],
+            |_ctx, _input, _event| {},
+            CmdlineStyle::Popup,
+        );
+        for (width, height) in [
+            (0, 0),
+            (1, 1),
+            (3, 2),
+            (10, 3),
+            (80, 5),
+            (80, 12),
+            (200, 60),
+        ] {
+            let viewport = Rect::new(0, 0, width, height);
+            let area = popup.calculate_popup_area(viewport);
+            assert_eq!(viewport.intersection(area), area, "{viewport:?}");
+            for items in [1, 10, 500] {
+                let list = CmdlinePopup::completion_area(area, viewport, items);
+                if list.height > 0 {
+                    assert_eq!(viewport.intersection(list), list, "{viewport:?}");
+                    assert!(list.height <= items as u16 + 2);
+                    assert!(list.height <= MAX_COMPLETIONS as u16 + 2);
+                }
+            }
+        }
+        // a tall screen shows ten completions, a short one what fits
+        let area = popup.calculate_popup_area(Rect::new(0, 0, 80, 40));
+        let list = CmdlinePopup::completion_area(area, Rect::new(0, 0, 80, 40), 500);
+        assert_eq!(list.height, 12);
+        let short = Rect::new(0, 0, 80, 12);
+        let area = popup.calculate_popup_area(short);
+        let list = CmdlinePopup::completion_area(area, short, 500);
+        assert_eq!(list.bottom(), short.bottom());
+
+        // a very long line doesn't overflow the width
+        let viewport = Rect::new(0, 0, 100, 30);
+        popup.prompt.set_line_unchecked("x".repeat(70_000));
+        let area = popup.calculate_popup_area(viewport);
+        assert_eq!(area.width, popup.max_width);
     }
 
     // ===========================================

@@ -213,13 +213,19 @@ impl Compositor {
     }
 
     pub fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
-        // Check if there are prompt layers active and update EditorView
-        let has_prompt = self.has_component("helix_term::ui::prompt::Prompt");
+        // The terminal cursor goes where the top-most layer with a cursor puts it. When that
+        // is a layer above the editor (a prompt, the command line popup, a picker, ...) the
+        // editor draws its primary cursor itself, or it would not be seen at all.
+        let cursor_above_editor = self
+            .layers
+            .iter()
+            .rev()
+            .take_while(|layer| !layer.as_any().is::<crate::ui::EditorView>())
+            .any(|layer| layer.cursor(area, cx.editor).0.is_some());
 
         for layer in &mut self.layers {
-            // Update prompt state for EditorView
             if let Some(editor_view) = layer.as_any_mut().downcast_mut::<crate::ui::EditorView>() {
-                editor_view.prompt_active = has_prompt;
+                editor_view.prompt_active = cursor_above_editor;
             }
             layer.render(area, surface, cx);
         }

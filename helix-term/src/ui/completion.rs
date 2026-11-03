@@ -131,7 +131,8 @@ impl menu::Item for CompletionItem {
         let is_folder = kind.0[0].content == "folder";
 
         let highlight_type = format_completion_data.completion_highlight_type;
-        let theme = format_completion_data.theme.clone();
+        // Borrowed: rows are formatted for every option whenever the menu is sized.
+        let theme = &format_completion_data.theme;
         let style = theme
             .try_get(&format!("completion.{}", name))
             .or_else(|| theme.try_get(name))
@@ -192,6 +193,9 @@ pub struct Completion {
     resolve_handler: ResolveHandler,
     /// Border of the documentation panel beside the menu.
     doc_border: PanelBorder,
+    /// The documentation of the selected item, kept while it is selected so that it is
+    /// not parsed (and highlighted) again for every frame.
+    doc: Option<Markdown>,
 }
 
 impl Completion {
@@ -396,6 +400,7 @@ impl Completion {
             filter: String::from(fragment),
             resolve_handler: ResolveHandler::new(),
             doc_border: PanelBorder::default(),
+            doc: None,
         };
 
         // need to recompute immediately in case start_offset != trigger_offset
@@ -465,10 +470,20 @@ impl Completion {
 
     /// Synchronously resolve the given completion item. This is used when
     /// accepting a completion.
+    ///
+    /// It has to be synchronous: the resolved item can bring the edits applied with the
+    /// completion (`additionalTextEdits`, e.g. an import), which belong to the same change.
+    /// The selected item is normally resolved in the background already (see
+    /// `ResolveHandler`), so this only waits when a completion is accepted right after
+    /// being selected, and then at most `RESOLVE_TIMEOUT` instead of the server's request
+    /// timeout (20s by default), during which the editor would be frozen. Without an answer
+    /// in time, the completion is applied as it is.
     fn resolve_completion_item(
         language_server: &helix_lsp::Client,
         completion_item: lsp::CompletionItem,
     ) -> Option<lsp::CompletionItem> {
+        const RESOLVE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+
         if !matches!(
             language_server.capabilities().completion_provider,
             Some(lsp::CompletionOptions {
@@ -479,11 +494,17 @@ impl Completion {
             return None;
         }
         let future = language_server.resolve_completion_item(&completion_item);
-        let response = helix_lsp::block_on(future);
+        let response = helix_lsp::block_on(tokio::time::timeout(RESOLVE_TIMEOUT, future));
         match response {
-            Ok(item) => Some(item),
-            Err(err) => {
+            Ok(Ok(item)) => Some(item),
+            Ok(Err(err)) => {
                 log::error!("Failed to resolve completion item: {}", err);
+                None
+            }
+            Err(_) => {
+                log::warn!(
+                    "Completion item not resolved within {RESOLVE_TIMEOUT:?}, applying it as is"
+                );
                 None
             }
         }
@@ -573,17 +594,14 @@ impl Component for Completion {
         let doc = doc!(cx.editor);
         let language = doc.language_name().unwrap_or("");
 
-        let markdowned = |lang: &str, detail: Option<&str>, doc: Option<&str>| {
-            let md = match (detail, doc) {
-                (Some(detail), Some(doc)) => format!("```{lang}\n{detail}\n```\n{doc}"),
-                (Some(detail), None) => format!("```{lang}\n{detail}\n```"),
-                (None, Some(doc)) => doc.to_string(),
-                (None, None) => String::new(),
-            };
-            Markdown::new(md, cx.editor.syn_loader.clone())
+        let markdowned = |lang: &str, detail: Option<&str>, doc: Option<&str>| match (detail, doc) {
+            (Some(detail), Some(doc)) => format!("```{lang}\n{detail}\n```\n{doc}"),
+            (Some(detail), None) => format!("```{lang}\n{detail}\n```"),
+            (None, Some(doc)) => doc.to_string(),
+            (None, None) => String::new(),
         };
 
-        let mut markdown_doc = match option {
+        let md = match option {
             CompletionItem::Lsp(option) => match &option.item.documentation {
                 Some(lsp::Documentation::String(contents))
                 | Some(lsp::Documentation::MarkupContent(lsp::MarkupContent {
@@ -612,6 +630,10 @@ impl Component for Completion {
                 };
                 markdowned(language, None, Some(doc))
             }
+        };
+        let markdown_doc = match &mut self.doc {
+            Some(doc) if doc.contents == md => doc,
+            doc => doc.insert(Markdown::new(md, cx.editor.syn_loader.clone())),
         };
 
         let popup_area = self.popup.area(area, cx.editor);

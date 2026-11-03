@@ -200,7 +200,7 @@ impl<T: Component> Popup<T> {
 
         width = width.min(MAX_WIDTH);
         let height = if render_borders {
-            (child_height + 2).min(MAX_HEIGHT)
+            child_height.saturating_add(2).min(MAX_HEIGHT)
         } else {
             child_height.min(MAX_HEIGHT)
         };
@@ -220,7 +220,7 @@ impl<T: Component> Popup<T> {
             Open::Below => {
                 rel_y += 1;
                 let y_max = viewport.bottom().min(height + rel_y);
-                Rect::new(rel_x, rel_y, width, y_max - rel_y)
+                Rect::new(rel_x, rel_y, width, y_max.saturating_sub(rel_y))
             }
         };
         RenderInfo {
@@ -381,7 +381,7 @@ impl<T: Component> Component for Popup<T> {
         self.contents.render(inner, surface, cx);
 
         // render scrollbar if contents do not fit
-        if self.has_scrollbar {
+        if self.has_scrollbar && inner.width > 0 {
             let win_height = inner.height as usize;
             let len = child_height as usize;
             let fits = len <= win_height;
@@ -392,10 +392,11 @@ impl<T: Component> Component for Popup<T> {
                 let scroll_line = (win_height - scroll_height) * scroll
                     / std::cmp::max(1, len.saturating_sub(win_height));
 
-                let mut cell;
+                let x = inner.right() - 1 + border as u16;
                 for i in 0..win_height {
-                    cell =
-                        &mut surface[(inner.right() - 1 + border as u16, inner.top() + i as u16)];
+                    let Some(cell) = surface.get_mut(x, inner.top() + i as u16) else {
+                        continue;
+                    };
 
                     let half_block = if render_borders { "▌" } else { "▐" };
 

@@ -108,6 +108,9 @@ impl<T: Item> Menu<T> {
 
     pub fn move_up(&mut self) {
         let len = self.matches.len();
+        if len == 0 {
+            return;
+        }
         let max_index = len.saturating_sub(1);
         let pos = self.cursor.map_or(max_index, |i| (i + max_index) % len) % len;
         self.cursor = Some(pos);
@@ -116,6 +119,9 @@ impl<T: Item> Menu<T> {
 
     pub fn move_half_page_up(&mut self) {
         let len = self.matches.len();
+        if len == 0 {
+            return;
+        }
         let max_index = len.saturating_sub((self.size.1 as usize / 2).max(1));
         let pos = self.cursor.map_or(max_index, |i| (i + max_index) % len) % len;
         self.cursor = Some(pos);
@@ -124,6 +130,9 @@ impl<T: Item> Menu<T> {
 
     pub fn move_down(&mut self) {
         let len = self.matches.len();
+        if len == 0 {
+            return;
+        }
         let pos = self.cursor.map_or(0, |i| i + 1) % len;
         self.cursor = Some(pos);
         self.adjust_scroll();
@@ -131,6 +140,9 @@ impl<T: Item> Menu<T> {
 
     pub fn move_half_page_down(&mut self) {
         let len = self.matches.len();
+        if len == 0 {
+            return;
+        }
         let pos = self
             .cursor
             .map_or(0, |i| i + (self.size.1 as usize / 2).max(1))
@@ -178,7 +190,8 @@ impl<T: Item> Menu<T> {
 
         self.widths = max_lens
             .into_iter()
-            .map(|len| Constraint::Length(len as u16))
+            // a huge label must not wrap around to a narrow column
+            .map(|len| Constraint::Length(len.min(u16::MAX as usize) as u16))
             .collect();
 
         self.size = (width as u16, height as u16);
@@ -356,26 +369,32 @@ impl<T: Item + 'static> Component for Menu<T> {
             .unwrap_or_else(|| theme.get("ui.text"));
         let selected = theme.get("ui.menu.selected");
 
+        let area = area.intersection(surface.area);
         surface.clear_with(area, style);
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
 
-        let scroll = self.scroll;
-
-        let options: Vec<_> = self
-            .matches
-            .iter()
-            .map(|(index, _score)| {
-                // (index, self.options.get(*index).unwrap()) // get_unchecked
-                &self.options[*index as usize] // get_unchecked
-            })
-            .collect();
-
-        let len = options.len();
-
+        let len = self.matches.len();
         let win_height = area.height as usize;
 
-        let rows = options
+        // The rows shown: from `scroll`, moved so that the cursor is among them (the area
+        // can be shorter than the size the menu asked for).
+        let cursor = self.cursor.filter(|&cursor| cursor < len);
+        let scroll = match cursor {
+            Some(cursor) if cursor < self.scroll => cursor,
+            Some(cursor) if cursor >= self.scroll + win_height => cursor + 1 - win_height,
+            Some(_) => self.scroll,
+            None => 0,
+        };
+
+        // Only the visible rows are formatted: there can be thousands of options.
+        let rows = self
+            .matches
             .iter()
-            .map(|option| option.format(&self.editor_data));
+            .skip(scroll)
+            .take(win_height)
+            .map(|&(index, _score)| self.options[index as usize].format(&self.editor_data));
         let table = Table::new(rows)
             .style(style)
             .highlight_style(selected)
@@ -388,8 +407,8 @@ impl<T: Item + 'static> Component for Menu<T> {
             area.clip_left(Self::LEFT_PADDING as u16).clip_right(1),
             surface,
             &mut TableState {
-                offset: scroll,
-                selected: self.cursor,
+                offset: 0,
+                selected: cursor.map(|cursor| cursor - scroll),
             },
             false,
         );
@@ -399,15 +418,10 @@ impl<T: Item + 'static> Component for Menu<T> {
         // A panel border leaves the padding cells inside it, so the selection
         // bar spans the full inner width there too.
         if !render_borders || self.panel_border {
-            if let Some(cursor) = self.cursor {
-                let offset_from_top = cursor - scroll;
-                let left = &mut surface[(area.left(), area.y + offset_from_top as u16)];
-                left.set_style(selected);
-                let right = &mut surface[(
-                    area.right().saturating_sub(1),
-                    area.y + offset_from_top as u16,
-                )];
-                right.set_style(selected);
+            if let Some(cursor) = cursor {
+                let y = area.y + (cursor - scroll) as u16;
+                surface[(area.left(), y)].set_style(selected);
+                surface[(area.right() - 1, y)].set_style(selected);
             }
         }
 
@@ -419,9 +433,8 @@ impl<T: Item + 'static> Component for Menu<T> {
             let scroll_line = (win_height - scroll_height) * scroll
                 / std::cmp::max(1, len.saturating_sub(win_height));
 
-            let mut cell;
             for i in 0..win_height {
-                cell = &mut surface[(area.right() - 1, area.top() + i as u16)];
+                let cell = &mut surface[(area.right() - 1, area.top() + i as u16)];
 
                 let half_block = if render_borders { "▌" } else { "▐" };
 
@@ -436,5 +449,44 @@ impl<T: Item + 'static> Component for Menu<T> {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Label(String);
+
+    impl Item for Label {
+        type Data = ();
+
+        fn format(&self, _data: &()) -> Row<'_> {
+            Row::new([Cell::from(self.0.as_str())])
+        }
+    }
+
+    fn menu(labels: &[&str]) -> Menu<Label> {
+        let options = labels.iter().map(|l| Label(l.to_string())).collect();
+        Menu::new(options, (), |_, _, _| {})
+    }
+
+    #[test]
+    fn moving_through_an_empty_menu_selects_nothing() {
+        let mut menu = menu(&["a", "b"]);
+        menu.clear();
+        menu.move_down();
+        menu.move_up();
+        menu.move_half_page_down();
+        menu.move_half_page_up();
+        assert!(menu.selection().is_none());
+    }
+
+    #[test]
+    fn huge_labels_do_not_wrap_the_column_width() {
+        let long = "x".repeat(70_000);
+        let mut menu = menu(&[&long]);
+        assert_eq!(menu.required_size((80, 10)), Some((80, 1)));
+        assert_eq!(menu.widths, [Constraint::Length(u16::MAX)]);
     }
 }

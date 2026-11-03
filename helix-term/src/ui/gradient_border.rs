@@ -1,3 +1,4 @@
+use helix_core::unicode::{segmentation::UnicodeSegmentation, width::UnicodeWidthStr};
 use helix_view::{
     editor::{GradientBorderConfig, GradientDirection},
     graphics::{Color, Rect, Style},
@@ -153,16 +154,18 @@ impl GradientBorder {
 
         let ratio = match self.config.direction {
             GradientDirection::Horizontal => {
-                let base_ratio = (x - area.x) as f32 / area.width.max(1) as f32;
+                let base_ratio = x.saturating_sub(area.x) as f32 / area.width.max(1) as f32;
                 (base_ratio + animation_offset) % 1.0
             }
             GradientDirection::Vertical => {
-                let base_ratio = (y - area.y) as f32 / area.height.max(1) as f32;
+                let base_ratio = y.saturating_sub(area.y) as f32 / area.height.max(1) as f32;
                 (base_ratio + animation_offset) % 1.0
             }
             GradientDirection::Diagonal => {
-                let base_ratio =
-                    ((x - area.x) + (y - area.y)) as f32 / (area.width + area.height).max(1) as f32;
+                // In u32: the sums can overflow u16 on huge areas.
+                let base_ratio = (x.saturating_sub(area.x) as u32 + y.saturating_sub(area.y) as u32)
+                    as f32
+                    / (area.width as u32 + area.height as u32).max(1) as f32;
                 (base_ratio + animation_offset) % 1.0
             }
             GradientDirection::Radial => {
@@ -191,29 +194,32 @@ impl GradientBorder {
         !rounded && thickness <= 1
     }
 
-    /// Get the appropriate border characters based on thickness and rounded corners setting
-    fn get_border_chars(thickness: u8, rounded: bool) -> Vec<&'static str> {
+    /// The border glyphs for a thickness and corner setting:
+    /// `[top, bottom, left, right, top-left, top-right, bottom-left, bottom-right]`.
+    ///
+    /// Thicker borders keep the background behind the popup in their cells (see
+    /// `ui::border_cells_take_background`), so a glyph that only fills half of its cell
+    /// fills the inner half: the top edge its lower half, the bottom edge its upper half.
+    /// Otherwise the background behind the popup would show between the line and the popup.
+    fn get_border_chars(thickness: u8, rounded: bool) -> [&'static str; 8] {
         match (thickness, rounded) {
             // Thickness 1 - thin borders
-            (1, false) => vec!["─", "│", "┌", "┐", "└", "┘"], // thin square
-            (1, true) => vec!["─", "│", "╭", "╮", "╰", "╯"],  // thin rounded
+            (1, true) => ["─", "─", "│", "│", "╭", "╮", "╰", "╯"], // thin rounded
 
-            // Thickness 2 - thick borders
-            (2, false) => vec!["━", "┃", "┏", "┓", "┗", "┛"], // thick square
-            (2, true) => vec!["━", "┃", "┏", "┓", "┗", "┛"],  // thick (no rounded equivalent)
+            // Thickness 2 - thick borders (no rounded equivalent)
+            (2, _) => ["━", "━", "┃", "┃", "┏", "┓", "┗", "┛"],
 
-            // Thickness 3 - double borders
-            (3, false) => vec!["═", "║", "╔", "╗", "╚", "╝"], // double square
-            (3, true) => vec!["═", "║", "╔", "╗", "╚", "╝"],  // double (no rounded equivalent)
+            // Thickness 3 - double borders (no rounded equivalent)
+            (3, _) => ["═", "═", "║", "║", "╔", "╗", "╚", "╝"],
 
-            // Thickness 4 - block characters
-            (4, _) => vec!["▄", "█", "█", "█", "█", "█"], // block (rounded doesn't apply)
+            // Thickness 4 - half blocks on the inner half, full blocks at the sides
+            (4, _) => ["▄", "▀", "█", "█", "█", "█", "█", "█"],
 
-            // Thickness 5 - full block characters
-            (5, _) => vec!["▀", "█", "█", "█", "█", "█"], // full block (rounded doesn't apply)
+            // Thickness 5 - full blocks all around
+            (5, _) => ["█"; 8],
 
-            // Fallback to thin
-            _ => vec!["─", "│", "┌", "┐", "└", "┘"],
+            // Thin square, and the fallback
+            _ => ["─", "─", "│", "│", "┌", "┐", "└", "┘"],
         }
     }
 
@@ -253,8 +259,18 @@ impl GradientBorder {
                     e.bottom_right,
                 )
             } else {
-                let c = Self::get_border_chars(self.config.thickness, rounded);
-                (c[0], c[0], c[1], c[1], c[2], c[3], c[4], c[5])
+                let [top, bottom, left, right, top_left, top_right, bottom_left, bottom_right] =
+                    Self::get_border_chars(self.config.thickness, rounded);
+                (
+                    top,
+                    bottom,
+                    left,
+                    right,
+                    top_left,
+                    top_right,
+                    bottom_left,
+                    bottom_right,
+                )
             };
 
         // Render top border
@@ -329,17 +345,27 @@ impl GradientBorder {
 
         // If there's a title, render it in the top border with padding
         if let Some(title) = title {
-            if !title.is_empty() && area.width > title.len() as u16 + 6 {
+            // Between the corner and one cell of border on either side; a title that is
+            // too long is cut with an ellipsis.
+            let room = area.width.saturating_sub(4) as usize;
+            if !title.is_empty() && room >= 3 && area.height >= 2 {
                 // Format title with spaces for padding: " Title "
-                let padded_title = format!(" {} ", title);
+                let padded_title = format!(" {} ", fit_to_width(title, room - 2));
 
-                // Position title near the left side (after corner + some space)
-                let title_start = area.x + 2;
-                let columns: Vec<(u16, char)> = padded_title
-                    .chars()
-                    .enumerate()
-                    .map(|(i, ch)| (title_start + i as u16, ch))
-                    .filter(|&(x, _)| x < area.right() - 1)
+                // Position title near the left side (after corner + some space), one
+                // entry per grapheme with the column it starts at and its width.
+                let mut x = area.x + 2;
+                let columns: Vec<(u16, &str, usize)> = padded_title
+                    .graphemes(true)
+                    .filter_map(|grapheme| {
+                        let width = grapheme.width();
+                        if width == 0 {
+                            return None;
+                        }
+                        let column = (x, grapheme, width);
+                        x = x.saturating_add(width as u16);
+                        Some(column)
+                    })
                     .collect();
 
                 // `ui.popup.title` decides when the theme sets it. Otherwise the title takes
@@ -354,12 +380,13 @@ impl GradientBorder {
                     Some(Color::Reset) | None => theme_background,
                     Some(bg) => Some(bg),
                 };
-                let gradient_readable = columns.iter().all(|&(x, _)| {
-                    readable_on(self.get_gradient_color(x, area.y, area), background_at(x))
-                });
+                let gradient_readable = explicit.is_some()
+                    || columns.iter().all(|&(x, _, _)| {
+                        readable_on(self.get_gradient_color(x, area.y, area), background_at(x))
+                    });
                 let text = theme.get("ui.text");
 
-                for (x, ch) in columns {
+                for (x, grapheme, width) in columns {
                     let title_style = match explicit {
                         Some(style) => style,
                         None if gradient_readable => {
@@ -372,10 +399,9 @@ impl GradientBorder {
                     }
                     .add_modifier(Modifier::BOLD);
 
-                    if let Some(cell) = surface.get_mut(x, area.top()) {
-                        // Over the border glyph, keeping the popup's background.
-                        cell.set_symbol(&ch.to_string()).set_style(title_style);
-                    }
+                    // Over the border glyph, keeping the popup's background (a wide
+                    // grapheme also blanks the cell it covers).
+                    surface.set_stringn(x, area.top(), grapheme, width, title_style);
                 }
             }
         }
@@ -395,6 +421,28 @@ impl GradientBorder {
 
         Self::new(border_config)
     }
+}
+
+/// `text` cut to at most `max_width` columns, ending in `…` when something was cut.
+fn fit_to_width(text: &str, max_width: usize) -> std::borrow::Cow<'_, str> {
+    if text.width() <= max_width {
+        return text.into();
+    }
+    let mut fitted = String::new();
+    let mut width = 0;
+    for grapheme in text.graphemes(true) {
+        let grapheme_width = grapheme.width();
+        // keep a column for the ellipsis
+        if width + grapheme_width + 1 > max_width {
+            break;
+        }
+        fitted.push_str(grapheme);
+        width += grapheme_width;
+    }
+    if max_width > 0 {
+        fitted.push('…');
+    }
+    fitted.into()
 }
 
 /// The WCAG relative luminance of an RGB color; `None` for named and indexed colors, whose
@@ -701,47 +749,104 @@ mod tests {
     #[test]
     fn test_border_chars_thickness_1_square() {
         let chars = GradientBorder::get_border_chars(1, false);
-        assert_eq!(chars, vec!["─", "│", "┌", "┐", "└", "┘"]);
+        assert_eq!(chars, ["─", "─", "│", "│", "┌", "┐", "└", "┘"]);
     }
 
     #[test]
     fn test_border_chars_thickness_1_rounded() {
         let chars = GradientBorder::get_border_chars(1, true);
-        assert_eq!(chars, vec!["─", "│", "╭", "╮", "╰", "╯"]);
+        assert_eq!(chars, ["─", "─", "│", "│", "╭", "╮", "╰", "╯"]);
     }
 
     #[test]
     fn test_border_chars_thickness_2() {
         let chars = GradientBorder::get_border_chars(2, false);
-        assert_eq!(chars, vec!["━", "┃", "┏", "┓", "┗", "┛"]);
+        assert_eq!(chars, ["━", "━", "┃", "┃", "┏", "┓", "┗", "┛"]);
     }
 
     #[test]
     fn test_border_chars_thickness_3_double() {
         let chars = GradientBorder::get_border_chars(3, false);
-        assert_eq!(chars, vec!["═", "║", "╔", "╗", "╚", "╝"]);
+        assert_eq!(chars, ["═", "═", "║", "║", "╔", "╗", "╚", "╝"]);
     }
 
     #[test]
     fn test_border_chars_thickness_4_block() {
+        // the half blocks fill the inner half of the top and bottom cells
         let chars = GradientBorder::get_border_chars(4, false);
-        assert_eq!(chars, vec!["▄", "█", "█", "█", "█", "█"]);
+        assert_eq!(chars, ["▄", "▀", "█", "█", "█", "█", "█", "█"]);
     }
 
     #[test]
     fn test_border_chars_thickness_5_full_block() {
         let chars = GradientBorder::get_border_chars(5, false);
-        assert_eq!(chars, vec!["▀", "█", "█", "█", "█", "█"]);
+        assert_eq!(chars, ["█"; 8]);
     }
 
     #[test]
     fn test_border_chars_invalid_thickness_fallback() {
         // Thickness 0 or > 5 should fallback to thin
         let chars = GradientBorder::get_border_chars(0, false);
-        assert_eq!(chars, vec!["─", "│", "┌", "┐", "└", "┘"]);
+        assert_eq!(chars, ["─", "─", "│", "│", "┌", "┐", "└", "┘"]);
 
         let chars = GradientBorder::get_border_chars(10, false);
-        assert_eq!(chars, vec!["─", "│", "┌", "┐", "└", "┘"]);
+        assert_eq!(chars, ["─", "─", "│", "│", "┌", "┐", "└", "┘"]);
+    }
+
+    /// The symbols of a rendered row.
+    fn row(surface: &Surface, y: u16) -> String {
+        let area = surface.area;
+        (area.left()..area.right())
+            .map(|x| surface.get(x, y).unwrap().symbol.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn block_borders_fill_the_inner_half_of_top_and_bottom() {
+        let area = Rect::new(0, 0, 4, 3);
+        let mut config = default_config();
+        config.thickness = 4;
+        let mut surface = Surface::empty(area);
+        GradientBorder::new(config).render(area, &mut surface, &Theme::default(), false);
+        assert_eq!(row(&surface, 0), "█▄▄█");
+        assert_eq!(row(&surface, 2), "█▀▀█");
+    }
+
+    #[test]
+    fn long_and_wide_titles_are_cut_to_fit() {
+        let theme = Theme::default();
+        let area = Rect::new(0, 0, 12, 3);
+        let render = |title: &str| {
+            let mut surface = Surface::empty(area);
+            GradientBorder::new(default_config()).render_with_title(
+                area,
+                &mut surface,
+                &theme,
+                Some(title),
+                false,
+            );
+            row(&surface, 0)
+        };
+        // fits: " Files " from column 2
+        assert_eq!(render("Files"), "🭽▔ Files ▔▔🭾");
+        // too long: cut with an ellipsis, the corners stay
+        assert_eq!(render("a very long title"), "🭽▔ a ver… ▔🭾");
+        // wide characters take two columns each (the second cell is blank) and are
+        // never split
+        assert_eq!(render("日本語のタイトル"), "🭽▔ 日 本 … ▔▔🭾");
+        // a title longer than u16::MAX doesn't overflow
+        assert_eq!(render(&"x".repeat(70_000)), "🭽▔ xxxxx… ▔🭾");
+        // no room at all: only the border
+        let tiny = Rect::new(0, 0, 5, 2);
+        let mut surface = Surface::empty(tiny);
+        GradientBorder::new(default_config()).render_with_title(
+            tiny,
+            &mut surface,
+            &theme,
+            Some("Files"),
+            false,
+        );
+        assert_eq!(row(&surface, 0), "🭽▔▔▔🭾");
     }
 
     // ===========================================

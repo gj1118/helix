@@ -13,11 +13,11 @@ impl Component for Info {
         // Calculate the area of the terminal to modify. Because we want to
         // render at the bottom right, we use the viewport's width and height
         // which evaluate to the most bottom right coordinate.
-        let width = self.width + 2 + 2; // +2 for border, +2 for margin
-        let height = self.height + 2; // +2 for border
+        let width = self.width.saturating_add(2 + 2); // +2 for border, +2 for margin
+        let height = self.height.saturating_add(2); // +2 for border
         let area = viewport.intersection(Rect::new(
             viewport.width.saturating_sub(width),
-            viewport.height.saturating_sub(height + 2), // +2 for statusline
+            viewport.height.saturating_sub(height.saturating_add(2)), // +2 for statusline
             width,
             height,
         ));

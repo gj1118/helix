@@ -278,7 +278,7 @@ pub fn raw_regex_prompt(
                                                     let size = compositor.size();
                                                     let popup = Popup::new("invalid-regex", contents)
                                                         .position(Some(helix_core::Position::new(
-                                                            size.height as usize - 2,
+                                                            (size.height as usize).saturating_sub(2),
                                                             0,
                                                         )))
                                                         .auto_close(true);
@@ -364,7 +364,7 @@ pub fn raw_regex_prompt(
                                                     let size = compositor.size();
                                                     let popup = Popup::new("invalid-regex", contents)
                                                         .position(Some(helix_core::Position::new(
-                                                            size.height as usize - 2,
+                                                            (size.height as usize).saturating_sub(2),
                                                             0,
                                                         )))
                                                         .auto_close(true);

@@ -14,7 +14,8 @@ use tui::buffer::Buffer as Surface;
 
 pub struct NotificationPopup {
     notifications: Vec<NotificationItem>,
-    gradient_border: Option<GradientBorder>,
+    /// The gradient border, with the configuration it was made from.
+    gradient_border: Option<(helix_view::editor::GradientBorderConfig, GradientBorder)>,
     // Cached layout params computed per render from editor config
     layout_thickness: u16,
     layout_rounded: bool,
@@ -487,30 +488,58 @@ impl NotificationPopup {
             .corner_radius
             .unwrap_or(config.border.radius);
 
-        // Whether the border is drawn along the outer edge of its cells: they then take the
-        // card's background too (see `ui::border_cells_take_background`).
-        let mut border_hugs_edge = false;
+        let editor_config = cx.editor.config();
+        let gradient_config = &editor_config.gradient_borders;
+        let gradient = gradient_config.enable;
+        let rounded = editor_config.border_rounded() || corner_radius > 0;
+        // a corner radius asks for rounded corners on an otherwise plain border
+        let mut border_type = crate::ui::border_type(&editor_config);
+        if corner_radius > 0 && border_type == tui::widgets::BorderType::Edge {
+            border_type = tui::widgets::BorderType::Rounded;
+        }
+        // Whether the border cells take the card's background, as for every popup (see
+        // `ui::border_cells_take_background`): without a border, without border glyphs,
+        // and for borders along the outer edge of their cells. Otherwise they keep the
+        // background behind the card. The card's background is painted before the border.
+        let border_cells_take_background = !config.border.enable
+            || if gradient {
+                editor_config.borders_hidden()
+                    || GradientBorder::hugs_the_edge(gradient_config.thickness, rounded)
+            } else {
+                matches!(
+                    border_type,
+                    tui::widgets::BorderType::Hidden
+                        | tui::widgets::BorderType::Edge
+                        | tui::widgets::BorderType::QuadrantOutside
+                )
+            };
+        crate::ui::clear_bordered(
+            surface,
+            item.area,
+            background_style,
+            !border_cells_take_background,
+        );
+
         // Render border based on configuration
         let inner_area = if config.border.enable {
-            if cx.editor.config().gradient_borders.enable {
-                // Use gradient border
-                if self.gradient_border.is_none() {
-                    self.gradient_border = Some(GradientBorder::from_theme(
-                        theme,
-                        &cx.editor.config().gradient_borders,
-                    ));
+            if gradient {
+                // Use gradient border, made again when its configuration changes (with
+                // the animation off).
+                let mut wanted = gradient_config.clone();
+                wanted.animation_speed = 0;
+                if self
+                    .gradient_border
+                    .as_ref()
+                    .is_none_or(|(config, _)| *config != wanted)
+                {
+                    let mut border = GradientBorder::from_theme(theme, &wanted);
+                    border.disable_animation();
+                    self.gradient_border = Some((wanted, border));
                 }
 
-                if let Some(ref mut gradient_border) = self.gradient_border {
-                    // Disable animation as requested
-                    gradient_border.disable_animation();
-                    let rounded = cx.editor.config().border_rounded() || corner_radius > 0;
-                    if !cx.editor.config().borders_hidden() {
+                if let Some((_, gradient_border)) = self.gradient_border.as_mut() {
+                    if !editor_config.borders_hidden() {
                         gradient_border.render(item.area, surface, theme, rounded);
-                        border_hugs_edge = GradientBorder::hugs_the_edge(
-                            cx.editor.config().gradient_borders.thickness,
-                            rounded,
-                        );
                     }
                 }
 
@@ -519,13 +548,6 @@ impl NotificationPopup {
                 GradientBorder::inner_area(item.area)
             } else {
                 // Render simple border without filling background
-                let mut border_type = crate::ui::border_type(&cx.editor.config());
-                // a corner radius asks for rounded corners on an otherwise plain border
-                if corner_radius > 0 && border_type == tui::widgets::BorderType::Edge {
-                    border_type = tui::widgets::BorderType::Rounded;
-                }
-                border_hugs_edge =
-                    border_type == tui::widgets::BorderType::Edge && config.border.width <= 1;
                 self.render_simple_border(
                     item.area,
                     surface,
@@ -566,27 +588,6 @@ impl NotificationPopup {
         // Nothing fits inside the border (e.g. a very wide `border.width`).
         if content_area.width == 0 || content_area.height == 0 {
             return;
-        }
-
-        // Fill the entire inner area (card background). Overlay outside remains transparent.
-        if inner_area.width > 0 && inner_area.height > 0 {
-            surface.clear_with(inner_area, background_style);
-        }
-        if border_hugs_edge {
-            if let Some(bg) = background_style.bg {
-                let area = item.area.intersection(surface.area);
-                for y in area.top()..area.bottom() {
-                    for x in area.left()..area.right() {
-                        let on_border = x == area.left()
-                            || x + 1 == area.right()
-                            || y == area.top()
-                            || y + 1 == area.bottom();
-                        if on_border {
-                            surface[(x, y)].bg = bg;
-                        }
-                    }
-                }
-            }
         }
 
         // Render notification content inside the content_area
@@ -680,12 +681,13 @@ impl Component for NotificationPopup {
         let config = &cx.editor.config().notifications;
         self.calculate_notification_areas(area, config);
 
-        // Render notifications in reverse order so newer ones appear on top
-        // Clone the notifications to avoid borrowing issues
-        let notifications_to_render = self.notifications.to_vec();
-        for item in notifications_to_render.iter().rev() {
+        // Render notifications in reverse order so newer ones appear on top. They are
+        // taken out for the loop (`render_notification` needs `self` too), not cloned.
+        let notifications = std::mem::take(&mut self.notifications);
+        for item in notifications.iter().rev() {
             self.render_notification(item, surface, cx);
         }
+        self.notifications = notifications;
     }
 }
 
