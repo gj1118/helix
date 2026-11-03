@@ -131,10 +131,10 @@ local function update_diagnostics()
   local content_width = max_msg_len + 2
 
   -- Calculate alignment
-  local current_line_text = buffer:get_text():sub(
-    buffer:line_to_char(current_line_idx),
-    buffer:line_to_char(current_line_idx + 1) - 2
-  )
+  -- The whole line by its (1-based) number, without its line ending. (Slicing
+  -- `get_text()` with `sub` would mix char indices with Lua's byte indices and cut
+  -- lines with non-ASCII text in the wrong place.)
+  local current_line_text = buffer:get_line(current_line_idx + 1):gsub("[\r\n]+$", "")
   local line_visual_width = calculate_visual_width(current_line_text, tab_width)
   if current_line_text == "" then line_visual_width = 0 end
 
