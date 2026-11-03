@@ -7,7 +7,6 @@ use crate::{
 use dap::{StackFrame, Thread, ThreadStates};
 use helix_core::syntax::config::{DebugConfigCompletion, DebugTemplate};
 use helix_dap::{self as dap, requests::TerminateArguments};
-use helix_lsp::block_on;
 use helix_view::editor::Breakpoint;
 
 use serde_json::{to_value, Value};
@@ -19,7 +18,7 @@ use std::path::PathBuf;
 use anyhow::{anyhow, bail};
 
 use helix_view::handlers::dap::{
-    breakpoints_changed, jump_to_stack_frame, refresh_inline_values, select_thread_id,
+    breakpoints_changed, jump_to_stack_frame, refresh_inline_values, switch_thread,
 };
 
 fn thread_picker(
@@ -138,12 +137,6 @@ pub fn dap_start_impl(
         .and_then(|config| config.debugger.as_ref())
         .ok_or_else(|| anyhow!("No debug adapter available for language"))?;
 
-    let id = cx
-        .editor
-        .debug_adapters
-        .start_client(socket, config)
-        .map_err(|e| anyhow!("Failed to start debug client: {}", e))?;
-
     // TODO: avoid refetching all of this... pass a config in
     let template = match name {
         Some(name) => config.templates.iter().find(|t| t.name == name),
@@ -168,37 +161,45 @@ pub fn dap_start_impl(
 
     args.insert("cwd", to_value(helix_stdx::env::current_working_dir())?);
 
-    let args = to_value(args).unwrap();
-
-    let callback = |_editor: &mut Editor, _compositor: &mut Compositor, _response: Value| {
-        // if let Err(e) = result {
-        //     editor.set_error(format!("Failed {} target: {}", template.request, e));
-        // }
-    };
+    let args = to_value(args)?;
 
     let template_name = template.name.clone();
-    let request = template.request.clone();
-    let debugger = match cx.editor.debug_adapters.get_client_mut(id) {
-        Some(child) => child,
-        None => {
-            bail!("Failed to get child debugger.");
-        }
-    };
-    debugger.name = Some(template_name);
-
-    match &request[..] {
-        "launch" => {
-            let call = debugger.launch(args);
-            dap_callback(cx.jobs, call, callback);
-        }
-        "attach" => {
-            let call = debugger.attach(args);
-            dap_callback(cx.jobs, call, callback);
-        }
+    let launch = match &template.request[..] {
+        "launch" => true,
+        "attach" => false,
         request => bail!("Unsupported request '{}'", request),
     };
 
-    // TODO: either await "initialized" or buffer commands until event is received
+    // Starting the adapter waits for it to answer `initialize`: that happens in the background.
+    let start = dap::registry::Registry::start_client(socket, config);
+    cx.jobs.callback(async move {
+        let started = start
+            .await
+            .map_err(|e| anyhow!("Failed to start debug client: {}", e))?;
+        Ok(Callback::Editor(Box::new(move |editor: &mut Editor| {
+            let id = editor.debug_adapters.add_client(started);
+            let Some(debugger) = editor.debug_adapters.get_client_mut(id) else {
+                return;
+            };
+            debugger.name = Some(template_name);
+            let call = if launch {
+                futures_util::future::Either::Left(debugger.launch(args))
+            } else {
+                futures_util::future::Either::Right(debugger.attach(args))
+            };
+            // TODO: either await "initialized" or buffer commands until event is received
+            tokio::spawn(async move {
+                if let Err(err) = call.await {
+                    let action = if launch { "launch" } else { "attach" };
+                    crate::job::dispatch(move |editor, _| {
+                        editor.set_error(format!("Failed to {action} the debug target: {err}"));
+                    })
+                    .await;
+                }
+            });
+        })))
+    });
+
     Ok(())
 }
 
@@ -445,12 +446,41 @@ pub fn dap_toggle_breakpoints_impl(cx: &mut Context, path: PathBuf, lines: Vec<u
         }
     }
 
-    let debugger = debugger!(cx.editor);
+    send_breakpoints(cx.editor, path);
+}
 
-    if let Err(e) = breakpoints_changed(debugger, path, breakpoints) {
-        cx.editor
-            .set_error(format!("Failed to set breakpoints: {}", e));
+/// Sends the breakpoints of `path` to the selected session, if there is one.
+fn send_breakpoints(editor: &mut Editor, path: PathBuf) {
+    let Some(session) = editor.debug_adapters.active_id() else {
+        return;
+    };
+    if let Err(e) = breakpoints_changed(editor, session, path) {
+        editor.set_error(format!("Failed to set breakpoints: {}", e));
     }
+}
+
+/// Changes the breakpoint the prompt of [`dap_edit_condition`] or [`dap_edit_log`] was opened
+/// for (at index `pos` of the breakpoints of `path`, on `line`) and sends the breakpoints. The
+/// breakpoints may have changed while the prompt was open.
+fn edit_breakpoint(
+    editor: &mut Editor,
+    path: PathBuf,
+    pos: usize,
+    line: usize,
+    edit: impl FnOnce(&mut Breakpoint),
+) {
+    let Some(breakpoint) = editor.breakpoints.get_mut(&path).and_then(|breakpoints| {
+        if breakpoints.get(pos).is_some_and(|b| b.line == line) {
+            breakpoints.get_mut(pos)
+        } else {
+            breakpoints.iter_mut().find(|b| b.line == line)
+        }
+    }) else {
+        editor.set_error("The breakpoint is gone");
+        return;
+    };
+    edit(breakpoint);
+    send_breakpoints(editor, path);
 }
 
 /// The session `id` is running again: forget where it was stopped.
@@ -488,9 +518,14 @@ pub fn dap_pause(cx: &mut Context) {
         let debugger = debugger!(editor);
         let request = debugger.pause(thread.id);
         // NOTE: we don't need to set active thread id here because DAP will emit a "stopped" event
-        if let Err(e) = block_on(request) {
-            editor.set_error(format!("Failed to pause: {}", e));
-        }
+        tokio::spawn(async move {
+            if let Err(e) = request.await {
+                crate::job::dispatch(move |editor, _| {
+                    editor.set_error(format!("Failed to pause: {}", e));
+                })
+                .await;
+            }
+        });
     })
 }
 
@@ -705,6 +740,7 @@ pub fn dap_edit_condition(cx: &mut Context) {
         let Some(path) = doc!(cx.editor).path().map(ToOwned::to_owned) else {
             return;
         };
+        let line = breakpoint.line;
         let callback = Box::pin(async move {
             let call: Callback = Callback::EditorCompositor(Box::new(move |editor, compositor| {
                 let mut prompt = Prompt::new(
@@ -716,18 +752,13 @@ pub fn dap_edit_condition(cx: &mut Context) {
                             return;
                         }
 
-                        let breakpoints = &mut cx.editor.breakpoints.get_mut(&path).unwrap();
-                        breakpoints[pos].condition = match input {
+                        let condition = match input {
                             "" => None,
                             input => Some(input.to_owned()),
                         };
-
-                        let debugger = debugger!(cx.editor);
-
-                        if let Err(e) = breakpoints_changed(debugger, path.clone(), breakpoints) {
-                            cx.editor
-                                .set_error(format!("Failed to set breakpoints: {}", e));
-                        }
+                        edit_breakpoint(cx.editor, path.clone(), pos, line, |breakpoint| {
+                            breakpoint.condition = condition
+                        });
                     },
                 );
                 if let Some(condition) = breakpoint.condition {
@@ -746,6 +777,7 @@ pub fn dap_edit_log(cx: &mut Context) {
         let Some(path) = doc!(cx.editor).path().map(ToOwned::to_owned) else {
             return;
         };
+        let line = breakpoint.line;
         let callback = Box::pin(async move {
             let call: Callback = Callback::EditorCompositor(Box::new(move |editor, compositor| {
                 let mut prompt = Prompt::new(
@@ -757,17 +789,13 @@ pub fn dap_edit_log(cx: &mut Context) {
                             return;
                         }
 
-                        let breakpoints = &mut cx.editor.breakpoints.get_mut(&path).unwrap();
-                        breakpoints[pos].log_message = match input {
+                        let log_message = match input {
                             "" => None,
                             input => Some(input.to_owned()),
                         };
-
-                        let debugger = debugger!(cx.editor);
-                        if let Err(e) = breakpoints_changed(debugger, path.clone(), breakpoints) {
-                            cx.editor
-                                .set_error(format!("Failed to set breakpoints: {}", e));
-                        }
+                        edit_breakpoint(cx.editor, path.clone(), pos, line, |breakpoint| {
+                            breakpoint.log_message = log_message
+                        });
                     },
                 );
                 if let Some(log_message) = breakpoint.log_message {
@@ -783,7 +811,7 @@ pub fn dap_edit_log(cx: &mut Context) {
 
 pub fn dap_switch_thread(cx: &mut Context) {
     thread_picker(cx, |editor, thread| {
-        block_on(select_thread_id(editor, thread.id, true));
+        switch_thread(editor, thread.id);
     })
 }
 /// A row of the stack frame picker.

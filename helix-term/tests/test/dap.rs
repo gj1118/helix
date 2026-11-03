@@ -550,3 +550,87 @@ async fn sources_generated_by_the_adapter_open_read_only_and_take_breakpoints() 
     assert!(with_reference[0]["source"].get("path").is_none());
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn breakpoints_threads_and_the_end_of_a_session_are_handled_in_the_background(
+) -> anyhow::Result<()> {
+    let fixture = fixture()?;
+    let mut app = app(&fixture)?;
+    let start_keys = start(&fixture.path);
+    let path = helix_stdx::path::canonicalize(&fixture.path);
+    let breakpoint = |app: &Application| {
+        app.editor
+            .breakpoints
+            .get(&path)
+            .and_then(|breakpoints| breakpoints.first())
+            .cloned()
+    };
+    test_key_sequences(
+        &mut app,
+        vec![
+            (Some(start_keys.as_str()), None),
+            (Some("<esc>"), None),
+            (Some("<esc>"), Some(&|app| assert_eq!(cursor_line(app), 2))),
+            // the adapter's answer is merged in when it arrives
+            (Some("<space>Gb"), None),
+            (
+                Some("<esc>"),
+                Some(&|app| {
+                    let breakpoint = breakpoint(app).expect("a breakpoint");
+                    assert_eq!(breakpoint.line, 2);
+                    assert!(breakpoint.verified, "{breakpoint:?}");
+                    assert!(breakpoint.id.is_some(), "{breakpoint:?}");
+                }),
+            ),
+            // the prompt opens once the key is handled
+            (Some("<space>G<C-c>"), None),
+            (Some("x == 1<ret>"), None),
+            (
+                Some("<esc>"),
+                Some(&|app| {
+                    let breakpoint = breakpoint(app).expect("a breakpoint");
+                    assert_eq!(breakpoint.condition.as_deref(), Some("x == 1"));
+                    assert!(breakpoint.verified, "{breakpoint:?}");
+                }),
+            ),
+            // switching the thread shows where it stopped once its stack arrived
+            (Some("gg<space>Gst"), None),
+            (Some("<esc>"), None),
+            (Some("<esc>"), Some(&|app| assert_eq!(cursor_line(app), 2))),
+            // after a continue the next stop (line 5) is shown as a stop
+            (Some("<space>Gc"), None),
+            (Some("<esc>"), None),
+            (
+                Some("<esc>"),
+                Some(&|app| {
+                    assert_eq!(cursor_line(app), 4);
+                    let debugger = app.editor.debug_adapters.get_active_client().unwrap();
+                    assert_eq!(debugger.state_label(), "stopped");
+                }),
+            ),
+            // the program ends: the session goes away
+            (Some("<space>Gc"), None),
+            (Some("<esc>"), None),
+            (
+                Some("<esc>"),
+                Some(&|app| {
+                    assert!(app.editor.debug_adapters.is_empty());
+                    assert!(!breakpoint(app).expect("a breakpoint").verified);
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+
+    let conditions: Vec<_> = requests(&fixture, "setBreakpoints")
+        .iter()
+        .map(|args| args["breakpoints"][0]["condition"].clone())
+        .collect();
+    assert_eq!(
+        conditions,
+        [serde_json::Value::Null, serde_json::json!("x == 1")],
+        "{conditions:?}"
+    );
+    Ok(())
+}

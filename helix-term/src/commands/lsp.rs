@@ -1,6 +1,5 @@
 use futures_util::{stream::FuturesUnordered, FutureExt};
 use helix_lsp::{
-    block_on,
     lsp::{
         self, CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionTriggerKind,
         DiagnosticSeverity, NumberOrString,
@@ -1262,30 +1261,33 @@ fn code_lens_inner(cx: &mut Context, whole_file: bool) {
     }
 
     cx.jobs.callback(async move {
-        let mut items = Vec::new();
-        for (lens, language_server_id, server, location, line) in lenses {
-            let lens = match (lens.command.is_some(), server) {
-                (true, _) => Some(lens),
-                (false, Some(server)) => {
-                    match crate::handlers::code_lenses::resolve_lens(server, lens).await {
-                        Ok(resolved) => resolved,
-                        Err(err) => {
-                            log::error!("code lens resolve failed: {err}");
-                            None
+        // Resolved side by side (`resolve_lens` limits how many at once), in file order.
+        let resolved = futures_util::future::join_all(lenses.into_iter().map(
+            |(lens, language_server_id, server, location, line)| async move {
+                let lens = match (lens.command.is_some(), server) {
+                    (true, _) => Some(lens),
+                    (false, Some(server)) => {
+                        match crate::handlers::code_lenses::resolve_lens(server, lens).await {
+                            Ok(resolved) => resolved,
+                            Err(err) => {
+                                log::error!("code lens resolve failed: {err}");
+                                None
+                            }
                         }
                     }
-                }
-                (false, None) => None,
-            };
-            if let Some(command) = lens.and_then(|lens| lens.command) {
-                items.push(CodeLensItem {
+                    (false, None) => None,
+                };
+                let command = lens.and_then(|lens| lens.command)?;
+                Some(CodeLensItem {
                     command,
                     language_server_id,
                     location,
                     line,
-                });
-            }
-        }
+                })
+            },
+        ))
+        .await;
+        let items: Vec<CodeLensItem> = resolved.into_iter().flatten().collect();
 
         let call = move |editor: &mut Editor, compositor: &mut Compositor| {
             // The text changed while the server was resolving: the lenses are for other code.
@@ -2031,6 +2033,53 @@ pub fn rename_symbol(cx: &mut Context) {
         }
     }
 
+    /// Asks the server to rename the symbol under the cursor to `new_name` and applies its
+    /// edits once they arrive. The server may take a while for a symbol used in many files:
+    /// the editor doesn't wait for it.
+    fn rename_to(
+        cx: &mut compositor::Context,
+        new_name: &str,
+        language_server_id: Option<LanguageServerId>,
+    ) {
+        let (view, doc) = current!(cx.editor);
+
+        let Some(language_server) = doc
+            .language_servers_with_feature(LanguageServerFeature::RenameSymbol)
+            .find(|ls| language_server_id.is_none_or(|id| id == ls.id()))
+        else {
+            cx.editor
+                .set_error("No configured language server supports symbol renaming");
+            return;
+        };
+
+        let offset_encoding = language_server.offset_encoding();
+        let pos = doc.position(view.id, offset_encoding);
+        let Some(future) =
+            language_server.rename_symbol(doc.identifier(), pos, new_name.to_string())
+        else {
+            return;
+        };
+
+        let doc_id = doc.id();
+        let version = doc.version();
+        cx.jobs.callback(async move {
+            let response = future.await;
+            Ok(Callback::Editor(Box::new(
+                move |editor: &mut Editor| match response {
+                    Ok(_) if editor.document(doc_id).map(Document::version) != Some(version) => {
+                        // The edits are for the text the server was asked about.
+                        editor.set_error("The document changed while renaming, rename again");
+                    }
+                    Ok(edits) => {
+                        let _ = editor
+                            .apply_workspace_edit(offset_encoding, &edits.unwrap_or_default());
+                    }
+                    Err(err) => editor.set_error(err.to_string()),
+                },
+            )))
+        });
+    }
+
     fn create_rename_prompt(
         editor: &Editor,
         prefill: String,
@@ -2047,33 +2096,7 @@ pub fn rename_symbol(cx: &mut Context) {
                         if event != PromptEvent::Validate {
                             return;
                         }
-                        let (view, doc) = current!(cx.editor);
-
-                        let Some(language_server) = doc
-                            .language_servers_with_feature(LanguageServerFeature::RenameSymbol)
-                            .find(|ls| language_server_id.is_none_or(|id| id == ls.id()))
-                        else {
-                            cx.editor.set_error(
-                                "No configured language server supports symbol renaming",
-                            );
-                            return;
-                        };
-
-                        let offset_encoding = language_server.offset_encoding();
-                        let pos = doc.position(view.id, offset_encoding);
-                        let future = language_server
-                            .rename_symbol(doc.identifier(), pos, input.to_string())
-                            .unwrap();
-
-                        match block_on(future) {
-                            Ok(edits) => {
-                                let _ = cx.editor.apply_workspace_edit(
-                                    offset_encoding,
-                                    &edits.unwrap_or_default(),
-                                );
-                            }
-                            Err(err) => cx.editor.set_error(err.to_string()),
-                        }
+                        rename_to(cx, input, language_server_id);
                     },
                     helix_view::editor::CmdlineStyle::Popup,
                 )
@@ -2090,33 +2113,7 @@ pub fn rename_symbol(cx: &mut Context) {
                         if event != PromptEvent::Validate {
                             return;
                         }
-                        let (view, doc) = current!(cx.editor);
-
-                        let Some(language_server) = doc
-                            .language_servers_with_feature(LanguageServerFeature::RenameSymbol)
-                            .find(|ls| language_server_id.is_none_or(|id| id == ls.id()))
-                        else {
-                            cx.editor.set_error(
-                                "No configured language server supports symbol renaming",
-                            );
-                            return;
-                        };
-
-                        let offset_encoding = language_server.offset_encoding();
-                        let pos = doc.position(view.id, offset_encoding);
-                        let future = language_server
-                            .rename_symbol(doc.identifier(), pos, input.to_string())
-                            .unwrap();
-
-                        match block_on(future) {
-                            Ok(edits) => {
-                                let _ = cx.editor.apply_workspace_edit(
-                                    offset_encoding,
-                                    &edits.unwrap_or_default(),
-                                );
-                            }
-                            Err(err) => cx.editor.set_error(err.to_string()),
-                        }
+                        rename_to(cx, input, language_server_id);
                     },
                 )
                 .with_line(prefill, editor);
@@ -2290,6 +2287,7 @@ fn compute_inlay_hints_for_view(
     );
 
     let offset_encoding = language_server.offset_encoding();
+    let version = doc.version();
 
     let callback = super::make_job_callback(
         language_server.text_document_range_inlay_hints(doc.identifier(), range, None)?,
@@ -2304,6 +2302,11 @@ fn compute_inlay_hints_for_view(
                 Some(doc) => doc,
                 None => return,
             };
+            // Edited since: the positions are for the old text. The hints stay outdated, so
+            // the next idle timeout asks again.
+            if doc.version() != version {
+                return;
+            }
 
             // If we have neither hints nor an LSP, empty the inlay hints since they're now oudated
             let mut hints = match response {

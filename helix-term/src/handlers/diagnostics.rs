@@ -300,30 +300,38 @@ pub fn request_workspace_diagnostics(editor: &mut Editor, server_id: LanguageSer
     };
 
     tokio::spawn(async move {
-        if let Ok(lsp::WorkspaceDiagnosticReportResult::Report(report)) = future.await {
-            for item in report.items {
+        let Ok(lsp::WorkspaceDiagnosticReportResult::Report(report)) = future.await else {
+            return;
+        };
+        let reports: Vec<_> = report
+            .items
+            .into_iter()
+            .filter_map(|item| {
                 let lsp::WorkspaceDocumentDiagnosticReport::Full(report) = item else {
                     // The report was unchanged since some previous result id, but we do
                     // not keep result ids for files without an open document.
-                    continue;
+                    return None;
                 };
-                let Ok(uri) = Uri::try_from(report.uri) else {
-                    continue;
-                };
+                let uri = Uri::try_from(report.uri).ok()?;
                 let version = report
                     .version
                     .and_then(|version| i32::try_from(version).ok());
-                let items = report.full_document_diagnostic_report.items;
-                let provider = provider.clone();
-
-                crate::job::dispatch(move |editor, _| {
-                    crate::commands::lsp::apply_pulled_diagnostics(
-                        editor, &provider, uri, version, items,
-                    );
-                })
-                .await;
-            }
+                Some((uri, version, report.full_document_diagnostic_report.items))
+            })
+            .collect();
+        if reports.is_empty() {
+            return;
         }
+        // One job for the whole workspace: a report covers every file the server knows,
+        // and the editor would otherwise handle (and redraw for) them one by one.
+        crate::job::dispatch(move |editor, _| {
+            for (uri, version, items) in reports {
+                crate::commands::lsp::apply_pulled_diagnostics(
+                    editor, &provider, uri, version, items,
+                );
+            }
+        })
+        .await;
     });
 }
 

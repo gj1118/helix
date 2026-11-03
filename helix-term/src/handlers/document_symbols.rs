@@ -137,6 +137,7 @@ fn request_document_symbols(editor: &mut Editor, doc_id: DocumentId) {
         return;
     };
     let cancel = doc.document_symbols_controller.restart();
+    let version = doc.version();
 
     tokio::spawn(async move {
         let Some(Ok(Some(response))) = cancelable_future(future, &cancel).await else {
@@ -147,6 +148,11 @@ fn request_document_symbols(editor: &mut Editor, doc_id: DocumentId) {
             let Some(doc) = editor.document_mut(doc_id) else {
                 return;
             };
+            // Edited after the answer arrived: the ranges are for the old text, and the edit
+            // asks again.
+            if doc.version() != version {
+                return;
+            }
             match response {
                 DocumentSymbolResponse::Nested(symbols) => {
                     doc.set_document_symbols(symbols, offset_encoding);

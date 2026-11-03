@@ -267,14 +267,18 @@ pub(crate) async fn resolve_lens(
 }
 
 /// `workspace/codeLens/refresh`: the server's answers changed, e.g. after it finished indexing.
+///
+/// Servers send this often (some after every change they analyzed), so the requests go through
+/// the debounce like edits do: a burst of refreshes asks once per document.
 pub fn refresh_for_language_server(editor: &mut Editor, server_id: LanguageServerId) {
-    let docs: Vec<_> = editor
+    if !enabled(editor) {
+        return;
+    }
+    for doc in editor
         .documents()
         .filter(|doc| doc.supports_language_server(server_id))
-        .map(|doc| doc.id())
-        .collect();
-    for doc in docs {
-        request_code_lenses(editor, doc);
+    {
+        helix_event::send_blocking(&editor.handlers.code_lenses, CodeLensesEvent(doc.id()));
     }
 }
 
@@ -320,6 +324,8 @@ pub(super) fn register_hooks(handlers: &Handlers) {
     register_hook!(move |event: &mut LanguageServerExited<'_>| {
         for doc in event.editor.documents_mut() {
             if doc.supports_language_server(event.server_id) {
+                // Resolves in flight refer to lenses by index.
+                doc.code_lens_resolve_controller.cancel();
                 doc.code_lenses
                     .retain(|lens| lens.language_server_id != event.server_id);
             }

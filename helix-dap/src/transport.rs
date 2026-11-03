@@ -223,10 +223,9 @@ impl Transport {
                             request_seq
                         ),
                     }
-                    None => {
-                        warn!("Response to nonexistent request #{}", res.request_seq);
-                        client_tx.send(Payload::Response(res)).expect("Failed to send");
-                    }
+                    // Nobody waits for it: an adapter bug, or an answer to a request that
+                    // was never made. Dropped, the client has no use for it.
+                    None => warn!("Response to nonexistent request #{}", res.request_seq),
                 }
 
                 Ok(())
@@ -237,13 +236,11 @@ impl Transport {
                 ..
             }) => {
                 info!("[{}] <- DAP request {} #{}", self.id, command, seq);
-                client_tx.send(msg).expect("Failed to send");
-                Ok(())
+                client_tx.send(msg).map_err(|_| Error::StreamClosed)
             }
             Payload::Event(ref event) => {
                 info!("[{}] <- DAP event {:?}", self.id, event);
-                client_tx.send(msg).expect("Failed to send");
-                Ok(())
+                client_tx.send(msg).map_err(|_| Error::StreamClosed)
             }
         }
     }
@@ -276,17 +273,17 @@ impl Transport {
                     if !matches!(err, Error::StreamClosed) {
                         error!("Exiting after unexpected error: {err:?}");
                     }
-
-                    // Close any outstanding requests.
-                    for (id, tx) in transport.pending_requests.lock().await.drain() {
-                        match tx.send(Err(Error::StreamClosed)).await {
-                            Ok(_) => (),
-                            Err(_) => {
-                                error!("Could not close request on a closed channel (id={id})");
-                            }
-                        }
-                    }
                     break;
+                }
+            }
+        }
+
+        // Close any outstanding requests: nothing answers them anymore.
+        for (id, tx) in transport.pending_requests.lock().await.drain() {
+            match tx.send(Err(Error::StreamClosed)).await {
+                Ok(_) => (),
+                Err(_) => {
+                    error!("Could not close request on a closed channel (id={id})");
                 }
             }
         }

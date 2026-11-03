@@ -389,6 +389,13 @@ fn load_more(cx: &mut compositor::Context, browser: &Shared, session: DebugAdapt
                     let mut guard = lock(&browser);
                     if let Some(level) = guard.levels.last_mut() {
                         level.loaded_indexed += variables.len();
+                        // A short page: the adapter has no more children than that, whatever
+                        // count it gave. Otherwise "Load more…" would stay and load nothing.
+                        if let Kind::Children { indexed, .. } = level.kind {
+                            if variables.len() < PAGE {
+                                level.loaded_indexed = level.loaded_indexed.max(indexed);
+                            }
+                        }
                         level
                             .items
                             .extend(variables.into_iter().map(Item::Variable));

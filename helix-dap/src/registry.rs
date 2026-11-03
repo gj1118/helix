@@ -1,10 +1,17 @@
 use crate::{Client, Payload, Result, StackFrame};
-use futures_executor::block_on;
 use futures_util::stream::SelectAll;
 use helix_core::syntax::config::DebugAdapterConfig;
 use slotmap::SlotMap;
-use std::fmt;
+use std::{fmt, future::Future};
+use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_stream::wrappers::UnboundedReceiverStream;
+
+/// A debug adapter that was started and initialized but is not in the registry yet, see
+/// [`Registry::start_client`].
+pub struct StartedClient {
+    client: Client,
+    receiver: UnboundedReceiver<(DebugAdapterId, Payload)>,
+}
 
 /// The resgistry is a struct that manages and owns multiple debugger clients
 /// This holds the responsibility of managing the lifecycle of each client
@@ -30,32 +37,49 @@ impl Registry {
         }
     }
 
+    /// Starts (or, with `socket`, connects to) a debug adapter and initializes it. This waits for
+    /// the adapter, so it runs in the background: the returned future doesn't borrow anything,
+    /// and what it resolves to is added to the registry with [`Self::add_client`].
     pub fn start_client(
-        &mut self,
         socket: Option<std::net::SocketAddr>,
         config: &DebugAdapterConfig,
-    ) -> Result<DebugAdapterId> {
-        self.inner.try_insert_with_key(|id| {
-            let result = match socket {
-                Some(socket) => block_on(Client::tcp(socket, id)),
-                None => block_on(Client::process(
-                    &config.transport,
-                    &config.command,
-                    config.args.iter().map(|arg| arg.as_str()).collect(),
-                    config.port_arg.as_deref(),
-                    id,
-                )),
+    ) -> impl Future<Output = Result<StartedClient>> + Send + 'static {
+        let config = config.clone();
+        async move {
+            let (mut client, receiver) = match socket {
+                Some(socket) => Client::tcp(socket).await?,
+                None => {
+                    Client::process(
+                        &config.transport,
+                        &config.command,
+                        config.args.iter().map(|arg| arg.as_str()).collect(),
+                        config.port_arg.as_deref(),
+                    )
+                    .await?
+                }
             };
 
-            let (mut client, receiver) = result?;
-            self.incoming.push(UnboundedReceiverStream::new(receiver));
-
-            client.config = Some(config.clone());
-            block_on(client.initialize(config.name.clone()))?;
+            client.initialize(config.name.clone()).await?;
             client.quirks = config.quirks.clone();
+            client.config = Some(config);
 
-            Ok(client)
-        })
+            Ok(StartedClient { client, receiver })
+        }
+    }
+
+    /// Adds a client [`Self::start_client`] started; its messages arrive on
+    /// [`Self::incoming`] from now on.
+    pub fn add_client(&mut self, started: StartedClient) -> DebugAdapterId {
+        let StartedClient {
+            mut client,
+            receiver,
+        } = started;
+        let id = self.inner.insert_with_key(|id| {
+            client.set_id(id);
+            client
+        });
+        self.incoming.push(UnboundedReceiverStream::new(receiver));
+        id
     }
 
     /// Removes a session. When it was the selected one, another session is selected: one that

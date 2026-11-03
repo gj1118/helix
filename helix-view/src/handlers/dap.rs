@@ -2,12 +2,11 @@ use crate::editor::{Action, Breakpoint};
 use crate::{align_view, Align, Editor};
 use anyhow::bail;
 use dap::requests::DisconnectArguments;
-use dap::requests::ThreadsArguments;
+use futures_util::future::Either;
 use helix_core::Selection;
 use helix_dap::{
     self as dap, registry::DebugAdapterId, Client, ConnectionType, Payload, Request, ThreadId,
 };
-use helix_lsp::block_on;
 use log::{error, warn};
 use serde_json::{json, Value};
 use std::fmt::Write;
@@ -24,40 +23,124 @@ macro_rules! debugger {
 }
 
 // general utils:
+/// The char index of a (one based) DAP position. A line past the end of the text is its last
+/// line, a column past the end of its line the end of the line (the file may have changed since
+/// the adapter read it). `None` for line 0, which adapters send for frames without a position.
 pub fn dap_pos_to_pos(doc: &helix_core::Rope, line: usize, column: usize) -> Option<usize> {
     // 1-indexing to 0 indexing
-    let line = doc.try_line_to_char(line - 1).ok()?;
-    let pos = line + column.saturating_sub(1);
+    let line = line.checked_sub(1)?.min(doc.len_lines().saturating_sub(1));
+    let start = doc.try_line_to_char(line).ok()?;
+    let end = helix_core::line_ending::line_end_char_index(&doc.slice(..), line);
     // TODO: this is probably utf-16 offsets
-    Some(pos)
+    Some((start + column.saturating_sub(1)).min(end))
 }
 
-pub async fn select_thread_id(editor: &mut Editor, thread_id: ThreadId, force: bool) {
+/// Makes `thread_id` the current thread of the selected session. Its stack is fetched in the
+/// background and shown when it arrives (if the thread is still the current one by then).
+pub fn switch_thread(editor: &mut Editor, thread_id: ThreadId) {
     let Some(id) = editor.debug_adapters.active_id() else {
         return;
     };
-    select_thread_id_of(editor, id, thread_id, force).await
+    let Some(debugger) = editor.debug_adapters.get_client_mut(id) else {
+        return;
+    };
+    debugger.thread_id = Some(thread_id);
+    debugger.active_frame = Some(0);
+    let page = debugger.stack_trace_page(thread_id, 0, STACK_FRAMES_PAGE);
+    // The values are those of the thread that was current.
+    editor.clear_dap_inline_values();
+    spawn_job(editor, id, async move {
+        let page = page.await;
+        Some(Box::new(move |editor: &mut Editor| {
+            let Some(debugger) = editor.debug_adapters.get_client_mut(id) else {
+                return;
+            };
+            store_stack_trace(debugger, thread_id, page);
+            if debugger.thread_id == Some(thread_id)
+                && editor.debug_adapters.active_id() == Some(id)
+            {
+                show_current_frame(editor);
+            }
+        }) as Job)
+    });
 }
 
-/// Makes `thread_id` the current thread of the session `id` and, when that session is the
-/// selected one, shows where it stopped.
-pub async fn select_thread_id_of(
+/// The session `id` stopped: fetches the stack of the thread that stopped (of all threads, when
+/// they all stopped) in the background, then makes that thread current, unless the session has
+/// a current thread already, and shows where it stopped.
+fn fetch_stop(
     editor: &mut Editor,
     id: DebugAdapterId,
-    thread_id: ThreadId,
-    force: bool,
+    thread_id: Option<ThreadId>,
+    all_threads_stopped: bool,
 ) {
     let Some(debugger) = editor.debug_adapters.get_client_mut(id) else {
         return;
     };
+    if !all_threads_stopped && thread_id.is_none() {
+        return;
+    }
+    debugger.stops += 1;
+    let stop = debugger.stops;
+    let requester = debugger.requester();
+    spawn_job(editor, id, async move {
+        let threads: Vec<ThreadId> = match thread_id {
+            Some(thread_id) if !all_threads_stopped => vec![thread_id],
+            _ => match requester.threads().await {
+                Ok(threads) => threads.into_iter().map(|thread| thread.id).collect(),
+                Err(err) => {
+                    warn!("Failed to fetch the threads of a stopped session: {err}");
+                    return None;
+                }
+            },
+        };
+        let pages = futures_util::future::join_all(
+            threads
+                .iter()
+                .map(|&thread| requester.stack_trace_page(thread, 0, STACK_FRAMES_PAGE)),
+        )
+        .await;
+        Some(Box::new(move |editor: &mut Editor| {
+            let Some(debugger) = editor.debug_adapters.get_client_mut(id) else {
+                return;
+            };
+            // It stopped again since: that stop's stacks count.
+            if debugger.stops != stop {
+                return;
+            }
+            for (&thread, page) in threads.iter().zip(pages) {
+                store_stack_trace(debugger, thread, page);
+            }
+            let Some(thread) = thread_id.or_else(|| threads.first().copied()) else {
+                return;
+            };
+            // It runs again by now (the user continued, or the adapter did).
+            if debugger
+                .thread_states
+                .get(&thread)
+                .is_some_and(|state| state == "running")
+            {
+                return;
+            }
+            select_stopped_thread(editor, id, thread);
+        }) as Job)
+    });
+}
 
-    if !force && debugger.thread_id.is_some() {
+/// Makes `thread_id` (whose stack was fetched) the current thread of the session `id` and, when
+/// that session is the selected one, shows where it stopped. A session that has a current
+/// thread keeps it.
+fn select_stopped_thread(editor: &mut Editor, id: DebugAdapterId, thread_id: ThreadId) {
+    let Some(debugger) = editor.debug_adapters.get_client_mut(id) else {
+        return;
+    };
+
+    if debugger.thread_id.is_some() {
         return;
     }
 
     debugger.thread_id = Some(thread_id);
     debugger.active_frame = Some(0);
-    fetch_stack_trace(debugger, thread_id).await;
 
     // A session that stops while the selected one is running takes over: that is where the
     // attention is needed.
@@ -274,6 +357,25 @@ fn short_value(value: &str) -> String {
 }
 
 #[cfg(test)]
+mod dap_pos_tests {
+    use super::dap_pos_to_pos;
+    use helix_core::Rope;
+
+    #[test]
+    fn positions_stay_inside_the_text() {
+        let text = Rope::from("ab\ncd\n");
+        assert_eq!(dap_pos_to_pos(&text, 2, 2), Some(4));
+        // past the end of the line: the end of the line, not the next one
+        assert_eq!(dap_pos_to_pos(&text, 1, 40), Some(2));
+        // past the last line: the last line
+        assert_eq!(dap_pos_to_pos(&text, 9, 1), Some(6));
+        // line 0: no position (used to underflow)
+        assert_eq!(dap_pos_to_pos(&text, 0, 1), None);
+        assert_eq!(dap_pos_to_pos(&Rope::new(), 1, 1), Some(0));
+    }
+}
+
+#[cfg(test)]
 mod inline_value_tests {
     use super::*;
 
@@ -339,13 +441,14 @@ mod inline_value_tests {
 /// in the stack frame picker.
 pub const STACK_FRAMES_PAGE: usize = 20;
 
-pub async fn fetch_stack_trace(debugger: &mut Client, thread_id: ThreadId) {
-    let (frames, total) = match debugger
-        .stack_trace_page(thread_id, 0, STACK_FRAMES_PAGE)
-        .await
-    {
-        Ok(page) => page,
-        Err(_) => return,
+/// Keeps the first page of the stack of `thread_id` (a failed request keeps what was there).
+fn store_stack_trace(
+    debugger: &mut Client,
+    thread_id: ThreadId,
+    page: helix_dap::Result<(Vec<helix_dap::StackFrame>, Option<usize>)>,
+) {
+    let Ok((frames, total)) = page else {
+        return;
     };
     match total {
         Some(total) => debugger.total_frames.insert(thread_id, total),
@@ -508,11 +611,18 @@ pub fn jump_to_stack_frame(editor: &mut Editor, frame: &helix_dap::StackFrame) {
     align_view(doc, view, Align::Center);
 }
 
+/// Sends the breakpoints the editor has for `path` to the session `session`. What the adapter
+/// answers (whether it could set them, and where) is merged in when the answer arrives; an
+/// error is only returned for breakpoints the adapter can't take.
 pub fn breakpoints_changed(
-    debugger: &mut dap::Client,
+    editor: &mut Editor,
+    session: DebugAdapterId,
     path: PathBuf,
-    breakpoints: &mut [Breakpoint],
 ) -> Result<(), anyhow::Error> {
+    let Some(debugger) = editor.debug_adapters.get_client_mut(session) else {
+        return Ok(());
+    };
+    let breakpoints: &[Breakpoint] = editor.breakpoints.get(&path).map_or(&[], Vec::as_slice);
     if let Some(caps) = debugger.caps.as_ref() {
         if breakpoints.iter().any(|b| b.condition.is_some())
             && !caps.supports_conditional_breakpoints.unwrap_or_default()
@@ -543,24 +653,50 @@ pub fn breakpoints_changed(
         })
         .collect::<Vec<_>>();
 
-    let request = debugger.set_breakpoints(path, source_breakpoints);
-    match block_on(request) {
-        Ok(Some(dap_breakpoints)) => {
+    let sent = source_breakpoints.len();
+    let request = debugger.next_breakpoints_request(&path);
+    let response = debugger.set_breakpoints(path.clone(), source_breakpoints);
+    spawn_job(editor, session, async move {
+        let response = response.await;
+        Some(Box::new(move |editor: &mut Editor| {
+            // The breakpoints changed again since: the answer to that request counts.
+            let latest = editor
+                .debug_adapters
+                .get_client(session)
+                .is_some_and(|debugger| debugger.is_latest_breakpoints_request(&path, request));
+            if !latest {
+                return;
+            }
+            let dap_breakpoints = match response {
+                Ok(Some(dap_breakpoints)) => dap_breakpoints,
+                Ok(None) => return,
+                Err(err) => {
+                    editor.set_error(format!("Failed to set breakpoints: {err}"));
+                    return;
+                }
+            };
+            // The adapter answers for the breakpoints in the order they were sent.
+            let Some(breakpoints) = editor
+                .breakpoints
+                .get_mut(&path)
+                .filter(|breakpoints| breakpoints.len() == sent)
+            else {
+                return;
+            };
             for (breakpoint, dap_breakpoint) in breakpoints.iter_mut().zip(dap_breakpoints) {
                 breakpoint.id = dap_breakpoint.id;
                 breakpoint.verified = dap_breakpoint.verified;
                 breakpoint.message = dap_breakpoint.message;
-                // TODO: handle breakpoint.message
                 // TODO: verify source matches
-                breakpoint.line = dap_breakpoint.line.unwrap_or(0).saturating_sub(1); // convert to 0-indexing
-                                                                                      // TODO: no unwrap
-                breakpoint.column = dap_breakpoint.column;
+                // A breakpoint the adapter couldn't place (no line) stays where it was set.
+                if let Some(line) = dap_breakpoint.line {
+                    breakpoint.line = line.saturating_sub(1); // convert to 0-indexing
+                }
+                breakpoint.column = dap_breakpoint.column.or(breakpoint.column);
                 // TODO: verify end_linef/col instruction reference, offset
             }
-        }
-        Err(e) => anyhow::bail!("Failed to set breakpoints: {}", e),
-        _ => {}
-    };
+        }) as Job)
+    });
     Ok(())
 }
 
@@ -606,24 +742,13 @@ impl Editor {
 
                         let all_threads_stopped = all_threads_stopped.unwrap_or_default();
 
-                        if all_threads_stopped {
-                            if let Ok(response) = debugger
-                                .request::<dap::requests::Threads>(Some(ThreadsArguments {}))
-                                .await
-                            {
-                                for thread in response.threads {
-                                    fetch_stack_trace(debugger, thread.id).await;
-                                }
-                                select_thread_id_of(self, id, thread_id.unwrap_or_default(), false)
-                                    .await;
-                            }
-                        } else if let Some(thread_id) = thread_id {
-                            debugger.thread_states.insert(thread_id, reason.clone()); // TODO: dap uses "type" || "reason" here
-
-                            fetch_stack_trace(debugger, thread_id).await;
-                            // whichever thread stops is made "current" (if no previously selected thread).
-                            select_thread_id_of(self, id, thread_id, false).await;
+                        if let Some(thread_id) = thread_id {
+                            debugger.thread_states.insert(thread_id, reason.clone());
+                            // TODO: dap uses "type" || "reason" here
                         }
+                        // whichever thread stops is made "current" (if no previously selected
+                        // thread) once its stack arrived.
+                        fetch_stop(self, id, thread_id, all_threads_stopped);
 
                         let scope = match thread_id {
                             Some(id) => format!("Thread {}", id),
@@ -795,29 +920,40 @@ impl Editor {
                     }
                     Event::Initialized(_) => {
                         self.set_status("Debugger initialized...");
-                        let debugger = match self.debug_adapters.get_client_mut(id) {
+                        let debugger = match self.debug_adapters.get_client(id) {
                             Some(debugger) => debugger,
                             None => return false,
                         };
 
                         // send existing breakpoints
-                        for (path, breakpoints) in &mut self.breakpoints {
+                        let paths: Vec<PathBuf> = self
+                            .breakpoints
+                            .keys()
                             // Sources generated by another session mean nothing to this one.
-                            if path.starts_with(helix_dap::adapter_source_dir_root())
-                                && !debugger.adapter_sources.contains_key(path)
-                            {
-                                continue;
-                            }
-                            // TODO: call futures in parallel, await all
-                            let _ = breakpoints_changed(debugger, path.clone(), breakpoints);
+                            .filter(|path| {
+                                !path.starts_with(helix_dap::adapter_source_dir_root())
+                                    || debugger.adapter_sources.contains_key(*path)
+                            })
+                            .cloned()
+                            .collect();
+                        for path in paths {
+                            let _ = breakpoints_changed(self, id, path);
                         }
                         // TODO: fetch breakpoints (in case we're attaching)
 
-                        if let Err(err) = debugger.configuration_done().await {
-                            self.set_error(format!("Debugger configuration failed: {}", err));
-                        } else {
-                            self.set_status("Debugged application started");
-                        }
+                        // Requests go out in order: the breakpoints are set before the adapter
+                        // hears that the configuration is done.
+                        let Some(debugger) = self.debug_adapters.get_client(id) else {
+                            return false;
+                        };
+                        let configuration_done = debugger.configuration_done();
+                        spawn_job(self, id, async move {
+                            let err = configuration_done.await.err()?;
+                            Some(Box::new(move |editor: &mut Editor| {
+                                editor.set_error(format!("Debugger configuration failed: {}", err));
+                            }) as Job)
+                        });
+                        self.set_status("Debugged application started");
 
                         self.debug_adapters.set_active_client(id);
                     }
@@ -843,61 +979,21 @@ impl Editor {
                             suspend_debuggee: None,
                         });
 
-                        if let Err(err) = debugger.disconnect(disconnect_args).await {
-                            self.set_error(format!(
-                                "Cannot disconnect debugger upon terminated event receival {:?}",
-                                err
-                            ));
-                            return false;
-                        }
-
-                        match restart_arg {
-                            Some(Value::Bool(false)) | None => {
-                                let was_selected = self.debug_adapters.active_id() == Some(id);
-                                self.debug_adapters.remove_client(id);
-                                forget_session_sources(self, id);
-                                self.clear_dap_inline_values();
-                                if was_selected && self.debug_adapters.active_id().is_some() {
-                                    // Another session takes the place of the one that ended.
-                                    show_current_frame(self);
-                                }
-                                self.set_status(
-                                    "Terminated debugging session and disconnected debugger.",
-                                );
-
-                                // Go through all breakpoints and set verfified to false
-                                // this should update the UI to show the breakpoints are no longer connected
-                                for breakpoints in self.breakpoints.values_mut() {
-                                    for breakpoint in breakpoints.iter_mut() {
-                                        breakpoint.verified = false;
-                                    }
-                                }
-                            }
-                            Some(val) => {
-                                log::info!("Attempting to restart debug session.");
-                                let connection_type = match debugger.connection_type() {
-                                    Some(connection_type) => connection_type,
-                                    None => {
-                                        self.set_error("No starting request found, to be used in restarting the debugging session.");
-                                        return false;
-                                    }
-                                };
-
-                                let relaunch_resp = if let ConnectionType::Launch = connection_type
-                                {
-                                    debugger.launch(val).await
-                                } else {
-                                    debugger.attach(val).await
-                                };
-
-                                if let Err(err) = relaunch_resp {
-                                    self.set_error(format!(
-                                        "Failed to restart debugging session: {:?}",
-                                        err
-                                    ));
-                                }
-                            }
-                        }
+                        // `disconnect` forgets how the session was started: a restart needs it.
+                        let connection_type = debugger.connection_type();
+                        let disconnect = debugger.disconnect(disconnect_args);
+                        spawn_job(self, id, async move {
+                            let disconnected = disconnect.await;
+                            Some(Box::new(move |editor: &mut Editor| {
+                                session_terminated(
+                                    editor,
+                                    id,
+                                    restart_arg,
+                                    connection_type,
+                                    disconnected,
+                                )
+                            }) as Job)
+                        });
                     }
                     Event::LoadedSource(events::LoadedSourceBody { reason, source }) => {
                         // A generated source that changed or went away is not what its buffer
@@ -996,47 +1092,27 @@ impl Editor {
                             }
                         };
 
-                        let result = self.debug_adapters.start_client(Some(socket), &config);
-
-                        let client_id = match result {
-                            Ok(child) => child,
-                            Err(err) => {
-                                self.set_error(format!(
-                                    "Failed to create child debugger: {:?}",
-                                    err
-                                ));
-                                return true;
-                            }
-                        };
-
-                        let child_name = arguments
-                            .configuration
-                            .get("name")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned);
-                        let client = match self.debug_adapters.get_client_mut(client_id) {
-                            Some(child) => child,
-                            None => {
-                                self.set_error("Failed to get child debugger.");
-                                return true;
-                            }
-                        };
-                        client.parent = Some(id);
-                        client.name = Some(child_name.unwrap_or_else(|| "child".to_owned()));
-
-                        let relaunch_resp = if let ConnectionType::Launch = arguments.request {
-                            client.launch(arguments.configuration).await
-                        } else {
-                            client.attach(arguments.configuration).await
-                        };
-                        if let Err(err) = relaunch_resp {
-                            self.set_error(format!("Failed to start debugging session: {:?}", err));
-                            return true;
-                        }
-
-                        Ok(json!({
-                            "success": true,
-                        }))
+                        // Starting the child waits for it: that happens in the background, and
+                        // the reply is sent from there.
+                        let reply = debugger.deferred_reply(request.seq, &request.command);
+                        let start = dap::registry::Registry::start_client(Some(socket), &config);
+                        spawn_job(self, id, async move {
+                            let child = match start.await {
+                                Ok(child) => child,
+                                Err(err) => {
+                                    let message =
+                                        format!("Failed to create child debugger: {:?}", err);
+                                    let _ = reply(Err(err));
+                                    return Some(Box::new(move |editor: &mut Editor| {
+                                        editor.set_error(message)
+                                    }) as Job);
+                                }
+                            };
+                            Some(Box::new(move |editor: &mut Editor| {
+                                start_child_session(editor, id, child, arguments, reply)
+                            }) as Job)
+                        });
+                        return true;
                     }
                     Err(err) => Err(err),
                 };
@@ -1050,6 +1126,127 @@ impl Editor {
             }
         }
         true
+    }
+}
+
+/// The child debugger the session `parent` asked for (`startDebugging`) runs: it joins the
+/// sessions and is launched (or attached); `reply` answers the parent's request once that is done.
+fn start_child_session(
+    editor: &mut Editor,
+    parent: DebugAdapterId,
+    child: dap::registry::StartedClient,
+    arguments: dap::requests::StartDebuggingArguments,
+    reply: impl FnOnce(Result<Value, dap::Error>) -> dap::Result<()> + Send + 'static,
+) {
+    let child_id = editor.debug_adapters.add_client(child);
+    let Some(client) = editor.debug_adapters.get_client_mut(child_id) else {
+        return;
+    };
+    let child_name = arguments
+        .configuration
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    client.parent = Some(parent);
+    client.name = Some(child_name.unwrap_or_else(|| "child".to_owned()));
+
+    let launched = if let ConnectionType::Launch = arguments.request {
+        Either::Left(client.launch(arguments.configuration))
+    } else {
+        Either::Right(client.attach(arguments.configuration))
+    };
+    spawn_job(editor, child_id, async move {
+        match launched.await {
+            Ok(_) => {
+                let _ = reply(Ok(json!({
+                    "success": true,
+                })));
+                None
+            }
+            Err(err) => {
+                let message = format!("Failed to start debugging session: {:?}", err);
+                let _ = reply(Err(err));
+                Some(Box::new(move |editor: &mut Editor| {
+                    // Nothing runs in it.
+                    editor.debug_adapters.remove_client(child_id);
+                    editor.set_error(message)
+                }) as Job)
+            }
+        }
+    });
+}
+
+/// The adapter of session `id` answered the `disconnect` sent after the debuggee terminated: the
+/// session ends, or starts again when the adapter asked for a restart.
+fn session_terminated(
+    editor: &mut Editor,
+    id: DebugAdapterId,
+    restart_arg: Option<Value>,
+    connection_type: Option<ConnectionType>,
+    disconnected: helix_dap::Result<Value>,
+) {
+    // Ended in the meantime (`debug-terminate`).
+    if editor.debug_adapters.get_client(id).is_none() {
+        return;
+    }
+
+    match restart_arg {
+        Some(Value::Bool(false)) | None => {
+            // An adapter that exits right after the debuggee doesn't answer: the session is
+            // over all the same.
+            if let Err(err) = disconnected {
+                log::warn!("Cannot disconnect debugger upon terminated event receival: {err}");
+            }
+            let was_selected = editor.debug_adapters.active_id() == Some(id);
+            editor.debug_adapters.remove_client(id);
+            forget_session_sources(editor, id);
+            if was_selected {
+                editor.clear_dap_inline_values();
+                if editor.debug_adapters.active_id().is_some() {
+                    // Another session takes the place of the one that ended.
+                    show_current_frame(editor);
+                }
+            }
+            editor.set_status("Terminated debugging session and disconnected debugger.");
+
+            // Go through all breakpoints and set verfified to false
+            // this should update the UI to show the breakpoints are no longer connected
+            for breakpoints in editor.breakpoints.values_mut() {
+                for breakpoint in breakpoints.iter_mut() {
+                    breakpoint.verified = false;
+                }
+            }
+        }
+        Some(val) => {
+            if let Err(err) = disconnected {
+                editor.set_error(format!(
+                    "Cannot disconnect debugger upon terminated event receival {:?}",
+                    err
+                ));
+                return;
+            }
+            log::info!("Attempting to restart debug session.");
+            let Some(connection_type) = connection_type else {
+                editor.set_error(
+                    "No starting request found, to be used in restarting the debugging session.",
+                );
+                return;
+            };
+            let Some(debugger) = editor.debug_adapters.get_client_mut(id) else {
+                return;
+            };
+            let relaunch = if let ConnectionType::Launch = connection_type {
+                Either::Left(debugger.launch(val))
+            } else {
+                Either::Right(debugger.attach(val))
+            };
+            spawn_job(editor, id, async move {
+                let err = relaunch.await.err()?;
+                Some(Box::new(move |editor: &mut Editor| {
+                    editor.set_error(format!("Failed to restart debugging session: {:?}", err));
+                }) as Job)
+            });
+        }
     }
 }
 

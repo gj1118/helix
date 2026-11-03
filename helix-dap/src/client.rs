@@ -25,13 +25,19 @@ use tokio::{
     io::{AsyncBufRead, AsyncWrite, BufReader, BufWriter},
     net::TcpStream,
     process::{Child, Command},
-    sync::mpsc::{channel, unbounded_channel, UnboundedReceiver, UnboundedSender},
+    sync::{
+        mpsc::{channel, unbounded_channel, UnboundedReceiver, UnboundedSender},
+        oneshot,
+    },
     time,
 };
 
 #[derive(Debug)]
 pub struct Client {
     id: DebugAdapterId,
+    /// Hands the id the registry gives the client to the task that forwards its messages,
+    /// see [`Self::set_id`].
+    id_tx: Option<oneshot::Sender<DebugAdapterId>>,
     _process: Option<Child>,
     server_tx: UnboundedSender<Payload>,
     request_counter: Arc<AtomicU64>,
@@ -54,29 +60,36 @@ pub struct Client {
     pub thread_states: ThreadStates,
     pub progress: ProgressMap,
     pub thread_id: Option<ThreadId>,
+    /// How many times the session stopped. The stack of a stop is fetched in the background
+    /// and dropped when the session stopped again in the meantime.
+    pub stops: u64,
     /// Currently active frame for the current thread.
     pub active_frame: Option<usize>,
     pub quirks: DebuggerQuirks,
     /// The config which was used to start this debugger.
     pub config: Option<DebugAdapterConfig>,
+    /// The latest `setBreakpoints` request sent for each path, see
+    /// [`Self::next_breakpoints_request`].
+    breakpoint_requests: HashMap<PathBuf, u64>,
 }
 
 impl Client {
     // Spawn a process and communicate with it by either TCP or stdio
-    // The returned stream includes the Client ID so consumers can differentiate between multiple clients
+    // The returned stream includes the Client ID so consumers can differentiate between multiple
+    // clients. The client has no id until the registry gives it one (`set_id`); its messages are
+    // held back until then.
     pub async fn process(
         transport: &str,
         command: &str,
         args: Vec<&str>,
         port_arg: Option<&str>,
-        id: DebugAdapterId,
     ) -> Result<(Self, UnboundedReceiver<(DebugAdapterId, Payload)>)> {
         if command.is_empty() {
             return Result::Err(Error::Other(anyhow!("Command not provided")));
         }
         match (transport, port_arg) {
-            ("tcp", Some(port_arg)) => Self::tcp_process(command, args, port_arg, id).await,
-            ("stdio", _) => Self::stdio(command, args, id),
+            ("tcp", Some(port_arg)) => Self::tcp_process(command, args, port_arg).await,
+            ("stdio", _) => Self::stdio(command, args),
             _ => Result::Err(Error::Other(anyhow!("Incorrect transport {}", transport))),
         }
     }
@@ -85,14 +98,15 @@ impl Client {
         rx: Box<dyn AsyncBufRead + Unpin + Send>,
         tx: Box<dyn AsyncWrite + Unpin + Send>,
         err: Option<Box<dyn AsyncBufRead + Unpin + Send>>,
-        id: DebugAdapterId,
         process: Option<Child>,
     ) -> Result<(Self, UnboundedReceiver<(DebugAdapterId, Payload)>)> {
-        let (server_rx, server_tx) = Transport::start(rx, tx, err, id);
+        let (server_rx, server_tx) = Transport::start(rx, tx, err, DebugAdapterId::default());
         let (client_tx, client_rx) = unbounded_channel();
+        let (id_tx, id_rx) = oneshot::channel();
 
         let client = Self {
-            id,
+            id: DebugAdapterId::default(),
+            id_tx: Some(id_tx),
             _process: process,
             server_tx,
             request_counter: Arc::new(AtomicU64::new(0)),
@@ -108,29 +122,29 @@ impl Client {
             thread_states: HashMap::new(),
             progress: HashMap::new(),
             thread_id: None,
+            stops: 0,
             active_frame: None,
             quirks: DebuggerQuirks::default(),
             config: None,
+            breakpoint_requests: HashMap::new(),
         };
 
-        tokio::spawn(Self::recv(id, server_rx, client_tx));
+        tokio::spawn(Self::recv(id_rx, server_rx, client_tx));
 
         Ok((client, client_rx))
     }
 
     pub async fn tcp(
         addr: std::net::SocketAddr,
-        id: DebugAdapterId,
     ) -> Result<(Self, UnboundedReceiver<(DebugAdapterId, Payload)>)> {
         let stream = TcpStream::connect(addr).await?;
         let (rx, tx) = stream.into_split();
-        Self::streams(Box::new(BufReader::new(rx)), Box::new(tx), None, id, None)
+        Self::streams(Box::new(BufReader::new(rx)), Box::new(tx), None, None)
     }
 
     pub fn stdio(
         cmd: &str,
         args: Vec<&str>,
-        id: DebugAdapterId,
     ) -> Result<(Self, UnboundedReceiver<(DebugAdapterId, Payload)>)> {
         // Resolve path to the binary
         let cmd = helix_stdx::env::which(cmd)?;
@@ -155,7 +169,6 @@ impl Client {
             Box::new(reader),
             Box::new(writer),
             Some(Box::new(stderr)),
-            id,
             Some(process),
         )
     }
@@ -182,9 +195,10 @@ impl Client {
         cmd: &str,
         args: Vec<&str>,
         port_format: &str,
-        id: DebugAdapterId,
     ) -> Result<(Self, UnboundedReceiver<(DebugAdapterId, Payload)>)> {
-        let port = Self::get_port().await.unwrap();
+        let port = Self::get_port()
+            .await
+            .ok_or_else(|| Error::Other(anyhow!("No free port for the debug adapter")))?;
 
         let process = Command::new(cmd)
             .args(args)
@@ -206,7 +220,6 @@ impl Client {
             Box::new(BufReader::new(rx)),
             Box::new(tx),
             None,
-            id,
             Some(process),
         );
 
@@ -219,29 +232,55 @@ impl Client {
     }
 
     async fn recv(
-        id: DebugAdapterId,
+        id: oneshot::Receiver<DebugAdapterId>,
         mut server_rx: UnboundedReceiver<Payload>,
         client_tx: UnboundedSender<(DebugAdapterId, Payload)>,
     ) {
+        // The client was dropped before it got an id: nobody listens.
+        let Ok(id) = id.await else {
+            return;
+        };
         while let Some(msg) = server_rx.recv().await {
-            match msg {
-                Payload::Event(ev) => {
-                    client_tx
-                        .send((id, Payload::Event(ev)))
-                        .expect("Failed to send");
-                }
-                Payload::Response(_) => unreachable!(),
-                Payload::Request(req) => {
-                    client_tx
-                        .send((id, Payload::Request(req)))
-                        .expect("Failed to send");
-                }
+            let msg = match msg {
+                Payload::Event(ev) => Payload::Event(ev),
+                Payload::Request(req) => Payload::Request(req),
+                // Responses go to their requests; the transport drops any other.
+                Payload::Response(_) => continue,
+            };
+            // The editor is gone.
+            if client_tx.send((id, msg)).is_err() {
+                break;
             }
         }
     }
 
     pub fn id(&self) -> DebugAdapterId {
         self.id
+    }
+
+    /// Gives the client the id the registry knows it by. Its messages, which were held back
+    /// until now, are tagged with it from here on.
+    pub fn set_id(&mut self, id: DebugAdapterId) {
+        self.id = id;
+        if let Some(id_tx) = self.id_tx.take() {
+            let _ = id_tx.send(id);
+        }
+    }
+
+    /// Numbers a new `setBreakpoints` request for `path`. Requests for one path are answered
+    /// in order but the answers are applied in the background: an answer is only applied when
+    /// it is for the latest request, see [`Self::is_latest_breakpoints_request`].
+    pub fn next_breakpoints_request(&mut self, path: &std::path::Path) -> u64 {
+        let request = self
+            .breakpoint_requests
+            .get(path)
+            .map_or(1, |last| last + 1);
+        self.breakpoint_requests.insert(path.to_path_buf(), request);
+        request
+    }
+
+    pub fn is_latest_breakpoints_request(&self, path: &std::path::Path, request: u64) -> bool {
+        self.breakpoint_requests.get(path) == Some(&request)
     }
 
     /// The name of the session shown in the editor.
@@ -452,11 +491,12 @@ impl Client {
         self.call::<requests::Restart>(args)
     }
 
-    pub async fn set_breakpoints(
+    /// Sends the breakpoints of `file`. The returned future doesn't borrow the client.
+    pub fn set_breakpoints(
         &self,
         file: PathBuf,
         breakpoints: Vec<SourceBreakpoint>,
-    ) -> Result<Option<Vec<Breakpoint>>> {
+    ) -> impl Future<Output = Result<Option<Vec<Breakpoint>>>> {
         // A buffer of a source the adapter generated is identified by its reference.
         let source = self.adapter_sources.get(&file).cloned().unwrap_or(Source {
             path: Some(file),
@@ -474,9 +514,11 @@ impl Client {
             source_modified: Some(false),
         };
 
-        let response = self.request::<requests::SetBreakpoints>(args).await?;
-
-        Ok(response.breakpoints)
+        let call = self.call::<requests::SetBreakpoints>(args);
+        async move {
+            let response: requests::SetBreakpointsResponse = serde_json::from_value(call.await?)?;
+            Ok(response.breakpoints)
+        }
     }
 
     /// The text of a source the adapter generated. The returned future doesn't borrow the client.
@@ -498,20 +540,25 @@ impl Client {
         path
     }
 
-    pub async fn configuration_done(&self) -> Result<()> {
-        if !self
+    /// Sends `configurationDone`, when the adapter supports it. The returned future doesn't
+    /// borrow the client.
+    pub fn configuration_done(&self) -> impl Future<Output = Result<()>> {
+        let call = self
             .caps
             .as_ref()
             .and_then(|caps| caps.supports_configuration_done_request)
             .unwrap_or(false)
-        {
-            return Ok(());
+            .then(|| {
+                self.call::<requests::ConfigurationDone>(Some(
+                    requests::ConfigurationDoneArguments {},
+                ))
+            });
+        async move {
+            if let Some(call) = call {
+                call.await?;
+            }
+            Ok(())
         }
-
-        self.call::<requests::ConfigurationDone>(Some(requests::ConfigurationDoneArguments {}))
-            .await?;
-
-        Ok(())
     }
 
     pub fn continue_thread(&self, thread_id: ThreadId) -> impl Future<Output = Result<Value>> {
@@ -710,6 +757,33 @@ impl Requester {
         call::<R>(self.server_tx.clone(), id, arguments)
     }
 
+    /// Like [`Client::stack_trace_page`].
+    pub fn stack_trace_page(
+        &self,
+        thread_id: ThreadId,
+        start: usize,
+        levels: usize,
+    ) -> impl Future<Output = Result<(Vec<StackFrame>, Option<usize>)>> {
+        let call = self.call::<requests::StackTrace>(requests::StackTraceArguments {
+            thread_id,
+            start_frame: Some(start),
+            levels: Some(levels),
+            format: None,
+        });
+        async move {
+            let response: requests::StackTraceResponse = serde_json::from_value(call.await?)?;
+            Ok((response.stack_frames, response.total_frames))
+        }
+    }
+
+    pub fn threads(&self) -> impl Future<Output = Result<Vec<Thread>>> {
+        let call = self.call::<requests::Threads>(Some(requests::ThreadsArguments {}));
+        async move {
+            let response: requests::ThreadsResponse = serde_json::from_value(call.await?)?;
+            Ok(response.threads)
+        }
+    }
+
     pub fn scopes(&self, frame_id: usize) -> impl Future<Output = Result<Vec<Scope>>> {
         let call = self.call::<requests::Scopes>(requests::ScopesArguments { frame_id });
         async move {
@@ -736,7 +810,11 @@ impl Requester {
     }
 }
 
-/// Sends request `id` to the adapter and waits for its response.
+/// Sends request `id` to the adapter and returns a future that waits for its response.
+///
+/// The request is sent right away, not when the future is first polled: requests go out in the
+/// order they are made (the breakpoints before `configurationDone`, say), wherever and whenever
+/// their responses are awaited.
 fn call<R: helix_dap_types::Request>(
     server_tx: UnboundedSender<Payload>,
     id: u64,
@@ -745,26 +823,26 @@ fn call<R: helix_dap_types::Request>(
 where
     R::Arguments: serde::Serialize,
 {
-    // Serialize now: the future doesn't borrow the arguments.
-    let arguments = serde_json::to_value(arguments);
+    let sent = serde_json::to_value(arguments)
+        .map_err(Error::from)
+        .and_then(|arguments| {
+            let (callback_tx, callback_rx) = channel(1);
+            let req = Request {
+                back_ch: Some(callback_tx),
+                seq: id,
+                command: R::COMMAND.to_string(),
+                arguments: Some(arguments),
+            };
+            server_tx
+                .send(Payload::Request(req))
+                .map_err(|e| Error::Other(e.into()))?;
+            Ok(callback_rx)
+        });
     async move {
         use std::time::Duration;
         use tokio::time::timeout;
 
-        let arguments = Some(arguments?);
-
-        let (callback_tx, mut callback_rx) = channel(1);
-
-        let req = Request {
-            back_ch: Some(callback_tx),
-            seq: id,
-            command: R::COMMAND.to_string(),
-            arguments,
-        };
-
-        server_tx
-            .send(Payload::Request(req))
-            .map_err(|e| Error::Other(e.into()))?;
+        let mut callback_rx = sent?;
 
         // TODO: specifiable timeout, delay other calls until initialize success
         let response = timeout(Duration::from_secs(20), callback_rx.recv())
@@ -826,6 +904,116 @@ pub fn adapter_source_path(session: DebugAdapterId, source: &Source) -> PathBuf 
             source.source_reference.unwrap_or_default()
         ))
         .join(name)
+}
+
+#[cfg(test)]
+mod transport_tests {
+    use super::*;
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, DuplexStream};
+
+    /// A client talking to an in-memory adapter, and the adapter's end of the connection.
+    fn client() -> (
+        Client,
+        UnboundedReceiver<(DebugAdapterId, Payload)>,
+        BufReader<DuplexStream>,
+        DuplexStream,
+    ) {
+        let (client_out, adapter_in) = tokio::io::duplex(64 * 1024);
+        let (adapter_out, client_in) = tokio::io::duplex(64 * 1024);
+        let (client, receiver) = Client::streams(
+            Box::new(BufReader::new(client_in)),
+            Box::new(client_out),
+            None,
+            None,
+        )
+        .unwrap();
+        (client, receiver, BufReader::new(adapter_in), adapter_out)
+    }
+
+    /// The next message the client sent.
+    async fn read_message(adapter_in: &mut BufReader<DuplexStream>) -> Value {
+        let mut length = None;
+        loop {
+            let mut header = String::new();
+            adapter_in.read_line(&mut header).await.unwrap();
+            let header = header.trim();
+            if header.is_empty() {
+                break;
+            }
+            if let Some(value) = header.strip_prefix("Content-Length: ") {
+                length = Some(value.parse::<usize>().unwrap());
+            }
+        }
+        let mut content = vec![0; length.unwrap()];
+        adapter_in.read_exact(&mut content).await.unwrap();
+        serde_json::from_slice(&content).unwrap()
+    }
+
+    async fn write_message(adapter_out: &mut DuplexStream, message: Value) {
+        let content = message.to_string();
+        let framed = format!("Content-Length: {}\r\n\r\n{content}", content.len());
+        adapter_out.write_all(framed.as_bytes()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn requests_go_out_in_the_order_they_are_made() {
+        let (mut client, _receiver, mut adapter_in, _adapter_out) = client();
+        client.caps = Some(
+            serde_json::from_value(serde_json::json!({
+                "supportsConfigurationDoneRequest": true
+            }))
+            .unwrap(),
+        );
+        // Neither future is ever polled: making the request sends it.
+        let breakpoints = client.set_breakpoints(PathBuf::from("/a.py"), Vec::new());
+        let done = client.configuration_done();
+
+        assert_eq!(
+            read_message(&mut adapter_in).await["command"],
+            "setBreakpoints"
+        );
+        assert_eq!(
+            read_message(&mut adapter_in).await["command"],
+            "configurationDone"
+        );
+        drop((breakpoints, done));
+    }
+
+    #[tokio::test]
+    async fn messages_wait_for_the_id_and_a_stray_response_does_not_stop_them() {
+        let (mut client, mut receiver, _adapter_in, mut adapter_out) = client();
+        // A response nobody asked for, then an event.
+        write_message(
+            &mut adapter_out,
+            serde_json::json!({
+                "seq": 1, "type": "response", "request_seq": 99, "success": true,
+                "command": "threads"
+            }),
+        )
+        .await;
+        write_message(
+            &mut adapter_out,
+            serde_json::json!({"seq": 2, "type": "event", "event": "initialized"}),
+        )
+        .await;
+
+        // Nothing comes out before the client has its id.
+        let early = time::timeout(time::Duration::from_millis(50), receiver.recv()).await;
+        assert!(early.is_err());
+
+        let mut ids = slotmap::SlotMap::<DebugAdapterId, ()>::with_key();
+        let id = ids.insert(());
+        client.set_id(id);
+        let (from, payload) = time::timeout(time::Duration::from_secs(5), receiver.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(from, id);
+        assert!(
+            matches!(&payload, Payload::Event(event) if event.event == "initialized"),
+            "{payload:?}"
+        );
+    }
 }
 
 #[cfg(test)]
