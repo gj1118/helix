@@ -659,6 +659,11 @@ max-history = 100          # Maximum notifications to keep in history
 enable = true              # Show borders around notifications
 width = 1                  # Border width
 radius = 0                 # Corner radius (0 for square corners)
+style = "solid"            # "solid" (the editor's border-style), "dashed", "dotted",
+                           # or a border-style value for notifications only
+gradient = false           # Gradient border from gradient-start to gradient-end
+gradient-start = "#8A2BE2"
+gradient-end = "#00BFFF"
 
 # Customize notification icons
 [editor.notifications.icons]

@@ -70,7 +70,7 @@
 | `true-color` | Whether to override automatic detection of terminal truecolor support in the event of a false negative | `false` |
 | `undercurl` | Whether to override automatic detection of terminal undercurl support in the event of a false negative | `false` |
 | `rulers` | List of column positions at which to display the rulers. Can be overridden by language specific `rulers` in `languages.toml` file | `[]` |
-| `bufferline` | A line at the top of the editor showing the open buffers. A table, see [`[editor.bufferline]`](#editorbufferline-section) | |
+| `bufferline` | A line at the top of the editor showing the open buffers. A table, see [`[editor.bufferline]`](#editorbufferline-section), or just the render mode as a string (`"always"`, `"never"`, `"multiple"`) | `"never"` |
 | `color-modes` | Whether to color the mode indicator with different colors depending on the mode itself | `false` |
 | `text-width` | Maximum line length. Used for the `:reflow` command and soft-wrapping if `soft-wrap.wrap-at-text-width` is set | `80` |
 | `fold-textobjects` | Text objects folded automatically when a document is opened, such as `["comment"]`. See [Folding](./textobjects.md#folding-text-objects) | `[]` |
@@ -116,8 +116,8 @@ render-mode = "multiple"
 separator = "│"
 ```
 
-> ⚠️ In this fork `bufferline` is a table: the upstream form `bufferline = "multiple"` is
-> rejected when the config is loaded. Use `render-mode` instead.
+The upstream string form is accepted too: `bufferline = "multiple"` (or `"always"`,
+`"never"`) under `[editor]` sets `render-mode` and keeps the other keys at their defaults.
 
 ### `[editor.inline-completion]` Section
 
@@ -675,8 +675,10 @@ available with `:notifications-history`, `:notifications-clear` clears it and
 | `enable-history` | Keep the history at all | `true` |
 | `border.enable` | Draw a border around each popup | `true` |
 | `border.width` | Number of nested border frames (ignored with gradient borders, which are one cell wide) | `1` |
-| `border.radius` | Above `0`, a `plain` border gets rounded corners (`╭╮╰╯`), so by default notifications are rounded. `0` keeps the glyphs of `border-style` | `2` |
-| `border.gradient`, `border.gradient-start`, `border.gradient-end`, `border.style` | Accepted, but not used: notifications use [`gradient-borders`](#editorgradient-borders-section) and `border-style` like every popup | |
+| `border.radius` | Above `0`, a `plain` border (from `border-style`, with `border.style = "solid"`) and a dashed or dotted one get rounded corners (`╭╮╰╯`), so by default notifications are rounded. `0` keeps the glyphs of `border-style` | `2` |
+| `border.style` | Glyphs of the notification border: `"solid"` uses those of the editor's `border-style`; `"dashed"` (`┄ ┆`) and `"dotted"` (`┈ ┊`) draw broken lines; or any `border-style` value (`"none"`, `"plain"`, `"rounded"`, `"double"`, `"thick"`, `"quadrant-inside"`, `"quadrant-outside"`) for notifications only, whatever `border.radius` says. A gradient border follows `"none"` and rounded corners only | `"solid"` |
+| `border.gradient` | Draw the notification border with a gradient from `border.gradient-start` to `border.gradient-end`, even when `[editor.gradient-borders]` is off; its line weight and direction come from [`gradient-borders`](#editorgradient-borders-section). When `false`, notifications follow `gradient-borders` like every popup | `false` |
+| `border.gradient-start`, `border.gradient-end` | Colors of the `border.gradient`, as `"#rrggbb"` (an invalid color falls back to the default) | `"#8A2BE2"`, `"#00BFFF"` |
 | `shadow.enable` | Draw a shadow behind each popup | `true` |
 | `shadow.offset-x`, `shadow.offset-y` | Offset of the shadow, in cells | `1`, `1` |
 | `icons.info`, `icons.warning`, `icons.error`, `icons.success` | Icon text for each severity | `ℹ`, `⚠`, `✗`, `✓` |
@@ -684,11 +686,12 @@ available with `:notifications-history`, `:notifications-clear` clears it and
 
 The colors come from the theme: `ui.popup` for the background and the `error`, `warning`,
 `info` and `hint` scopes for the text; the border uses `ui.popup.border`, or the gradient when
-`[editor.gradient-borders]` is enabled. The border cells follow the same rule as the other
-popups (see `border-style`): with `"none"`, `"plain"` and `"quadrant-outside"` (and without a
-border) they take the notification's background; with the styles drawn through the middle of
-their cells (rounded, double, thick, `"quadrant-inside"`) they keep what is behind the
-notification. With `border-style = "none"` no border is drawn, but its space is kept. See [Notification and cmdline popup
+`border.gradient` or `[editor.gradient-borders]` is enabled. The border cells follow the same
+rule as the other popups (see `border-style`, or `border.style` when it names one): with
+`"none"`, `"plain"` and `"quadrant-outside"` (and without a border) they take the
+notification's background; with the styles drawn through the middle of their cells (rounded,
+double, thick, dashed, dotted, `"quadrant-inside"`) they keep what is behind the
+notification. With the style `"none"` no border is drawn, but its space is kept. See [Notification and cmdline popup
 styling](./themes.md#notification-and-cmdline-popup-styling).
 
 ### `[editor.inline-blame]` Section

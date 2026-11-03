@@ -999,13 +999,16 @@ pub struct NotificationBorderConfig {
     pub width: u8,
     /// Border radius for rounded corners (0-10). Defaults to 2.
     pub radius: u8,
-    /// Use gradient borders. Defaults to false.
+    /// Draw the border with a gradient from `gradient_start` to `gradient_end` (whatever
+    /// `[editor.gradient-borders]` says; its thickness and direction are used). Defaults to
+    /// false.
     pub gradient: bool,
     /// Gradient start color (in hex format like "#FF0000"). Defaults to "#8A2BE2".
     pub gradient_start: String,
     /// Gradient end color (in hex format like "#FF0000"). Defaults to "#00BFFF".
     pub gradient_end: String,
-    /// Border style. Options: "solid", "dashed", "dotted". Defaults to "solid".
+    /// Border glyphs: "solid" (those of the editor's `border-style`), "dashed", "dotted", or
+    /// one of the `border-style` values for notifications only. Defaults to "solid".
     pub style: NotificationBorderStyle,
 }
 
@@ -1026,13 +1029,37 @@ impl Default for NotificationBorderConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum NotificationBorderStyle {
-    /// Solid border
+    /// The glyphs of the editor's `border-style` (with `radius` rounding a plain border).
     #[default]
     Solid,
-    /// Dashed border
+    /// Dashed lines (`┄ ┆`), with square corners, or rounded ones when `radius` is above 0.
     Dashed,
-    /// Dotted border
+    /// Dotted lines (`┈ ┊`), with square corners, or rounded ones when `radius` is above 0.
     Dotted,
+    /// The glyphs of a [`BorderStyle`], for notifications only.
+    None,
+    Plain,
+    Rounded,
+    Double,
+    Thick,
+    QuadrantInside,
+    QuadrantOutside,
+}
+
+impl NotificationBorderStyle {
+    /// The [`BorderStyle`] this style names, if it names one.
+    pub fn border_style(self) -> Option<BorderStyle> {
+        match self {
+            Self::Solid | Self::Dashed | Self::Dotted => Option::None,
+            Self::None => Some(BorderStyle::None),
+            Self::Plain => Some(BorderStyle::Plain),
+            Self::Rounded => Some(BorderStyle::Rounded),
+            Self::Double => Some(BorderStyle::Double),
+            Self::Thick => Some(BorderStyle::Thick),
+            Self::QuadrantInside => Some(BorderStyle::QuadrantInside),
+            Self::QuadrantOutside => Some(BorderStyle::QuadrantOutside),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1233,11 +1260,86 @@ pub enum BufferLineRenderMode {
     Multiple,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+/// The `bufferline` setting: a table (`[editor.bufferline]`), or the upstream string form
+/// (`bufferline = "multiple"`), which sets the render mode and leaves the other fields at
+/// their defaults.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
 pub struct BufferLineConfig {
     pub render_mode: BufferLineRenderMode,
     pub separator: String,
+}
+
+/// The table form of [`BufferLineConfig`].
+#[derive(Deserialize)]
+#[serde(
+    rename = "BufferLineConfig",
+    rename_all = "kebab-case",
+    default,
+    deny_unknown_fields
+)]
+struct BufferLineTable {
+    render_mode: BufferLineRenderMode,
+    separator: String,
+}
+
+impl Default for BufferLineTable {
+    fn default() -> Self {
+        let BufferLineConfig {
+            render_mode,
+            separator,
+        } = BufferLineConfig::default();
+        Self {
+            render_mode,
+            separator,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for BufferLineConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct Visitor;
+
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = BufferLineConfig;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                write!(
+                    f,
+                    "\"always\", \"never\", \"multiple\" or a table with `render-mode` and `separator`"
+                )
+            }
+
+            fn visit_str<E>(self, mode: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                use serde::de::IntoDeserializer;
+                Ok(BufferLineConfig {
+                    render_mode: BufferLineRenderMode::deserialize(mode.into_deserializer())?,
+                    ..BufferLineConfig::default()
+                })
+            }
+
+            fn visit_map<M>(self, map: M) -> Result<Self::Value, M::Error>
+            where
+                M: serde::de::MapAccess<'de>,
+            {
+                let table = BufferLineTable::deserialize(
+                    serde::de::value::MapAccessDeserializer::new(map),
+                )?;
+                Ok(BufferLineConfig {
+                    render_mode: table.render_mode,
+                    separator: table.separator,
+                })
+            }
+        }
+
+        deserializer.deserialize_any(Visitor)
+    }
 }
 
 impl Default for BufferLineConfig {
@@ -3630,6 +3732,31 @@ impl Editor {
         Ok(())
     }
 
+    /// Commits a document's uncommitted changes (e.g. edits made by the pre-save hook) to its
+    /// history, through a view showing it (the focused one when it does), so that a following
+    /// save records them as part of the saved revision.
+    fn commit_pending_changes(&mut self, doc_id: DocumentId) {
+        let Some(doc) = self.documents.get_mut(&doc_id) else {
+            return;
+        };
+        if doc.changes().is_empty() {
+            return;
+        }
+        let focus = self.tree.focus;
+        let view_id = if self.tree.contains(focus) && self.tree.get(focus).doc == doc_id {
+            Some(focus)
+        } else {
+            self.tree
+                .views()
+                .find(|(view, _)| view.doc == doc_id)
+                .map(|(view, _)| view.id)
+        };
+        if let Some(view_id) = view_id {
+            let view = self.tree.get_mut(view_id);
+            doc.append_changes_to_history(view);
+        }
+    }
+
     pub fn save<P: Into<PathBuf>>(
         &mut self,
         doc_id: DocumentId,
@@ -3643,6 +3770,7 @@ impl Editor {
         if let Some(mut hook) = self.pre_save_hook.take() {
             hook(self, doc_id);
             self.pre_save_hook.get_or_insert(hook);
+            self.commit_pending_changes(doc_id);
         }
 
         let path = path.map(|path| path.into());
@@ -4170,5 +4298,98 @@ mod border_style_tests {
         let none = config("border-style = \"none\"");
         assert!(none.borders_hidden());
         assert!(!config("border-style = \"plain\"").borders_hidden());
+    }
+}
+
+#[cfg(test)]
+mod bufferline_config_tests {
+    use super::*;
+
+    fn bufferline(toml: &str) -> Result<BufferLineConfig, toml::de::Error> {
+        toml::from_str::<Config>(toml).map(|config| config.bufferline)
+    }
+
+    #[test]
+    fn bufferline_accepts_the_string_and_the_table_forms() {
+        // the upstream string form: the mode, the other fields at their defaults
+        for (name, mode) in [
+            ("always", BufferLineRenderMode::Always),
+            ("never", BufferLineRenderMode::Never),
+            ("multiple", BufferLineRenderMode::Multiple),
+        ] {
+            assert_eq!(
+                bufferline(&format!("bufferline = \"{name}\"")).unwrap(),
+                BufferLineConfig {
+                    render_mode: mode,
+                    ..BufferLineConfig::default()
+                }
+            );
+        }
+
+        // the table form
+        assert_eq!(
+            bufferline("[bufferline]\nrender-mode = \"multiple\"\nseparator = \"|\"").unwrap(),
+            BufferLineConfig {
+                render_mode: BufferLineRenderMode::Multiple,
+                separator: "|".to_owned(),
+            }
+        );
+        assert_eq!(
+            bufferline("[bufferline]\nseparator = \"|\"").unwrap(),
+            BufferLineConfig {
+                separator: "|".to_owned(),
+                ..BufferLineConfig::default()
+            }
+        );
+        assert_eq!(bufferline("").unwrap(), BufferLineConfig::default());
+
+        // still rejected: unknown modes, unknown keys, other types
+        assert!(bufferline("bufferline = \"sometimes\"").is_err());
+        assert!(bufferline("[bufferline]\nrender-mode = \"sometimes\"").is_err());
+        assert!(bufferline("[bufferline]\nseprator = \"|\"").is_err());
+        assert!(bufferline("bufferline = 3").is_err());
+    }
+}
+
+#[cfg(test)]
+mod notification_border_tests {
+    use super::*;
+
+    #[test]
+    fn notification_border_keys_parse() {
+        let config: Config = toml::from_str(
+            r##"
+            [notifications.border]
+            gradient = true
+            gradient-start = "#112233"
+            gradient-end = "#445566"
+            style = "double"
+            "##,
+        )
+        .unwrap();
+        let border = &config.notifications.border;
+        assert!(border.gradient);
+        assert_eq!(border.gradient_start, "#112233");
+        assert_eq!(border.gradient_end, "#445566");
+        assert_eq!(border.style, NotificationBorderStyle::Double);
+        assert_eq!(border.style.border_style(), Some(BorderStyle::Double));
+
+        for (name, style) in [
+            ("solid", NotificationBorderStyle::Solid),
+            ("dashed", NotificationBorderStyle::Dashed),
+            ("dotted", NotificationBorderStyle::Dotted),
+            ("none", NotificationBorderStyle::None),
+            ("plain", NotificationBorderStyle::Plain),
+            ("rounded", NotificationBorderStyle::Rounded),
+            ("thick", NotificationBorderStyle::Thick),
+            ("quadrant-inside", NotificationBorderStyle::QuadrantInside),
+            ("quadrant-outside", NotificationBorderStyle::QuadrantOutside),
+        ] {
+            let config: Config =
+                toml::from_str(&format!("notifications.border.style = \"{name}\"")).unwrap();
+            assert_eq!(config.notifications.border.style, style, "{name}");
+        }
+        assert_eq!(NotificationBorderStyle::Solid.border_style(), Option::None);
+        assert!(toml::from_str::<Config>("notifications.border.style = \"wavy\"").is_err());
     }
 }

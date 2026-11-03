@@ -69,7 +69,7 @@ Plugins are set up in the `[plugins]` section of the **global** `config.toml`:
 ```toml
 [plugins]
 enabled = true                          # false: no plugin is loaded
-plugin_dirs = ["/home/me/src/helix-plugins"]   # replaces the default directories
+plugin_dirs = ["~/src/helix-plugins"]   # replaces the default directories
 
 [[plugins.plugins]]
 name = "greeter"                        # the plugin's name (plugin.toml or directory)
@@ -84,7 +84,7 @@ enabled = false                         # skip this one
 | Key | Description | Default |
 | --- | --- | --- |
 | `enabled` | Load plugins at all | `true` |
-| `plugin_dirs` | Directories to search for plugins. When set, the default directories are not searched. `~` is not expanded: give full paths | the default directories |
+| `plugin_dirs` | Directories to search for plugins. When set, the default directories are not searched. A leading `~` is expanded to the home directory, and a relative path is relative to the Helix config directory (`plugins` is `~/.config/helix/plugins` on Linux) | the default directories |
 | `plugins` | One `[[plugins.plugins]]` entry per plugin to configure: `name`, `enabled` (default `true`) and `config`, a table the plugin reads with `helix.get_config()` | `[]` |
 
 Plugins without an entry are loaded. The keys are written with underscores (`plugin_dirs`),

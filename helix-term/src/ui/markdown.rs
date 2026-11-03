@@ -10,7 +10,7 @@ use std::{cell::RefCell, sync::Arc};
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 use helix_core::{
-    syntax::{self, HighlightEvent, OverlayHighlights},
+    syntax::{self, Highlight, HighlightEvent, OverlayHighlights},
     RopeSlice, Syntax,
 };
 use helix_view::{
@@ -157,31 +157,56 @@ struct Parsed {
     text: Arc<Text<'static>>,
 }
 
-/// What a parse takes from the theme: its name, and the styles of the markdown elements (a
-/// theme reloaded under the same name with other markdown styles is parsed again).
+/// What a parse takes from the theme: its name, the styles of the markdown elements and the
+/// syntax highlight scopes and styles of the code blocks. A theme reloaded under the same
+/// name with other styles (markdown or syntax) is parsed again.
 #[derive(PartialEq)]
 struct ThemeKey {
     name: String,
     styles: Vec<Style>,
+    scopes: Vec<String>,
+    highlights: Vec<Style>,
 }
 
 impl ThemeKey {
+    const STYLE_KEYS: [&'static str; 5] = [
+        Markdown::TEXT_STYLE,
+        Markdown::BLOCK_STYLE,
+        Markdown::RULE_STYLE,
+        Markdown::UNNUMBERED_LIST_STYLE,
+        Markdown::NUMBERED_LIST_STYLE,
+    ];
+
+    fn style_keys() -> impl Iterator<Item = &'static str> {
+        Self::STYLE_KEYS
+            .into_iter()
+            .chain(Markdown::HEADING_STYLES.iter().copied())
+    }
+
+    fn highlights(theme: &Theme) -> impl Iterator<Item = Style> + '_ {
+        (0..theme.scopes().len()).map(|idx| theme.highlight(Highlight::new(idx as u32)))
+    }
+
     fn new(theme: &Theme) -> Self {
-        let keys = [
-            Markdown::TEXT_STYLE,
-            Markdown::BLOCK_STYLE,
-            Markdown::RULE_STYLE,
-            Markdown::UNNUMBERED_LIST_STYLE,
-            Markdown::NUMBERED_LIST_STYLE,
-        ];
         Self {
             name: theme.name().to_owned(),
-            styles: keys
-                .iter()
-                .chain(Markdown::HEADING_STYLES.iter())
-                .map(|key| theme.get(key))
-                .collect(),
+            styles: Self::style_keys().map(|key| theme.get(key)).collect(),
+            scopes: theme.scopes().to_vec(),
+            highlights: Self::highlights(theme).collect(),
         }
+    }
+
+    /// Whether a parse with `theme` would be styled the same (checked for every frame, so
+    /// without allocating).
+    fn matches(&self, theme: &Theme) -> bool {
+        self.name == theme.name()
+            && self
+                .styles
+                .iter()
+                .copied()
+                .eq(Self::style_keys().map(|key| theme.get(key)))
+            && self.scopes == theme.scopes()
+            && self.highlights.iter().copied().eq(Self::highlights(theme))
     }
 }
 
@@ -232,24 +257,25 @@ impl Markdown {
     /// change.
     pub fn parse(&self, theme: Option<&Theme>) -> Arc<Text<'static>> {
         let slot = usize::from(theme.is_some());
-        let theme_key = theme.map(ThemeKey::new);
         // Without a theme code blocks aren't highlighted: the loader doesn't matter.
         let loader = match theme {
             Some(_) => Arc::as_ptr(&*self.config_loader.load()) as usize,
             None => 0,
         };
         if let Some(parsed) = &self.cache.borrow()[slot] {
-            if parsed.loader == loader
-                && parsed.theme == theme_key
-                && parsed.contents == self.contents
-            {
+            let same_theme = match (&parsed.theme, theme) {
+                (Some(key), Some(theme)) => key.matches(theme),
+                (None, None) => true,
+                _ => false,
+            };
+            if parsed.loader == loader && same_theme && parsed.contents == self.contents {
                 return Arc::clone(&parsed.text);
             }
         }
         let text = Arc::new(into_owned(self.parse_uncached(theme)));
         self.cache.borrow_mut()[slot] = Some(Parsed {
             contents: self.contents.clone(),
-            theme: theme_key,
+            theme: theme.map(ThemeKey::new),
             loader,
             text: Arc::clone(&text),
         });
@@ -504,6 +530,22 @@ mod tests {
             .store(Arc::new(helix_core::config::default_lang_loader()));
         assert!(!Arc::ptr_eq(&themed, &md.parse(Some(&theme))));
         assert!(Arc::ptr_eq(&plain, &md.parse(None)));
+
+        // a theme reloaded under the same name with other syntax colours highlights the code
+        // blocks again
+        let red: Theme = toml::from_str("keyword = \"red\"").unwrap();
+        let blue: Theme = toml::from_str("keyword = \"blue\"").unwrap();
+        assert_eq!(red.name(), blue.name());
+        assert_eq!(red.scopes(), blue.scopes());
+        // (as the editor does when it sets a theme)
+        md.config_loader.load().set_scopes(red.scopes().to_vec());
+        let red_text = md.parse(Some(&red));
+        assert!(Arc::ptr_eq(&red_text, &md.parse(Some(&red))));
+        let blue_text = md.parse(Some(&blue));
+        assert!(!Arc::ptr_eq(&red_text, &blue_text));
+        assert_ne!(*red_text, *blue_text);
+        assert_eq!(*blue_text, md.parse_uncached(Some(&blue)));
+        assert!(Arc::ptr_eq(&blue_text, &md.parse(Some(&blue))));
 
         // new contents are parsed again
         md.contents.push_str("\n\nmore");

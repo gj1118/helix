@@ -341,11 +341,45 @@ impl LuaPluginAnnotation {
             style: table.get("style")?,
             fg: table.get("fg")?,
             bg: table.get("bg")?,
-            offset: table.get::<Option<u16>>("offset")?.unwrap_or(0),
+            offset: Self::offset_from_table(table)?,
             is_line: table.get::<Option<bool>>("is_line")?.unwrap_or(false),
             virt_line_idx: table.get("virt_line_idx")?,
             dropped_text: table.get("dropped_text")?,
         })
+    }
+}
+
+impl LuaPluginAnnotation {
+    /// The `offset` field (0 when absent). A column past `u16::MAX` (a very long line)
+    /// saturates to `u16::MAX`; a negative, fractional or NaN number, or a value that isn't a
+    /// number, is an error.
+    fn offset_from_table(table: &LuaTable) -> LuaResult<u16> {
+        let invalid = |message: String| LuaError::FromLuaConversionError {
+            from: "number",
+            to: "u16".to_string(),
+            message: Some(format!("invalid annotation offset: {message}")),
+        };
+        let number = match table.get::<Option<LuaValue>>("offset")? {
+            None => return Ok(0),
+            Some(LuaValue::Integer(int)) => {
+                return if int < 0 {
+                    Err(invalid(format!("{int} is negative")))
+                } else {
+                    Ok(u16::try_from(int).unwrap_or(u16::MAX))
+                };
+            }
+            Some(LuaValue::Number(number)) => number,
+            // Not a number: a numeric string still converts, anything else is an error.
+            Some(_) => match table.get::<Option<f64>>("offset")? {
+                Some(number) => number,
+                None => return Ok(0),
+            },
+        };
+        if number.is_nan() || number < 0.0 || number.fract() != 0.0 && number.is_finite() {
+            return Err(invalid(format!("{number} is not a column")));
+        }
+        // `as` saturates (and maps +inf to u16::MAX).
+        Ok(number as u16)
     }
 }
 
@@ -517,6 +551,34 @@ mod tests {
             format!("{:?}", buffer.document_id),
             format!("{:?}", DocumentId::default())
         );
+    }
+
+    #[test]
+    fn annotation_offset_saturates_but_rejects_wrong_types() {
+        let lua = Lua::new();
+        let offset = |value: &str| -> LuaResult<u16> {
+            let table: LuaTable = lua
+                .load(format!(
+                    "return {{ char_idx = 0, text = 'x', offset = {value} }}"
+                ))
+                .eval()?;
+            LuaPluginAnnotation::from_table(&table).map(|annotation| annotation.offset)
+        };
+        assert_eq!(offset("nil").unwrap(), 0);
+        assert_eq!(offset("12").unwrap(), 12);
+        assert_eq!(offset("12.0").unwrap(), 12);
+        assert_eq!(offset("'7'").unwrap(), 7);
+        assert_eq!(offset("65535").unwrap(), u16::MAX);
+        // Columns on lines wider than u16::MAX saturate rather than raise.
+        assert_eq!(offset("65536").unwrap(), u16::MAX);
+        assert_eq!(offset("100000").unwrap(), u16::MAX);
+        assert_eq!(offset("1e300").unwrap(), u16::MAX);
+        assert_eq!(offset("math.huge").unwrap(), u16::MAX);
+        assert_eq!(offset("math.maxinteger").unwrap(), u16::MAX);
+        // Wrong types and non-columns are still errors.
+        for wrong in ["true", "{}", "'abc'", "-1", "1.5", "0/0", "-math.huge"] {
+            assert!(offset(wrong).is_err(), "{wrong}");
+        }
     }
 
     #[test]

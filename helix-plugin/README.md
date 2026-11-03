@@ -57,7 +57,9 @@ cannot set it: it is ignored there, with a warning in the log):
 ```toml
 [plugins]
 enabled = true                                 # false: no plugin is loaded
-plugin_dirs = ["/home/me/src/helix-plugins"]   # replaces the default directories
+plugin_dirs = ["~/src/helix-plugins"]          # replaces the default directories; `~` is
+                                               # expanded, relative paths are relative to
+                                               # the Helix config directory
 
 [[plugins.plugins]]
 name = "greeter"

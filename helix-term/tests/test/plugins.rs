@@ -109,17 +109,27 @@ end)
     let pre = events.iter().position(|e| e == "buffer_pre_save");
     let post = events.iter().position(|e| e == "buffer_post_save");
     assert!(pre.is_some() && pre < post, "{events:?}");
+    // The pre-save edit is part of the saved revision: nothing is left unsaved.
+    assert!(!helix_view::doc!(app.editor).is_modified());
+    assert!(app.editor.documents().all(|doc| !doc.is_modified()));
 
     send_keys(
         &mut app,
-        &format!(":o {}<ret>:bc!<ret>", other.path().to_string_lossy()),
+        &format!(":o {}<ret>:bc<ret>", other.path().to_string_lossy()),
     )
     .await?;
     assert_eq!(
         recorded(&app).last().map(String::as_str),
         Some("buffer_close")
     );
+    assert!(!app.editor.should_close());
 
-    send_keys(&mut app, ":qa!<ret>").await?;
+    // `:wq` writes (running the hook again) and quits: the hook's edit doesn't block it.
+    send_keys(&mut app, ":wq<ret>").await?;
+    assert!(app.editor.should_close(), "{:?}", app.editor.get_status());
+    helpers::assert_file_has_content(
+        &mut file,
+        &LineFeedHandling::Native.apply(&format!("PRE PRE {}abc\n", "x".repeat(21))),
+    )?;
     Ok(())
 }

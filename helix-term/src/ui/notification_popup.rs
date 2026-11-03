@@ -386,11 +386,9 @@ impl NotificationPopup {
         area: Rect,
         surface: &mut Surface,
         style: Style,
-        border_type: tui::widgets::BorderType,
+        symbols: &tui::symbols::line::Set,
         width: u8,
     ) {
-        // Choose border glyphs
-        let symbols = tui::widgets::BorderType::line_symbols(border_type);
         let (h, v, tl, tr, bl, br) = (
             symbols.horizontal,
             symbols.vertical,
@@ -489,21 +487,17 @@ impl NotificationPopup {
             .unwrap_or(config.border.radius);
 
         let editor_config = cx.editor.config();
-        let gradient_config = &editor_config.gradient_borders;
-        let gradient = gradient_config.enable;
-        let rounded = editor_config.border_rounded() || corner_radius > 0;
-        // a corner radius asks for rounded corners on an otherwise plain border
-        let mut border_type = crate::ui::border_type(&editor_config);
-        if corner_radius > 0 && border_type == tui::widgets::BorderType::Edge {
-            border_type = tui::widgets::BorderType::Rounded;
-        }
+        let look = BorderLook::new(&editor_config, corner_radius);
+        let gradient_config = look.gradient.as_ref();
+        let rounded = look.rounded;
+        let border_type = look.border_type;
         // Whether the border cells take the card's background, as for every popup (see
         // `ui::border_cells_take_background`): without a border, without border glyphs,
         // and for borders along the outer edge of their cells. Otherwise they keep the
         // background behind the card. The card's background is painted before the border.
         let border_cells_take_background = !config.border.enable
-            || if gradient {
-                editor_config.borders_hidden()
+            || if let Some(gradient_config) = gradient_config {
+                border_type == tui::widgets::BorderType::Hidden
                     || GradientBorder::hugs_the_edge(gradient_config.thickness, rounded)
             } else {
                 matches!(
@@ -522,11 +516,9 @@ impl NotificationPopup {
 
         // Render border based on configuration
         let inner_area = if config.border.enable {
-            if gradient {
+            if let Some(wanted) = look.gradient {
                 // Use gradient border, made again when its configuration changes (with
                 // the animation off).
-                let mut wanted = gradient_config.clone();
-                wanted.animation_speed = 0;
                 if self
                     .gradient_border
                     .as_ref()
@@ -538,7 +530,7 @@ impl NotificationPopup {
                 }
 
                 if let Some((_, gradient_border)) = self.gradient_border.as_mut() {
-                    if !editor_config.borders_hidden() {
+                    if border_type != tui::widgets::BorderType::Hidden {
                         gradient_border.render(item.area, surface, theme, rounded);
                     }
                 }
@@ -552,7 +544,7 @@ impl NotificationPopup {
                     item.area,
                     surface,
                     border_style,
-                    border_type,
+                    &look.symbols,
                     config.border.width,
                 );
 
@@ -661,16 +653,17 @@ impl Component for NotificationPopup {
         // Border width used for sizing. The gradient border is always one cell
         // wide (its thickness only picks glyphs); the simple border draws
         // `border.width` nested frames.
-        self.layout_thickness = if !cx.editor.config().notifications.border.enable {
+        let editor_config = cx.editor.config();
+        let look = BorderLook::new(&editor_config, editor_config.notifications.border.radius);
+        self.layout_thickness = if !editor_config.notifications.border.enable {
             0
-        } else if cx.editor.config().gradient_borders.enable {
+        } else if look.gradient.is_some() {
             1
         } else {
-            cx.editor.config().notifications.border.width.max(1) as u16
+            editor_config.notifications.border.width.max(1) as u16
         };
-        self.layout_rounded = cx.editor.config().border_rounded()
-            || cx.editor.config().notifications.border.radius > 0;
-        self.layout_padding = cx.editor.config().notifications.padding;
+        self.layout_rounded = look.rounded;
+        self.layout_padding = editor_config.notifications.padding;
 
         // No continuous redraws or fading logic – redraws only on add and timeout/dismiss.
 
@@ -694,6 +687,102 @@ impl Component for NotificationPopup {
 impl Default for NotificationPopup {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// How a notification's border is drawn, from `[editor.notifications.border]` and the
+/// editor's `border-style` and `[editor.gradient-borders]`.
+struct BorderLook {
+    /// The kind of glyphs (for the background of the border cells; `Hidden` draws none).
+    border_type: tui::widgets::BorderType,
+    /// The glyphs of a border without a gradient.
+    symbols: tui::symbols::line::Set,
+    /// Whether the corners are rounded (what a gradient border follows).
+    rounded: bool,
+    /// The gradient, when the border has one (with the animation off).
+    gradient: Option<helix_view::editor::GradientBorderConfig>,
+}
+
+impl BorderLook {
+    fn new(editor_config: &helix_view::editor::Config, corner_radius: u8) -> Self {
+        use helix_view::editor::{BorderStyle, NotificationBorderStyle};
+        use tui::widgets::BorderType;
+
+        let border = &editor_config.notifications.border;
+        let (border_type, rounded) = match border.style {
+            NotificationBorderStyle::Solid => {
+                // a corner radius asks for rounded corners on an otherwise plain border
+                let mut border_type = crate::ui::border_type(editor_config);
+                if corner_radius > 0 && border_type == BorderType::Edge {
+                    border_type = BorderType::Rounded;
+                }
+                (
+                    border_type,
+                    editor_config.border_rounded() || corner_radius > 0,
+                )
+            }
+            NotificationBorderStyle::Dashed | NotificationBorderStyle::Dotted => {
+                if corner_radius > 0 {
+                    (BorderType::Rounded, true)
+                } else {
+                    (BorderType::Plain, false)
+                }
+            }
+            style => {
+                let border_type = match style.border_style() {
+                    Some(BorderStyle::None) => BorderType::Hidden,
+                    Some(BorderStyle::Plain) => BorderType::Edge,
+                    Some(BorderStyle::Rounded) => BorderType::Rounded,
+                    Some(BorderStyle::Double) => BorderType::Double,
+                    Some(BorderStyle::Thick) => BorderType::Thick,
+                    Some(BorderStyle::QuadrantInside) => BorderType::QuadrantInside,
+                    Some(BorderStyle::QuadrantOutside) => BorderType::QuadrantOutside,
+                    None => BorderType::Plain,
+                };
+                (border_type, border_type == BorderType::Rounded)
+            }
+        };
+
+        let mut symbols = BorderType::line_symbols(border_type);
+        let dashes = match border.style {
+            NotificationBorderStyle::Dashed => Some(("┄", "┆")),
+            NotificationBorderStyle::Dotted => Some(("┈", "┊")),
+            _ => None,
+        };
+        if let Some((horizontal, vertical)) = dashes {
+            symbols.horizontal = horizontal;
+            symbols.bottom = horizontal;
+            symbols.vertical = vertical;
+            symbols.right = vertical;
+        }
+
+        // `border.gradient` draws a gradient between its own colors, with the thickness and
+        // direction of `[editor.gradient-borders]`; without it, notifications follow
+        // `[editor.gradient-borders]` like every popup.
+        let gradient = if border.gradient {
+            Some(helix_view::editor::GradientBorderConfig {
+                enable: true,
+                start_color: border.gradient_start.clone(),
+                end_color: border.gradient_end.clone(),
+                middle_color: String::new(),
+                animation_speed: 0,
+                ..editor_config.gradient_borders.clone()
+            })
+        } else if editor_config.gradient_borders.enable {
+            Some(helix_view::editor::GradientBorderConfig {
+                animation_speed: 0,
+                ..editor_config.gradient_borders.clone()
+            })
+        } else {
+            None
+        };
+
+        Self {
+            border_type,
+            symbols,
+            rounded,
+            gradient,
+        }
     }
 }
 
@@ -750,6 +839,87 @@ mod tests {
         assert_eq!(popup.layout_thickness, 1);
         assert!(!popup.layout_rounded);
         assert_eq!(popup.layout_padding, 1);
+    }
+
+    fn editor_config(toml: &str) -> helix_view::editor::Config {
+        toml::from_str(toml).unwrap()
+    }
+
+    #[test]
+    fn border_style_picks_the_notification_glyphs() {
+        use tui::widgets::BorderType;
+
+        // "solid" (the default) follows `border-style`, a radius rounding a plain border
+        let look = BorderLook::new(&editor_config(""), 2);
+        assert_eq!(look.border_type, BorderType::Rounded);
+        assert!(look.rounded);
+        let look = BorderLook::new(&editor_config(""), 0);
+        assert_eq!(look.border_type, BorderType::Edge);
+        assert!(!look.rounded);
+        let look = BorderLook::new(&editor_config("border-style = \"double\""), 2);
+        assert_eq!(look.border_type, BorderType::Double);
+
+        // a `border-style` value for the notifications only, whatever the radius
+        for (name, border_type) in [
+            ("none", BorderType::Hidden),
+            ("plain", BorderType::Edge),
+            ("rounded", BorderType::Rounded),
+            ("double", BorderType::Double),
+            ("thick", BorderType::Thick),
+            ("quadrant-inside", BorderType::QuadrantInside),
+            ("quadrant-outside", BorderType::QuadrantOutside),
+        ] {
+            let config = editor_config(&format!(
+                "border-style = \"thick\"\nnotifications.border.style = \"{name}\""
+            ));
+            let look = BorderLook::new(&config, 2);
+            assert_eq!(look.border_type, border_type, "{name}");
+            assert_eq!(look.rounded, name == "rounded", "{name}");
+            assert_eq!(
+                look.symbols.horizontal,
+                BorderType::line_symbols(border_type).horizontal
+            );
+        }
+
+        // dashed and dotted lines, with the corners the radius asks for
+        let dashed = editor_config("notifications.border.style = \"dashed\"");
+        let look = BorderLook::new(&dashed, 0);
+        assert_eq!((look.symbols.horizontal, look.symbols.vertical), ("┄", "┆"));
+        assert_eq!((look.symbols.bottom, look.symbols.right), ("┄", "┆"));
+        assert_eq!(look.symbols.top_left, "┌");
+        assert_eq!(BorderLook::new(&dashed, 1).symbols.top_left, "╭");
+        let dotted = editor_config("notifications.border.style = \"dotted\"");
+        let look = BorderLook::new(&dotted, 0);
+        assert_eq!((look.symbols.horizontal, look.symbols.vertical), ("┈", "┊"));
+    }
+
+    #[test]
+    fn border_gradient_uses_the_notification_colors() {
+        // no gradient by default
+        assert!(BorderLook::new(&editor_config(""), 2).gradient.is_none());
+
+        // `border.gradient` draws one between its colors, with the editor's thickness
+        let config = editor_config(
+            r##"
+            gradient-borders = { thickness = 3, start-color = "#000000", end-color = "#000000", middle-color = "#ffffff", animation-speed = 5 }
+            notifications.border = { gradient = true, gradient-start = "#ff0000", gradient-end = "#0000ff" }
+            "##,
+        );
+        let gradient = BorderLook::new(&config, 2).gradient.unwrap();
+        assert!(gradient.enable);
+        assert_eq!(gradient.start_color, "#ff0000");
+        assert_eq!(gradient.end_color, "#0000ff");
+        assert_eq!(gradient.middle_color, "");
+        assert_eq!(gradient.thickness, 3);
+        assert_eq!(gradient.animation_speed, 0);
+
+        // without it, the editor's gradient borders are used, as for every popup
+        let config = editor_config(
+            r##"gradient-borders = { enable = true, start-color = "#010203", animation-speed = 5 }"##,
+        );
+        let gradient = BorderLook::new(&config, 2).gradient.unwrap();
+        assert_eq!(gradient.start_color, "#010203");
+        assert_eq!(gradient.animation_speed, 0);
     }
 
     #[test]

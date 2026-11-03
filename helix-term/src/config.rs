@@ -163,6 +163,17 @@ fn load_commands(
     Ok(commands)
 }
 
+/// Expands a leading `~` of a `plugin_dirs` entry and makes a relative one relative to the
+/// Helix config directory.
+fn resolve_plugin_dir(dir: &std::path::Path) -> std::path::PathBuf {
+    let dir = helix_stdx::path::expand_tilde(dir);
+    if dir.is_relative() {
+        helix_loader::config_dir().join(dir)
+    } else {
+        dir.into_owned()
+    }
+}
+
 /// Checks a `[plugins]` table.
 fn check_plugins(plugins: Option<toml::Value>) -> Result<Option<toml::Value>, ConfigLoadError> {
     if let Some(plugins) = &plugins {
@@ -176,11 +187,18 @@ fn check_plugins(plugins: Option<toml::Value>) -> Result<Option<toml::Value>, Co
 
 impl Config {
     /// The plugin settings of the `[plugins]` table (the defaults without one).
+    /// A leading `~` of a `plugin_dirs` entry is expanded to the home directory, and a
+    /// relative directory is relative to the Helix config directory.
     pub fn plugin_config(&self) -> helix_plugin::PluginConfig {
-        self.plugins
+        let mut config: helix_plugin::PluginConfig = self
+            .plugins
             .clone()
             .and_then(|plugins| plugins.try_into().ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        for dir in &mut config.plugin_dirs {
+            *dir = resolve_plugin_dir(dir);
+        }
+        config
     }
 
     pub fn load(
@@ -366,6 +384,32 @@ mod tests {
     }
 
     #[test]
+    fn bufferline_is_a_string_or_a_table() {
+        use helix_view::editor::{BufferLineConfig, BufferLineRenderMode};
+
+        let config = Config::load_test("[editor]\nbufferline = \"multiple\"");
+        assert_eq!(
+            config.editor.bufferline,
+            BufferLineConfig {
+                render_mode: BufferLineRenderMode::Multiple,
+                ..BufferLineConfig::default()
+            }
+        );
+
+        let config =
+            Config::load_test("[editor.bufferline]\nrender-mode = \"always\"\nseparator = \"|\"");
+        assert_eq!(
+            config.editor.bufferline,
+            BufferLineConfig {
+                render_mode: BufferLineRenderMode::Always,
+                separator: "|".to_owned(),
+            }
+        );
+
+        assert!(load_err("[editor]\nbufferline = \"sometimes\"", "").contains("sometimes"));
+    }
+
+    #[test]
     fn plugins_section_is_read_from_the_global_config_only() {
         let config = Config::load_test(
             r#"
@@ -390,6 +434,26 @@ mod tests {
 
         // without the section: the defaults
         assert!(Config::load_test("").plugin_config().enabled);
+
+        // `~` is expanded, relative directories are relative to the config directory
+        let dirs = Config::load_test(
+            r#"
+            [plugins]
+            plugin_dirs = ["~/helix-plugins", "~", "local/plugins", "/abs/~/x"]
+            "#,
+        )
+        .plugin_config()
+        .plugin_dirs;
+        let home = helix_stdx::path::home_dir().unwrap();
+        assert_eq!(
+            dirs,
+            [
+                home.join("helix-plugins"),
+                home.clone(),
+                helix_loader::config_dir().join("local/plugins"),
+                std::path::PathBuf::from("/abs/~/x"),
+            ]
+        );
 
         // a workspace can't enable or point plugins elsewhere
         let config = Config::load(
