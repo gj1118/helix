@@ -128,6 +128,11 @@ deliberate action than dismiss a dialog.
 > no prompt and no indicator. Only set this if you accept full
 > responsibility for what's in every project directory you `cd` into.
 
+The older `[editor] insecure = true` option is still accepted and means the
+same as `level = "insecure"`; Helix logs a deprecation warning when it is set.
+Like the rest of `[editor.workspace-trust]`, it only counts in your global
+config, not in a workspace's `.helix/config.toml`.
+
 ### Trusting workspaces by path (discouraged)
 
 If you keep all your repositories under a predictable layout, you can

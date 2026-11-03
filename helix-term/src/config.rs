@@ -292,6 +292,11 @@ impl Config {
             (Err(err), Err(_)) => return Err(err),
         };
 
+        let mut res = res;
+        for warning in res.editor.apply_deprecated_options() {
+            log::warn!("{warning}");
+        }
+
         Ok(res)
     }
 
@@ -343,6 +348,24 @@ mod tests {
         fn load_test(config: &str) -> Config {
             Config::load(Ok(&config.to_owned()), Err(ConfigLoadError::default())).unwrap()
         }
+    }
+
+    #[test]
+    fn deprecated_insecure_maps_to_workspace_trust() {
+        use helix_view::editor::ImplicitTrustLevelConfig;
+
+        let config = Config::load_test("[editor]\ninsecure = true\n");
+        assert_eq!(
+            config.editor.workspace_trust.level,
+            ImplicitTrustLevelConfig::Insecure
+        );
+        assert!(!config.editor.insecure);
+
+        let config = Config::load_test("[editor]\ninsecure = false\n");
+        assert_eq!(
+            config.editor.workspace_trust.level,
+            ImplicitTrustLevelConfig::default()
+        );
     }
 
     #[test]

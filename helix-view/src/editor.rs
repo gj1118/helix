@@ -622,7 +622,9 @@ pub struct Config {
     /// Defines which text objects will be folded when a document is opened.
     #[serde(default)]
     pub fold_textobjects: Vec<String>,
-    /// Whether to implicitly trust every workspace or not
+    /// Deprecated: `insecure = true` is read as `[editor.workspace-trust] level = "insecure"`
+    /// (see `Config::apply_deprecated_options`). Still accepted so older configs keep loading.
+    #[serde(skip_serializing)]
     pub insecure: bool,
     /// Workspace-trust configuration.
     pub workspace_trust: WorkspaceTrustConfig,
@@ -690,6 +692,19 @@ impl From<&WorkspaceTrustConfig> for helix_loader::workspace_trust::Config {
 }
 
 impl Config {
+    /// Maps options kept only for compatibility onto their replacements. Returns a
+    /// warning for each one that was set.
+    pub fn apply_deprecated_options(&mut self) -> Vec<&'static str> {
+        let mut warnings = Vec::new();
+        if std::mem::take(&mut self.insecure) {
+            self.workspace_trust.level = ImplicitTrustLevelConfig::Insecure;
+            warnings.push(
+                "`[editor] insecure` is deprecated, use `[editor.workspace-trust] level = \"insecure\"`",
+            );
+        }
+        warnings
+    }
+
     pub fn code_action_hint(&self) -> bool {
         self.gutters.layout.contains(&GutterType::CodeActionHint)
             || self
