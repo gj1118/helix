@@ -561,9 +561,23 @@ pub fn directory_content(
     root: &Path,
     editor: &Editor,
 ) -> Result<Vec<(PathBuf, bool)>, std::io::Error> {
+    directory_content_with(root, &editor.config().file_explorer)
+}
+
+/// [`directory_content`] with the `[editor.file-explorer]` settings it lists by, for use off
+/// the UI thread.
+pub fn directory_content_with(
+    root: &Path,
+    explorer: &helix_view::editor::FileExplorerConfig,
+) -> Result<Vec<(PathBuf, bool)>, std::io::Error> {
     use ignore::WalkBuilder;
 
-    let config = editor.config();
+    struct Config<'a> {
+        file_explorer: &'a helix_view::editor::FileExplorerConfig,
+    }
+    let config = Config {
+        file_explorer: explorer,
+    };
 
     let mut walk_builder = WalkBuilder::new(root);
 

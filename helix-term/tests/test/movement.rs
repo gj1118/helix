@@ -929,3 +929,29 @@ async fn match_inside_and_around_select_xml_elements() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+/// A huge count on `n` doesn't run the search that many times (it would hang the editor): it
+/// stops going round the matches once the result is known.
+#[tokio::test(flavor = "multi_thread")]
+async fn search_next_with_a_huge_count() -> anyhow::Result<()> {
+    // `/foo` goes to the second match; `n` then lands on match (1 + count) % 3 and `N` on
+    // match (1 - count) % 3.
+    test((
+        "#[f|]#oo\nfoo\nfoo\n",
+        "/foo<ret>5n",
+        "#[foo|]#\nfoo\nfoo\n",
+    ))
+    .await?;
+    test((
+        "#[f|]#oo\nfoo\nfoo\n",
+        "/foo<ret>99999999n",
+        "foo\n#[foo|]#\nfoo\n",
+    ))
+    .await?;
+    test((
+        "#[f|]#oo\nfoo\nfoo\n",
+        "/foo<ret>99999998N",
+        "foo\nfoo\n#[foo|]#\n",
+    ))
+    .await
+}

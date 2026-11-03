@@ -2642,7 +2642,17 @@ fn search_next_or_prev_impl(cx: &mut Context, movement: Movement, direction: Dir
             )
             .build(&query)
         {
-            for _ in 0..count {
+            let primary = |editor: &Editor| {
+                let (view, doc) = current_ref!(editor);
+                doc.selection(view.id).primary()
+            };
+            // A count can be up to 100 million: stop once a step stops moving (no more
+            // matches) and skip whole laps once wrapping around comes back to the
+            // first match, instead of running one search per step.
+            let mut first = None;
+            let mut step = 0;
+            while step < count {
+                let before = primary(cx.editor);
                 search_impl(
                     cx.editor,
                     &regex,
@@ -2652,6 +2662,19 @@ fn search_next_or_prev_impl(cx: &mut Context, movement: Movement, direction: Dir
                     wrap_around,
                     true,
                 );
+                step += 1;
+                let after = primary(cx.editor);
+                if after == before {
+                    break;
+                }
+                match first {
+                    None => first = Some((after, step)),
+                    Some((first_range, first_step)) if after == first_range => {
+                        let lap = step - first_step;
+                        step += (count - step) / lap * lap;
+                    }
+                    Some(_) => {}
+                }
             }
         } else {
             let error = format!("Invalid regex: {}", query);
@@ -2790,24 +2813,31 @@ fn global_search(cx: &mut Context) {
         path: PathBuf,
         /// 0 indexed lines
         line_num: usize,
-        /// Start of the match, in bytes from the start of the line
-        match_start_byte: usize,
-        /// End of the match, in bytes from the start of the line
-        match_end_byte: usize,
+        /// Start of the match, in chars from the start of the line. Chars, not bytes: a
+        /// file that isn't UTF-8 is searched as converted (lossily) to UTF-8, but opened in
+        /// its own encoding, where the same text takes a different number of bytes.
+        match_start: usize,
+        /// End of the match, in chars from the start of the line
+        match_end: usize,
+        /// The open buffer (and its version) the match was found in; `None` when the
+        /// file was searched on disk.
+        searched: Option<(DocumentId, i32)>,
     }
 
     impl FileResult {
         fn new(
             path: &Path,
             line_num: usize,
-            match_start_byte: usize,
-            match_end_byte: usize,
+            match_start: usize,
+            match_end: usize,
+            searched: Option<(DocumentId, i32)>,
         ) -> Self {
             Self {
                 path: path.to_path_buf(),
                 line_num,
-                match_start_byte,
-                match_end_byte,
+                match_start,
+                match_end,
+                searched,
             }
         }
     }
@@ -2851,7 +2881,13 @@ fn global_search(cx: &mut Context) {
 
         let documents: Vec<_> = editor
             .documents()
-            .map(|doc| (doc.path().map(ToOwned::to_owned), doc.text().to_owned()))
+            .map(|doc| {
+                (
+                    doc.path().map(ToOwned::to_owned),
+                    doc.text().to_owned(),
+                    (doc.id(), doc.version()),
+                )
+            })
             .collect();
 
         let matcher = match RegexMatcherBuilder::new()
@@ -2909,6 +2945,13 @@ fn global_search(cx: &mut Context) {
                             return WalkState::Continue;
                         }
 
+                        let doc = documents.iter().find(|&(doc_path, _, _)| {
+                            doc_path
+                                .as_ref()
+                                .is_some_and(|doc_path| doc_path == entry.path())
+                        });
+                        let searched = doc.map(|&(_, _, searched)| searched);
+
                         let mut stop = false;
                         let sink = sinks::Lossy(|line_num, line_content| {
                             let Some(match_range) = matcher
@@ -2921,20 +2964,15 @@ fn global_search(cx: &mut Context) {
                                 .push(FileResult::new(
                                     entry.path(),
                                     line_num as usize - 1,
-                                    match_range.start(),
-                                    match_range.end(),
+                                    chars_before(line_content, match_range.start()),
+                                    chars_before(line_content, match_range.end()),
+                                    searched,
                                 ))
                                 .is_err();
 
                             Ok(!stop)
                         });
-                        let doc = documents.iter().find(|&(doc_path, _)| {
-                            doc_path
-                                .as_ref()
-                                .is_some_and(|doc_path| doc_path == entry.path())
-                        });
-
-                        let result = if let Some((_, doc)) = doc {
+                        let result = if let Some((_, doc, _)) = doc {
                             // there is already a buffer for this file
                             // search the buffer instead of the file because it's faster
                             // and captures new edits without requiring a save
@@ -2981,8 +3019,9 @@ fn global_search(cx: &mut Context) {
               FileResult {
                   path,
                   line_num,
-                  match_start_byte,
-                  match_end_byte,
+                  match_start,
+                  match_end,
+                  ..
               },
               action| {
             let doc = match cx.editor.open(path, action) {
@@ -3006,8 +3045,8 @@ fn global_search(cx: &mut Context) {
             let Some(selection) = selection_for_global_search_match(
                 text.slice(..),
                 line_num,
-                *match_start_byte,
-                *match_end_byte,
+                *match_start,
+                *match_end,
             ) else {
                 cx.editor
                     .set_error("The match you jumped to does not exist anymore.");
@@ -3024,22 +3063,22 @@ fn global_search(cx: &mut Context) {
         Some((path.as_path().into(), Some((*line_num, *line_num))))
     })
     .with_replace(move |cx, query, replacement, scope| {
-        use std::collections::{BTreeMap, BTreeSet};
-        let mut targets: BTreeMap<PathBuf, BTreeSet<usize>> = BTreeMap::new();
-        match scope {
-            ui::picker::ReplaceScope::Selected(item) => {
-                targets
-                    .entry(item.path.clone())
-                    .or_default()
-                    .insert(item.line_num);
-            }
-            ui::picker::ReplaceScope::All(items) => {
-                for item in items {
-                    targets
-                        .entry(item.path.clone())
-                        .or_default()
-                        .insert(item.line_num);
-                }
+        let items = match scope {
+            ui::picker::ReplaceScope::Selected(item) => vec![item],
+            ui::picker::ReplaceScope::All(items) => items,
+        };
+        let mut targets: std::collections::BTreeMap<PathBuf, ReplaceTarget> = Default::default();
+        for item in items {
+            let target = targets
+                .entry(item.path.clone())
+                .or_insert_with(|| ReplaceTarget {
+                    lines: Default::default(),
+                    searched: Some(item.searched),
+                });
+            target.lines.insert(item.line_num);
+            if target.searched != Some(item.searched) {
+                // Results of two searches: the line numbers can't be trusted.
+                target.searched = None;
             }
         }
         global_replace(cx, smart_case, query, replacement, targets);
@@ -3069,8 +3108,19 @@ fn replace_in_line(
     line: &str,
     replacement: &str,
 ) -> Option<(String, usize)> {
+    let (replaced, count) = replace_in_line_bytes(matcher, line.as_bytes(), replacement)?;
+    String::from_utf8(replaced)
+        .ok()
+        .map(|replaced| (replaced, count))
+}
+
+/// [`replace_in_line`] for a line of a file on disk, which needn't be UTF-8.
+fn replace_in_line_bytes(
+    matcher: &grep_regex::RegexMatcher,
+    haystack: &[u8],
+    replacement: &str,
+) -> Option<(Vec<u8>, usize)> {
     use grep_matcher::{Captures as _, Matcher as _};
-    let haystack = line.as_bytes();
     let mut count = 0;
     matcher
         .find_iter(haystack, |_| {
@@ -3094,9 +3144,35 @@ fn replace_in_line(
             true
         })
         .ok()?;
-    String::from_utf8(dst)
-        .ok()
-        .map(|replaced| (replaced, count))
+    Some((dst, count))
+}
+
+/// Whether the line numbers found by a global search still point at the lines they were
+/// found on. `open` is the file's buffer, if open: its id, version and whether it is modified.
+fn replace_target_is_fresh(
+    open: Option<(DocumentId, i32, bool)>,
+    searched: Option<Option<(DocumentId, i32)>>,
+) -> bool {
+    match (open, searched) {
+        // Searched in this buffer, and it hasn't changed since.
+        (Some((id, version, _)), Some(Some(searched))) => searched == (id, version),
+        // Searched on disk, and the buffer still holds what is on disk.
+        (Some((_, _, modified)), Some(None)) => !modified,
+        // Searched on disk and still not open.
+        (None, Some(None)) => true,
+        // Searched in a buffer that has since been closed (maybe without saving its
+        // edits), or the results disagree.
+        (None, Some(Some(_))) | (_, None) => false,
+    }
+}
+
+/// The lines of one file a global replace changes.
+struct ReplaceTarget {
+    /// 0-indexed lines with a match.
+    lines: std::collections::BTreeSet<usize>,
+    /// Where the lines were found: `Some(Some((buffer, version)))` in an open buffer,
+    /// `Some(None)` on disk, `None` when the results disagree.
+    searched: Option<Option<(DocumentId, i32)>>,
 }
 
 /// Replaces matches of the global search `query` with `replacement` (regex
@@ -3104,12 +3180,14 @@ fn replace_in_line(
 /// the given 0-indexed lines of each file. Open buffers, including unsaved
 /// edits, are changed in place as one undo step each; other files are
 /// rewritten on disk by a background job, which reports the result when done.
+/// A file whose text changed since it was searched (the line numbers would
+/// point at other lines) is left alone and reported.
 fn global_replace(
     cx: &mut compositor::Context,
     smart_case: bool,
     query: &str,
     replacement: &str,
-    targets: std::collections::BTreeMap<PathBuf, std::collections::BTreeSet<usize>>,
+    targets: std::collections::BTreeMap<PathBuf, ReplaceTarget>,
 ) {
     let matcher = match RegexMatcherBuilder::new()
         .case_smart(smart_case)
@@ -3126,10 +3204,19 @@ fn global_replace(
     let view_id = view!(cx.editor).id;
     let mut total = 0usize;
     let mut changed_files = 0usize;
+    let mut stale_files = 0usize;
     let mut disk_targets = Vec::new();
 
-    for (path, lines) in targets {
-        let Some(doc_id) = cx.editor.document_by_path(&path).map(|doc| doc.id()) else {
+    for (path, ReplaceTarget { lines, searched }) in targets {
+        let open = cx
+            .editor
+            .document_by_path(&path)
+            .map(|doc| (doc.id(), doc.version(), doc.is_modified()));
+        if !replace_target_is_fresh(open, searched) {
+            stale_files += 1;
+            continue;
+        }
+        let Some((doc_id, _, _)) = open else {
             disk_targets.push((path, lines));
             continue;
         };
@@ -3169,8 +3256,11 @@ fn global_replace(
         changed_files += 1;
     }
 
+    let stale = (stale_files > 0).then(|| {
+        format!("{stale_files} file(s) changed since the search and were skipped, replace again")
+    });
     if disk_targets.is_empty() {
-        report_global_replace(cx.editor, total, changed_files, None);
+        report_global_replace(cx.editor, total, changed_files, stale);
         return;
     }
 
@@ -3182,32 +3272,36 @@ fn global_replace(
             let mut changed_files = 0usize;
             let mut failure = None;
             for (path, lines) in disk_targets {
-                let content = match std::fs::read_to_string(&path) {
+                // Bytes, not a `String`: files that aren't UTF-8 (Latin-1, say) are
+                // replaced in too, and the rest of their bytes are kept as they are.
+                let content = match std::fs::read(&path) {
                     Ok(content) => content,
                     Err(err) => {
                         failure.get_or_insert_with(|| format!("{}: {err}", path.display()));
                         continue;
                     }
                 };
-                let mut out = String::with_capacity(content.len());
+                let mut out = Vec::with_capacity(content.len());
                 let mut file_matches = 0;
-                for (index, raw) in content.split_inclusive('\n').enumerate() {
+                for (index, raw) in content.split_inclusive(|&byte| byte == b'\n').enumerate() {
                     if lines.contains(&index) {
-                        let (body, eol) = match raw.strip_suffix("\r\n") {
-                            Some(body) => (body, "\r\n"),
-                            None => match raw.strip_suffix('\n') {
-                                Some(body) => (body, "\n"),
-                                None => (raw, ""),
+                        let (body, eol): (&[u8], &[u8]) = match raw.strip_suffix(b"\r\n") {
+                            Some(body) => (body, b"\r\n"),
+                            None => match raw.strip_suffix(b"\n") {
+                                Some(body) => (body, b"\n"),
+                                None => (raw, b""),
                             },
                         };
-                        if let Some((replaced, n)) = replace_in_line(&matcher, body, &replacement) {
+                        if let Some((replaced, n)) =
+                            replace_in_line_bytes(&matcher, body, &replacement)
+                        {
                             file_matches += n;
-                            out.push_str(&replaced);
-                            out.push_str(eol);
+                            out.extend_from_slice(&replaced);
+                            out.extend_from_slice(eol);
                             continue;
                         }
                     }
-                    out.push_str(raw);
+                    out.extend_from_slice(raw);
                 }
                 if out == content {
                     continue;
@@ -3223,6 +3317,10 @@ fn global_replace(
             (total, changed_files, failure)
         })
         .await?;
+        let failure = match (failure, stale) {
+            (Some(failure), Some(stale)) => Some(format!("{failure}; {stale}")),
+            (failure, stale) => failure.or(stale),
+        };
         let call: job::Callback = job::Callback::Editor(Box::new(move |editor: &mut Editor| {
             report_global_replace(
                 editor,
@@ -3261,24 +3359,27 @@ fn report_global_replace(
 fn selection_for_global_search_match(
     text: RopeSlice,
     line_start: usize,
-    match_start_byte: usize,
-    match_end_byte: usize,
+    match_start: usize,
+    match_end: usize,
 ) -> Option<Selection> {
-    if line_start >= text.len_lines() || match_start_byte > match_end_byte {
+    if line_start >= text.len_lines() || match_start > match_end {
         return None;
     }
 
-    let line_start_byte = text.line_to_byte(line_start);
-    let start_byte = line_start_byte + match_start_byte;
-    let end_byte = line_start_byte + match_end_byte;
-    if end_byte > text.len_bytes() {
+    let line_start_char = text.line_to_char(line_start);
+    let start = line_start_char + match_start;
+    let end = line_start_char + match_end;
+    if end > text.len_chars() {
         return None;
     }
 
-    Some(Selection::single(
-        text.byte_to_char(start_byte),
-        text.byte_to_char(end_byte),
-    ))
+    Some(Selection::single(start, end))
+}
+
+/// The number of chars in `line` before byte `byte`.
+fn chars_before(line: &str, byte: usize) -> usize {
+    line.get(..byte)
+        .map_or_else(|| line.chars().count(), |before| before.chars().count())
 }
 
 /// A line of the current buffer found by the buffer search pickers.
@@ -4693,6 +4794,29 @@ pub fn command_palette(cx: &mut Context) {
                     doc: cmd.doc.to_owned(),
                 }
             }));
+
+            // Custom `[commands]` (unless hidden). One that shadows a built-in typable
+            // command replaces its entry, as running it does.
+            for (name, custom) in &cx.editor.config().commands {
+                if custom.hidden {
+                    continue;
+                }
+                let doc = custom
+                    .desc
+                    .clone()
+                    .unwrap_or_else(|| format!("Runs {}", custom.commands.join(", ")));
+                let command = MappableCommand::Typable {
+                    name: name.clone(),
+                    args: String::new(),
+                    doc,
+                };
+                match commands.iter_mut().find(|command| {
+                    matches!(command, MappableCommand::Typable { name: other, .. } if other == name)
+                }) {
+                    Some(existing) => *existing = command,
+                    None => commands.push(command),
+                }
+            }
 
             if let Some(pm) = &cx.plugin_manager {
                 commands.extend(pm.get_commands().into_iter().map(|meta| {
@@ -9400,7 +9524,50 @@ fn toggle_fold(cx: &mut Context) {
 
 #[cfg(test)]
 mod global_replace_tests {
-    use super::replace_in_line;
+    use super::{replace_in_line, replace_in_line_bytes, replace_target_is_fresh};
+    use helix_view::DocumentId;
+
+    #[test]
+    fn replaces_in_lines_that_are_not_utf8() {
+        let m = matcher("caf", false);
+        // "café au lait" in Latin-1: é is the single byte 0xE9
+        let line = b"caf\xe9 au lait";
+        assert_eq!(
+            replace_in_line_bytes(&m, line, "th"),
+            Some((b"th\xe9 au lait".to_vec(), 1))
+        );
+        // the bytes around a match are kept as they are
+        let m = matcher("lait", false);
+        assert_eq!(
+            replace_in_line_bytes(&m, line, "milk"),
+            Some((b"caf\xe9 au milk".to_vec(), 1))
+        );
+    }
+
+    #[test]
+    fn line_numbers_of_a_changed_buffer_are_not_trusted() {
+        let id = DocumentId::default();
+        // searched in the buffer, which hasn't changed since
+        assert!(replace_target_is_fresh(
+            Some((id, 3, true)),
+            Some(Some((id, 3)))
+        ));
+        // the buffer was edited after the search
+        assert!(!replace_target_is_fresh(
+            Some((id, 4, true)),
+            Some(Some((id, 3)))
+        ));
+        // searched on disk, the buffer (opened since) holds what is on disk
+        assert!(replace_target_is_fresh(Some((id, 1, false)), Some(None)));
+        // searched on disk, but the buffer has unsaved edits
+        assert!(!replace_target_is_fresh(Some((id, 2, true)), Some(None)));
+        // a file that isn't open, searched on disk
+        assert!(replace_target_is_fresh(None, Some(None)));
+        // searched in a buffer that has been closed since
+        assert!(!replace_target_is_fresh(None, Some(Some((id, 3)))));
+        // results of two searches
+        assert!(!replace_target_is_fresh(None, None));
+    }
     use grep_regex::RegexMatcherBuilder;
 
     fn matcher(query: &str, smart_case: bool) -> grep_regex::RegexMatcher {
@@ -9468,17 +9635,19 @@ mod global_search_selection_tests {
     fn selects_the_match_not_the_line() {
         let text = Rope::from("hello search term world\n");
         let line = text.line(0).to_string();
-        let start = line.find("search").unwrap();
-        let end = line.find(" term").unwrap();
+        let start = super::chars_before(&line, line.find("search").unwrap());
+        let end = super::chars_before(&line, line.find(" term").unwrap());
 
         let selection = selection_for_global_search_match(text.slice(..), 0, start, end).unwrap();
         assert_eq!(selection.primary().fragment(text.slice(..)), "search");
     }
 
     #[test]
-    fn counts_bytes_not_chars() {
+    fn counts_chars_not_bytes() {
         let text = Rope::from("日本語 match\nsecond\n");
-        let start = "日本語 ".len();
+        let line = "日本語 match";
+        let start = super::chars_before(line, line.find("match").unwrap());
+        assert_eq!(start, 4);
         let selection =
             selection_for_global_search_match(text.slice(..), 0, start, start + "match".len())
                 .unwrap();

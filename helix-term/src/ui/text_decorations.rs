@@ -251,7 +251,8 @@ impl<'a> Decoration for FoldDecoration<'a> {
     }
 
     fn reset_pos(&mut self, pos: usize) -> usize {
-        self.annotations.reset_pos(pos, |fold| fold.start.char.saturating_sub(1));
+        self.annotations
+            .reset_pos(pos, |fold| fold.start.char.saturating_sub(1));
         usize::MAX
     }
 }

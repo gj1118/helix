@@ -292,8 +292,32 @@ struct LiveRefresh<T: 'static + Send + Sync, D: 'static> {
     last: Option<u64>,
     last_refresh: std::time::Instant,
     wake_scheduled: bool,
-    /// Key of the item to select once the refreshed results are in.
-    reselect: Option<String>,
+    /// The item to select once the refreshed results are in.
+    reselect: Option<Reselect>,
+}
+
+/// Finds the previously selected item in refreshed results. Keys are built once per item, as
+/// items arrive (a refresh can stream in tens of thousands while the search runs), and the
+/// item's position among the matches is then found by address.
+struct Reselect {
+    key: String,
+    /// Address of the first item, which tells a rebuilt item list from the scanned one.
+    items: usize,
+    /// Items (by insertion index) already compared with `key`.
+    scanned: u32,
+    /// Address of the item whose key is `key`.
+    found: Option<usize>,
+}
+
+impl Reselect {
+    fn new(key: String) -> Self {
+        Self {
+            key,
+            items: 0,
+            scanned: 0,
+            found: None,
+        }
+    }
 }
 
 /// Minimum time between two refreshes of a picker.
@@ -573,7 +597,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                 .matcher
                 .snapshot()
                 .get_matched_item(self.cursor)
-                .map(|item| (live.key)(item.data));
+                .map(|item| Reselect::new((live.key)(item.data)));
         }
         if let Some(rebuild) = &live.rebuild {
             self.version.fetch_add(1, atomic::Ordering::Relaxed);
@@ -638,11 +662,35 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
     /// Moves the cursor back to the item that was selected before a refresh.
     fn restore_selection(&mut self) {
         let Some(live) = &mut self.live else { return };
-        let Some(key) = &live.reselect else { return };
+        let Some(reselect) = &mut live.reselect else {
+            return;
+        };
         let snapshot = self.matcher.snapshot();
+        let address = |data: &T| data as *const T as usize;
+        let items = snapshot.get_item(0).map_or(0, |item| address(item.data));
+        if items != reselect.items {
+            *reselect = Reselect {
+                items,
+                ..Reselect::new(std::mem::take(&mut reselect.key))
+            };
+        }
+        if reselect.found.is_none() {
+            while reselect.scanned < snapshot.item_count() {
+                // Not yet written by the injector: look again on the next frame.
+                let Some(item) = snapshot.get_item(reselect.scanned) else {
+                    break;
+                };
+                reselect.scanned += 1;
+                if (live.key)(item.data) == reselect.key {
+                    reselect.found = Some(address(item.data));
+                    break;
+                }
+            }
+        }
+        let Some(found) = reselect.found else { return };
         if let Some(index) = snapshot
             .matched_items(..)
-            .position(|item| &(live.key)(item.data) == key)
+            .position(|item| address(item.data) == found)
         {
             self.cursor = index as u32;
             live.reselect = None;
@@ -1015,22 +1063,17 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
 
                 let path: Arc<Path> = path.into();
                 let read_editor_config = editor.config().editor_config;
+                let mut listing_directory = false;
                 let preview = std::fs::metadata(&path)
                     .and_then(|metadata| {
                         if metadata.is_dir() {
-                            let files = super::directory_content(&path, editor)?;
-                            let file_names: Vec<_> = files
-                                .iter()
-                                .filter_map(|(path, is_dir)| {
-                                    let name = path.file_name()?.to_string_lossy();
-                                    if *is_dir {
-                                        Some((format!("{}/", name), true))
-                                    } else {
-                                        Some((name.into_owned(), false))
-                                    }
-                                })
-                                .collect();
-                            Ok(CachedPreview::Directory(file_names))
+                            // Listing a big (or network) directory can take a while.
+                            listing_directory = true;
+                            Self::load_directory_in_background(
+                                path.clone(),
+                                editor.config().file_explorer.clone(),
+                            );
+                            Ok(CachedPreview::Loading)
                         } else if metadata.is_file() {
                             if metadata.len() > MAX_FILE_SIZE_FOR_PREVIEW {
                                 return Ok(CachedPreview::LargeFile);
@@ -1094,7 +1137,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                         }
                     })
                     .unwrap_or(CachedPreview::NotFound);
-                if matches!(preview, CachedPreview::Loading) {
+                if matches!(preview, CachedPreview::Loading) && !listing_directory {
                     Self::load_preview_in_background(path.clone(), read_editor_config);
                 }
                 self.cache_preview(path.clone(), preview);
@@ -1119,6 +1162,43 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         if self.preview_cache.insert(path.clone(), preview).is_none() {
             self.preview_cache_order.push_back(path);
         }
+    }
+
+    /// Lists a previewed directory on a blocking thread, then puts its preview in place of the
+    /// [`CachedPreview::Loading`] one, if the picker is still open.
+    fn load_directory_in_background(
+        path: Arc<Path>,
+        explorer: helix_view::editor::FileExplorerConfig,
+    ) {
+        tokio::task::spawn_blocking(move || {
+            let listing = super::directory_content_with(&path, &explorer).map(|files| {
+                files
+                    .iter()
+                    .filter_map(|(path, is_dir)| {
+                        let name = path.file_name()?.to_string_lossy();
+                        Some(if *is_dir {
+                            (format!("{name}/"), true)
+                        } else {
+                            (name.into_owned(), false)
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            });
+            crate::job::dispatch_blocking(move |_editor, compositor| {
+                let Some(picker) = find_picker::<T, D>(compositor) else {
+                    return;
+                };
+                if let Some(entry @ CachedPreview::Loading) = picker.preview_cache.get_mut(&path) {
+                    *entry = match listing {
+                        Ok(names) => CachedPreview::Directory(names),
+                        Err(err) => {
+                            log::info!("previewing {} failed: {err}", path.display());
+                            CachedPreview::NotFound
+                        }
+                    };
+                }
+            });
+        });
     }
 
     /// Reads a file too big to read on the UI thread (see [`MAX_FILE_SIZE_FOR_SYNC_PREVIEW`])

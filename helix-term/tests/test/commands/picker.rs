@@ -54,6 +54,35 @@ async fn big_files_are_previewed_once_read() -> anyhow::Result<()> {
     .await
 }
 
+/// Directories are listed for their preview off the UI thread, then shown.
+#[tokio::test(flavor = "multi_thread")]
+async fn directories_are_previewed_once_listed() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let listed = dir.path().join("listed");
+    std::fs::create_dir(&listed)?;
+    std::fs::write(listed.join("inside-the-directory.txt"), "")?;
+    std::fs::create_dir(listed.join("a-subdirectory"))?;
+
+    let mut app = app_with_quicklist(&[&listed])?;
+    test_key_sequences(
+        &mut app,
+        vec![
+            (
+                Some("<space>q"),
+                Some(&|app| {
+                    let screen = screen(app);
+                    assert!(screen.contains("inside-the-directory.txt"), "{screen}");
+                    assert!(screen.contains("a-subdirectory/"), "{screen}");
+                    assert!(!screen.contains("<Loading…>"), "{screen}");
+                }),
+            ),
+            (Some("<esc>"), None),
+        ],
+        false,
+    )
+    .await
+}
+
 /// The preview of a file without a language has no highlighting to wait for: showing it
 /// must not keep asking for it, which kept the editor busy (and never idle) for as long as
 /// the preview was shown.
@@ -127,6 +156,46 @@ async fn the_command_palette_lists_commands_once() -> anyhow::Result<()> {
                         })
                         .count();
                     assert_eq!(rows, 1, "{screen}");
+                }),
+            ),
+            (Some("<esc>"), None),
+        ],
+        false,
+    )
+    .await
+}
+
+/// Custom `[commands]` are in the command palette; hidden ones are not.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_command_palette_lists_custom_commands() -> anyhow::Result<()> {
+    let toml = r#"
+        # without the `:`, a command is hidden
+        quiet-one = ":echo quiet"
+
+        [":shout-it"]
+        commands = [":echo loud"]
+        desc = "Echoes something loud"
+    "#;
+    let commands = helix_view::custom_commands::parse(toml::from_str(toml)?)
+        .map_err(|err| anyhow::anyhow!(err))?;
+    let mut config = helix_term::config::Config::default();
+    config.editor.commands = commands;
+    let mut app = AppBuilder::new().with_config(config).build()?;
+    test_key_sequences(
+        &mut app,
+        vec![
+            (
+                Some("<space>?shout-it"),
+                Some(&|app| {
+                    let screen = screen(app);
+                    assert!(screen.contains(":shout-it"), "{screen}");
+                }),
+            ),
+            (
+                Some("<esc><space>?quiet-one"),
+                Some(&|app| {
+                    let screen = screen(app);
+                    assert!(!screen.contains(":quiet-one"), "{screen}");
                 }),
             ),
             (Some("<esc>"), None),

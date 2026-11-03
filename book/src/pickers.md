@@ -24,8 +24,13 @@ shown:
 
 Regex captures expand in the replacement (`$1`, `${name}`) and `$$` is a literal `$`. Open
 buffers are edited in place, unsaved changes included, as one undo step per buffer; other
-files are rewritten on disk in the background. The status line reports how many matches in how
-many files were replaced, and the picker runs its query again.
+files are rewritten on disk in the background; files that aren't UTF-8 are rewritten byte for
+byte, keeping the bytes around the matches as they were. The status line reports how many
+matches in how many files were replaced, and the picker runs its query again.
+
+A file whose text changed since it was searched (a buffer edited since, or opened with unsaved
+changes after its file was searched on disk) is skipped, since its results may point at other
+lines now; the status line says how many were, and replacing again uses the refreshed results.
 
 ### File explorer
 
@@ -87,7 +92,9 @@ horizontal / vertical split. A file picker opened by `:vsplit <directory>` or
 ### Command palette
 
 `Space-?` lists every command once: the static commands, the typable commands (shown with a
-leading `:`) and the commands registered by [plugins](./plugins.md), with their key bindings.
+leading `:`), your [custom commands](./custom-commands.md) (except hidden ones, with their
+`desc`; one named like a built-in typable command replaces it in the list) and the commands
+registered by [plugins](./plugins.md), with their key bindings.
 Commands that open a picker or a prompt (`:open`, `file_picker`, `rename_symbol`, ...) work
 from the palette: the picker or prompt opens once the palette has closed. Commands that wait
 for another key (`replace`, `select_register`, the `m` and `t` motions, ...) cannot run from

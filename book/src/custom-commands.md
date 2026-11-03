@@ -62,14 +62,14 @@ With this configuration, `:w` force-writes while `:^w` retains the built-in `:wr
 
 ## Hidden commands
 
-Commands whose configuration key starts with `:` appear in command-mode completion. Omit that prefix to keep a command usable but hidden:
+Commands whose configuration key starts with `:` appear in command-mode completion and in the command palette (`Space-?`). Omit that prefix to keep a command usable but hidden:
 
 ```toml
 [commands]
 "0" = ":goto 1"
 ```
 
-The command remains available as `:0` but does not appear in completion. A custom command named like a number takes precedence over `:<line>`.
+The command remains available as `:0` but does not appear in completion or in the command palette. A custom command named like a number takes precedence over `:<line>`.
 
 ## Workspace configuration
 
