@@ -1,0 +1,171 @@
+# simpledark: a monochrome dark theme, from a grey Ghostty palette.
+# Syntax is told apart by shade and by bold / italic rather than by hue.
+
+# Syntax highlighting
+"attribute" = "gray-7"
+"type" = { fg = "light-1" }
+"type.builtin" = { fg = "light-1", modifiers = ["italic"] }
+"type.parameter" = { fg = "light-0", modifiers = ["italic"] }
+"type.enum.variant" = "light-0"
+"constructor" = "light-1"
+"constant" = "gray-9"
+"constant.builtin" = { fg = "gray-9", modifiers = ["italic"] }
+"constant.character.escape" = "light-2"
+"constant.numeric" = "gray-8"
+"string" = "gray-6"
+"string.regexp" = "gray-7"
+"string.special" = "gray-8"
+"comment" = { fg = "gray-1", modifiers = ["italic"] }
+"comment.block.documentation" = { fg = "gray-3", modifiers = ["italic"] }
+"variable" = "fg"
+"variable.builtin" = { fg = "light-0", modifiers = ["italic"] }
+"variable.parameter" = "light-0"
+"variable.other.member" = "gray-9"
+"label" = "gray-7"
+"punctuation" = "gray-4"
+"punctuation.bracket" = "gray-5"
+"punctuation.special" = "gray-7"
+"keyword" = { fg = "white", modifiers = ["bold"] }
+"keyword.control" = { fg = "white", modifiers = ["bold"] }
+"keyword.directive" = "light-2"
+"keyword.storage.modifier" = "light-2"
+"operator" = "gray-5"
+"function" = "light-2"
+"function.builtin" = { fg = "light-2", modifiers = ["italic"] }
+"function.macro" = { fg = "light-0", modifiers = ["bold"] }
+"tag" = "light-1"
+"tag.attribute" = "gray-7"
+"namespace" = "gray-8"
+"special" = "light-2"
+
+"markup.heading" = { fg = "white", modifiers = ["bold"] }
+"markup.heading.marker" = "gray-4"
+"markup.list" = "gray-7"
+"markup.list.checked" = "gray-6"
+"markup.list.unchecked" = "gray-4"
+"markup.bold" = { modifiers = ["bold"] }
+"markup.italic" = { modifiers = ["italic"] }
+"markup.strikethrough" = { modifiers = ["crossed_out"] }
+"markup.link.url" = { fg = "gray-7", underline = { style = "line" } }
+"markup.link.text" = "light-2"
+"markup.link.label" = "light-1"
+"markup.quote" = { fg = "gray-6", modifiers = ["italic"] }
+"markup.raw" = "gray-8"
+
+"diff.plus" = "gray-8"
+"diff.minus" = "gray-2"
+"diff.delta" = "gray-6"
+"diff.delta.moved" = "gray-5"
+"diff.delta.conflict" = { fg = "white", modifiers = ["bold"] }
+
+# Interface
+"ui.background" = { bg = "bg" }
+"ui.background.separator" = "bg-3"
+"ui.text" = "fg"
+"ui.text.focus" = { fg = "white", bg = "bg-2", modifiers = ["bold"] }
+"ui.text.inactive" = "gray-3"
+"ui.text.info" = "fg"
+"ui.text.directory" = "light-2"
+"ui.text.symlink" = { fg = "gray-7", modifiers = ["italic"] }
+
+"ui.cursor" = { fg = "gray-3", bg = "light-1" }
+"ui.cursor.primary" = { fg = "bg", bg = "light-1" }
+"ui.cursor.select" = { fg = "bg", bg = "gray-7" }
+"ui.cursor.insert" = { fg = "bg", bg = "white" }
+"ui.cursor.match" = { fg = "white", bg = "bg-3", modifiers = ["bold"] }
+"ui.cursorline.primary" = { bg = "bg-1" }
+"ui.cursorline.secondary" = { bg = "bg-1" }
+"ui.cursorcolumn.primary" = { bg = "bg-1" }
+"ui.selection" = { bg = "bg-3" }
+"ui.selection.primary" = { bg = "bg-4" }
+"ui.highlight" = { bg = "bg-2" }
+"ui.highlight.frameline" = { bg = "bg-3" }
+
+"ui.gutter" = { bg = "bg" }
+"ui.gutter.selected" = { bg = "bg-1" }
+"ui.linenr" = "bg-4"
+"ui.linenr.selected" = { fg = "light-1", modifiers = ["bold"] }
+"ui.debug.breakpoint" = "white"
+"ui.debug.active" = "light-1"
+
+"ui.statusline" = { fg = "gray-9", bg = "bg-2" }
+"ui.statusline.inactive" = { fg = "gray-3", bg = "bg-1" }
+"ui.statusline.normal" = { fg = "bg", bg = "light-1", modifiers = ["bold"] }
+"ui.statusline.insert" = { fg = "bg", bg = "white", modifiers = ["bold"] }
+"ui.statusline.select" = { fg = "bg", bg = "gray-6", modifiers = ["bold"] }
+"ui.statusline.separator" = "gray-2"
+"ui.bufferline" = { fg = "gray-4", bg = "bg-1" }
+"ui.bufferline.active" = { fg = "white", bg = "bg-3", modifiers = ["bold"] }
+"ui.bufferline.background" = { bg = "bg-1" }
+"ui.breadcrumb" = "gray-6"
+"ui.breadcrumb.separator" = "gray-2"
+
+"ui.window" = "bg-3"
+"ui.popup" = { fg = "fg", bg = "bg-1" }
+"ui.popup.info" = { fg = "fg", bg = "bg-1" }
+"ui.popup.title" = { fg = "white", modifiers = ["bold"] }
+"ui.popup.border" = "gray-1"
+"ui.help" = { fg = "fg", bg = "bg-1" }
+"ui.menu" = { fg = "fg", bg = "bg-1" }
+"ui.menu.selected" = { fg = "bg", bg = "light-1" }
+"ui.menu.scroll" = { fg = "gray-4", bg = "bg-2" }
+"ui.picker.header" = { bg = "bg-1" }
+"ui.picker.header.column" = "gray-6"
+"ui.picker.header.column.active" = { fg = "white", modifiers = ["bold", "underlined"] }
+
+"ui.explorer.border" = "bg-3"
+"ui.explorer.tree" = "bg-4"
+"ui.explorer.tree.selected" = "gray-4"
+"ui.explorer.path" = { bg = "bg-2" }
+
+"ui.virtual" = "bg-4"
+"ui.virtual.ruler" = { bg = "bg-1" }
+"ui.virtual.whitespace" = "bg-3"
+"ui.virtual.indent-guide" = "bg-3"
+"ui.virtual.wrap" = "gray-1"
+"ui.virtual.inlay-hint" = { fg = "gray-2", modifiers = ["italic"] }
+"ui.virtual.inline-value" = { fg = "gray-4", modifiers = ["italic"] }
+"ui.virtual.code-lens" = { fg = "gray-3", modifiers = ["italic"] }
+"ui.virtual.inline-blame" = { fg = "gray-1", modifiers = ["italic"] }
+"ui.virtual.inline-completion" = { fg = "gray-2", modifiers = ["italic"] }
+"ui.virtual.fold-decoration" = { fg = "gray-4", bg = "bg-2" }
+"ui.virtual.jump-label" = { fg = "white", bg = "bg-3", modifiers = ["bold"] }
+
+# Diagnostics: brighter (and bolder) the more serious, with distinct underlines
+"error" = { fg = "white", modifiers = ["bold"] }
+"warning" = "light-2"
+"info" = "gray-7"
+"hint" = "gray-4"
+"diagnostic.error" = { underline = { color = "white", style = "curl" } }
+"diagnostic.warning" = { underline = { color = "light-0", style = "curl" } }
+"diagnostic.info" = { underline = { color = "gray-6", style = "dotted" } }
+"diagnostic.hint" = { underline = { color = "gray-4", style = "dotted" } }
+"diagnostic.unnecessary" = { modifiers = ["dim"] }
+"diagnostic.deprecated" = { modifiers = ["crossed_out"] }
+"tabstop" = { bg = "bg-3", modifiers = ["italic"] }
+
+rainbow = ["white", "gray-8", "gray-6", "light-1", "gray-7", "gray-5"]
+
+[palette]
+# Backgrounds (black, then palette 8 and steps between)
+bg = "#000000"
+bg-1 = "#0f0f0e"
+bg-2 = "#1a1a19"
+bg-3 = "#2e2e2c"
+bg-4 = "#444442"
+# Greys, darkest to lightest (palette 2, 10, 6, 14, 4, 12, 1, 9, 7, 15)
+gray-1 = "#5e5e5c"
+gray-2 = "#635361"
+gray-3 = "#696966"
+gray-4 = "#727370"
+gray-5 = "#777875"
+gray-6 = "#939490"
+gray-7 = "#989995"
+gray-8 = "#aaaba6"
+gray-9 = "#afb0ab"
+# Foregrounds (foreground, cursor, 11, 5, 13)
+fg = "#b8b9b4"
+light-1 = "#b6b8b3"
+light-0 = "#bbbdbb"
+light-2 = "#d1d1cb"
+white = "#d6d6d0"
