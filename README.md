@@ -99,8 +99,6 @@ Default settings (`[editor.explorer]` in your `config.toml`):
 |`width` | Width of the pinned panel in columns | `30` |
 |`floating-width` | Width of the floating window in columns | `40` |
 |`floating-height` | Height of the floating window in lines | `20` |
-|`floating-x` | Column of the floating window's left edge (centered when unset) | unset |
-|`floating-y` | Row of the floating window's top edge (centered when unset) | unset |
 |`icons` | Show per-file-type icons (honors the global `[icons.mime]` settings, see below) | `true` |
 |`auto-reveal` | Select the current buffer's file when the panel opens | `false` |
 |`show-hidden` | Show dotfiles (hidden files) | `false` |
@@ -275,12 +273,14 @@ The floating window's border is a plain solid line by default. When
 `[editor.gradient-borders]` is enabled it is drawn as a gradient border instead
 (using its colors, direction and thickness), exactly like the pickers.
 
-The floating window can be moved and resized with the mouse: drag the top
-border to move it, any other border (or a corner) to resize it. The geometry
-is remembered across sessions in `explorer-float.toml` in Helix's state
-directory (the config file itself is never rewritten), and takes precedence
-over `floating-width`, `floating-height`, `floating-x` and `floating-y` until
-you run `:explorer-float-reset`.
+The floating window opens centered on the screen, at `floating-width` x
+`floating-height`. Like the pickers, it gets at most 90% of the editor (without
+the status line and the command line): when it is configured bigger than that,
+it is shrunk to fit, still centered. Its size and position are not saved.
+
+While it is open, it can be moved and resized with the mouse: drag the top
+border to move it, any other border (or a corner) to resize it. The next time
+it opens it is centered again; `:explorer-float-reset` centers the open one.
 
 The separator between a pinned panel and the editor can be dragged to resize
 the panel. Dividers between editor splits can be dragged too. Notifications

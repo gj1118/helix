@@ -164,9 +164,6 @@ impl Application {
             editor.set_error(format!("Failed to load snippets: {err:#}"));
         }
 
-        // The floating explorer reopens where it was left last time.
-        editor.explorer_panel.floating_geometry = helix_view::explorer::load_floating_geometry();
-
         // Load cross-session history into registers when enabled.
         if persistence_config.commands {
             editor

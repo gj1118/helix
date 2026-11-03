@@ -396,3 +396,83 @@ async fn counts_do_not_leak_and_the_buffer_keeps_its_motions() -> anyhow::Result
     .await?;
     Ok(())
 }
+
+/// The floating window is centered on the screen at its configured size, and shrunk
+/// (still centered) when it is configured bigger than the room there is.
+#[tokio::test(flavor = "multi_thread")]
+async fn floating_window_is_centered_and_fits_the_screen() -> anyhow::Result<()> {
+    for (explorer_toml, fits) in [
+        ("floating-width = 30\nfloating-height = 10", true),
+        ("floating-width = 500\nfloating-height = 500", false),
+    ] {
+        let (_dir, root) = repo()?;
+        let mut app = helpers::AppBuilder::new()
+            .with_config(config(explorer_toml))
+            .build()?;
+        app.editor.explorer_panel.floating = true;
+        open_explorer(&mut app, &root);
+        test_key_sequences(
+            &mut app,
+            vec![(
+                // (not Esc: that closes a floating window)
+                Some("k"),
+                Some(&|app| {
+                    let rows = app.rendered_rows();
+                    let corners = ['┌', '╭', '┏', '╔'];
+                    let grid: Vec<Vec<char>> =
+                        rows.iter().map(|row| row.chars().collect()).collect();
+                    let at = |y: usize, x: usize| grid.get(y).and_then(|row| row.get(x)).copied();
+                    // The frame that holds the tree (a notification has one too).
+                    let (top, left, width, height) = (0..grid.len())
+                        .flat_map(|y| (0..grid[y].len()).map(move |x| (y, x)))
+                        .filter(|&(y, x)| at(y, x).is_some_and(|c| corners.contains(&c)))
+                        // measured to the frame's own corners: text drawn next to the
+                        // window can touch its border
+                        .filter_map(|(y, x)| {
+                            let right = (x + 1..grid[y].len())
+                                .find(|&i| at(y, i).is_some_and(|c| "┐╮┓╗".contains(c)))?;
+                            let bottom = (y + 1..grid.len())
+                                .find(|&j| at(j, x).is_some_and(|c| "└╰┗╚".contains(c)))?;
+                            Some((y, x, right - x + 1, bottom - y + 1))
+                        })
+                        .find(|&(y, x, width, height)| {
+                            (y..y + height).any(|j| {
+                                grid[j]
+                                    .iter()
+                                    .skip(x)
+                                    .take(width)
+                                    .collect::<String>()
+                                    .contains("a.txt")
+                            })
+                        })
+                        .unwrap_or_else(|| panic!("no explorer window:\n{}", rows.join("\n")));
+                    // no pinned panel: the editor spans the screen
+                    let screen_width = app.editor.tree.area().width as usize;
+                    // without the status line and the command line, like the pickers
+                    let screen_height = rows.len() - 2;
+                    let (right, bottom) =
+                        (screen_width - left - width, screen_height - top - height);
+                    let text = rows.join("\n");
+                    assert!(
+                        left.abs_diff(right) <= 1,
+                        "not centered: {left} | {right}\n{text}"
+                    );
+                    assert!(
+                        top.abs_diff(bottom) <= 1,
+                        "not centered: {top} | {bottom}\n{text}"
+                    );
+                    if fits {
+                        assert_eq!((width, height), (30, 10), "{text}");
+                    } else {
+                        // the pickers' 90%
+                        assert!(width <= screen_width * 9 / 10, "{width} wide\n{text}");
+                        assert!(height <= screen_height * 9 / 10, "{height} high\n{text}");
+                    }
+                }),
+            )],
+            false,
+        )
+        .await?;
+    }
+    Ok(())
+}

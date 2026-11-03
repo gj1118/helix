@@ -4052,6 +4052,8 @@ pub fn explorer_float_toggle(cx: &mut Context) {
         panel.visible = true;
         panel.focused = true;
         panel.floating = true;
+        // Every floating window opens centered at its configured size.
+        panel.floating_geometry = None;
         explorer_install_layer(cx);
     }
 }
@@ -4084,6 +4086,8 @@ pub fn explorer_float(cx: &mut Context) {
     panel.visible = true;
     panel.focused = true;
     panel.floating = true;
+    // Every floating window opens centered at its configured size.
+    panel.floating_geometry = None;
     explorer_install_layer(cx);
 }
 

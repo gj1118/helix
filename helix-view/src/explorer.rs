@@ -47,9 +47,12 @@ pub struct ExplorerConfig {
     pub floating_width: u16,
     /// Height of the floating window in lines. Defaults to `20`.
     pub floating_height: u16,
-    /// Column of the floating window's left edge. Centered when unset.
+    /// No longer used: the floating window is always centered. Still accepted so that
+    /// existing configs keep loading.
+    #[serde(skip_serializing)]
     pub floating_x: Option<u16>,
-    /// Row of the floating window's top edge. Centered when unset.
+    /// No longer used, see `floating_x`.
+    #[serde(skip_serializing)]
     pub floating_y: Option<u16>,
     /// Draw file type icons (honoring the global `[editor.icons]` settings).
     /// Defaults to `true`.
@@ -118,9 +121,8 @@ pub struct ExplorerState {
     /// (`:explorer-float-toggle`); closing the window clears it, so the pinned
     /// panel's toggle never reopens a float.
     pub floating: bool,
-    /// Position and size of the floating window as last set with the mouse.
-    /// Takes precedence over `floating-*` in the config and is kept across
-    /// sessions (see [`load_floating_geometry`]).
+    /// Position and size of the floating window as moved or resized with the mouse
+    /// while it is open. Forgotten when it closes: it opens centered every time.
     pub floating_geometry: Option<FloatGeometry>,
     /// Runtime width override (`:explorer-width`).
     pub width: Option<u16>,
@@ -143,6 +145,8 @@ impl ExplorerState {
         self.visible = false;
         self.focused = false;
         self.floating = false;
+        // The next floating window opens centered at its configured size.
+        self.floating_geometry = None;
     }
 
     /// Effective width of the pinned panel.
@@ -162,22 +166,26 @@ impl ExplorerState {
             .map_or(config.floating_height, |g| g.height)
     }
 
-    /// The floating window's frame (border included) inside `area`: the mouse
-    /// set geometry if there is one, else the `floating-*` config, centered
-    /// where no position is given. Always fits inside `area`.
+    /// The floating window's frame (border included) inside `area`, the editor without
+    /// its status line and command line. Like the pickers (`ui::overlay`), it takes at most
+    /// [`FLOAT_MAX_PERCENT`] of `area` and is centered: the `floating-width` x
+    /// `floating-height` of the config, shrunk to fit when there isn't room. While it is
+    /// open, a mouse move or resize (`floating_geometry`) takes over, kept inside `area`.
     pub fn floating_frame(&self, config: &ExplorerConfig, area: Rect) -> Rect {
-        let width = self
-            .floating_width(config)
-            .min(area.width.saturating_sub(2));
-        let height = self
-            .floating_height(config)
-            .min(area.height.saturating_sub(2));
-        let (x, y) = match self.floating_geometry {
-            Some(g) => (Some(g.x), Some(g.y)),
-            None => (config.floating_x, config.floating_y),
+        let percent = |size: u16| (size as u32 * FLOAT_MAX_PERCENT / 100) as u16;
+        let (x, y, width, height) = match self.floating_geometry {
+            Some(g) => (g.x, g.y, g.width.min(area.width), g.height.min(area.height)),
+            None => {
+                let width = self.floating_width(config).min(percent(area.width));
+                let height = self.floating_height(config).min(percent(area.height));
+                (
+                    area.width.saturating_sub(width) / 2,
+                    area.height.saturating_sub(height) / 2,
+                    width,
+                    height,
+                )
+            }
         };
-        let x = x.unwrap_or(area.width.saturating_sub(width) / 2);
-        let y = y.unwrap_or(area.height.saturating_sub(height) / 2);
         Rect::new(
             area.x + x.min(area.width.saturating_sub(width)),
             area.y + y.min(area.height.saturating_sub(height)),
@@ -301,12 +309,15 @@ struct Dir {
 // Floating window geometry
 // ---------------------------------------------------------------------------
 
+/// The most of the editor the floating window takes, as the pickers do.
+pub const FLOAT_MAX_PERCENT: u32 = 90;
+
 /// Smallest the floating window can be dragged to.
 pub const MIN_FLOAT_WIDTH: u16 = 16;
 pub const MIN_FLOAT_HEIGHT: u16 = 6;
 
 /// Position and size of the floating window, in cells relative to the area it
-/// floats in. Saved between sessions.
+/// floats in, as set with the mouse while it is open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FloatGeometry {
     pub x: u16,
@@ -409,37 +420,6 @@ impl FloatDrag {
             width: w.max(1) as u16,
             height: h.max(1) as u16,
         }
-    }
-}
-
-fn floating_geometry_path() -> PathBuf {
-    helix_loader::state_dir().join("explorer-float.toml")
-}
-
-/// The floating window geometry saved by an earlier session, if any.
-pub fn load_floating_geometry() -> Option<FloatGeometry> {
-    let text = fs::read_to_string(floating_geometry_path()).ok()?;
-    toml::from_str(&text).ok()
-}
-
-/// Saves (or, for `None`, forgets) the floating window geometry. It lives in
-/// the state directory rather than in `config.toml`, so the config file is
-/// never rewritten behind the user's back; `floating-width` and friends in the
-/// config remain the defaults until a window is moved or resized.
-pub fn save_floating_geometry(geometry: Option<FloatGeometry>) -> io::Result<()> {
-    let path = floating_geometry_path();
-    match geometry {
-        Some(geometry) => {
-            if let Some(dir) = path.parent() {
-                fs::create_dir_all(dir)?;
-            }
-            let text = toml::to_string(&geometry).map_err(io::Error::other)?;
-            fs::write(path, text)
-        }
-        None => match fs::remove_file(path) {
-            Err(err) if err.kind() != io::ErrorKind::NotFound => Err(err),
-            _ => Ok(()),
-        },
     }
 }
 
@@ -2292,30 +2272,40 @@ mod tests {
     }
 
     #[test]
-    fn floating_frame_uses_geometry_config_or_center() {
-        let area = Rect::new(0, 0, 100, 40);
-        let mut config = ExplorerConfig::default();
+    fn floating_frame_is_centered_and_fits() {
+        let area = Rect::new(5, 2, 100, 40);
+        let config = ExplorerConfig::default();
         let mut state = ExplorerState::default();
-        // Centered by default.
+        // Centered at the configured 40 x 20.
+        let centered = Rect::new(5 + 30, 2 + 10, 40, 20);
+        assert_eq!(state.floating_frame(&config, area), centered);
+        // `floating-x` / `floating-y` no longer move it.
+        let mut positioned = config.clone();
+        positioned.floating_x = Some(0);
+        positioned.floating_y = Some(0);
+        assert_eq!(state.floating_frame(&positioned, area), centered);
+        // Bigger than the room there is: 90% of it, like the pickers, still centered.
+        let mut big = config.clone();
+        big.floating_width = 500;
+        big.floating_height = 500;
         assert_eq!(
-            state.floating_frame(&config, area),
-            Rect::new(30, 10, 40, 20)
+            state.floating_frame(&big, area),
+            Rect::new(5 + 5, 2 + 2, 90, 36)
         );
-        // Config position.
-        config.floating_x = Some(5);
-        config.floating_y = Some(2);
-        assert_eq!(state.floating_frame(&config, area), Rect::new(5, 2, 40, 20));
-        // Mouse set geometry wins, and always fits inside the area.
+        // A mouse move or resize while open takes over, kept inside the area.
         state.floating_geometry = Some(FloatGeometry {
-            x: 90,
+            x: 80,
             y: 30,
             width: 50,
             height: 12,
         });
         assert_eq!(
             state.floating_frame(&config, area),
-            Rect::new(50, 28, 50, 12)
+            Rect::new(5 + 50, 2 + 28, 50, 12)
         );
+        // Closing forgets it: the next window is centered again.
+        state.hide();
+        assert_eq!(state.floating_frame(&config, area), centered);
     }
 
     #[test]

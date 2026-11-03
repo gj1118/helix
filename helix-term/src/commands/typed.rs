@@ -5205,7 +5205,7 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
     TypableCommand {
         name: "explorer-float-reset",
         aliases: &[],
-        doc: "Forget the floating explorer window's mouse-set position and size, going back to the config",
+        doc: "Put the floating explorer window back in the center at its configured size, undoing a mouse move or resize",
         fun: explorer_float_reset,
         completer: CommandCompleter::none(),
         signature: Signature { positionals: (0, Some(0)), ..Signature::DEFAULT },
@@ -6122,7 +6122,6 @@ fn explorer_float_reset(
         return Ok(());
     }
     cx.editor.explorer_panel.floating_geometry = None;
-    helix_view::explorer::save_floating_geometry(None)?;
     Ok(())
 }
 

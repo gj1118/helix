@@ -31,9 +31,8 @@ use helix_view::{
     document::Mode,
     editor::{Action, CmdlineStyle, GradientBorderConfig, PointerShape},
     explorer::{
-        copy_recursively, new_matcher, save_floating_geometry, Entry, ExplorerClipboard,
-        ExplorerSide, FloatDrag, FloatGeometry, ScanOptions, Tree, TreeParams, FILTER_RESULT_LIMIT,
-        FILTER_SCAN_LIMIT,
+        copy_recursively, new_matcher, Entry, ExplorerClipboard, ExplorerSide, FloatDrag,
+        FloatGeometry, ScanOptions, Tree, TreeParams, FILTER_RESULT_LIMIT, FILTER_SCAN_LIMIT,
     },
     graphics::{Color, Rect, Style},
     Editor,
@@ -962,14 +961,8 @@ impl Explorer {
                         Some(drag.apply(start, dx, dy, bounds.width, bounds.height));
                 }
                 MouseEventKind::Up(_) => {
+                    // Kept while the window is open; it opens centered next time.
                     self.float_drag = None;
-                    // Keep the window where the user left it next session.
-                    if let Err(err) =
-                        save_floating_geometry(cx.editor.explorer_panel.floating_geometry)
-                    {
-                        cx.editor
-                            .set_error(format!("Failed to save the explorer window: {err}"));
-                    }
                 }
                 _ => {}
             }
@@ -1749,10 +1742,14 @@ impl Component for Explorer {
         let bottom = if cmdline_popup_full_height { 0 } else { 1 };
 
         let (rect, frame) = if floating {
+            // The area the pickers float in: the editor without the status line and the
+            // command line. The window is centered in it, at most 90% of it.
+            let bounds = area.clip_bottom(2);
+            self.float_bounds = bounds;
             let frame = cx
                 .editor
                 .explorer_panel
-                .floating_frame(&cx.editor.config().explorer, area);
+                .floating_frame(&cx.editor.config().explorer, bounds);
             // Gradient borders, when configured, set the border's thickness.
             let gradient = &cx.editor.config().gradient_borders;
             let t = if gradient.enable {
@@ -1808,7 +1805,6 @@ impl Component for Explorer {
         self.screen_width = area.width;
         self.separator = None;
         self.frame = frame;
-        self.float_bounds = area;
 
         let theme = &cx.editor.theme;
         let text_style = theme.get("ui.text");
