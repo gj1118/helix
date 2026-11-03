@@ -913,6 +913,7 @@ fn load_more_frames(cx: &mut compositor::Context) {
         let (frames, total) = page.await?;
         Ok(Callback::EditorCompositor(Box::new(
             move |editor: &mut Editor, compositor: &mut Compositor| {
+                let frames = helix_view::handlers::dap::with_open_buffer_paths(editor, frames);
                 if let Some(debugger) = editor.debug_adapters.get_active_client_mut() {
                     // The thread may have moved on while the request was in flight.
                     if debugger.thread_id == Some(thread_id) {

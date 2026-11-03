@@ -52,6 +52,7 @@ pub fn switch_thread(editor: &mut Editor, thread_id: ThreadId) {
     spawn_job(editor, id, async move {
         let page = page.await;
         Some(Box::new(move |editor: &mut Editor| {
+            let page = page.map(|(frames, total)| (with_open_buffer_paths(editor, frames), total));
             let Some(debugger) = editor.debug_adapters.get_client_mut(id) else {
                 return;
             };
@@ -101,6 +102,12 @@ fn fetch_stop(
         )
         .await;
         Some(Box::new(move |editor: &mut Editor| {
+            let pages: Vec<_> = pages
+                .into_iter()
+                .map(|page| {
+                    page.map(|(frames, total)| (with_open_buffer_paths(editor, frames), total))
+                })
+                .collect();
             let Some(debugger) = editor.debug_adapters.get_client_mut(id) else {
                 return;
             };
@@ -574,6 +581,50 @@ pub fn forget_session_sources(editor: &mut Editor, session: DebugAdapterId) {
 /// An adapter that takes longer than this to send a generated source is given up on.
 const ADAPTER_SOURCE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// The path of an open buffer of the same file as `path`, or `path`. An adapter names files by
+/// the path it was given, which `:debug-start` resolves through symlinks (`/var` is
+/// `/private/var` on macOS): opening that path again would make a second buffer of a file
+/// that is already open, and breakpoints set in one wouldn't show in the other.
+fn open_path_of_same_file(editor: &Editor, path: PathBuf) -> PathBuf {
+    let open = |candidate: &std::path::Path| editor.document_by_path(candidate).is_some();
+    if open(&path) {
+        return path;
+    }
+    let Ok(real) = std::fs::canonicalize(&path) else {
+        return path;
+    };
+    editor
+        .documents()
+        .filter_map(|doc| doc.path())
+        .find(|doc_path| std::fs::canonicalize(doc_path).is_ok_and(|doc_real| doc_real == real))
+        .map(ToOwned::to_owned)
+        .unwrap_or(path)
+}
+
+/// Names the sources of `frames` by the paths of the buffers already open for them, see
+/// [`open_path_of_same_file`]: the gutter, inline values and the stack frame picker find a
+/// frame's buffer by its path.
+pub fn with_open_buffer_paths(
+    editor: &Editor,
+    mut frames: Vec<helix_dap::StackFrame>,
+) -> Vec<helix_dap::StackFrame> {
+    let mut known: std::collections::HashMap<PathBuf, PathBuf> = Default::default();
+    for frame in &mut frames {
+        let Some(path) = frame
+            .source
+            .as_mut()
+            .and_then(|source| source.path.as_mut())
+        else {
+            continue;
+        };
+        let open = known
+            .entry(path.clone())
+            .or_insert_with(|| open_path_of_same_file(editor, path.clone()));
+        path.clone_from(open);
+    }
+    frames
+}
+
 pub fn jump_to_stack_frame(editor: &mut Editor, frame: &helix_dap::StackFrame) {
     let path = match &frame.source {
         Some(helix_dap::Source {
@@ -591,6 +642,7 @@ pub fn jump_to_stack_frame(editor: &mut Editor, frame: &helix_dap::StackFrame) {
         }
         _ => return,
     };
+    let path = open_path_of_same_file(editor, path);
 
     if let Err(e) = editor.open(&path, Action::Replace) {
         editor.set_error(format!("Unable to jump to stack frame: {}", e));

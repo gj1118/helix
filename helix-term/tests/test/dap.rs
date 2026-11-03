@@ -634,3 +634,42 @@ async fn breakpoints_threads_and_the_end_of_a_session_are_handled_in_the_backgro
     );
     Ok(())
 }
+
+/// `:debug-start` resolves the program's path through symlinks (as `/var` is `/private/var`
+/// on macOS) and the adapter names the stopped file by that path: the stop is shown in the
+/// buffer already open, not in a second buffer of the same file.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stop_in_a_file_opened_through_a_symlink_uses_its_buffer() -> anyhow::Result<()> {
+    let real = fixture()?;
+    let links = tempfile::tempdir()?;
+    let link = links.path().join("linked");
+    std::os::unix::fs::symlink(real.path.parent().unwrap(), &link)?;
+    let fixture = Fixture {
+        _dir: tempfile::tempdir()?,
+        path: link.join("prog.mock"),
+        log: real.log.clone(),
+    };
+    let mut app = app(&fixture)?;
+    let start_keys = start(&fixture.path);
+    let opened = helix_stdx::path::canonicalize(&fixture.path);
+    test_key_sequences(
+        &mut app,
+        vec![
+            (Some(start_keys.as_str()), None),
+            (Some("<esc>"), None),
+            (Some("<esc>"), Some(&|app| assert_eq!(cursor_line(app), 2))),
+            (
+                Some("<space>Gb"),
+                Some(&|app| {
+                    assert_eq!(app.editor.documents().count(), 1);
+                    assert_eq!(helix_view::doc!(app.editor).path(), Some(opened.as_path()));
+                    let breakpoints = app.editor.breakpoints.get(&opened);
+                    assert_eq!(breakpoints.map(Vec::len), Some(1), "{breakpoints:?}");
+                }),
+            ),
+        ],
+        false,
+    )
+    .await
+}
