@@ -1,5 +1,5 @@
-# simplelight: the light twin of simpledark. Each grey has the contrast against the
-# background that its simpledark counterpart has against black.
+# simplelight: the light twin of simpledark, on a soft grey background. The greys keep
+# simpledark's order and spacing of contrast.
 # Syntax is told apart by shade and by bold / italic rather than by hue.
 
 # Syntax highlighting
@@ -148,25 +148,25 @@
 rainbow = ["ink", "gray-8", "gray-6", "dark-1", "gray-7", "gray-5"]
 
 [palette]
-# Backgrounds, lightest first: the page, then the cursor line, bars, selections and guides
-bg = "#fafaf7"
-bg-1 = "#f0f0ec"
-bg-2 = "#e7e7e2"
-bg-3 = "#d9d9d4"
-bg-4 = "#c4c4bf"
+# Backgrounds: the page, then darker steps for the cursor line, bars, selections and guides
+bg = "#b6b8b3"
+bg-1 = "#adafaa"
+bg-2 = "#a4a6a1"
+bg-3 = "#979994"
+bg-4 = "#868883"
 # Greys, faintest to strongest
-gray-1 = "#8c8c89"
-gray-2 = "#868683"
-gray-3 = "#80807d"
-gray-4 = "#757572"
-gray-5 = "#70706d"
-gray-6 = "#575754"
-gray-7 = "#535350"
-gray-8 = "#464643"
-gray-9 = "#42423f"
+gray-1 = "#6d6e6b"
+gray-2 = "#686966"
+gray-3 = "#636461"
+gray-4 = "#5a5b58"
+gray-5 = "#565754"
+gray-6 = "#40413e"
+gray-7 = "#3c3d3a"
+gray-8 = "#2e2f2c"
+gray-9 = "#2a2b28"
 # Text, then the darkest inks for cursors, keywords and headings
-fg = "#3c3c39"
-dark-1 = "#3d3d3a"
-dark-0 = "#393936"
-dark-2 = "#2a2a27"
-ink = "#272724"
+fg = "#232421"
+dark-1 = "#242522"
+dark-0 = "#1f201d"
+dark-2 = "#080906"
+ink = "#000100"
