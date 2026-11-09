@@ -2530,6 +2530,9 @@ pub struct Editor {
     /// `buffer_pre_save` handlers with it). It may edit the document: what it leaves is
     /// written.
     pub pre_save_hook: Option<PreSaveHook>,
+    /// Whether the terminal can draw the secondary cursors itself (kitty's multiple cursors
+    /// protocol), detected when the terminal is set up.
+    pub kitty_multi_cursor_support: bool,
 }
 
 pub type Motion = Box<dyn Fn(&mut Editor)>;
@@ -2672,6 +2675,7 @@ impl Editor {
             workspace_trust,
             old_file_locs,
             pre_save_hook: None,
+            kitty_multi_cursor_support: false,
         }
     }
 

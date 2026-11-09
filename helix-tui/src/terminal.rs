@@ -74,6 +74,12 @@ where
     /// Set to request a full clear. The erase is deferred to the next `flush` so it is emitted
     /// inside the same synchronized-output frame as the repaint to avoid painting blank frames
     force_clear: bool,
+    /// The secondary cursors the terminal should draw from the next draw on, see
+    /// [`Terminal::set_secondary_cursors`].
+    secondary_cursors: Vec<(u16, u16)>,
+    /// The secondary cursors last sent to the backend, or `None` when the terminal's are unknown
+    /// (nothing sent yet, or a clear removed them).
+    sent_secondary_cursors: Option<Vec<(u16, u16)>>,
 }
 
 /// Default terminal size: 80 columns, 24 lines
@@ -115,10 +121,14 @@ where
             cursor_kind: CursorKind::Block,
             viewport: options.viewport,
             force_clear: false,
+            secondary_cursors: Vec::new(),
+            sent_secondary_cursors: None,
         })
     }
 
     pub fn claim(&mut self) -> io::Result<()> {
+        // Claiming clears the (alternate) screen, and with it any secondary cursors.
+        self.sent_secondary_cursors = None;
         self.backend.claim()
     }
 
@@ -249,6 +259,13 @@ where
             kind => self.show_cursor(kind)?,
         }
 
+        // Only when they changed: the terminal keeps them between frames (erasing the screen
+        // removes them, so a clear forgets what was sent).
+        if self.sent_secondary_cursors.as_ref() != Some(&self.secondary_cursors) {
+            self.backend.set_multiple_cursors(&self.secondary_cursors)?;
+            self.sent_secondary_cursors = Some(self.secondary_cursors.clone());
+        }
+
         self.backend.end_sync()?;
 
         // Swap buffers
@@ -281,12 +298,21 @@ where
         self.backend.set_cursor(x, y)
     }
 
+    /// Sets the secondary cursors (zero-based `(x, y)` cells) the terminal draws besides the
+    /// main cursor from the next [`Terminal::draw`] on, for backends supporting a multiple
+    /// cursors protocol. An empty list removes them.
+    pub fn set_secondary_cursors(&mut self, cursors: Vec<(u16, u16)>) {
+        self.secondary_cursors = cursors;
+    }
+
     /// Clear the terminal and force a full redraw on the next draw call.
     ///
     /// The physical erase is deferred to the next `flush` so it shares a
     /// synchronized frame with the repaint.
     pub fn clear(&mut self) -> io::Result<()> {
         self.force_clear = true;
+        // Erasing the display removes the terminal's secondary cursors too.
+        self.sent_secondary_cursors = None;
         // Reset the back buffer to make sure the next update will redraw everything.
         self.buffers[1 - self.current].reset();
         Ok(())
@@ -382,5 +408,36 @@ mod overlay_tests {
         terminal.clear().unwrap();
         frame(&mut terminal, &[overlay(1, area)]);
         assert_eq!(raw(&mut terminal), [(1, 1, "image 1".to_string())]);
+    }
+
+    fn sent_cursors(terminal: &mut Terminal<TestBackend>) -> Vec<Vec<(u16, u16)>> {
+        std::mem::take(&mut terminal.backend_mut().multiple_cursors)
+    }
+
+    /// Secondary cursors go to the backend when they change (the terminal keeps them between
+    /// frames), and again after a clear, which removes them from the screen.
+    #[test]
+    fn secondary_cursors_are_sent_when_they_change() {
+        let mut terminal = Terminal::new(TestBackend::new(20, 10)).unwrap();
+
+        // The first frame says that there are none.
+        frame(&mut terminal, &[]);
+        assert_eq!(sent_cursors(&mut terminal), [vec![]]);
+        frame(&mut terminal, &[]);
+        assert_eq!(sent_cursors(&mut terminal), Vec::<Vec<(u16, u16)>>::new());
+
+        terminal.set_secondary_cursors(vec![(1, 2), (3, 4)]);
+        frame(&mut terminal, &[]);
+        assert_eq!(sent_cursors(&mut terminal), [vec![(1, 2), (3, 4)]]);
+        frame(&mut terminal, &[]);
+        assert_eq!(sent_cursors(&mut terminal), Vec::<Vec<(u16, u16)>>::new());
+
+        terminal.clear().unwrap();
+        frame(&mut terminal, &[]);
+        assert_eq!(sent_cursors(&mut terminal), [vec![(1, 2), (3, 4)]]);
+
+        terminal.set_secondary_cursors(Vec::new());
+        frame(&mut terminal, &[]);
+        assert_eq!(sent_cursors(&mut terminal), [vec![]]);
     }
 }

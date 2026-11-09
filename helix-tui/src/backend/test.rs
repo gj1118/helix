@@ -19,6 +19,8 @@ pub struct TestBackend {
     pub raw: Vec<(u16, u16, Vec<u8>)>,
     /// What `cell_size` reports.
     pub cell_size: Option<(u16, u16)>,
+    /// The secondary cursors set with `set_multiple_cursors`, one entry per call.
+    pub multiple_cursors: Vec<Vec<(u16, u16)>>,
 }
 
 /// Returns a string representation of the given buffer for debugging purpose.
@@ -60,6 +62,7 @@ impl TestBackend {
             pos: (0, 0),
             raw: Vec::new(),
             cell_size: None,
+            multiple_cursors: Vec::new(),
         }
     }
 
@@ -156,6 +159,11 @@ impl Backend for TestBackend {
 
     fn set_cursor(&mut self, x: u16, y: u16) -> Result<(), io::Error> {
         self.pos = (x, y);
+        Ok(())
+    }
+
+    fn set_multiple_cursors(&mut self, cursors: &[(u16, u16)]) -> Result<(), io::Error> {
+        self.multiple_cursors.push(cursors.to_vec());
         Ok(())
     }
 

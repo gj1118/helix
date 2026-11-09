@@ -40,6 +40,12 @@ pub trait Backend {
     fn show_cursor(&mut self, kind: CursorKind) -> Result<(), io::Error>;
     /// Sets the cursor to the given position
     fn set_cursor(&mut self, x: u16, y: u16) -> Result<(), io::Error>;
+    /// Replaces the secondary cursors the terminal draws besides the main one, at the given
+    /// zero-based `(x, y)` cells (kitty's multiple cursors protocol); an empty slice removes them.
+    /// Backends without such a protocol ignore this.
+    fn set_multiple_cursors(&mut self, _cursors: &[(u16, u16)]) -> Result<(), io::Error> {
+        Ok(())
+    }
     /// Clears the terminal
     fn clear(&mut self) -> Result<(), io::Error>;
     /// Begins a synchronized-output frame (if the terminal supports it), so the

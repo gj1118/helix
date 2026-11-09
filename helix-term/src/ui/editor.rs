@@ -31,7 +31,7 @@ use helix_lsp::lsp::SymbolKind;
 use helix_view::{
     // annotations::diagnostics::DiagnosticFilter,
     document::{Mode, SCRATCH_BUFFER_NAME},
-    editor::{CompleteAction, CursorShapeConfig, InlineBlameConfig, InlineBlameShow},
+    editor::{CompleteAction, InlineBlameConfig, InlineBlameShow},
     graphics::{Color, CursorKind, Modifier, Rect, Style},
     icons::ICONS,
     input::{KeyEvent, MouseButton, MouseEvent, MouseEventKind},
@@ -53,7 +53,7 @@ use std::{
 };
 
 use tui::{
-    buffer::Buffer as Surface,
+    buffer::{Buffer as Surface, Cell},
     text::{Span, Spans},
 };
 
@@ -74,6 +74,10 @@ pub struct EditorView {
     terminal_focused: bool,
     /// Tracks if there are prompt layers active (updated by compositor)
     pub prompt_active: bool,
+    /// The focused view's secondary cursors when the terminal draws them (kitty's multiple
+    /// cursors protocol): their screen cells, with the cell as the views were drawn, to tell
+    /// whether something was drawn over them afterwards.
+    terminal_secondary_cursors: Vec<(u16, u16, Cell)>,
     notification_popup: NotificationPopup,
     /// Cache for bufferline display names to avoid O(n³) recomputation per frame
     bufferline_cache: BufferlineCache,
@@ -163,6 +167,7 @@ impl EditorView {
             bufferline_info: BufferLineInfo::default(),
             terminal_focused: true,
             prompt_active: false,
+            terminal_secondary_cursors: Vec::new(),
             notification_popup: NotificationPopup::new(),
             bufferline_cache: BufferlineCache::default(),
             split_drag: None,
@@ -535,11 +540,10 @@ impl EditorView {
                 overlays.push(tabstops);
             }
             overlays.push(self.doc_selection_highlights(
-                editor.mode(),
+                editor,
                 doc,
                 view,
                 theme,
-                &config.cursor_shape,
                 self.terminal_focused,
             ));
             if let Some(overlay) = Self::highlight_focused_view_elements(view, doc, theme) {
@@ -1106,13 +1110,15 @@ impl EditorView {
     /// Get highlight spans for selections in a document view.
     fn doc_selection_highlights(
         &self,
-        mode: Mode,
+        editor: &Editor,
         doc: &Document,
         view: &View,
         theme: &Theme,
-        cursor_shape_config: &CursorShapeConfig,
         is_terminal_focused: bool,
     ) -> OverlayHighlights {
+        let mode = editor.mode();
+        let cursor_shape_config = &editor.config().cursor_shape;
+        let terminal_draws_secondary_cursors = self.terminal_draws_secondary_cursors(editor);
         let text = doc.text().slice(..);
         let selection = doc.selection(view.id);
         let primary_idx = selection.primary_index();
@@ -1151,6 +1157,17 @@ impl EditorView {
         let mut spans = Vec::new();
         for (i, range) in selection.iter().enumerate() {
             let selection_is_primary = i == primary_idx;
+            // Whether this cursor is drawn here rather than by the terminal: the primary one
+            // when the terminal cursor is elsewhere, secondary ones unless the terminal draws
+            // them (in the main cursor's shape, so their selections look like the primary's).
+            let (draw_cursor, terminal_shaped) = if selection_is_primary {
+                (!is_terminal_focused || self.prompt_active, true)
+            } else {
+                (
+                    !terminal_draws_secondary_cursors,
+                    terminal_draws_secondary_cursors,
+                )
+            };
             let (cursor_scope, selection_scope) = if selection_is_primary {
                 (primary_cursor_scope, primary_selection_scope)
             } else {
@@ -1159,7 +1176,7 @@ impl EditorView {
 
             // Special-case: cursor at end of the rope.
             if range.head == range.anchor && range.head == text.len_chars() {
-                if !selection_is_primary || !is_terminal_focused || self.prompt_active {
+                if draw_cursor {
                     // Primary cursor is drawn by the terminal when focused and no prompt is active
                     // Secondary cursors, unfocused primary cursor, and editor cursor when prompt is active are drawn manually
                     spans.push((cursor_scope, range.head..range.head + 1));
@@ -1172,28 +1189,23 @@ impl EditorView {
                 // Standard case.
                 let cursor_start = prev_grapheme_boundary(text, range.head);
                 // non block cursors look like they exclude the cursor
-                let selection_end =
-                    if selection_is_primary && !cursor_is_block && mode != Mode::Insert {
-                        range.head
-                    } else {
-                        cursor_start
-                    };
+                let selection_end = if terminal_shaped && !cursor_is_block && mode != Mode::Insert {
+                    range.head
+                } else {
+                    cursor_start
+                };
                 spans.push((selection_scope, range.anchor..selection_end));
-                // add cursors
-                // skip primary cursor if terminal is focused and no prompt is active - terminal cursor is used in that case
-                if !selection_is_primary || !is_terminal_focused || self.prompt_active {
+                if draw_cursor {
                     spans.push((cursor_scope, cursor_start..range.head));
                 }
             } else {
                 // Reverse case.
                 let cursor_end = next_grapheme_boundary(text, range.head);
-                // add cursors
-                // skip primary cursor if terminal is focused and no prompt is active - terminal cursor is used in that case
-                if !selection_is_primary || !is_terminal_focused || self.prompt_active {
+                if draw_cursor {
                     spans.push((cursor_scope, range.head..cursor_end));
                 }
                 // non block cursors look like they exclude the cursor
-                let selection_start = if selection_is_primary
+                let selection_start = if terminal_shaped
                     && !cursor_is_block
                     && !(mode == Mode::Insert && cursor_end == range.anchor)
                 {
@@ -1206,6 +1218,56 @@ impl EditorView {
         }
 
         OverlayHighlights::Heterogenous { highlights: spans }
+    }
+
+    /// Whether the terminal draws the focused view's secondary cursors (kitty's multiple cursors
+    /// protocol) rather than the editor. Like the primary cursor: while the terminal is focused
+    /// and its cursor is in the editor (no prompt above it). Block cursors are always drawn by
+    /// the editor, which colors them with the theme.
+    fn terminal_draws_secondary_cursors(&self, editor: &Editor) -> bool {
+        let kind = editor.config().cursor_shape.from_mode(editor.mode());
+        editor.kitty_multi_cursor_support
+            && self.terminal_focused
+            && !self.prompt_active
+            && !matches!(kind, CursorKind::Block | CursorKind::Hidden)
+    }
+
+    /// The screen cells of the focused view's secondary cursors the terminal draws, with the
+    /// cells as drawn by the views.
+    fn secondary_cursor_cells(&self, editor: &Editor, surface: &Surface) -> Vec<(u16, u16, Cell)> {
+        if !self.terminal_draws_secondary_cursors(editor) {
+            return Vec::new();
+        }
+        let (view, doc) = current_ref!(editor);
+        let text = doc.text().slice(..);
+        let selection = doc.selection(view.id);
+        let inner = view.inner_area(doc);
+        selection
+            .iter()
+            .enumerate()
+            .filter(|&(i, _)| i != selection.primary_index())
+            .filter_map(|(_, range)| {
+                let pos = view.screen_coords_at_pos(doc, text, range.cursor(text))?;
+                let x = inner.x.checked_add(u16::try_from(pos.col).ok()?)?;
+                let y = inner.y.checked_add(u16::try_from(pos.row).ok()?)?;
+                if x >= inner.right() || y >= inner.bottom() {
+                    return None;
+                }
+                let cell = surface.get(x, y)?.clone();
+                Some((x, y, cell))
+            })
+            .collect()
+    }
+
+    /// The secondary cursors the terminal should draw after the whole screen was drawn in
+    /// `surface`: those whose cell is still as the views drew it, as anything drawn over them
+    /// since (the completion menu, a popup, a picker, ...) would otherwise have a cursor on top.
+    pub fn terminal_secondary_cursors(&self, surface: &Surface) -> Vec<(u16, u16)> {
+        self.terminal_secondary_cursors
+            .iter()
+            .filter(|(x, y, cell)| surface.get(*x, *y) == Some(cell))
+            .map(|&(x, y, _)| (x, y))
+            .collect()
     }
 
     /// Render brace match, etc (meant for the focused view only)
@@ -2755,6 +2817,7 @@ impl Component for EditorView {
             // its right, not a pinned explorer panel.
             self.render_view(cx.editor, doc, view, editor_area, surface, is_focused);
         }
+        self.terminal_secondary_cursors = self.secondary_cursor_cells(cx.editor, surface);
 
         if config.auto_info {
             if let Some(mut info) = cx.editor.autoinfo.take() {

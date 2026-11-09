@@ -186,6 +186,10 @@ impl Application {
         let backend = TestBackend::new(120, 150);
 
         let theme_mode = backend.get_theme_mode();
+        #[cfg(all(not(windows), not(feature = "integration")))]
+        let kitty_multi_cursor_support = backend.supports_kitty_multi_cursor();
+        #[cfg(any(windows, feature = "integration"))]
+        let kitty_multi_cursor_support = false;
         let mut terminal = Terminal::new(backend)?;
         let area = terminal.size();
         let mut compositor = Compositor::new(area);
@@ -212,6 +216,8 @@ impl Application {
             workspace_trust,
             old_file_locs,
         );
+
+        editor.kitty_multi_cursor_support = kitty_multi_cursor_support;
 
         if let Err(err) = editor.reload_snippets() {
             log::error!("Failed to load snippets: {err:#}");
@@ -670,6 +676,14 @@ impl Application {
         let surface = self.terminal.current_buffer_mut();
 
         self.compositor.render(area, surface, &mut cx);
+        // The secondary cursors the terminal draws (kitty's multiple cursors protocol), except
+        // where something was drawn over them since the editor drew its views.
+        let secondary_cursors = self
+            .compositor
+            .find::<ui::EditorView>()
+            .map(|editor_view| editor_view.terminal_secondary_cursors(surface))
+            .unwrap_or_default();
+        self.terminal.set_secondary_cursors(secondary_cursors);
         let (pos, kind) = self.compositor.cursor(area, &self.editor);
         // reset cursor cache
         self.editor.cursor_cache.reset();
@@ -1983,6 +1997,19 @@ impl Application {
     #[cfg(feature = "integration")]
     pub fn raw_output(&self) -> &[(u16, u16, Vec<u8>)] {
         &self.terminal.backend().raw
+    }
+
+    /// The secondary cursors (kitty's multiple cursors protocol) sent to the (test) terminal,
+    /// one list per change.
+    #[cfg(feature = "integration")]
+    pub fn sent_secondary_cursors(&self) -> &[Vec<(u16, u16)>] {
+        &self.terminal.backend().multiple_cursors
+    }
+
+    /// A cell of the last frame drawn to the (test) terminal.
+    #[cfg(feature = "integration")]
+    pub fn rendered_cell(&self, x: u16, y: u16) -> &tui::buffer::Cell {
+        &self.terminal.backend().buffer()[(x, y)]
     }
 
     /// Resizes the (test) terminal as a terminal resize event would, then draws a frame.

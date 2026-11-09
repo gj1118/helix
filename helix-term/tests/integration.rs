@@ -31,6 +31,7 @@ mod test {
     mod image_preview;
     mod inline_completion;
     mod movement;
+    mod multi_cursor;
     mod persistence;
     mod plugins;
     mod popups;

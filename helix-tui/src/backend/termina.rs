@@ -50,6 +50,9 @@ fn vte_version() -> Option<usize> {
 #[derive(Debug, Default, Clone, Copy)]
 struct Capabilities {
     kitty_keyboard: KittyKeyboardSupport,
+    /// kitty's multiple cursors protocol, with secondary cursors following the main cursor's
+    /// shape.
+    kitty_multi_cursor: bool,
     synchronized_output: bool,
     true_color: bool,
     extended_underlines: bool,
@@ -120,13 +123,16 @@ impl TerminaBackend {
         // If we only receive the device attributes then we know it is not.
         write!(
             terminal,
-            "{}{}{}{}{}{}{}{}",
+            "{}{}{}{}{}{}{}{}{}",
             // Synchronized output
             Csi::Mode(csi::Mode::QueryDecPrivateMode(csi::DecPrivateMode::Code(
                 csi::DecPrivateModeCode::SynchronizedOutput
             ))),
             // Mode 2031 theme updates. Query the current theme.
             Csi::Mode(csi::Mode::QueryTheme),
+            // kitty's multiple cursors protocol: a supporting terminal lists what it supports.
+            // <https://sw.kovidgoyal.net/kitty/multiple-cursors-protocol/>
+            Csi::Cursor(csi::Cursor::QueryCursorShape),
             // True color and while we're at it, extended underlines:
             // <https://github.com/termstandard/colors?tab=readme-ov-file#querying-the-terminal>
             Csi::Sgr(csi::Sgr::Background(TEST_COLOR.into())),
@@ -164,6 +170,9 @@ impl TerminaBackend {
                     }
                     Event::Csi(Csi::Mode(csi::Mode::ReportTheme(mode))) => {
                         capabilities.theme_mode = Some(mode.into());
+                    }
+                    Event::Csi(Csi::Cursor(csi::Cursor::CursorShapeQueryResponse(supported))) => {
+                        capabilities.kitty_multi_cursor = multi_cursor_supported(&supported);
                     }
                     Event::Osc(Osc::ChangeDynamicColors(
                         osc::DynamicColorNumber::TextBackgroundColor,
@@ -453,6 +462,7 @@ impl Backend for TerminaBackend {
 
     fn restore(&mut self) -> io::Result<()> {
         self.set_pointer_shape("")?;
+        self.set_multiple_cursors(&[])?;
         self.disable_extensions()?;
         self.disable_mouse_capture()?;
         write!(
@@ -574,6 +584,13 @@ impl Backend for TerminaBackend {
         )
     }
 
+    fn set_multiple_cursors(&mut self, cursors: &[(u16, u16)]) -> io::Result<()> {
+        if !self.capabilities.kitty_multi_cursor {
+            return Ok(());
+        }
+        write!(self.terminal, "{}", secondary_cursors_sequence(cursors))
+    }
+
     fn set_cursor(&mut self, x: u16, y: u16) -> io::Result<()> {
         let col = OneBased::from_zero_based(x);
         let line = OneBased::from_zero_based(y);
@@ -663,6 +680,7 @@ impl Drop for TerminaBackend {
         // Avoid resetting the terminal while panicking because we set a panic hook above in
         // `Self::new`.
         if !std::thread::panicking() {
+            let _ = self.set_multiple_cursors(&[]);
             let _ = self.disable_extensions();
             let _ = self.disable_mouse_capture();
             let _ = write!(
@@ -680,6 +698,40 @@ impl Drop for TerminaBackend {
             // panicking.
         }
     }
+}
+
+impl TerminaBackend {
+    /// Whether the terminal draws secondary cursors itself (kitty's multiple cursors protocol),
+    /// see [`Backend::set_multiple_cursors`].
+    pub fn supports_kitty_multi_cursor(&self) -> bool {
+        self.capabilities.kitty_multi_cursor
+    }
+}
+
+/// Whether a terminal answering the multiple cursors query with `supported` can draw secondary
+/// cursors the way Helix asks for them: in the shape of the main cursor.
+fn multi_cursor_supported(supported: &[csi::MultiCursorCapability]) -> bool {
+    supported.contains(&csi::MultiCursorCapability::FollowMainCursorShape)
+}
+
+/// The escape codes replacing the terminal's secondary cursors with `cursors` (zero-based
+/// `(x, y)` cells), in the main cursor's shape.
+fn secondary_cursors_sequence(cursors: &[(u16, u16)]) -> String {
+    let mut sequence = Csi::Cursor(csi::Cursor::ClearSecondaryCursors).to_string();
+    if !cursors.is_empty() {
+        let positions = cursors
+            .iter()
+            .map(|&(x, y)| (OneBased::from_zero_based(y), OneBased::from_zero_based(x)))
+            .collect();
+        sequence.push_str(
+            &Csi::Cursor(csi::Cursor::SetMultipleCursors {
+                shape: csi::MultiCursorShape::FollowMainCursor,
+                positions,
+            })
+            .to_string(),
+        );
+    }
+    sequence
 }
 
 fn diff_modifiers(from: Modifier, to: Modifier) -> SgrModifiers {
@@ -738,4 +790,44 @@ fn diff_modifiers(from: Modifier, to: Modifier) -> SgrModifiers {
     }
 
     modifiers
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The reply kitty documents for the multiple cursors query enables secondary cursors;
+    /// terminals that cannot follow the main cursor's shape (or don't reply) don't get them.
+    #[test]
+    fn multi_cursor_support_needs_the_follow_main_cursor_shape() {
+        use csi::MultiCursorCapability as Capability;
+
+        let kitty = [
+            Capability::BlockShape,
+            Capability::BeamShape,
+            Capability::UnderlineShape,
+            Capability::FollowMainCursorShape,
+            Capability::TextColor,
+            Capability::CursorColor,
+            Capability::QueryCurrentCursors,
+            Capability::QueryColors,
+        ];
+        assert!(multi_cursor_supported(&kitty));
+        assert!(!multi_cursor_supported(&[
+            Capability::BlockShape,
+            Capability::BeamShape
+        ]));
+        assert!(!multi_cursor_supported(&[]));
+    }
+
+    /// The protocol's escape codes: `CSI > 0;4 SP q` removes all secondary cursors, then
+    /// `CSI > 29;2:y:x;... SP q` sets them in the main cursor's shape at one-based `y:x` cells.
+    #[test]
+    fn secondary_cursors_escape_codes() {
+        assert_eq!(secondary_cursors_sequence(&[]), "\x1b[>0;4 q");
+        assert_eq!(
+            secondary_cursors_sequence(&[(0, 0), (4, 1), (79, 23)]),
+            "\x1b[>0;4 q\x1b[>29;2:1:1;2:2:5;2:24:80 q"
+        );
+    }
 }

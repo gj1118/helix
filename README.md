@@ -76,6 +76,7 @@ This fork of Helix implements the following pull requests. Future pull requests 
 30. https://github.com/helix-editor/helix/pull/15573 (breadcrumb navigation bar - with tree-sitter fallback, depth/name truncation, debounced LSP requests and icon support)
 31. https://github.com/helix-editor/helix/pull/16065 (don't block the UI on prompt completions - file, directory, theme and shell completions of `:open`, `:cd`, `:theme`, `:sh`, ... run in the background, one at a time per prompt; also with the popup command line)
 32. https://github.com/helix-editor/helix/pull/16460 (clear completion before switching views with the mouse - fixes the "Savepoint must not be used with a different view!" crash; also covers this fork's bufferline clicks and files opened from the explorer)
+33. https://github.com/helix-editor/helix/pull/14757 (kitty multiple cursors protocol - with a bar or underline cursor, terminals supporting it (kitty 0.43+) draw the secondary cursors natively; detected automatically, block cursors stay editor-drawn; cursors under the completion menu or popups are left out)
 
 ## Explorer
 
