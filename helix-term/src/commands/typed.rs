@@ -1995,17 +1995,29 @@ fn lsp_stop(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> any
         valid
     };
 
+    let mut stopped = Vec::new();
     for ls_name in &language_servers {
         cx.editor.language_servers.stop(ls_name);
 
         for doc in cx.editor.documents_mut() {
             if let Some(client) = doc.remove_language_server_by_name(ls_name) {
                 doc.clear_diagnostics_for_language_server(client.id());
-                doc.reset_all_inlay_hints();
-                doc.inlay_hints_oudated = true;
-                doc.clear_document_symbols();
+                doc.clear_language_server_data();
+                if !stopped.contains(&client.id()) {
+                    stopped.push(client.id());
+                }
             }
         }
+    }
+
+    // The stopped servers left the registry, so their exit notification is dropped and the
+    // handlers never hear of it: tell them, so documents served by other language servers too
+    // ask those again for what was just cleared.
+    for server_id in stopped {
+        helix_event::dispatch(helix_view::events::LanguageServerExited {
+            editor: cx.editor,
+            server_id,
+        });
     }
 
     Ok(())

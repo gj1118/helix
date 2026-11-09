@@ -511,6 +511,27 @@ impl Document {
         self.code_lenses.clear();
         self.code_lenses_version = None;
     }
+
+    /// Drops what the language servers computed for this document and cancels the requests for
+    /// it still in flight: document links, color swatches, document highlights, code lenses, code
+    /// action hints, symbols (and breadcrumbs), inline completions and inlay hints. For when the
+    /// document's language servers change, so none of it stays on screen from a server that no
+    /// longer serves the document (helix-editor/helix#15777). Diagnostics are kept: they are
+    /// tracked per language server and cleared as such.
+    pub fn clear_language_server_data(&mut self) {
+        self.document_link_controller.cancel();
+        self.document_links.clear();
+        self.color_swatch_controller.cancel();
+        self.color_swatches = None;
+        self.clear_all_document_highlights();
+        self.clear_code_lenses();
+        self.clear_all_code_action_hints();
+        self.document_symbols_controller.cancel();
+        self.clear_document_symbols();
+        self.inline_completions.clear();
+        self.reset_all_inlay_hints();
+        self.inlay_hints_oudated = true;
+    }
 }
 
 /// Inlay hints for a single `(Document, View)` combo.

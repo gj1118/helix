@@ -30,6 +30,7 @@ mod test {
     mod history;
     mod image_preview;
     mod inline_completion;
+    mod lsp_data;
     mod movement;
     mod multi_cursor;
     mod persistence;

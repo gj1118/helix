@@ -3210,7 +3210,9 @@ impl Editor {
         let doc = doc_mut!(self, &doc_id);
         let diagnostics = Editor::doc_diagnostics(&self.language_servers, &self.diagnostics, doc);
         doc.replace_diagnostics(diagnostics, &[], None);
-        doc.reset_all_inlay_hints();
+        // The document's language servers were detached before (a new path) or may have
+        // changed with the language.
+        doc.clear_language_server_data();
     }
 
     /// Launch a language server for a given document
@@ -3266,6 +3268,18 @@ impl Editor {
         }
 
         let language_id = doc.language_id().map(ToOwned::to_owned).unwrap_or_default();
+
+        // A server leaving or joining (`:lang`, `:lsp-restart`, ...) makes what the previous
+        // ones computed for the document stale.
+        let servers_changed = doc.language_servers.len() != language_servers.len()
+            || doc.language_servers.iter().any(|(name, doc_ls)| {
+                language_servers
+                    .get(name)
+                    .is_none_or(|ls| ls.id() != doc_ls.id())
+            });
+        if servers_changed {
+            doc.clear_language_server_data();
+        }
 
         // only spawn new language servers if the servers aren't the same
         let doc_language_servers_not_in_registry =
