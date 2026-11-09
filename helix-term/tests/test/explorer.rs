@@ -189,16 +189,25 @@ async fn the_filter_box_shows_the_filter_and_a_count() -> anyhow::Result<()> {
                     assert!(left.abs_diff(right) <= 1, "{text}");
                     // the root's `sub`, `a.txt` and `new.txt`
                     assert!(rows[1].trim_end().ends_with("3/3 ▕"), "{text}");
-                    assert!(rows[1].contains("▏ > "), "{text}");
+                    // the empty box says how to search, wildcards included
+                    assert!(rows[1].contains("▏ > / to search (*.rs) "), "{text}");
                 }),
             ),
             (
-                Some("/tx"),
+                Some("/"),
+                Some(&|app| {
+                    let rows = rows_of(app);
+                    assert!(rows[1].contains("> name or *.rs"), "{}", rows.join("\n"));
+                }),
+            ),
+            (
+                Some("tx"),
                 Some(&|app| {
                     let rows = rows_of(app);
                     let text = rows.join("\n");
                     // `a.txt`, `sub/b.txt` and `new.txt` out of the four entries
                     assert!(rows[1].contains("> tx"), "{text}");
+                    assert!(!rows[1].contains("*.rs"), "{text}");
                     assert!(rows[1].trim_end().ends_with("3/4 ▕"), "{text}");
                     // the cursor is after the filter, in the box
                     let area = app.compositor.size();

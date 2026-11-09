@@ -219,8 +219,9 @@ from the built-in listing (no staged state). Turn it off with `git-status = fals
 
 ### The filter box and the lines
 
-The panel opens with a box titled `Explorer`: the filter prompt (`>`), and on the right a
-count like a picker's. Without a filter it counts the entries listed (`51/51`); while
+The panel opens with a box titled `Explorer`: the filter prompt (`>`) with a hint while
+the filter is empty (`/ to search (*.rs)`: `/` starts a filter, wildcards work too), and
+on the right a count like a picker's. Without a filter it counts the entries listed (`51/51`); while
 filtering, the entries matching out of those searched (`12/4318`, with `(scanning)` in
 front while the search is still running). The tree starts under it with the folder it is
 rooted in. A panel too short for the box shows the folder (shortened from the start when

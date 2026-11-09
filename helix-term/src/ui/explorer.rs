@@ -110,6 +110,11 @@ const MIN_PANEL_WIDTH: u16 = 4;
 const FILTER_PREFIX: &str = "> ";
 /// The title of the filter box at the top of the panel.
 const FILTER_BOX_TITLE: &str = "Explorer";
+/// What the empty filter box says, the longest that fits: how to start a filter, and that
+/// wildcards work too.
+const FILTER_PLACEHOLDERS: &[&str] = &["/ to search (*.rs)", "/ search, *.rs", "/ search"];
+/// The same while typing into the empty box.
+const FILTER_EDITING_PLACEHOLDERS: &[&str] = &["name or *.rs", "*.rs"];
 /// The panel height from which the filter is a bordered box (three rows) rather than a line.
 const FILTER_BOX_MIN_HEIGHT: u16 = 8;
 /// How long a git status is kept before the panel asks for a new one (it is asked for while the
@@ -721,6 +726,13 @@ impl Explorer {
                 &self.filter[start..],
                 avail,
                 theme.get("ui.text"),
+            );
+        } else if let Some(placeholder) = filter_placeholder(self.filter_editing, avail) {
+            surface.set_string(
+                input.x + prefix_width,
+                input.y,
+                placeholder,
+                theme.get("ui.virtual"),
             );
         }
     }
@@ -2458,6 +2470,19 @@ fn truncate_spans(spans: Vec<Span>, width: usize) -> Vec<Span> {
 
 /// The folder the panel shows in its top row: relative to the home folder when it is in it, and
 /// cut at the start (`…/src/ui`) when it does not fit `width` columns.
+/// The hint the empty filter box shows in `width` columns, if one fits.
+fn filter_placeholder(editing: bool, width: usize) -> Option<&'static str> {
+    let placeholders = if editing {
+        FILTER_EDITING_PLACEHOLDERS
+    } else {
+        FILTER_PLACEHOLDERS
+    };
+    placeholders
+        .iter()
+        .copied()
+        .find(|placeholder| placeholder.width() <= width)
+}
+
 fn root_label(root: &Path, width: usize) -> String {
     let label = helix_stdx::path::fold_home_dir(root).display().to_string();
     if label.width() <= width {
@@ -2536,6 +2561,18 @@ mod tests {
         let style = marker_style(&theme, ChangeKind::Added);
         assert_eq!(style.fg, Some(Color::Rgb(0, 255, 0)));
         assert_eq!(style.bg, None);
+    }
+
+    #[test]
+    fn the_filter_placeholder_is_the_longest_that_fits() {
+        // The default panel (30 columns) has 18 for it next to a two-digit count.
+        assert_eq!(filter_placeholder(false, 18), Some("/ to search (*.rs)"));
+        assert_eq!(filter_placeholder(false, 17), Some("/ search, *.rs"));
+        assert_eq!(filter_placeholder(false, 9), Some("/ search"));
+        assert_eq!(filter_placeholder(false, 7), None);
+        assert_eq!(filter_placeholder(true, 18), Some("name or *.rs"));
+        assert_eq!(filter_placeholder(true, 5), Some("*.rs"));
+        assert_eq!(filter_placeholder(true, 3), None);
     }
 
     #[test]
