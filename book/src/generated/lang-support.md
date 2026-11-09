@@ -32,7 +32,7 @@
 | clojure | ✓ | ✓ | ✓ | ✓ | ✓ | `clojure-lsp` |
 | cmake | ✓ | ✓ | ✓ |  | ✓ | `neocmakelsp`, `cmake-language-server` |
 | codeql | ✓ | ✓ |  |  |  | `codeql` |
-| comment | ✓ |  |  |  |  |  |
+| comment | ✓ |  |  | ✓ |  |  |
 | common-lisp | ✓ | ✓ |  | ✓ | ✓ | `cl-lsp` |
 | concerto | ✓ | ✓ | ✓ |  |  |  |
 | cpon | ✓ |  | ✓ |  |  |  |

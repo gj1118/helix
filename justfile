@@ -4,13 +4,15 @@ smallbuild:
 build: fmt lint test
     cargo build --release
 
+generate_doc:
+    cargo xtask docgen 
+
 install:
     cargo install --path helix-term --locked
 
-local_build_install: smallbuild install
+local_build_install: smallbuild install generate_doc
     echo "Build and install complete!"
 
-    
 build_and_install: build install
     echo "Build and install complete!"
 
