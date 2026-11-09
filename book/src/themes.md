@@ -418,8 +418,10 @@ key, so a theme still colors every tag through `error`, `warning`, `info` and
 | `info.<keyword>`    | `info`        | `info`, `note` (`NOTES`), `todo` (`TO-DO`), `undone`, `perf` (`PERFORMANCE`), `optimize` (`OPTIMISE`), `question` (`ASK`), `review` (`PR`, `CR`), `refactor` |
 | `hint.<keyword>`    | `hint`        | `hint`, `mark` (`MARKER`, `BOOKMARK`), `passed`, `stub` (`MOCK`), `tip`, `done` |
 
-47 tags share 33 keys, with the aliases listed in parens. The tag keyword must
-be followed by a colon and it may name a user, as in `TODO(user):`. Surrounding
+47 tags share 33 keys, with the aliases listed in parens. Tags are written in
+capitals, usually followed by a colon, and may name a user, as in
+`TODO(user):`; a bare keyword without the colon (`// TODO later`) counts too,
+except for the hyphenated `TO-DO`. Surrounding
 comment text keeps the regular `comment` style, so only the tag itself is
 accentuated. Tags are recognized in every language whose comments inject the
 `comment` grammar — all mainstream languages do; languages without the

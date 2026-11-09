@@ -36,4 +36,5 @@ mod test {
     mod quicklist;
     mod snippets;
     mod splits;
+    mod todos;
 }

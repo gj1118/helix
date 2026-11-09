@@ -295,18 +295,30 @@ fn tag_picker(
     .truncate_start(false)
 }
 
-/// Jumps to the tag's keyword: the document it is open in (also split views)
-/// or the file it lives in.
+/// Jumps to the tag's keyword: the document it is open in, or the file it
+/// lives in, shown as `action` asks (replacing the view or in a split).
 fn jump_to_tag(editor: &mut Editor, tag: &CommentTag, action: Action) {
     let (view, doc) = current!(editor);
     push_jump(view, doc);
 
     let doc_id = match &tag.source {
-        TagSource::Doc { id, .. } => *id,
-        TagSource::Path(path) => match editor.open(path.as_ref(), action) {
+        // The document may have been closed since the tags were collected:
+        // fall back to its file then.
+        TagSource::Doc { id, .. } if editor.documents.contains_key(id) => {
+            editor.switch(*id, action);
+            *id
+        }
+        TagSource::Doc { path: None, .. } => {
+            editor.set_error("The buffer of this tag has been closed");
+            return;
+        }
+        TagSource::Doc {
+            path: Some(path), ..
+        }
+        | TagSource::Path(path) => match editor.open(path.as_ref(), action) {
             Ok(id) => id,
             Err(err) => {
-                editor.set_error(format!("Failed to open file '{path:?}': {err}"));
+                editor.set_error(format!("Failed to open file '{}': {err}", path.display()));
                 return;
             }
         },
@@ -416,14 +428,15 @@ fn scan_syntax_tags<'a>(
         });
         let start_line = text.char_to_line(start);
         let end_line = text.char_to_line(end);
-        // The line the tag is on, for the `message` column.
-        let line = text
+        // The line the tag is on, for the `message` column. Truncated while
+        // reading, so a huge line is not copied whole for every tag on it.
+        let line: String = text
             .line(start_line)
-            .to_string()
-            .trim()
             .chars()
+            .skip_while(|ch| ch.is_whitespace())
             .take(MAX_TAG_TEXT)
             .collect();
+        let line = line.trim_end().to_owned();
 
         tags.push(CommentTag {
             source: source.clone(),
@@ -442,8 +455,8 @@ fn scan_syntax_tags<'a>(
 /// Hashes what the open documents' task tags depend on: the path, version and
 /// whether the syntax tree exists yet, of the open documents (`only` or all of
 /// them). This runs on every redraw of a live tag picker, so it hashes no
-/// strings. The workspace pickers hash all documents as they also fill in the
-/// files of the workspace.
+/// document text. The workspace pickers hash all documents as they also fill
+/// in the files of the workspace.
 fn open_docs_fingerprint(editor: &Editor, only: Option<DocumentId>) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     let mut docs = 0usize;
@@ -473,17 +486,19 @@ pub fn todos_picker(cx: &mut Context) {
     }
     let doc_id = doc.id();
     let tags = scan_open_docs_tags(cx.editor, Some(doc_id));
-    let picker = tag_picker(cx.editor, tags, false).with_live_refresh(
-        move |editor| open_docs_fingerprint(editor, Some(doc_id)),
-        Some(Box::new(move |editor, injector| {
-            for tag in scan_open_docs_tags(editor, Some(doc_id)) {
-                if injector.push(tag).is_err() {
-                    break;
+    let picker = tag_picker(cx.editor, tags, false)
+        .with_live_refresh(
+            move |editor| open_docs_fingerprint(editor, Some(doc_id)),
+            Some(Box::new(move |editor, injector| {
+                for tag in scan_open_docs_tags(editor, Some(doc_id)) {
+                    if injector.push(tag).is_err() {
+                        break;
+                    }
                 }
-            }
-        })),
-        CommentTag::key,
-    );
+            })),
+            CommentTag::key,
+        )
+        .with_title("Todos");
     cx.push_layer(Box::new(overlaid(
         picker,
         cx.editor.config().fullscreen_overlay,
@@ -518,11 +533,28 @@ pub fn workspace_todos_picker(cx: &mut Context) {
         let scanned = tokio::task::spawn_blocking(move || {
             scan_workspace_files(root, file_picker_config, &loader)
         })
-        .await
-        .unwrap_or_else(|_| Arc::new(Vec::new()));
+        .await;
 
         crate::job::dispatch_blocking(move |editor, compositor| {
             WORKSPACE_SCANNING.store(false, Ordering::SeqCst);
+            let scanned = match scanned {
+                Ok(WorkspaceScan { tags, truncated }) => {
+                    if truncated {
+                        editor.set_status(format!(
+                            "Showing the task tags of the first {MAX_WORKSPACE_FILES} files of the workspace"
+                        ));
+                    } else {
+                        editor.clear_status();
+                    }
+                    tags
+                }
+                Err(err) => {
+                    // Still show the tags of the open documents.
+                    log::error!("Scanning the workspace for task tags failed: {err}");
+                    editor.set_error("Scanning the workspace for task tags failed");
+                    Arc::new(Vec::new())
+                }
+            };
             let picker = make_workspace_todos_picker(editor, scanned);
             compositor.push(Box::new(overlaid(
                 picker,
@@ -576,14 +608,18 @@ fn merged_workspace_tags(editor: &Editor, scanned: &[CommentTag]) -> Vec<Comment
     tags
 }
 
+/// The result of scanning the workspace's files for task tags.
+struct WorkspaceScan {
+    tags: Arc<Vec<CommentTag>>,
+    /// Whether the scan stopped at [`MAX_WORKSPACE_FILES`] files, leaving the
+    /// rest of the workspace out.
+    truncated: bool,
+}
+
 /// Scans the files below `root` for task tags. Slow work: it runs on a
 /// blocking thread. Files that are open are scanned too; [`merged_workspace_tags`]
 /// replaces their disk tags with the live ones their open document has.
-fn scan_workspace_files(
-    root: PathBuf,
-    config: FilePickerConfig,
-    loader: &Loader,
-) -> Arc<Vec<CommentTag>> {
+fn scan_workspace_files(root: PathBuf, config: FilePickerConfig, loader: &Loader) -> WorkspaceScan {
     let absolute_root = root.canonicalize().unwrap_or_else(|_| root.clone());
 
     // The same files the file picker would show.
@@ -604,10 +640,8 @@ fn scan_workspace_files(
     walk_builder.add_custom_ignore_filename(".helix/ignore");
 
     let mut files = Vec::new();
+    let mut truncated = false;
     for entry in walk_builder.build() {
-        if files.len() >= MAX_WORKSPACE_FILES {
-            break;
-        }
         let Ok(entry) = entry else { continue };
         if !entry
             .file_type()
@@ -620,6 +654,15 @@ fn scan_workspace_files(
         };
         if metadata.len() > MAX_WORKSPACE_FILE_BYTES {
             continue;
+        }
+        // Only files with a language count towards the limit: images, lock
+        // files and the like would otherwise use it up before the sources.
+        if !may_have_language(entry.path(), loader) {
+            continue;
+        }
+        if files.len() >= MAX_WORKSPACE_FILES {
+            truncated = true;
+            break;
         }
         // Document paths are canonical; the merge compares against them.
         files.push(path::canonicalize(entry.into_path()));
@@ -634,7 +677,25 @@ fn scan_workspace_files(
         tags.extend(scan_syntax_tags(&syntax, rope.slice(..), loader, source));
     }
     sort_tags(&mut tags);
-    Arc::new(tags)
+    WorkspaceScan {
+        tags: Arc::new(tags),
+        truncated,
+    }
+}
+
+/// Whether [`syntax_for_path`] can find a language for the file: by its name,
+/// or by a shebang line (only read when the name gives no language). Cheap
+/// compared to reading and decoding the whole file.
+fn may_have_language(path: &Path, loader: &Loader) -> bool {
+    use std::io::Read;
+
+    if loader.language_for_filename(path).is_some() {
+        return true;
+    }
+    let mut start = [0u8; 2];
+    std::fs::File::open(path)
+        .and_then(|mut file| file.read_exact(&mut start))
+        .is_ok_and(|()| &start == b"#!")
 }
 
 #[cfg(test)]
@@ -685,5 +746,68 @@ mod tests {
         assert_eq!(TAG_KEYWORDS[expect("WORKAROUND") as usize].1, "hack");
         assert!(spelled_keyword("XYZZY").is_none());
         assert!(spelled_keyword("todo").is_none());
+    }
+
+    /// The tags of a Rust source, scanned like an open document's.
+    fn scan_rust(source: &str) -> Vec<CommentTag> {
+        let loader = helix_core::config::default_lang_loader();
+        let rust = loader.language_for_name("rust").unwrap();
+        let rope = helix_core::Rope::from_str(source);
+        let syntax = Syntax::new(rope.slice(..), rust, &loader).unwrap();
+        let source_path: Arc<Path> = Arc::from(Path::new("tags.rs"));
+        scan_syntax_tags(
+            &syntax,
+            rope.slice(..),
+            &loader,
+            TagSource::Path(source_path),
+        )
+    }
+
+    /// The `message` column is the tag's line without the surrounding
+    /// whitespace, cut to `MAX_TAG_TEXT` characters, and the keyword range
+    /// and lines point at the keyword itself.
+    #[test]
+    fn scanned_tags_keep_a_trimmed_truncated_line() {
+        let long = "x".repeat(MAX_TAG_TEXT * 2);
+        let source = format!("fn f() {{\n    // TODO(ann): short  \n}}\n// FIXME: {long}\n");
+        let tags = scan_rust(&source);
+        assert_eq!(tags.len(), 2);
+
+        let todo = &tags[0];
+        assert_eq!(todo.keyword(), "todo");
+        assert_eq!(todo.severity(), TagSeverity::Info);
+        assert_eq!(todo.user.as_deref(), Some("ann"));
+        assert_eq!(todo.text, "// TODO(ann): short");
+        assert_eq!((todo.start_line, todo.end_line), (1, 1));
+        assert_eq!(&source[todo.start..todo.end], "TODO");
+
+        let fixme = &tags[1];
+        assert_eq!(fixme.keyword(), "fixme");
+        assert_eq!(fixme.severity(), TagSeverity::Error);
+        assert_eq!(fixme.user, None);
+        assert_eq!(fixme.text.chars().count(), MAX_TAG_TEXT);
+        assert!(fixme.text.starts_with("// FIXME: xxx"));
+        assert_eq!(&source[fixme.start..fixme.end], "FIXME");
+    }
+
+    /// Only files with a language (by name or shebang) are scanned, and count
+    /// towards the workspace limit.
+    #[test]
+    fn files_without_a_language_are_skipped() {
+        let loader = helix_core::config::default_lang_loader();
+        let dir = tempfile::tempdir().unwrap();
+        let file = |name: &str, contents: &[u8]| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, contents).unwrap();
+            path
+        };
+        assert!(may_have_language(&file("main.rs", b""), &loader));
+        assert!(may_have_language(
+            &file("script", b"#!/bin/sh\necho\n"),
+            &loader
+        ));
+        assert!(!may_have_language(&file("blob", b"\x89PNG\r\n"), &loader));
+        assert!(!may_have_language(&file("empty", b""), &loader));
+        assert!(!may_have_language(&dir.path().join("missing"), &loader));
     }
 }

@@ -646,8 +646,6 @@ Keys to use within prompt. Remap them in `[keys.prompt]` (see [Remapping](./rema
 | `Ctrl-b`, `Left`                            | Backward a char                                                         |
 | `Alt-f`, `Ctrl-Right`                       | Forward a word                                                          |
 | `Ctrl-f`, `Right`                           | Forward a char                                                          |
-| `Ctrl-e`, `End`      t-f`, `Ctrl-Right`                       | Forward a word                                                          |
-| `Ctrl-f`, `Right`                           | Forward a char                                                          |
 | `Ctrl-e`, `End`                             | Move prompt end                                                         |
 | `Ctrl-a`, `Home`                            | Move prompt start                                                       |
 | `Ctrl-w`, `Alt-Backspace`, `Ctrl-Backspace` | Delete previous word                                                    |
