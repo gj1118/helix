@@ -1,8 +1,9 @@
 //! Task-tag pickers: `todos` (the current file) and `workspace_todos`
-//! (the workspace). They list the task tags — `TODO:`, `FIXME(user):`, bare
-//! keyword mentions without a colon, ... — found in comments via the tree-sitter
-//! tags query of the `comment` grammar, like the highlighting does: they are
-//! syntax-aware, not a text search.
+//! (the workspace). They list the task tags — `TODO:`, `FIXME(user):`, ... —
+//! found in comments via the tree-sitter tags query of the `comment` grammar,
+//! like the highlighting does: they are syntax-aware, not a text search.
+//! Written bare, without a colon, only the classic markers (`TODO`, `FIXME`,
+//! `FIXIT`, `XXX`, `HACK`, `BUG`) are listed; see `runtime/queries/comment/tags.scm`.
 //!
 //! Like the diagnostics pickers (see [`super::lsp::diagnostics_picker`]) the
 //! pickers are live: the tags of open documents are re-collected when their

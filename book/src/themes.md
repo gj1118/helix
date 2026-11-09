@@ -420,8 +420,11 @@ key, so a theme still colors every tag through `error`, `warning`, `info` and
 
 47 tags share 33 keys, with the aliases listed in parens. Tags are written in
 capitals, usually followed by a colon, and may name a user, as in
-`TODO(user):`; a bare keyword without the colon (`// TODO later`) counts too,
-except for the hyphenated `TO-DO`. Surrounding
+`TODO(user):`; a bare keyword without the colon (`// TODO later`) is
+highlighted too, except for the hyphenated `TO-DO`. The task-tag pickers
+(`Space t`, `Space T`) list every tag written with the colon, but written bare
+only `TODO`, `FIXME`, `FIXIT`, `XXX`, `HACK` and `BUG`: the other keywords
+are often ordinary words in prose (`PR`, `TEST`, `DEBUG`, `INFO`, …). Surrounding
 comment text keeps the regular `comment` style, so only the tag itself is
 accentuated. Tags are recognized in every language whose comments inject the
 `comment` grammar — all mainstream languages do; languages without the

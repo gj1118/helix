@@ -1571,7 +1571,9 @@ mod test {
     /// pickers run: per match a `@comment.tag` keyword capture (with its
     /// optional `@comment.user` mention), for recognized tags only, and only
     /// inside comments (words with a tag spelling elsewhere don't count, and
-    /// a bare hyphenated spelling is two words to the grammar).
+    /// a bare hyphenated spelling is two words to the grammar). Written bare,
+    /// without a colon, only the classic markers count: other keywords are
+    /// often ordinary words (`PR`, `TEST`, `DEBUG`) and need the colon.
     #[test]
     fn test_comment_tag_query() {
         let loader = crate::config::default_lang_loader();
@@ -1584,6 +1586,9 @@ Text with a standalone WARN word.
 // TO-DO: alias
 // TO-DO bare
 // XYZZY: unrecognized
+// FIXME bare
+// See the PR, the TEST target and DEBUG builds.
+// PR: colonful
 "#;
         let rope = Rope::from_str(source);
         let language = loader.language_for_name("rust").unwrap();
@@ -1640,6 +1645,10 @@ Text with a standalone WARN word.
                 ("TODO".to_owned(), None),
                 ("FIXME".to_owned(), Some("user".to_owned())),
                 ("TO-DO".to_owned(), None),
+                ("FIXME".to_owned(), None),
+                // Bare `PR`, `TEST` and `DEBUG` are prose; with the colon,
+                // `PR:` is a tag.
+                ("PR".to_owned(), None),
             ],
             "the tags of the commented source"
         );
