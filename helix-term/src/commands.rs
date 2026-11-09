@@ -7,6 +7,7 @@ pub(crate) mod notification;
 pub(crate) mod quicklist;
 pub(crate) mod snippets;
 pub(crate) mod syntax;
+pub(crate) mod todos;
 pub(crate) mod typed;
 
 pub use dap::*;
@@ -21,6 +22,7 @@ use helix_view::document::LineBlameError;
 pub use lsp::*;
 pub use notification::*;
 pub use syntax::*;
+pub use todos::*;
 use tui::{
     text::{Span, Spans},
     widgets::Cell,
@@ -483,6 +485,8 @@ impl MappableCommand {
         lsp_or_syntax_workspace_symbol_picker, "Open workspace symbol picker from LSP or syntax information",
         diagnostics_picker, "Open diagnostic picker",
         workspace_diagnostics_picker, "Open workspace diagnostic picker",
+        todos_picker, "Show task tags (TODO, FIXME, ...) of the current file",
+        workspace_todos_picker, "Show task tags (TODO, FIXME, ...) of the workspace",
         last_picker, "Open last picker",
         insert_at_line_start, "Insert at start of line",
         insert_at_line_end, "Insert at end of line",

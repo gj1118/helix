@@ -142,6 +142,43 @@
 "diagnostic.hint" = { underline = { color = "gray-4", style = "dotted" } }
 "diagnostic.unnecessary" = { modifiers = ["dim"] }
 "diagnostic.deprecated" = { modifiers = ["crossed_out"] }
+
+# Comment annotations (TODO:, FIXME:, …): stand out against the surrounding comment
+# Aliases share a key: TO-DO -> todo, FIXIT -> fix, PERFORMANCE -> perf, MARKER/BOOKMARK -> mark, MOCK -> stub.
+"error.broken" = { fg = "white", modifiers = ["bold"] }
+"error.bug" = { fg = "white", modifiers = ["bold"] }
+"error.compliance" = { fg = "white", modifiers = ["bold"] }
+"error.debug" = { fg = "white", modifiers = ["bold"] }
+"error.fail" = { fg = "white", modifiers = ["bold"] }
+"error.fix" = { fg = "white", modifiers = ["bold"] }
+"error.fixme" = { fg = "white", modifiers = ["bold"] }
+"error.invariant" = { fg = "white", modifiers = ["bold"] }
+"error.issue" = { fg = "white", modifiers = ["bold"] }
+"error.panic" = { fg = "white", modifiers = ["bold"] }
+"error.safety" = { fg = "white", modifiers = ["bold"] }
+"error.security" = { fg = "white", modifiers = ["bold"] }
+"error.xxx" = { fg = "white", modifiers = ["bold"] }
+"warning.hack" = { fg = "light-2", modifiers = ["bold"] }
+"warning.temp" = { fg = "light-2", modifiers = ["bold"] }
+"warning.test" = { fg = "light-2", modifiers = ["bold"] }
+"warning.untested" = { fg = "light-2", modifiers = ["bold"] }
+"warning.warn" = { fg = "light-2", modifiers = ["bold"] }
+"info.info" = { fg = "gray-7", modifiers = ["bold"] }
+"info.note" = { fg = "gray-7", modifiers = ["bold"] }
+"info.optimize" = { fg = "gray-7", modifiers = ["bold"] }
+"info.perf" = { fg = "gray-7", modifiers = ["bold"] }
+"info.question" = { fg = "gray-7", modifiers = ["bold"] }
+"info.refactor" = { fg = "gray-7", modifiers = ["bold"] }
+"info.review" = { fg = "gray-7", modifiers = ["bold"] }
+"info.todo" = { fg = "gray-7", modifiers = ["bold"] }
+"info.undone" = { fg = "gray-7", modifiers = ["bold"] }
+"hint.done" = { fg = "gray-4", modifiers = ["bold"] }
+"hint.hint" = { fg = "gray-4", modifiers = ["bold"] }
+"hint.mark" = { fg = "gray-4", modifiers = ["bold"] }
+"hint.passed" = { fg = "gray-4", modifiers = ["bold"] }
+"hint.stub" = { fg = "gray-4", modifiers = ["bold"] }
+"hint.tip" = { fg = "gray-4", modifiers = ["bold"] }
+
 "tabstop" = { bg = "bg-3", modifiers = ["italic"] }
 
 rainbow = ["white", "gray-8", "gray-6", "light-1", "gray-7", "gray-5"]

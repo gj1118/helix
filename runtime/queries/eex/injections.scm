@@ -7,3 +7,6 @@
  (#set! injection.language "elixir")
  (#set! injection.include-children)
  (#set! injection.combined))
+
+((comment) @injection.content
+ (#set! injection.language "comment"))

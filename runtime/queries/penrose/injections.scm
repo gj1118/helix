@@ -5,3 +5,6 @@
 ; String-based labels are often TeX as well
 ((label_stmt (string) @injection.content)
  (#set! injection.language "latex"))
+
+((comment) @injection.content
+ (#set! injection.language "comment"))
