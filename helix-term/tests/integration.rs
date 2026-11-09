@@ -22,6 +22,7 @@ mod test {
     mod code_lenses;
     mod command_line;
     mod commands;
+    mod completion;
     mod component_keys;
     mod custom_commands;
     mod dap;

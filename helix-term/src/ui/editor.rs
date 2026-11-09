@@ -41,6 +41,7 @@ use helix_view::{
     Editor,
     Theme,
     View,
+    ViewId,
 };
 use std::{
     mem::take,
@@ -64,6 +65,9 @@ pub struct EditorView {
     pseudo_pending: Vec<KeyEvent>,
     pub(crate) last_insert: (commands::MappableCommand, Vec<InsertEvent>),
     pub(crate) completion: Option<Completion>,
+    /// The view and document the completion was opened in: its preview and savepoint belong
+    /// to them, even when another view or document gets the focus.
+    completion_origin: Option<(ViewId, DocumentId)>,
     spinners: ProgressSpinners,
     bufferline_info: BufferLineInfo,
     /// Tracks if the terminal window is focused by reaction to terminal focus events
@@ -154,6 +158,7 @@ impl EditorView {
             pseudo_pending: Vec::new(),
             last_insert: (commands::MappableCommand::normal_mode, Vec::new()),
             completion: None,
+            completion_origin: None,
             spinners: ProgressSpinners::default(),
             bufferline_info: BufferLineInfo::default(),
             terminal_focused: true,
@@ -2094,11 +2099,14 @@ impl EditorView {
 
         // TODO : propagate required size on resize to completion too
         self.completion = Some(completion);
+        let (view, doc) = current_ref!(editor);
+        self.completion_origin = Some((view.id, doc.id()));
         Some(area)
     }
 
     pub fn clear_completion(&mut self, editor: &mut Editor) -> Option<OnKeyCallback> {
         self.completion = None;
+        let origin = self.completion_origin.take();
         let mut on_next_key: Option<OnKeyCallback> = None;
         editor.handlers.completions.request_controller.restart();
         editor.handlers.completions.active_completions.clear();
@@ -2125,12 +2133,45 @@ impl EditorView {
                     }))
                 }
                 CompleteAction::Selected { savepoint } => {
-                    let (view, doc) = current!(editor);
-                    doc.restore(view, &savepoint, false);
+                    // Take the preview back out where it was shown, which is not necessarily
+                    // the focused view and document anymore.
+                    let (view_id, doc_id) = origin.unwrap_or_else(|| {
+                        let (view, doc) = current_ref!(editor);
+                        (view.id, doc.id())
+                    });
+                    if savepoint.view == view_id && editor.tree.contains(view_id) {
+                        if let Some(doc) = editor.documents.get_mut(&doc_id) {
+                            doc.restore(editor.tree.get_mut(view_id), &savepoint, false);
+                        }
+                    }
                 }
             }
         }
         on_next_key
+    }
+
+    /// Clears a completion whose view or document lost the focus to something other than
+    /// the editor's own mouse handling, e.g. a file opened from the explorer, a plugin or a
+    /// buffer switch: it must not keep previewing into, or later be restored through, the
+    /// newly focused document.
+    fn clear_stale_completion(&mut self, editor: &mut Editor) {
+        let Some(origin) = self.completion_origin else {
+            return;
+        };
+        let (view, doc) = current_ref!(editor);
+        if origin != (view.id, doc.id()) {
+            // A pending placeholder edit belongs to the old document too: drop it.
+            let _ = self.clear_completion(editor);
+        }
+    }
+
+    /// Clears the completion before a mouse action focuses another view: its preview and
+    /// savepoint belong to the view it was opened in, and restoring them through another view
+    /// panics ("Savepoint must not be used with a different view!", helix-editor/helix#15349).
+    fn clear_completion_on_view_switch(&mut self, editor: &mut Editor, view_id: ViewId) {
+        if editor.tree.focus != view_id {
+            self.clear_completion(editor);
+        }
     }
 
     pub fn handle_idle_timeout(&mut self, cx: &mut commands::Context) -> EventResult {
@@ -2249,8 +2290,15 @@ impl EditorView {
                     _ => false,
                 };
                 if bufferline_visible && row == 0 {
-                    if let Some(buffer_info) = self.bufferline_info.get_clicked_buffer(column) {
-                        editor.switch(buffer_info.document_id, helix_view::editor::Action::Replace);
+                    let clicked = self
+                        .bufferline_info
+                        .get_clicked_buffer(column)
+                        .map(|buffer_info| buffer_info.document_id);
+                    if let Some(document_id) = clicked {
+                        // The clicked buffer replaces the focused view's document, which the
+                        // completion's preview and savepoint belong to.
+                        self.clear_completion(editor);
+                        editor.switch(document_id, helix_view::editor::Action::Replace);
                     }
 
                     return EventResult::Consumed(None);
@@ -2263,12 +2311,17 @@ impl EditorView {
                     return EventResult::Consumed(None);
                 }
 
-                if let Some((pos, view_id)) = pos_and_view(editor, row, column, true) {
+                if let Some((_, view_id)) = pos_and_view(editor, row, column, true) {
+                    self.clear_completion_on_view_switch(editor, view_id);
+                    // Clearing a preview can change the text in both views. Resolve the
+                    // position again before focusing can scroll the target view.
+                    let Some((pos, _)) = pos_and_view(editor, row, column, true) else {
+                        return EventResult::Ignored(None);
+                    };
                     editor.focus(view_id);
                     // The click belongs to the buffer, so keyboard focus leaves the explorer.
                     editor.explorer_panel.focused = false;
 
-                    let prev_view_id = view!(editor).id;
                     let doc = doc_mut!(editor, &view!(editor, view_id).doc);
 
                     if modifiers == KeyModifiers::ALT {
@@ -2287,16 +2340,13 @@ impl EditorView {
                         doc.set_selection(view_id, Selection::point(pos));
                     }
 
-                    if view_id != prev_view_id {
-                        self.clear_completion(editor);
-                    }
-
                     editor.ensure_cursor_in_view(view_id);
 
                     return EventResult::Consumed(None);
                 }
 
                 if let Some((coords, view_id)) = gutter_coords_and_view(editor, row, column) {
+                    self.clear_completion_on_view_switch(editor, view_id);
                     editor.focus(view_id);
                     editor.explorer_panel.focused = false;
 
@@ -2389,6 +2439,7 @@ impl EditorView {
 
             MouseEventKind::Up(MouseButton::Right) => {
                 if let Some((pos, view_id)) = gutter_coords_and_view(cxt.editor, row, column) {
+                    self.clear_completion_on_view_switch(cxt.editor, view_id);
                     cxt.editor.focus(view_id);
 
                     if let Some((pos, _)) = pos_and_view(cxt.editor, row, column, true) {
@@ -2426,10 +2477,14 @@ impl EditorView {
                     return EventResult::Consumed(None);
                 }
 
-                if let Some((pos, view_id)) = pos_and_view(editor, row, column, true) {
+                if let Some((_, view_id)) = pos_and_view(editor, row, column, true) {
+                    self.clear_completion_on_view_switch(editor, view_id);
+                    let Some((pos, _)) = pos_and_view(editor, row, column, true) else {
+                        return EventResult::Ignored(None);
+                    };
+                    editor.focus(view_id);
                     let doc = doc_mut!(editor, &view!(editor, view_id).doc);
                     doc.set_selection(view_id, Selection::point(pos));
-                    cxt.editor.focus(view_id);
                     commands::MappableCommand::paste_primary_clipboard_before.execute(cxt);
 
                     return EventResult::Consumed(None);
@@ -2467,6 +2522,7 @@ impl Component for EditorView {
         event: &Event,
         context: &mut crate::compositor::Context,
     ) -> EventResult {
+        self.clear_stale_completion(context.editor);
         let mut cx = commands::Context {
             editor: context.editor,
             count: None,
@@ -2650,6 +2706,9 @@ impl Component for EditorView {
     }
 
     fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
+        // Another component (the explorer, a plugin, ...) may have moved the focus away from
+        // the completion since the last event: take its preview out before drawing.
+        self.clear_stale_completion(cx.editor);
         // clear with background color
         surface.set_style(area, cx.editor.theme.get("ui.background"));
         let config = cx.editor.config();
