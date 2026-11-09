@@ -218,3 +218,55 @@ async fn changing_the_language_drops_the_old_servers_data() -> anyhow::Result<()
     assert!(!screen(app).contains("Run full"), "{}", screen(app));
     session.quit().await
 }
+
+/// Saving under a new name re-attaches the server to the new path: the data is asked for again
+/// and comes back without any edit.
+#[tokio::test(flavor = "multi_thread")]
+async fn saving_under_a_new_name_asks_the_server_again() -> anyhow::Result<()> {
+    let mut session = Session::new(&["fake-full"])?;
+    assert!(
+        session.until(full_data_shown).await,
+        "the server's data never arrived:\n{}",
+        screen(&session.app)
+    );
+    let dir = tempfile::tempdir()?;
+    let renamed = dir.path().join("renamed.rs");
+
+    session
+        .send(&format!(":w {}<ret>", renamed.display()))
+        .await?;
+    assert!(
+        session
+            .until(|app| helix_view::doc!(app.editor).path() == Some(renamed.as_path()))
+            .await,
+        "not saved under the new name"
+    );
+    assert!(
+        session.until(full_data_shown).await,
+        "the data did not come back:\n{}",
+        screen(&session.app)
+    );
+    session.quit().await
+}
+
+/// Switching back to a language whose server is already running (so it sends no "initialized"
+/// that would make the handlers ask) brings the data back without any edit.
+#[tokio::test(flavor = "multi_thread")]
+async fn switching_to_a_running_servers_language_asks_it() -> anyhow::Result<()> {
+    let mut session = Session::new(&["fake-full"])?;
+    assert!(
+        session.until(full_data_shown).await,
+        "the server's data never arrived:\n{}",
+        screen(&session.app)
+    );
+
+    session.send(":lang text<ret>").await?;
+    assert_eq!(link_targets(&session.app), Vec::<String>::new());
+    session.send(":lang rust<ret>").await?;
+    assert!(
+        session.until(full_data_shown).await,
+        "the data did not come back:\n{}",
+        screen(&session.app)
+    );
+    session.quit().await
+}

@@ -5,7 +5,10 @@ use helix_core::{syntax::config::LanguageServerFeature, Assoc};
 use helix_event::{cancelable_future, register_hook};
 use helix_view::{
     document::DocumentLink,
-    events::{DocumentDidChange, DocumentDidOpen, LanguageServerExited, LanguageServerInitialized},
+    events::{
+        DocumentDidChange, DocumentDidOpen, DocumentLanguageServersDidChange, LanguageServerExited,
+        LanguageServerInitialized,
+    },
     handlers::{lsp::DocumentLinksEvent, Handlers},
     DocumentId, Editor,
 };
@@ -152,6 +155,11 @@ pub(super) fn register_hooks(handlers: &Handlers) {
             request_document_links(event.editor, doc_id);
         }
 
+        Ok(())
+    });
+
+    register_hook!(move |event: &mut DocumentLanguageServersDidChange<'_>| {
+        request_document_links(event.editor, event.doc);
         Ok(())
     });
 

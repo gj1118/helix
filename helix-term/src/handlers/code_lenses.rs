@@ -10,8 +10,8 @@ use helix_lsp::{lsp, Client, LanguageServerId};
 use helix_view::{
     document::CodeLens,
     events::{
-        ConfigDidChange, DocumentDidChange, DocumentDidOpen, LanguageServerExited,
-        LanguageServerInitialized,
+        ConfigDidChange, DocumentDidChange, DocumentDidOpen, DocumentLanguageServersDidChange,
+        LanguageServerExited, LanguageServerInitialized,
     },
     handlers::{lsp::CodeLensesEvent, Handlers},
     DocumentId, Editor,
@@ -318,6 +318,11 @@ pub(super) fn register_hooks(handlers: &Handlers) {
 
     register_hook!(move |event: &mut LanguageServerInitialized<'_>| {
         request_all(event.editor);
+        Ok(())
+    });
+
+    register_hook!(move |event: &mut DocumentLanguageServersDidChange<'_>| {
+        request_code_lenses(event.editor, event.doc);
         Ok(())
     });
 

@@ -10,7 +10,8 @@ use helix_view::{
     document::Mode,
     events::{
         ConfigDidChange, DocumentDidChange, DocumentDidClose, DocumentDidOpen, DocumentFocusLost,
-        LanguageServerExited, LanguageServerInitialized, SelectionDidChange,
+        DocumentLanguageServersDidChange, LanguageServerExited, LanguageServerInitialized,
+        SelectionDidChange,
     },
     handlers::{lsp::DocumentSymbolsEvent, Handlers},
     DocumentId, Editor,
@@ -405,6 +406,16 @@ pub(super) fn register_hooks(handlers: &Handlers) {
 
     register_hook!(move |event: &mut DocumentDidClose<'_>| {
         forget_tree_sitter_symbols(event.editor, event.doc.id());
+        Ok(())
+    });
+
+    register_hook!(move |event: &mut DocumentLanguageServersDidChange<'_>| {
+        // The symbols were dropped: from the new servers, or from tree-sitter again if none
+        // offers them. Hidden documents are brought up to date when they are shown.
+        forget_tree_sitter_symbols(event.editor, event.doc);
+        if is_visible(event.editor, event.doc) {
+            update_document_symbols(event.editor, event.doc);
+        }
         Ok(())
     });
 

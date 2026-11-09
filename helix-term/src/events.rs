@@ -2,8 +2,8 @@ use helix_event::{events, register_event};
 use helix_view::document::Mode;
 use helix_view::events::{
     ConfigDidChange, DiagnosticsDidChange, DocumentDidChange, DocumentDidClose, DocumentDidOpen,
-    DocumentFocusLost, EditorConfigDidChange, LanguageServerExited, LanguageServerInitialized,
-    SelectionDidChange,
+    DocumentFocusLost, DocumentLanguageServersDidChange, EditorConfigDidChange,
+    LanguageServerExited, LanguageServerInitialized, SelectionDidChange,
 };
 
 use crate::commands;
@@ -28,5 +28,6 @@ pub fn register() {
     register_event::<DiagnosticsDidChange>();
     register_event::<LanguageServerInitialized>();
     register_event::<LanguageServerExited>();
+    register_event::<DocumentLanguageServersDidChange>();
     register_event::<ConfigDidChange>();
 }

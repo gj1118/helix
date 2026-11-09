@@ -38,6 +38,12 @@ events! {
         editor: &'a mut Editor,
         server_id: LanguageServerId
     }
+    // The language servers serving a document changed (`:lang`, a new path, `:lsp-restart`,
+    // ...) and what the previous ones computed for it was dropped: ask the current ones again.
+    DocumentLanguageServersDidChange<'a> {
+        editor: &'a mut Editor,
+        doc: DocumentId
+    }
 
     // NOTE: this event is simple for now and is expected to change as the config system evolves.
     // Ideally it would say what changed.

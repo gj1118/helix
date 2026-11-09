@@ -77,7 +77,7 @@ This fork of Helix implements the following pull requests. Future pull requests 
 31. https://github.com/helix-editor/helix/pull/16065 (don't block the UI on prompt completions - file, directory, theme and shell completions of `:open`, `:cd`, `:theme`, `:sh`, ... run in the background, one at a time per prompt; also with the popup command line)
 32. https://github.com/helix-editor/helix/pull/16460 (clear completion before switching views with the mouse - fixes the "Savepoint must not be used with a different view!" crash; also covers this fork's bufferline clicks and files opened from the explorer)
 33. https://github.com/helix-editor/helix/pull/14757 (kitty multiple cursors protocol - with a bar or underline cursor, terminals supporting it (kitty 0.43+) draw the secondary cursors natively; detected automatically, block cursors stay editor-drawn; cursors under the completion menu or popups are left out)
-34. https://github.com/helix-editor/helix/pull/15777 (clear stale LSP data on language server stop/refresh - `:lsp-stop`, `:lang` and path changes drop the old server's document links, color swatches, highlights, code lenses, lightbulbs, symbols and ghost text; the remaining servers are asked again)
+34. https://github.com/helix-editor/helix/pull/15777 (clear stale LSP data on language server stop/refresh - `:lsp-stop`, `:lang` and path changes drop the old server's document links, color swatches, highlights, code lenses, lightbulbs, symbols and ghost text; the servers that serve the buffer afterwards are asked again right away, so e.g. saving under a new name keeps links and swatches)
 
 ## Explorer
 

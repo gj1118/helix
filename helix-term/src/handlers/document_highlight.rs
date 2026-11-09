@@ -3,8 +3,8 @@ use helix_event::{cancelable_future, register_hook};
 use helix_lsp::{lsp, util::lsp_range_to_range, OffsetEncoding};
 use helix_view::{
     events::{
-        ConfigDidChange, DocumentDidChange, DocumentDidOpen, LanguageServerExited,
-        LanguageServerInitialized, SelectionDidChange,
+        ConfigDidChange, DocumentDidChange, DocumentDidOpen, DocumentLanguageServersDidChange,
+        LanguageServerExited, LanguageServerInitialized, SelectionDidChange,
     },
     handlers::Handlers,
     DocumentId, Editor, ViewId,
@@ -171,6 +171,23 @@ pub(super) fn register_hooks(_handlers: &Handlers) {
         };
         let doc_id = view.doc;
         request_document_highlights(event.editor, doc_id, view_id);
+        Ok(())
+    });
+
+    register_hook!(move |event: &mut DocumentLanguageServersDidChange<'_>| {
+        if !event.editor.config().lsp.auto_document_highlight {
+            return Ok(());
+        }
+        // Highlights follow the cursor of the focused view only.
+        let view_id = event.editor.tree.focus;
+        if event
+            .editor
+            .tree
+            .try_get(view_id)
+            .is_some_and(|view| view.doc == event.doc)
+        {
+            request_document_highlights(event.editor, event.doc, view_id);
+        }
         Ok(())
     });
 

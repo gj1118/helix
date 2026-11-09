@@ -6,7 +6,10 @@ use helix_event::{cancelable_future, register_hook};
 use helix_lsp::lsp;
 use helix_view::{
     document::DocumentColorSwatches,
-    events::{DocumentDidChange, DocumentDidOpen, LanguageServerExited, LanguageServerInitialized},
+    events::{
+        DocumentDidChange, DocumentDidOpen, DocumentLanguageServersDidChange, LanguageServerExited,
+        LanguageServerInitialized,
+    },
     handlers::{lsp::DocumentColorsEvent, Handlers},
     DocumentId, Editor, Theme,
 };
@@ -194,6 +197,11 @@ pub(super) fn register_hooks(handlers: &Handlers) {
             request_document_colors(event.editor, doc_id);
         }
 
+        Ok(())
+    });
+
+    register_hook!(move |event: &mut DocumentLanguageServersDidChange<'_>| {
+        request_document_colors(event.editor, event.doc);
         Ok(())
     });
 

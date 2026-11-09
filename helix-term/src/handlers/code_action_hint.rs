@@ -6,7 +6,8 @@ use helix_lsp::lsp::{CodeAction, CodeActionOrCommand, CodeActionTriggerKind};
 use helix_view::{
     events::{
         ConfigDidChange, DiagnosticsDidChange, DocumentDidChange, DocumentDidOpen,
-        LanguageServerExited, LanguageServerInitialized, SelectionDidChange,
+        DocumentLanguageServersDidChange, LanguageServerExited, LanguageServerInitialized,
+        SelectionDidChange,
     },
     handlers::{lsp::CodeActionHintEvent, Handlers},
     DocumentId, Editor, ViewId,
@@ -221,6 +222,30 @@ pub(super) fn register_hooks(handlers: &Handlers) {
                 view_id,
             },
         );
+        Ok(())
+    });
+
+    let tx = handlers.code_action_hint.clone();
+    register_hook!(move |event: &mut DocumentLanguageServersDidChange<'_>| {
+        if !event.editor.config().code_action_hint() {
+            return Ok(());
+        }
+        // Hints are shown for the focused view only.
+        let view_id = event.editor.tree.focus;
+        if event
+            .editor
+            .tree
+            .try_get(view_id)
+            .is_some_and(|view| view.doc == event.doc)
+        {
+            send_blocking(
+                &tx,
+                CodeActionHintEvent {
+                    document_id: event.doc,
+                    view_id,
+                },
+            );
+        }
         Ok(())
     });
 

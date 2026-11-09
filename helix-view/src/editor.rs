@@ -3015,7 +3015,19 @@ impl Editor {
 
     /// Refreshes the language server for a given document
     pub fn refresh_language_servers(&mut self, doc_id: DocumentId) {
-        self.launch_language_servers(doc_id)
+        if self.launch_language_servers(doc_id) {
+            self.language_servers_did_change(doc_id);
+        }
+    }
+
+    /// Tells the handlers that `doc_id`'s language servers changed and what the previous ones
+    /// computed was dropped, so they ask the current ones (already running servers send no
+    /// "initialized" event that would make them ask).
+    fn language_servers_did_change(&mut self, doc_id: DocumentId) {
+        helix_event::dispatch(crate::events::DocumentLanguageServersDidChange {
+            editor: self,
+            doc: doc_id,
+        });
     }
 
     /// Applies the edits the language servers ask for before a file operation
@@ -3206,26 +3218,28 @@ impl Editor {
         doc.detect_language(&loader);
         doc.detect_editor_config();
         doc.detect_indent_and_line_ending();
-        self.refresh_language_servers(doc_id);
+        // The document's language servers were detached before (a new path) or may change with
+        // the language: what they computed goes, and the servers now serving it are asked again.
+        doc.clear_language_server_data();
+        self.launch_language_servers(doc_id);
         let doc = doc_mut!(self, &doc_id);
         let diagnostics = Editor::doc_diagnostics(&self.language_servers, &self.diagnostics, doc);
         doc.replace_diagnostics(diagnostics, &[], None);
-        // The document's language servers were detached before (a new path) or may have
-        // changed with the language.
-        doc.clear_language_server_data();
+        self.language_servers_did_change(doc_id);
     }
 
-    /// Launch a language server for a given document
-    pub fn launch_language_servers(&mut self, doc_id: DocumentId) {
+    /// Launch a language server for a given document. Returns whether the document's language
+    /// servers changed (what the previous ones computed for it is dropped then).
+    pub fn launch_language_servers(&mut self, doc_id: DocumentId) -> bool {
         if !self.config().lsp.enable {
-            return;
+            return false;
         }
         // if doc doesn't have a URL it's a scratch buffer, ignore it
         let Some(doc) = self.documents.get_mut(&doc_id) else {
-            return;
+            return false;
         };
         let Some(doc_url) = doc.url() else {
-            return;
+            return false;
         };
         let (lang, path) = (doc.language.clone(), doc.path());
         let config = doc.config.load();
@@ -3234,7 +3248,7 @@ impl Editor {
         let workspace = doc.workspace_root();
         let trust = self.workspace_trust.query(workspace, TrustQuery::Lsp);
         if !trust.is_trusted() {
-            return;
+            return false;
         }
 
         // store only successfully started language servers
@@ -3264,7 +3278,7 @@ impl Editor {
         });
 
         if language_servers.is_empty() && doc.language_servers.is_empty() {
-            return;
+            return false;
         }
 
         let language_id = doc.language_id().map(ToOwned::to_owned).unwrap_or_default();
@@ -3310,6 +3324,7 @@ impl Editor {
         }
 
         doc.language_servers = language_servers;
+        servers_changed
     }
 
     fn _refresh(&mut self) {
