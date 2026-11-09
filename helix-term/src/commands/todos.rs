@@ -622,7 +622,7 @@ fn scan_workspace_files(
             continue;
         }
         // Document paths are canonical; the merge compares against them.
-        files.push(path::canonicalize(&entry.into_path()));
+        files.push(path::canonicalize(entry.into_path()));
     }
 
     let mut tags = Vec::new();
