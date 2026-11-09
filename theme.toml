@@ -95,6 +95,42 @@ error = "apricot"
 info = "delta"
 hint = "silver"
 
+# Task tags in comments (TODO:, FIXME:, …); one key per keyword.
+# Aliases share a key: TO-DO -> todo, FIXIT -> fix, PERFORMANCE -> perf, MARKER/BOOKMARK -> mark, MOCK -> stub.
+"error.broken" = { fg = "apricot", modifiers = ["bold"] }
+"error.bug" = { fg = "apricot", modifiers = ["bold"] }
+"error.compliance" = { fg = "apricot", modifiers = ["bold"] }
+"error.debug" = { fg = "apricot", modifiers = ["bold"] }
+"error.fail" = { fg = "apricot", modifiers = ["bold"] }
+"error.fix" = { fg = "apricot", modifiers = ["bold"] }
+"error.fixme" = { fg = "apricot", modifiers = ["bold"] }
+"error.invariant" = { fg = "apricot", modifiers = ["bold"] }
+"error.issue" = { fg = "apricot", modifiers = ["bold"] }
+"error.panic" = { fg = "apricot", modifiers = ["bold"] }
+"error.safety" = { fg = "apricot", modifiers = ["bold"] }
+"error.security" = { fg = "apricot", modifiers = ["bold"] }
+"error.xxx" = { fg = "apricot", modifiers = ["bold"] }
+"warning.hack" = { fg = "lightning", modifiers = ["bold"] }
+"warning.temp" = { fg = "lightning", modifiers = ["bold"] }
+"warning.test" = { fg = "lightning", modifiers = ["bold"] }
+"warning.untested" = { fg = "lightning", modifiers = ["bold"] }
+"warning.warn" = { fg = "lightning", modifiers = ["bold"] }
+"info.info" = { fg = "delta", modifiers = ["bold"] }
+"info.note" = { fg = "delta", modifiers = ["bold"] }
+"info.optimize" = { fg = "delta", modifiers = ["bold"] }
+"info.perf" = { fg = "delta", modifiers = ["bold"] }
+"info.question" = { fg = "delta", modifiers = ["bold"] }
+"info.refactor" = { fg = "delta", modifiers = ["bold"] }
+"info.review" = { fg = "delta", modifiers = ["bold"] }
+"info.todo" = { fg = "delta", modifiers = ["bold"] }
+"info.undone" = { fg = "delta", modifiers = ["bold"] }
+"hint.done" = { fg = "silver", modifiers = ["bold"] }
+"hint.hint" = { fg = "silver", modifiers = ["bold"] }
+"hint.mark" = { fg = "silver", modifiers = ["bold"] }
+"hint.passed" = { fg = "silver", modifiers = ["bold"] }
+"hint.stub" = { fg = "silver", modifiers = ["bold"] }
+"hint.tip" = { fg = "silver", modifiers = ["bold"] }
+
 [palette]
 white = "#ffffff"
 lilac = "#dbbfef"

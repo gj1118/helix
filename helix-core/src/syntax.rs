@@ -1466,4 +1466,182 @@ mod test {
 
         assert_eq!(result, expected);
     }
+
+    /// Task tags in comments (`TODO:`, `FIXME:`, …) are captured per keyword
+    /// as `<severity>.<keyword>` by the injected `comment` grammar. Highlights
+    /// resolve to theme scopes by matching the capture with the longest
+    /// recognized scope name: when a theme only defines the plain severity
+    /// key, the tag inherits its style; otherwise the keyword-specific key
+    /// wins.
+    #[test]
+    fn test_comment_annotation_highlights() {
+        use HighlightEvent::{Push, Refresh};
+
+        fn winning_scope(loader: &Loader, scopes: &[String], source: &str, needle: &str) -> String {
+            let language = loader.language_for_name("rust").unwrap();
+            let rope = Rope::from_str(source);
+            let syntax = Syntax::new(rope.slice(..), language, loader).unwrap();
+            let mut highlighter = syntax.highlighter(rope.slice(..), loader, ..);
+            let mut active: Vec<Highlight> = Vec::new();
+            let mut start = 0u32;
+            let len = rope.len_bytes() as u32;
+            let mut spans = Vec::<(u32, u32, Highlight)>::new();
+            loop {
+                let offset = highlighter.next_event_offset();
+                let cursor = if offset == u32::MAX { len } else { offset };
+                if cursor > start {
+                    if let Some(&highlight) = active.last() {
+                        spans.push((start, cursor, highlight));
+                    }
+                }
+                if offset == u32::MAX {
+                    break;
+                }
+                let (event, highlights) = highlighter.advance();
+                let v: Vec<Highlight> = highlights.collect();
+                match event {
+                    Refresh => active = v,
+                    Push => active.extend(v),
+                }
+                start = offset;
+            }
+            let pos = source.find(needle).unwrap() as u32;
+            spans
+                .iter()
+                .find(|(start, end, _)| *start <= pos && pos < *end)
+                .map(|(_, _, highlight)| scopes[highlight.get() as usize].clone())
+                .unwrap()
+        }
+
+        let source = "// TODO: later\n// FIXME: now\n// HACK: gross\n// MARK: here\n// XYZZY: unrecognized\n";
+
+        // Without any `*.annotation` theme keys, tags inherit the styles of
+        // the plain severity keys.
+        let scopes = [
+            "comment", "constant", "ui.text", "error", "hint", "info", "warning",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>();
+        let loader = crate::config::default_lang_loader();
+        loader.set_scopes(scopes.clone());
+        for (tag, expected) in [
+            ("TODO", "info"),
+            ("FIXME", "error"),
+            ("HACK", "warning"),
+            ("MARK", "hint"),
+            ("XYZZY", "ui.text"),
+        ] {
+            assert_eq!(
+                winning_scope(&loader, &scopes, source, tag),
+                expected,
+                "tag {tag}"
+            );
+        }
+
+        // With `<severity>.<keyword>` theme keys, the keyword keys win.
+        let scopes = scopes
+            .into_iter()
+            .chain([
+                "error.fixme".to_string(),
+                "hint.mark".to_string(),
+                "info.todo".to_string(),
+                "warning.hack".to_string(),
+            ])
+            .collect::<Vec<_>>();
+        let loader = crate::config::default_lang_loader();
+        loader.set_scopes(scopes.clone());
+        for (tag, expected) in [
+            ("TODO", "info.todo"),
+            ("FIXME", "error.fixme"),
+            ("HACK", "warning.hack"),
+            ("MARK", "hint.mark"),
+            ("XYZZY", "ui.text"),
+        ] {
+            assert_eq!(
+                winning_scope(&loader, &scopes, source, tag),
+                expected,
+                "tag {tag}"
+            );
+        }
+    }
+
+    /// Task tags (`TODO:`, `FIXME(user):`, bare `TODO`, …) are found in
+    /// comments through the `comment` grammar's tags query, the scan the tag
+    /// pickers run: per match a `@comment.tag` keyword capture (with its
+    /// optional `@comment.user` mention), for recognized tags only, and only
+    /// inside comments (words with a tag spelling elsewhere don't count, and
+    /// a bare hyphenated spelling is two words to the grammar).
+    #[test]
+    fn test_comment_tag_query() {
+        let loader = crate::config::default_lang_loader();
+        let comment = loader.language_for_name("comment").unwrap();
+
+        let source = r#"// TODO: colonful
+// TODO bare
+Text with a standalone WARN word.
+// FIXME(user): needs a user
+// TO-DO: alias
+// TO-DO bare
+// XYZZY: unrecognized
+"#;
+        let rope = Rope::from_str(source);
+        let language = loader.language_for_name("rust").unwrap();
+        let syntax = Syntax::new(rope.slice(..), language, &loader).unwrap();
+
+        let text = rope.slice(..);
+        let mut tags_iter = syntax.tags(text, &loader, ..);
+        let query = &loader.tag_query(comment).unwrap().query;
+        let tag_capture = query.get_capture("comment.tag");
+        let user_capture = query.get_capture("comment.user");
+
+        let mut found = Vec::new();
+        while let Some(event) = tags_iter.next() {
+            let QueryMatchIterEvent::Match(matched) = event else {
+                continue;
+            };
+            // Matches of other languages' tags queries must not be
+            // mistaken for comment-tag captures.
+            if tags_iter.current_language() != comment {
+                continue;
+            }
+            let mut name_range = None::<std::ops::Range<u32>>;
+            let mut user_range = None::<std::ops::Range<u32>>;
+            for node in matched.nodes.iter() {
+                if Some(node.capture) == tag_capture {
+                    name_range = Some(node.node.byte_range());
+                } else if Some(node.capture) == user_capture {
+                    user_range = Some(node.node.byte_range());
+                }
+            }
+            let Some(name_range) = name_range else {
+                continue;
+            };
+            let (start, end) = (
+                text.byte_to_char(name_range.start as usize),
+                text.byte_to_char(name_range.end as usize),
+            );
+            let user = user_range.map(|range| {
+                let (start, end) = (
+                    text.byte_to_char(range.start as usize),
+                    text.byte_to_char(range.end as usize),
+                );
+                text.slice(start..end).to_string()
+            });
+            found.push((text.slice(start..end).to_string(), user));
+        }
+
+        assert_eq!(
+            found,
+            vec![
+                ("TODO".to_owned(), None),
+                // The bare keyword without a colon is a standalone "text" node
+                // of the grammar, like in the highlighting.
+                ("TODO".to_owned(), None),
+                ("FIXME".to_owned(), Some("user".to_owned())),
+                ("TO-DO".to_owned(), None),
+            ],
+            "the tags of the commented source"
+        );
+    }
 }

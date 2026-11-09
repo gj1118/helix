@@ -18,3 +18,6 @@
   (#set! "injection.language" "bash")
   (#set! injection.combined)
   (#set! injection.include-children))
+
+((comment) @injection.content
+ (#set! injection.language "comment"))

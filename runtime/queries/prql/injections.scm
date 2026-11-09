@@ -6,3 +6,6 @@
   (keyword_json)
   (literal) @injection.content
   (#set! injection.language "json"))
+
+((comment) @injection.content
+ (#set! injection.language "comment"))

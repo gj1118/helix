@@ -758,9 +758,9 @@ fn push_workspace_diagnostics_picker(editor: &mut Editor, compositor: &mut Compo
 
 /// Maximum number of files diagnostics are pulled for in a single workspace
 /// diagnostics collection.
-const MAX_WORKSPACE_FILES: usize = 1000;
+pub(crate) const MAX_WORKSPACE_FILES: usize = 1000;
 /// Files larger than this are skipped when collecting workspace diagnostics.
-const MAX_WORKSPACE_FILE_BYTES: u64 = 2 * 1024 * 1024;
+pub(crate) const MAX_WORKSPACE_FILE_BYTES: u64 = 2 * 1024 * 1024;
 /// Maximum number of language server requests in flight at the same time while
 /// collecting workspace diagnostics.
 const WORKSPACE_DIAGNOSTICS_CONCURRENCY: usize = 32;

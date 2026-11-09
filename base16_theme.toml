@@ -54,3 +54,39 @@
 "debug" = "gray"
 "warning" = "yellow"
 "error" = "red"
+
+# Task tags in comments (TODO:, FIXME:, …).
+# Aliases share a key: TO-DO -> todo, FIXIT -> fix, PERFORMANCE -> perf, MARKER/BOOKMARK -> mark, MOCK -> stub.
+"error.broken" = { fg = "red", modifiers = ["bold"] }
+"error.bug" = { fg = "red", modifiers = ["bold"] }
+"error.compliance" = { fg = "red", modifiers = ["bold"] }
+"error.debug" = { fg = "red", modifiers = ["bold"] }
+"error.fail" = { fg = "red", modifiers = ["bold"] }
+"error.fix" = { fg = "red", modifiers = ["bold"] }
+"error.fixme" = { fg = "red", modifiers = ["bold"] }
+"error.invariant" = { fg = "red", modifiers = ["bold"] }
+"error.issue" = { fg = "red", modifiers = ["bold"] }
+"error.panic" = { fg = "red", modifiers = ["bold"] }
+"error.safety" = { fg = "red", modifiers = ["bold"] }
+"error.security" = { fg = "red", modifiers = ["bold"] }
+"error.xxx" = { fg = "red", modifiers = ["bold"] }
+"warning.hack" = { fg = "yellow", modifiers = ["bold"] }
+"warning.temp" = { fg = "yellow", modifiers = ["bold"] }
+"warning.test" = { fg = "yellow", modifiers = ["bold"] }
+"warning.untested" = { fg = "yellow", modifiers = ["bold"] }
+"warning.warn" = { fg = "yellow", modifiers = ["bold"] }
+"info.info" = { fg = "blue", modifiers = ["bold"] }
+"info.note" = { fg = "blue", modifiers = ["bold"] }
+"info.optimize" = { fg = "blue", modifiers = ["bold"] }
+"info.perf" = { fg = "blue", modifiers = ["bold"] }
+"info.question" = { fg = "blue", modifiers = ["bold"] }
+"info.refactor" = { fg = "blue", modifiers = ["bold"] }
+"info.review" = { fg = "blue", modifiers = ["bold"] }
+"info.todo" = { fg = "blue", modifiers = ["bold"] }
+"info.undone" = { fg = "blue", modifiers = ["bold"] }
+"hint.done" = { fg = "gray", modifiers = ["bold"] }
+"hint.hint" = { fg = "gray", modifiers = ["bold"] }
+"hint.mark" = { fg = "gray", modifiers = ["bold"] }
+"hint.passed" = { fg = "gray", modifiers = ["bold"] }
+"hint.stub" = { fg = "gray", modifiers = ["bold"] }
+"hint.tip" = { fg = "gray", modifiers = ["bold"] }

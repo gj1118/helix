@@ -141,6 +141,8 @@
 | `lsp_or_syntax_workspace_symbol_picker` | Open workspace symbol picker from LSP or syntax information | normal: `` <space>S ``, select: `` <space>S `` |
 | `diagnostics_picker` | Open diagnostic picker | normal: `` <space>d ``, select: `` <space>d `` |
 | `workspace_diagnostics_picker` | Open workspace diagnostic picker | normal: `` <space>D ``, select: `` <space>D `` |
+| `todos_picker` | Show task tags (TODO, FIXME, ...) of the current file | normal: `` <space>t ``, select: `` <space>t `` |
+| `workspace_todos_picker` | Show task tags (TODO, FIXME, ...) of the workspace | normal: `` <space>T ``, select: `` <space>T `` |
 | `last_picker` | Open last picker | normal: `` <space>' ``, select: `` <space>' `` |
 | `insert_at_line_start` | Insert at start of line | normal: `` I ``, select: `` I `` |
 | `insert_at_line_end` | Insert at end of line | normal: `` A ``, select: `` A `` |
