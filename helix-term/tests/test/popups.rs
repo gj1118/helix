@@ -60,7 +60,7 @@ impl helix_term::ui::menu::Item for Choice {
 /// The popups, prompts and menus, to render on screens of every size.
 fn components(editor: &helix_view::Editor) -> Vec<Box<dyn Component>> {
     use helix_term::ui::{self, Markdown, Popup, Prompt, PromptEvent, Select};
-    let completions = |_: &helix_view::Editor, _: &str| -> Vec<ui::prompt::Completion> {
+    let completions = |_: &helix_view::Editor, _: &str| -> ui::completers::CompletionResult {
         (0..50)
             .map(|i| (0.., format!("write-{i}-{}", "x".repeat(i)).into()))
             .collect()

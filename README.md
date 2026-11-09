@@ -74,6 +74,7 @@ This fork of Helix implements the following pull requests. Future pull requests 
 28. https://github.com/helix-editor/helix/pull/12043 (6 new case conversion commands: PascalCase, camelCase, snake_case, Title Case, kebab-case, Sentence case)
 29. https://github.com/helix-editor/helix/pull/15854 (scrollable file preview in picker)
 30. https://github.com/helix-editor/helix/pull/15573 (breadcrumb navigation bar - with tree-sitter fallback, depth/name truncation, debounced LSP requests and icon support)
+31. https://github.com/helix-editor/helix/pull/16065 (don't block the UI on prompt completions - file, directory, theme and shell completions of `:open`, `:cd`, `:theme`, `:sh`, ... run in the background, one at a time per prompt; also with the popup command line)
 
 ## Explorer
 

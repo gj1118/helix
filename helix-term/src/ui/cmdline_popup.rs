@@ -1,6 +1,7 @@
 use crate::compositor::{Component, Context, Event, EventResult};
+use crate::ui::completers::CompletionResult;
 use crate::ui::gradient_border::GradientBorder;
-use crate::ui::prompt::{Completion, Prompt, PromptEvent};
+use crate::ui::prompt::{Prompt, PromptEvent};
 use helix_core::{unicode::width::UnicodeWidthStr, Position};
 use helix_view::{
     editor::CmdlineStyle,
@@ -32,7 +33,7 @@ impl CmdlinePopup {
     pub fn new(
         prompt_text: Cow<'static, str>,
         history_register: Option<char>,
-        completion_fn: impl FnMut(&Editor, &str) -> Vec<Completion> + 'static,
+        completion_fn: impl FnMut(&Editor, &str) -> CompletionResult + 'static,
         callback_fn: impl FnMut(&mut Context, &str, PromptEvent) + 'static,
         style: CmdlineStyle,
     ) -> Self {
@@ -45,6 +46,11 @@ impl CmdlinePopup {
             padding: 2,
             gradient_border: None,
         }
+    }
+
+    /// The prompt the popup wraps, e.g. to deliver completions computed in the background.
+    pub fn prompt_mut(&mut self) -> &mut Prompt {
+        &mut self.prompt
     }
 
     pub fn with_line(mut self, line: String, editor: &Editor) -> Self {
@@ -481,7 +487,7 @@ mod tests {
         let popup = CmdlinePopup::new(
             "Test:".into(),
             None,
-            |_editor, _input| vec![],
+            crate::ui::completers::none,
             |_ctx, _input, _event| {},
             CmdlineStyle::Popup,
         );
@@ -499,7 +505,7 @@ mod tests {
         let popup = CmdlinePopup::new(
             ":".into(),
             None,
-            |_editor, _input| vec![],
+            crate::ui::completers::none,
             |_ctx, _input, _event| {},
             CmdlineStyle::Bottom,
         );
@@ -516,7 +522,7 @@ mod tests {
         let popup = CmdlinePopup::new(
             ":".into(),
             None,
-            |_editor, _input| vec![],
+            crate::ui::completers::none,
             |_ctx, _input, _event| {},
             CmdlineStyle::Popup,
         );
@@ -545,7 +551,7 @@ mod tests {
         let popup = CmdlinePopup::new(
             ":".into(),
             None,
-            |_editor, _input| vec![],
+            crate::ui::completers::none,
             |_ctx, _input, _event| {},
             CmdlineStyle::Popup,
         );
@@ -563,7 +569,7 @@ mod tests {
         let mut popup = CmdlinePopup::new(
             ":".into(),
             None,
-            |_editor, _input| vec![],
+            crate::ui::completers::none,
             |_ctx, _input, _event| {},
             CmdlineStyle::Popup,
         );

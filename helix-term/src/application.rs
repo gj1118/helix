@@ -1117,7 +1117,7 @@ impl Application {
                 let prompt = crate::ui::Prompt::new(
                     message.into(),
                     None,
-                    |_editor, _input| Vec::new(),
+                    crate::ui::completers::none,
                     move |cx, input, event| {
                         if event == crate::ui::PromptEvent::Validate {
                             pending.fire(cx.editor, serde_json::Value::String(input.to_string()));
@@ -1144,7 +1144,7 @@ impl Application {
                 let prompt = crate::ui::Prompt::new(
                     format!("{} (y/n) ", message).into(),
                     None,
-                    |_editor, _input| Vec::new(),
+                    crate::ui::completers::none,
                     move |cx, input, event| {
                         if event == crate::ui::PromptEvent::Validate {
                             let confirmed =

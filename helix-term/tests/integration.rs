@@ -33,6 +33,7 @@ mod test {
     mod persistence;
     mod plugins;
     mod popups;
+    mod prompt_completion;
     mod quicklist;
     mod snippets;
     mod splits;
