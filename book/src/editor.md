@@ -473,17 +473,22 @@ the last `git status` took, at most 30 seconds (also the wait after `git status`
 example outside a repository). In a trusted workspace it comes from `git status`; otherwise
 from the built-in listing (no staged state). Turn it off with `git-status = false`.
 
-### The first row and the lines
+### The filter box and the lines
 
-The first row of the panel shows the folder the tree starts in (shortened from the start
-when it does not fit) until you start a filter, with a blank row under it before the tree.
+The panel opens with a box titled `Explorer`: the filter prompt (`>`), and on the right a
+count like a picker's. Without a filter it counts the entries listed (`51/51`); while
+filtering, the entries matching out of those searched (`12/4318`, with `(scanning)` in
+front while the search is still running). The tree starts under it with the folder it is
+rooted in. A panel too short for the box shows the folder (shortened from the start when
+it does not fit) on its first row instead, or the filter while there is one, with a blank
+row under it before the tree.
 The nesting of folders is drawn with the tree lines `├─`, `└─` and `│`, three columns per
 level; `indent-guides = false` turns the lines off and indents by two columns instead.
 Names that do not fit end in `…`.
 
 ### Filtering
 
-The first row of the panel is also the filter box. Press `/` (or click it) and type:
+Press `/` (or click the filter box) and type:
 the input is a fuzzy search, matched and ranked like in the pickers (`mnrs` finds
 `main.rs`). The query uses smart case (an uppercase letter makes it case
 sensitive) and the picker operators: space separated terms must all match, `^prefix`,

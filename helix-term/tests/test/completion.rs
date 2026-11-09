@@ -344,13 +344,23 @@ async fn explorer_open_clears_completion() -> anyhow::Result<()> {
     let (_, doc) = current_ref!(app.editor);
     assert_eq!(doc.text().to_string(), format!("{prefix}llo\n"));
 
-    // The panel's rows: the filter box and its rule, `..`, `hello`, `other.txt`.
+    // The explorer's row (the completion menu lists `other.txt` too, further right).
+    let rows = app.rendered_rows();
+    let row = rows
+        .iter()
+        .position(|row| {
+            row.chars()
+                .take(30)
+                .collect::<String>()
+                .contains("other.txt")
+        })
+        .unwrap_or_else(|| panic!("no other.txt in the explorer:\n{}", rows.join("\n")));
     send_events(
         &mut app,
         [Event::Mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: 3,
-            row: 5,
+            row: row as u16,
             modifiers: KeyModifiers::empty(),
         })],
     )

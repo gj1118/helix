@@ -918,6 +918,8 @@ pub struct Tree {
     scan_truncated: bool,
     /// Whether the last filter result was cut at [`FILTER_RESULT_LIMIT`].
     results_capped: bool,
+    /// How many scanned entries the last filter result matched (before the cut).
+    filter_matches: usize,
     /// Whether to list a `...` row above the root.
     show_parent: bool,
     /// Scores of the previous fuzzy query, so typing one more character only
@@ -952,6 +954,7 @@ impl Tree {
             scan_rx: None,
             scan_truncated: false,
             results_capped: false,
+            filter_matches: 0,
             show_parent: false,
             fuzzy_cache: None,
             matcher: new_matcher(),
@@ -1037,6 +1040,13 @@ impl Tree {
     /// Like [`Tree::best_match`], restricted to files.
     pub fn best_file(&self) -> Option<&Path> {
         self.best_file.as_deref().filter(|_| self.filter.is_some())
+    }
+
+    /// While a filter is active: how many entries match it, out of how many were searched
+    /// (scanned so far, see [`Tree::scanning`]).
+    pub fn filter_counts(&self) -> Option<(usize, usize)> {
+        self.filter.as_ref()?;
+        Some((self.filter_matches, self.scan.len()))
     }
 
     /// Whether the background scan feeding the filter is still running.
@@ -1277,6 +1287,7 @@ impl Tree {
         self.scan_rx = None;
         self.scan_truncated = false;
         self.results_capped = false;
+        self.filter_matches = 0;
         self.fuzzy_cache = None;
         self.best_match = None;
         self.best_file = None;
@@ -1406,6 +1417,7 @@ impl Tree {
         // Best matches first (ties keep scan order); only the top results are
         // shown.
         let by_rank = |a: &(u32, u32), b: &(u32, u32)| b.1.cmp(&a.1).then(a.0.cmp(&b.0));
+        self.filter_matches = scored.len();
         let capped = scored.len() > FILTER_RESULT_LIMIT;
         if capped {
             scored.select_nth_unstable_by(FILTER_RESULT_LIMIT, by_rank);
@@ -2197,6 +2209,46 @@ mod tests {
         tree.set_filter("file1", p);
         tree.wait_for_scan(p);
         assert!(!tree.filter_capped());
+    }
+
+    /// The counts the explorer shows: entries matching the filter (all of them, even past the
+    /// shown results' cap) out of the entries searched; none without a filter.
+    #[test]
+    fn filter_counts_matches_out_of_searched() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("src")).unwrap();
+        for name in ["src/main.rs", "src/lib.rs", "notes.txt"] {
+            std::fs::write(tmp.path().join(name), "").unwrap();
+        }
+        let p = params(false, true);
+        let mut tree = Tree::new(tmp.path().to_path_buf(), p).unwrap();
+        assert_eq!(tree.filter_counts(), None);
+
+        tree.set_filter("*.rs", p);
+        tree.wait_for_scan(p);
+        // `src`, its two files and `notes.txt` were searched.
+        assert_eq!(tree.filter_counts(), Some((2, 4)));
+
+        tree.set_filter("zzz", p);
+        tree.wait_for_scan(p);
+        assert_eq!(tree.filter_counts(), Some((0, 4)));
+
+        tree.set_filter("", p);
+        assert_eq!(tree.filter_counts(), None);
+
+        // Past the cap of shown results, all matches are counted.
+        let many = tempfile::tempdir().unwrap();
+        for i in 0..FILTER_RESULT_LIMIT + 50 {
+            std::fs::write(many.path().join(format!("file{i}.txt")), "").unwrap();
+        }
+        let mut tree = Tree::new(many.path().to_path_buf(), p).unwrap();
+        tree.set_filter("file", p);
+        tree.wait_for_scan(p);
+        assert!(tree.filter_capped());
+        assert_eq!(
+            tree.filter_counts(),
+            Some((FILTER_RESULT_LIMIT + 50, FILTER_RESULT_LIMIT + 50))
+        );
     }
 
     #[test]

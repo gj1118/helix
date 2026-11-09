@@ -107,7 +107,11 @@ const SEPARATOR_WIDTH: u16 = 1;
 /// Narrowest the panel can be dragged to.
 const MIN_PANEL_WIDTH: u16 = 4;
 /// Drawn in front of the filter input (it is focused with `/`).
-const FILTER_PREFIX: &str = "/ ";
+const FILTER_PREFIX: &str = "> ";
+/// The title of the filter box at the top of the panel.
+const FILTER_BOX_TITLE: &str = "Explorer";
+/// The panel height from which the filter is a bordered box (three rows) rather than a line.
+const FILTER_BOX_MIN_HEIGHT: u16 = 8;
 /// How long a git status is kept before the panel asks for a new one (it is asked for while the
 /// panel is drawn, so a hidden panel costs nothing).
 const GIT_STATUS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
@@ -598,6 +602,129 @@ impl Explorer {
     }
 
     /// Tells the user when a filter result is incomplete.
+    /// The gradient border of `[editor.gradient-borders]`, made again when its config changed.
+    fn gradient(
+        &mut self,
+        config: &helix_view::editor::Config,
+        theme: &helix_view::Theme,
+    ) -> Option<&mut GradientBorder> {
+        let stale = self
+            .gradient_border
+            .as_ref()
+            .is_none_or(|(cached, _)| *cached != config.gradient_borders);
+        if stale {
+            self.gradient_border = Some((
+                config.gradient_borders.clone(),
+                GradientBorder::from_theme(theme, &config.gradient_borders),
+            ));
+        }
+        self.gradient_border.as_mut().map(|(_, border)| border)
+    }
+
+    /// The count at the right of the filter box, like a picker's: while filtering, the entries
+    /// matching the filter out of those searched (still growing while the search runs); else
+    /// the entries listed.
+    fn filter_count_label(&self) -> String {
+        match self.tree.filter_counts() {
+            Some((matches, searched)) => {
+                let scanning = if self.tree.scanning() {
+                    "(scanning) "
+                } else {
+                    ""
+                };
+                format!("{scanning}{matches}/{searched}")
+            }
+            None => {
+                let listed = self
+                    .tree
+                    .visible()
+                    .iter()
+                    .filter(|entry| !entry.is_parent && entry.depth > 0)
+                    .count();
+                format!("{listed}/{listed}")
+            }
+        }
+    }
+
+    /// The filter box heading a panel tall enough: a bordered box titled
+    /// [`FILTER_BOX_TITLE`] (in the middle of its top border) with the prompt, the filter and
+    /// the count. Sets `input_area` to where the prompt and the filter go.
+    fn render_filter_box(&mut self, area: Rect, surface: &mut Surface, editor: &Editor) {
+        let theme = &editor.theme;
+        let config = editor.config();
+        let border_style = explorer_border_style(theme, crate::ui::border_style(theme));
+
+        if config.gradient_borders.enable {
+            if let Some(border) = self.gradient(&config, theme) {
+                if !config.borders_hidden() {
+                    border.render(area, surface, theme, config.border_rounded());
+                }
+            }
+        } else {
+            Widget::render(
+                Block::bordered()
+                    .border_type(crate::ui::border_type(&config))
+                    .border_style(border_style),
+                area,
+                surface,
+            );
+        }
+        let title = format!(" {FILTER_BOX_TITLE} ");
+        let title_width = title.width() as u16;
+        if area.width >= title_width + 4 {
+            let title_style = theme.try_get("ui.popup.title").unwrap_or(border_style);
+            surface.set_string(
+                area.x + (area.width - title_width) / 2,
+                area.y,
+                &title,
+                title_style,
+            );
+        }
+
+        // One column of padding inside the border on either side.
+        let line = Rect::new(
+            area.x + 2,
+            area.y + 1,
+            area.width.saturating_sub(4),
+            area.height.min(1),
+        );
+        let count = self.filter_count_label();
+        let count_width = count.width() as u16;
+        self.input_area = if line.width >= count_width + 1 + FILTER_PREFIX.width() as u16 + 4 {
+            surface.set_stringn(
+                line.right() - count_width,
+                line.y,
+                &count,
+                count_width as usize,
+                theme.get("ui.text"),
+            );
+            line.clip_right(count_width + 1)
+        } else {
+            line
+        };
+
+        let input = self.input_area;
+        surface.set_stringn(
+            input.x,
+            input.y,
+            FILTER_PREFIX,
+            input.width as usize,
+            theme.get("ui.text.focus"),
+        );
+        let prefix_width = FILTER_PREFIX.width() as u16;
+        let avail = input.width.saturating_sub(prefix_width) as usize;
+        if avail > 0 && !self.filter.is_empty() {
+            let start = self.filter_window_start(avail);
+            surface.set_stringn(
+                input.x + prefix_width,
+                input.y,
+                &self.filter[start..],
+                avail,
+                theme.get("ui.text"),
+            );
+        }
+    }
+
     fn report_filter_limits(&self, editor: &mut Editor) {
         if self.tree.filter_truncated() {
             editor.set_status(format!(
@@ -1084,12 +1211,9 @@ impl Explorer {
         }
 
         let area = self.area;
-        // The filter box (and the rule below it).
+        // The filter box (or line, and the blank row below it).
         if mouse.row < area.y {
-            if mouse.kind == MouseEventKind::Down(MouseButton::Left)
-                && mouse.row == self.input_area.y
-                && self.input_area.width > 0
-            {
+            if mouse.kind == MouseEventKind::Down(MouseButton::Left) && self.input_area.width > 0 {
                 cx.editor.explorer_panel.focused = true;
                 self.start_filter_edit();
             }
@@ -1828,9 +1952,13 @@ impl Component for Explorer {
             return;
         }
 
-        // The top row shows the folder, or the filter while there is one, with a blank row under
-        // it to set it apart from the tree (no rule: the panel has its separator already).
-        let header: u16 = if rect.height >= 6 {
+        // A bordered filter box with its count heads the panel. A short panel makes do with a
+        // line showing the folder, or the filter while there is one, with a blank row under it
+        // to set it apart from the tree (no rule: the panel has its separator already).
+        let boxed = rect.height >= FILTER_BOX_MIN_HEIGHT && rect.width >= 8;
+        let header: u16 = if boxed {
+            3
+        } else if rect.height >= 6 {
             2
         } else if rect.height >= 3 {
             1
@@ -1850,6 +1978,22 @@ impl Component for Explorer {
         self.screen_width = area.width;
         self.separator = None;
         self.frame = frame;
+
+        // Results stream in from the scan thread while a filter is active. Taken in before
+        // anything is drawn, so the filter box's count and the rows show the same results.
+        if self.tree.poll_scan(tree_params(cx.editor)) {
+            // Better matches may arrive as the scan proceeds; follow the top
+            // one until the user picks a row themselves.
+            if self.filter_editing && !self.filter_navigated {
+                if let Some(row) = self.best_row(false) {
+                    self.cursor = row;
+                }
+            }
+            self.clamp_cursor();
+            if !self.tree.scanning() {
+                self.report_filter_limits(cx.editor);
+            }
+        }
 
         let theme = &cx.editor.theme;
         let text_style = theme.get("ui.text");
@@ -1880,17 +2024,7 @@ impl Component for Explorer {
                 );
                 if config.gradient_borders.enable {
                     // `[editor.gradient-borders]` wins whenever it is enabled.
-                    let stale = self
-                        .gradient_border
-                        .as_ref()
-                        .is_none_or(|(cached, _)| *cached != config.gradient_borders);
-                    if stale {
-                        self.gradient_border = Some((
-                            config.gradient_borders.clone(),
-                            GradientBorder::from_theme(theme, &config.gradient_borders),
-                        ));
-                    }
-                    if let Some((_, border)) = self.gradient_border.as_mut() {
+                    if let Some(border) = self.gradient(&config, theme) {
                         if !config.borders_hidden() {
                             border.render(frame, surface, theme, config.border_rounded());
                         }
@@ -1934,8 +2068,10 @@ impl Component for Explorer {
         // that lead to it.
         let path_style = explorer_path_style(theme, sel_style);
 
-        // The folder the tree starts in, until there is a filter to show.
-        if header > 0 && !self.filter_editing && self.filter.is_empty() {
+        if boxed {
+            self.render_filter_box(Rect::new(rect.x, rect.y, rect.width, 3), surface, cx.editor);
+        } else if header > 0 && !self.filter_editing && self.filter.is_empty() {
+            // The folder the tree starts in, until there is a filter to show.
             let label = root_label(&self.root, self.input_area.width as usize);
             // The root is always on the path to the cursor.
             for x in 0..self.input_area.width {
@@ -1982,21 +2118,6 @@ impl Component for Explorer {
                     avail,
                     style,
                 );
-            }
-        }
-
-        // Results stream in from the scan thread while a filter is active.
-        if self.tree.poll_scan(tree_params(cx.editor)) {
-            // Better matches may arrive as the scan proceeds; follow the top
-            // one until the user picks a row themselves.
-            if self.filter_editing && !self.filter_navigated {
-                if let Some(row) = self.best_row(false) {
-                    self.cursor = row;
-                }
-            }
-            self.clamp_cursor();
-            if !self.tree.scanning() {
-                self.report_filter_limits(cx.editor);
             }
         }
 

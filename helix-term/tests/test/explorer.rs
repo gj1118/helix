@@ -151,12 +151,101 @@ async fn the_tree_has_lines_and_room_under_the_header() -> anyhow::Result<()> {
     let nested = column(row(&rows, "b.txt"), "b.txt");
     assert_eq!(nested - sub, 3, "{text}");
 
-    // the folder on the first row, then a blank row (not a rule) before the tree
-    assert!(
-        rows[0].contains("/tmp") || rows[0].contains(".tmp"),
-        "{text}"
-    );
-    assert!(rows[1].trim().is_empty(), "{text}");
+    // the filter box on the first three rows, the tree right under it
+    assert!(rows[0].contains(" Explorer "), "{text}");
+    assert!(rows[1].contains("> "), "{text}");
+    assert!(rows[3].starts_with("..."), "the parent row first:\n{text}");
+    assert!(rows[4].starts_with(".tmp"), "then the root:\n{text}");
+    Ok(())
+}
+
+/// The filter box at the top of the panel: titled, with the prompt, the filter and a count.
+/// Without a filter the count is the entries listed; while filtering, the entries matching out
+/// of those searched. A click anywhere in the box starts typing a filter.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_filter_box_shows_the_filter_and_a_count() -> anyhow::Result<()> {
+    let (_dir, root) = repo()?;
+    let mut app = helpers::AppBuilder::new().with_config(config("")).build()?;
+    open_explorer(&mut app, &root);
+    let rows_of = |app: &Application| -> Vec<String> {
+        app.rendered_rows()
+            .iter()
+            .map(|row| row.chars().take(PANEL_WIDTH).collect())
+            .collect()
+    };
+
+    test_key_sequences(
+        &mut app,
+        vec![
+            (Some("<C-n>"), None),
+            (
+                Some("<C-p>"),
+                Some(&|app| {
+                    let rows = rows_of(app);
+                    let text = rows.join("\n");
+                    // in the middle of the top border
+                    let (left, right) = rows[0].split_once(" Explorer ").expect(&text);
+                    let (left, right) = (left.chars().count(), right.chars().count());
+                    assert!(left.abs_diff(right) <= 1, "{text}");
+                    // the root's `sub`, `a.txt` and `new.txt`
+                    assert!(rows[1].trim_end().ends_with("3/3 ▕"), "{text}");
+                    assert!(rows[1].contains("▏ > "), "{text}");
+                }),
+            ),
+            (
+                Some("/tx"),
+                Some(&|app| {
+                    let rows = rows_of(app);
+                    let text = rows.join("\n");
+                    // `a.txt`, `sub/b.txt` and `new.txt` out of the four entries
+                    assert!(rows[1].contains("> tx"), "{text}");
+                    assert!(rows[1].trim_end().ends_with("3/4 ▕"), "{text}");
+                    // the cursor is after the filter, in the box
+                    let area = app.compositor.size();
+                    let (cursor, _) = app.compositor.cursor(area, &app.editor);
+                    let cursor = cursor.expect("a cursor in the filter box");
+                    let column = rows[1].split_once("> tx").unwrap().0.chars().count() + 4;
+                    assert_eq!((cursor.row, cursor.col), (1, column), "{text}");
+                }),
+            ),
+            // Escape drops the filter
+            (
+                Some("<esc>"),
+                Some(&|app| {
+                    // all listed again (`sub` stays open, as the cursor's file is in it)
+                    let rows = rows_of(app);
+                    let text = rows.join("\n");
+                    let count = rows[1].trim_end().trim_end_matches('▕').trim_end();
+                    let count = count.rsplit(' ').next().unwrap();
+                    let (shown, total) = count.split_once('/').expect(&text);
+                    let listed = rows[5..]
+                        .iter()
+                        .filter(|row| !row.trim().is_empty())
+                        .count();
+                    assert_eq!(
+                        (shown, total),
+                        (&*listed.to_string(), &*listed.to_string()),
+                        "{text}"
+                    );
+                }),
+            ),
+        ],
+        false,
+    )
+    .await
+}
+
+/// A panel too short for the box keeps the one-line header: the folder, or the filter.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_short_panel_has_a_filter_line() -> anyhow::Result<()> {
+    let (_dir, root) = repo()?;
+    let mut app = helpers::AppBuilder::new().with_config(config("")).build()?;
+    open_explorer(&mut app, &root);
+    app.resize_terminal(120, 7).await;
+    let rows = app.rendered_rows();
+    let text = rows.join("\n");
+    assert!(rows[0].contains(".tmp"), "{text}");
+    assert!(!text.contains(" Explorer "), "{text}");
     Ok(())
 }
 
