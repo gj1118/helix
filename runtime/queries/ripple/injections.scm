@@ -11,3 +11,6 @@
 (template_substitution
   (expression) @injection.content
   (#set! injection.language "typescript"))
+
+((comment) @injection.content
+ (#set! injection.language "comment"))

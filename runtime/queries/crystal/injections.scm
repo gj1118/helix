@@ -9,3 +9,6 @@
   (heredoc_end) @name
   (#set! injection.language "html"))
   (#eq? @name "HTML"))
+
+((comment) @injection.content
+ (#set! injection.language "comment"))

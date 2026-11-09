@@ -343,6 +343,8 @@ This layer is a kludge of mappings, mostly pickers.
 | `S`     | Open workspace symbol picker (**LSP** or **TS**)                        | `lsp_or_syntax_workspace_symbol_picker`    |
 | `d`     | Open document diagnostics picker (**LSP**)                              | `diagnostics_picker`                       |
 | `D`     | Open workspace diagnostics picker (**LSP**)                             | `workspace_diagnostics_picker`             |
+| `t`     | Open task-tag picker (**TS**)                                           | `todos_picker`                             |
+| `T`     | Open workspace task-tag picker (**TS**)                                 | `workspace_todos_picker`                   |
 | `r`     | Rename symbol (**LSP**)                                                 | `rename_symbol`                            |
 | `a`     | Apply code action (**LSP**)                                             | `code_action`                              |
 | `A`     | Run a code lens of the current line (**LSP**, needs `display-code-lenses`) | `code_lens`                             |
@@ -643,6 +645,8 @@ Keys to use within prompt. Remap them in `[keys.prompt]` (see [Remapping](./rema
 | `Alt-b`, `Ctrl-Left`                        | Backward a word                                                         |
 | `Ctrl-b`, `Left`                            | Backward a char                                                         |
 | `Alt-f`, `Ctrl-Right`                       | Forward a word                                                          |
+| `Ctrl-f`, `Right`                           | Forward a char                                                          |
+| `Ctrl-e`, `End`      t-f`, `Ctrl-Right`                       | Forward a word                                                          |
 | `Ctrl-f`, `Right`                           | Forward a char                                                          |
 | `Ctrl-e`, `End`                             | Move prompt end                                                         |
 | `Ctrl-a`, `Home`                            | Move prompt start                                                       |

@@ -206,6 +206,9 @@ We use a similar set of scopes as
     - `documentation` - Block documentation comments (e.g. `/** */` in Rust)
   - `unused` - Unused variables and patterns, e.g. `_` and `_foo`
 
+- `<severity>.<keyword>` - Task tags in comments, one scope per keyword like
+  `info.todo` or `error.fixme`; see [Comment annotations](#comment-annotations)
+
 - `variable` - Variables
   - `mutable` - Mutable variables (e.g. marked with `mut` in Rust)
   - `builtin` - Reserved language variables (`self`, `this`, `super`, etc.)
@@ -398,6 +401,51 @@ These scopes are used for theming the editor interface:
 | `diagnostic.unnecessary`          | Diagnostics with unnecessary tag (editing area)                                                |
 | `diagnostic.deprecated`           | Diagnostics with deprecated tag (editing area)                                                 |
 | `tabstop`                         | Snippet placeholder                                                                            |
+
+### Comment annotations
+
+Task tags in comments — `TODO:`, `FIXME:`, `HACK:`, `NOTE:`, `UNDONE:`, … — are
+highlighted with one scope per keyword. Each scope consists of the keyword's
+severity class and the keyword itself, e.g. `info.todo` or `error.fixme`.
+Scoped keys that a theme does not define fall back to the keyword's severity
+key, so a theme still colors every tag through `error`, `warning`, `info` and
+`hint` without knowing them.
+
+| Scopes              | Falls back to | Tags |
+| ---                 | ---           | ---  |
+| `error.<keyword>`   | `error`       | `bug`, `fixme`, `issue`, `xxx`, `fix` (`FIXIT`), `safety`, `fail` (`FAILED`), `debug`, `invariant`, `compliance`, `panic`, `security`, `broken` |
+| `warning.<keyword>` | `warning`     | `hack` (`WORKAROUND`), `warn` (`WARNING`), `test`, `temp`, `untested` |
+| `info.<keyword>`    | `info`        | `info`, `note` (`NOTES`), `todo` (`TO-DO`), `undone`, `perf` (`PERFORMANCE`), `optimize` (`OPTIMISE`), `question` (`ASK`), `review` (`PR`, `CR`), `refactor` |
+| `hint.<keyword>`    | `hint`        | `hint`, `mark` (`MARKER`, `BOOKMARK`), `passed`, `stub` (`MOCK`), `tip`, `done` |
+
+47 tags share 33 keys, with the aliases listed in parens. The tag keyword must
+be followed by a colon and it may name a user, as in `TODO(user):`. Surrounding
+comment text keeps the regular `comment` style, so only the tag itself is
+accentuated. Tags are recognized in every language whose comments inject the
+`comment` grammar — all mainstream languages do; languages without the
+injection simply keep plain comment styling:
+
+```rust
+// TODO: move this to a shared module
+// FIXME(user): breaks on empty files, see #1292
+// HACK: unparsable without the preprocessor
+// BUG: release-blocker, file a follow-up
+```
+
+Style individual keywords by overriding their scopes:
+
+```toml
+# In ~/.config/helix/themes/my-theme.toml
+inherits = "default"
+
+"info.todo" = { fg = "yellow", modifiers = ["bold"] }    # TODO, TO-DO
+"error.fixme" = { fg = "red", modifiers = ["bold"] }     # FIXME
+"warning.hack" = { fg = "purple", modifiers = ["bold"] } # HACK, WORKAROUND
+"info.note" = { fg = "green" }                           # NOTE, NOTES
+```
+
+To change all tags of a severity at once, define the severity key they fall
+back to (e.g. `"info"` above).
 
 ### Notification and Cmdline Popup Styling
 
