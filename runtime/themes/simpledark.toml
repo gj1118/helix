@@ -15,7 +15,7 @@
 "string" = "gray-6"
 "string.regexp" = "gray-7"
 "string.special" = "gray-8"
-"comment" = { fg = "gray-5", modifiers = ["italic"] }
+"comment" = { fg = "gray-8", modifiers = ["italic"] }
 "comment.block.documentation" = { fg = "gray-6", modifiers = ["italic"] }
 "variable" = "fg"
 "variable.builtin" = { fg = "light-0", modifiers = ["italic"] }
@@ -31,7 +31,7 @@
 "keyword.storage.modifier" = "light-2"
 "operator" = "gray-7"
 "function" = "light-2"
-"function.builtin" = { fg = "light-2", modifiers = ["italic"] }
+"function.builtin" = { fg = "light-1", modifiers = ["italic"] }
 "function.macro" = { fg = "light-0", modifiers = ["bold"] }
 "tag" = "light-1"
 "tag.attribute" = "gray-7"
@@ -126,7 +126,7 @@
 "ui.virtual.inlay-hint" = { fg = "gray-2", modifiers = ["italic"] }
 "ui.virtual.inline-value" = { fg = "gray-4", modifiers = ["italic"] }
 "ui.virtual.code-lens" = { fg = "gray-3", modifiers = ["italic"] }
-"ui.virtual.inline-blame" = { fg = "gray-1", modifiers = ["italic"] }
+"ui.virtual.inline-blame" = { fg = "inline-blame", modifiers = ["italic"] }
 "ui.virtual.inline-completion" = { fg = "gray-2", modifiers = ["italic"] }
 "ui.virtual.fold-decoration" = { fg = "gray-4", bg = "bg-2" }
 "ui.virtual.jump-label" = { fg = "white", bg = "bg-3", modifiers = ["bold"] }
@@ -148,7 +148,7 @@ rainbow = ["white", "gray-8", "gray-6", "light-1", "gray-7", "gray-5"]
 
 [palette]
 # Backgrounds (black, then palette 8 and steps between)
-bg = "#000000"
+bg = "#121212"
 bg-1 = "#0f0f0e"
 bg-2 = "#1a1a19"
 bg-3 = "#2e2e2c"
@@ -169,3 +169,4 @@ light-1 = "#b6b8b3"
 light-0 = "#bbbdbb"
 light-2 = "#d1d1cb"
 white = "#d6d6d0"
+inline-blame="#f2d5cf"
