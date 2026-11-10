@@ -8,6 +8,7 @@ mod file_explorer;
 pub mod gradient_border;
 mod image_preview;
 mod info;
+pub mod logo;
 pub mod lsp;
 mod markdown;
 pub mod menu;

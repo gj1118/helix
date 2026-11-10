@@ -44,5 +44,6 @@ mod test {
     mod snippets;
     mod splits;
     mod todos;
+    mod welcome;
     mod window_title;
 }

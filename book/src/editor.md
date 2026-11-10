@@ -615,8 +615,12 @@ max-panel-height-percent = 0.8  # used when max-panel-height is 0 (0.0-1.0)
 
 When Helix starts without a file to open, the editor shows a welcome screen in the empty buffer.
 It is drawn in every split that shows this buffer (after `:vsplit`, say), not only the first
-one, and disappears as soon as you type in it or open a file in its place. Turn it off with the `[editor]` key
-`welcome-screen`:
+one, and disappears as soon as you type in it or open a file in its place.
+
+It is as large as the view allows: the Helix mark (drawn with half blocks, two pixels per cell)
+beside the "HELIX" wordmark and the help; on a shorter view, a smaller mark beside the help; then
+the help alone. Without true color, the logo is drawn in the text's color. Turn it off with the
+`[editor]` key `welcome-screen`:
 
 ```toml
 [editor]
