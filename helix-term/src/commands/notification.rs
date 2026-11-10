@@ -1,9 +1,15 @@
 use crate::compositor::Context;
 use crate::job::{self, Callback};
 use helix_view::editor::Severity;
+use std::fmt::Write;
 
 /// Show notification history
 pub fn show_notification_history(cx: &mut Context) {
+    if !cx.editor.config().notifications.enable_history {
+        cx.editor
+            .set_status("The notification history is off (`notifications.enable-history`)");
+        return;
+    }
     let history = cx.editor.get_notification_history();
 
     if history.is_empty() {
@@ -11,10 +17,18 @@ pub fn show_notification_history(cx: &mut Context) {
         return;
     }
 
-    let mut content = String::new();
-    content.push_str("Notification History:\n\n");
+    // The newest first, at most `SHOWN` of them.
+    const SHOWN: usize = 50;
+    let mut content = if history.len() > SHOWN {
+        format!(
+            "Notification History (the {SHOWN} newest of {}):\n\n",
+            history.len()
+        )
+    } else {
+        "Notification History:\n\n".to_string()
+    };
 
-    for (i, notification) in history.iter().enumerate().rev().take(50) {
+    for (i, notification) in history.iter().enumerate().rev().take(SHOWN) {
         let severity_icon = match notification.severity {
             Severity::Error => "❌",
             Severity::Warning => "⚠️",
@@ -31,18 +45,20 @@ pub fn show_notification_history(cx: &mut Context) {
             format!("{}h ago", timestamp / 3600)
         };
 
-        content.push_str(&format!(
+        let _ = write!(
+            content,
             "{:2}. {} {} ({})\n    {}\n\n",
             history.len() - i,
             severity_icon,
             time_str,
-            if notification.dismissed {
-                "dismissed"
-            } else {
+            // an expired notification is not shown any more, even before it is cleaned up
+            if notification.is_active() {
                 "active"
+            } else {
+                "dismissed"
             },
             notification.message
-        ));
+        );
     }
 
     let popup = crate::ui::Popup::new("notification-history", crate::ui::Text::new(content))
@@ -71,34 +87,14 @@ pub fn dismiss_all_notifications(cx: &mut Context) {
 
 /// Test notification system with sample notifications
 pub fn test_notifications(cx: &mut Context) {
-    let config = &cx.editor.config().notifications;
-    let timeout_ms = config.default_timeout.as_millis();
-
-    // Debug output to log
-    log::warn!(
-        "DEBUG: Creating notification with timeout: {:?} ({}ms)",
-        config.default_timeout,
-        timeout_ms
-    );
-
-    // Create a simple test notification
-    let _id = cx.editor.notify_info(format!(
-        "Test notification (timeout: {}ms) - should disappear in {}s",
-        timeout_ms,
-        timeout_ms as f64 / 1000.0
-    ));
-    // Check if the notification was created with timeout
-    let all_notifications = cx.editor.get_notification_history();
-    if let Some(notification) = all_notifications.last() {
-        log::warn!(
-            "DEBUG: Notification {} created with timeout: {:?}",
-            notification.id,
-            notification.timeout
-        );
-    }
-
-    cx.editor.set_status(format!(
-        "Test notification sent with {}ms timeout - check terminal for debug",
-        timeout_ms
-    ));
+    let timeout = cx.editor.config().notifications.default_timeout;
+    let message = if timeout.is_zero() {
+        "Test notification (no timeout: `:notifications-dismiss` removes it)".to_string()
+    } else {
+        format!(
+            "Test notification (disappears after {}s)",
+            timeout.as_secs_f64()
+        )
+    };
+    cx.editor.notify_info(message);
 }

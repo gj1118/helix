@@ -4,8 +4,8 @@ use crate::ui::gradient_border::GradientBorder;
 use crate::ui::prompt::{Prompt, PromptEvent};
 use helix_core::{unicode::width::UnicodeWidthStr, Position};
 use helix_view::{
-    editor::CmdlineStyle,
-    graphics::{CursorKind, Rect},
+    editor::{CmdlineConfig, CmdlineStyle, GradientBorderConfig},
+    graphics::{CursorKind, Rect, Style},
     Editor,
 };
 use std::borrow::Cow;
@@ -17,16 +17,20 @@ use tui::{
 /// Most completions the list below the input shows at once.
 const MAX_COMPLETIONS: usize = 10;
 
+/// Columns between the input and the popup's border, on each side.
+const PADDING: u16 = 2;
+
 pub struct CmdlinePopup {
     prompt: Prompt,
     style: CmdlineStyle,
-    // Popup-specific properties
+    /// Where the popup was last drawn.
     popup_area: Rect,
-    min_width: u16,
-    max_width: u16,
-    padding: u16,
-    // Gradient border for cmdline popup
-    gradient_border: Option<GradientBorder>,
+    /// The gradient border, with the configuration it was made from (kept for its animation).
+    gradient_border: Option<(GradientBorderConfig, GradientBorder)>,
+    /// The highlighted styles of the input (one per byte), for the line and theme they were
+    /// computed for: highlighting parses the line, which a frame drawn for every keystroke
+    /// (or a cursor blink) need not do again.
+    highlights: Option<(String, String, Vec<Style>)>,
 }
 
 impl CmdlinePopup {
@@ -41,16 +45,20 @@ impl CmdlinePopup {
             prompt: Prompt::new(prompt_text, history_register, completion_fn, callback_fn),
             style,
             popup_area: Rect::default(),
-            min_width: 40,
-            max_width: 80,
-            padding: 2,
             gradient_border: None,
+            highlights: None,
         }
     }
 
     /// The prompt the popup wraps, e.g. to deliver completions computed in the background.
     pub fn prompt_mut(&mut self) -> &mut Prompt {
         &mut self.prompt
+    }
+
+    #[cfg(test)]
+    fn with_line_unchecked(mut self, line: &str) -> Self {
+        self.prompt.set_line_unchecked(line.to_string());
+        self
     }
 
     pub fn with_line(mut self, line: String, editor: &Editor) -> Self {
@@ -67,13 +75,29 @@ impl CmdlinePopup {
         self
     }
 
-    /// Calculate optimal popup dimensions and position, inside `viewport`.
-    fn calculate_popup_area(&self, viewport: Rect) -> Rect {
-        let content_width = self.prompt.line().width().max(self.min_width as usize);
+    /// The help shown below the popup for what is typed (e.g. the documentation of a command),
+    /// like `Prompt::doc_fn` above the bottom command line.
+    pub fn with_doc_fn(mut self, doc_fn: crate::ui::prompt::DocFn) -> Self {
+        self.prompt.doc_fn = doc_fn;
+        self
+    }
+
+    /// The popup's area inside `viewport`: as wide as the input needs, between the
+    /// `min-popup-width` and `max-popup-width` of `[editor.cmdline]`, centered, in the upper
+    /// third.
+    fn calculate_popup_area(&self, viewport: Rect, config: &CmdlineConfig) -> Rect {
+        let min_width = config.min_popup_width;
+        // a maximum below the minimum is the minimum
+        let max_width = config.max_popup_width.max(min_width);
+        let content_width = self
+            .prompt
+            .line()
+            .width()
+            .saturating_add(PADDING as usize * 2)
+            .max(min_width as usize);
         // In usize: a very long line must not overflow (or wrap around to a narrow popup).
         let width = content_width
-            .saturating_add(self.padding as usize * 2)
-            .min(self.max_width as usize)
+            .min(max_width as usize)
             .min(viewport.width.saturating_sub(4) as usize) as u16;
 
         // Base height for single line + borders, unless the screen is shorter.
@@ -85,152 +109,252 @@ impl CmdlinePopup {
         Rect::new(x, y, width, height)
     }
 
-    /// Get command type icon based on the input
-    fn get_command_icon<'a>(&self, config: &'a helix_view::editor::CmdlineIcons) -> &'a str {
-        let line = self.prompt.line();
-        if line.starts_with("search:") || line.starts_with("/") || line.starts_with("?") {
-            &config.search
-        } else if line.starts_with(":") {
-            &config.command
-        } else if line.starts_with('!') {
-            &config.shell
-        } else {
-            // Check if this is a regex prompt by looking at the prompt text
-            match self.prompt.prompt() {
-                s if s.starts_with("search:") || s == "Search" => &config.search,
-                "Cmdline" => &config.command,
-                _ => &config.general,
-            }
+    /// The icon of the kind of prompt: from what it is (its history register and label), not
+    /// from what is typed in it.
+    fn get_command_icon<'a>(&self, icons: &'a helix_view::editor::CmdlineIcons) -> &'a str {
+        match (self.prompt.history_register(), self.prompt.prompt()) {
+            (Some(':'), _) | (_, "Cmdline") => &icons.command,
+            (Some('|'), _) => &icons.shell,
+            (Some('/'), _) | (_, "Search") => &icons.search,
+            (_, prompt) if prompt.starts_with("search") => &icons.search,
+            _ => &icons.general,
         }
+    }
+
+    /// The gradient border for `config`, made again when the configuration changed (a
+    /// `:config-reload` while the popup is open).
+    fn gradient_border(
+        &mut self,
+        theme: &helix_view::Theme,
+        config: &GradientBorderConfig,
+    ) -> &mut GradientBorder {
+        if self
+            .gradient_border
+            .as_ref()
+            .is_none_or(|(made_for, _)| made_for != config)
+        {
+            self.gradient_border =
+                Some((config.clone(), GradientBorder::from_theme(theme, config)));
+        }
+        &mut self.gradient_border.as_mut().unwrap().1
     }
 
     /// Render popup-style cmdline
     fn render_popup(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
-        let popup_area = self.calculate_popup_area(area);
+        let config = cx.editor.config();
+        let popup_area = self.calculate_popup_area(area, &config.cmdline);
         self.popup_area = popup_area;
 
         let theme = &cx.editor.theme;
-        let config = &cx.editor.config().gradient_borders;
 
         // Only inside the border (see `clear_bordered`).
         crate::ui::clear_bordered(
             surface,
             popup_area,
             theme.get("ui.popup"),
-            !crate::ui::border_cells_take_background(&cx.editor.config()),
+            !crate::ui::border_cells_take_background(&config),
         );
 
         // Use gradient border if enabled, otherwise use default border
-        let inner_area = if config.enable && self.style == CmdlineStyle::Popup {
-            // Initialize gradient border if needed
-            if self.gradient_border.is_none() {
-                self.gradient_border = Some(GradientBorder::from_theme(theme, config));
+        let inner_area = if config.gradient_borders.enable {
+            let rounded = config.border_rounded();
+            let hidden = config.borders_hidden();
+            let title = self.prompt.prompt().to_string();
+            let gradient_border = self.gradient_border(theme, &config.gradient_borders);
+            if !hidden {
+                gradient_border.render_with_title(
+                    popup_area,
+                    surface,
+                    theme,
+                    Some(&title),
+                    rounded,
+                );
             }
-
-            // Render gradient border with title
-            if let Some(ref mut gradient_border) = self.gradient_border {
-                let rounded = cx.editor.config().border_rounded();
-                if !cx.editor.config().borders_hidden() {
-                    gradient_border.render_with_title(
-                        popup_area,
-                        surface,
-                        theme,
-                        Some(self.prompt.prompt()),
-                        rounded,
-                    );
-                }
-            }
-
-            // Inner area inside the gradient border
-            {
-                // The gradient border is one cell wide whatever its thickness.
-                crate::ui::gradient_border::GradientBorder::inner_area(popup_area)
-            }
+            // The gradient border is one cell wide whatever its thickness.
+            GradientBorder::inner_area(popup_area)
         } else {
-            // Use traditional border
-            let border_style = crate::ui::border_style(theme);
-
-            let border_type = crate::ui::border_type(&cx.editor.config());
             let block = Block::default()
                 .borders(tui::widgets::Borders::ALL)
-                .border_type(border_type)
-                .border_style(border_style);
+                .border_type(crate::ui::border_type(&config))
+                .border_style(crate::ui::border_style(theme));
             // The background is painted inside the border above (see `clear_bordered`).
             // `ui.popup.title` when the theme sets it; otherwise the border's style.
             let block = match theme.try_get("ui.popup.title") {
                 Some(style) => block.title(tui::text::Span::styled(self.prompt.prompt(), style)),
                 None => block.title(self.prompt.prompt()),
             };
-
             let inner_area = block.inner(popup_area);
             block.render(popup_area, surface);
             inner_area
         };
 
-        // Render command icon (if enabled) but not the prompt text since it's now on the border
-        let config = cx.editor.config();
-        let icon = if config.cmdline.show_icons {
-            self.get_command_icon(&config.cmdline.icons)
-        } else {
-            ""
-        };
-        // Render icon without trailing space to avoid extra padding before input
-        let prefix_text = if icon.is_empty() {
-            "".to_string()
-        } else {
-            icon.to_string()
-        };
-
-        if !prefix_text.is_empty() {
-            let prompt_color = theme.get("ui.text.focus");
-            // Make the icon more prominent with bold styling
-            let icon_style = prompt_color.add_modifier(helix_view::theme::Modifier::BOLD);
-            surface.set_string(inner_area.x, inner_area.y, &prefix_text, icon_style);
+        // The icon of the kind of prompt, right before the input. The prompt's label is the
+        // border's title.
+        let icon = self.icon(&config);
+        let icon_width = Self::icon_width(icon, inner_area);
+        if inner_area.height > 0 && icon_width > 0 {
+            let icon_style = theme
+                .get("ui.text.focus")
+                .add_modifier(helix_view::theme::Modifier::BOLD);
+            surface.set_stringn(
+                inner_area.x,
+                inner_area.y,
+                icon,
+                icon_width as usize,
+                icon_style,
+            );
         }
 
-        // Calculate input area
-        let input_area = Rect::new(
-            inner_area.x + prefix_text.width() as u16,
-            inner_area.y,
-            inner_area.width.saturating_sub(prefix_text.width() as u16),
-            1,
-        );
-
-        // Render input text with syntax highlighting if available (unless the screen is too
-        // short to show it inside the border).
-        if inner_area.height > 0 && input_area.width > 0 {
+        // The input (unless the screen is too short or narrow to show it inside the border).
+        if let Some(input_area) = self.input_area(area, &config) {
             self.render_input_text(input_area, surface, cx);
         }
 
-        // Render completion popup if needed
+        // Below the popup: the completions, then the help for what is typed.
+        let mut below = popup_area;
         if !self.prompt.completions().is_empty() {
-            self.render_completion_popup(popup_area, area, surface, cx);
+            let list = self.render_completion_popup(popup_area, area, surface, cx);
+            if list.height > 0 {
+                below = list;
+            }
         }
+        self.render_doc(below, area, surface, cx);
     }
 
-    /// Render the input text with horizontal scrolling support
+    /// Render the input text with horizontal scrolling support, highlighted when the prompt
+    /// has a language (a regex, a shell command).
     fn render_input_text(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
         let theme = &cx.editor.theme;
-        let text_style = theme.get("ui.text");
-        let line_width = area.width as usize;
+        let line_width = Self::line_width(area);
 
-        // Update scroll anchor based on cursor position and available width
+        // Update scroll anchor based on cursor and available width
         self.prompt.update_scroll_anchor(line_width);
 
-        let anchor = self.prompt.anchor();
-        let line = self.prompt.line();
-        let visible_text = &line[anchor..];
+        if self.prompt.line().is_empty() {
+            // The most recently entered value as a suggestion, as with the bottom command line.
+            if let Some(suggestion) = self.prompt.first_history_completion(cx.editor) {
+                surface.set_stringn(
+                    area.x,
+                    area.y,
+                    &suggestion,
+                    line_width,
+                    theme.get("ui.text.inactive"),
+                );
+            }
+            return;
+        }
 
-        // Use set_string_anchored to handle truncation indicators
+        let text_style = theme.get("ui.text");
+        let line = self.prompt.line();
+        let fresh = self
+            .highlights
+            .as_ref()
+            .is_some_and(|(highlighted, theme_name, _)| {
+                highlighted == line && theme_name == theme.name()
+            });
+        if !fresh {
+            self.highlights = self
+                .prompt
+                .highlighted_line_styles(cx.editor)
+                .map(|styles| (line.clone(), theme.name().to_string(), styles));
+        }
+        let styles = self.highlights.as_ref().map(|(_, _, styles)| styles);
+
+        let anchor = self.prompt.anchor();
         surface.set_string_anchored(
             area.x,
             area.y,
             self.prompt.truncate_start(),
             self.prompt.truncate_end(),
-            visible_text,
+            &line[anchor..],
             line_width,
-            |_| text_style,
+            |offset| {
+                styles
+                    .and_then(|styles| styles.get(anchor + offset))
+                    .map_or(text_style, |style| text_style.patch(*style))
+            },
         );
+    }
+
+    /// The icon shown before the input (`show-icons`), or none.
+    fn icon<'a>(&self, config: &'a helix_view::editor::Config) -> &'a str {
+        if config.cmdline.show_icons {
+            self.get_command_icon(&config.cmdline.icons)
+        } else {
+            ""
+        }
+    }
+
+    fn icon_width(icon: &str, inner_area: Rect) -> u16 {
+        (icon.width().min(u16::MAX as usize) as u16).min(inner_area.width)
+    }
+
+    /// Where the input goes in `viewport`: inside the popup's border, after the icon. `None`
+    /// when the screen is too short or narrow for it. Asked for the cursor before the popup
+    /// is drawn (by the compositor), so it does not depend on drawing.
+    fn input_area(&self, viewport: Rect, config: &helix_view::editor::Config) -> Option<Rect> {
+        let popup_area = self.calculate_popup_area(viewport, &config.cmdline);
+        let inner_area = if config.gradient_borders.enable {
+            // The gradient border is one cell wide whatever its thickness.
+            GradientBorder::inner_area(popup_area)
+        } else {
+            Block::default()
+                .borders(tui::widgets::Borders::ALL)
+                .inner(popup_area)
+        };
+        let icon_width = Self::icon_width(self.icon(config), inner_area);
+        let input_area = inner_area.clip_left(icon_width).with_height(1);
+        (inner_area.height > 0 && input_area.width > 0).then_some(input_area)
+    }
+
+    /// The columns of the input `area` the text takes: the last one is kept for the cursor
+    /// after the end of the line.
+    fn line_width(area: Rect) -> usize {
+        area.width.saturating_sub(1).max(1) as usize
+    }
+
+    /// The help for what is typed (`with_doc_fn`), in a box below `above` (the popup or its
+    /// completions), as wide as the popup and as tall as the help needs and the screen
+    /// allows.
+    fn render_doc(&mut self, above: Rect, viewport: Rect, surface: &mut Surface, cx: &mut Context) {
+        let Some(doc) = (self.prompt.doc_fn)(self.prompt.line()) else {
+            return;
+        };
+        let mut text = crate::ui::Text::new(doc.into_owned());
+        let width = self.popup_area.width;
+        // border and a column of margin on each side
+        let text_width = width.saturating_sub(4);
+        let y = above.bottom();
+        let available = viewport.bottom().saturating_sub(y);
+        if text_width == 0 || available < 3 {
+            return;
+        }
+        let (_, text_height) = crate::ui::text::required_size(&text.contents, text_width);
+        let area = Rect::new(
+            self.popup_area.x,
+            y,
+            width,
+            text_height.saturating_add(2).min(available),
+        );
+
+        let config = cx.editor.config();
+        let help = cx.editor.theme.get("ui.help");
+        crate::ui::clear_bordered(
+            surface,
+            area,
+            help,
+            !crate::ui::border_cells_take_background(&config),
+        );
+        let mut border_style = help;
+        border_style.bg = None;
+        let block = Block::bordered()
+            .border_style(border_style)
+            .border_type(crate::ui::border_type(&config));
+        let inner = block
+            .inner(area)
+            .inner(helix_view::graphics::Margin::horizontal(1));
+        block.render(area, surface);
+        text.render(inner, surface, cx);
     }
 
     /// The area of the completion list: one row below the input popup (`base_area`), as
@@ -247,14 +371,15 @@ impl CmdlinePopup {
         Rect::new(base_area.x, y, base_area.width, height)
     }
 
-    /// Render completion popup
+    /// Render the completion list below the popup (`base_area`); its area (empty when it did
+    /// not fit).
     fn render_completion_popup(
         &mut self,
         base_area: Rect,
         viewport: Rect,
         surface: &mut Surface,
         cx: &Context,
-    ) {
+    ) -> Rect {
         let theme = &cx.editor.theme;
         // Match global autocomplete/picker colors
         let completion_bg = theme.get("ui.menu");
@@ -266,7 +391,7 @@ impl CmdlinePopup {
         let total_items = self.prompt.completions().len();
         let comp_area = Self::completion_area(base_area, viewport, total_items);
         if comp_area.width < 2 {
-            return;
+            return Rect::default();
         }
         // as many items as there are rows inside the border
         let max_display_items = (comp_area.height - 2) as usize;
@@ -280,23 +405,17 @@ impl CmdlinePopup {
             !crate::ui::border_cells_take_background(&cx.editor.config()),
         );
 
-        let config = &cx.editor.config().gradient_borders;
+        let editor_config = cx.editor.config();
 
         // Use gradient border for completion if enabled
-        let inner_area = if config.enable && self.style == CmdlineStyle::Popup {
-            // Reuse the gradient border for completion popup
-            if let Some(ref mut gradient_border) = self.gradient_border {
-                let rounded = cx.editor.config().border_rounded();
-                if !cx.editor.config().borders_hidden() {
-                    gradient_border.render(comp_area, surface, &cx.editor.theme, rounded);
-                }
+        let inner_area = if editor_config.gradient_borders.enable {
+            let rounded = editor_config.border_rounded();
+            if !editor_config.borders_hidden() {
+                self.gradient_border(theme, &editor_config.gradient_borders)
+                    .render(comp_area, surface, theme, rounded);
             }
-
-            // Inner area inside the gradient border
-            {
-                // The gradient border is one cell wide whatever its thickness.
-                crate::ui::gradient_border::GradientBorder::inner_area(comp_area)
-            }
+            // The gradient border is one cell wide whatever its thickness.
+            GradientBorder::inner_area(comp_area)
         } else {
             // Use traditional border, matching popup card styling
             let border_type = crate::ui::border_type(&cx.editor.config());
@@ -385,6 +504,7 @@ impl CmdlinePopup {
                 );
             }
         }
+        comp_area
     }
 
     /// Render traditional bottom cmdline
@@ -410,56 +530,20 @@ impl Component for CmdlinePopup {
     fn cursor(&self, area: Rect, editor: &Editor) -> (Option<Position>, CursorKind) {
         match self.style {
             CmdlineStyle::Popup => {
-                // Calculate cursor position for popup style
-                let config = editor.config();
-                let icon = if config.cmdline.show_icons {
-                    self.get_command_icon(&config.cmdline.icons)
-                } else {
-                    ""
+                // In the input, after the scroll anchor: none when the screen has no room for
+                // the input.
+                let Some(input_area) = self.input_area(area, &editor.config()) else {
+                    return (None, CursorKind::Hidden);
                 };
-                let prefix_width = if icon.is_empty() { 0 } else { icon.width() };
-
-                // Compute inner area similar to render
-                let inner_area = if editor.config().gradient_borders.enable {
-                    // The gradient border is one cell wide whatever its thickness.
-                    crate::ui::gradient_border::GradientBorder::inner_area(self.popup_area)
-                } else {
-                    Block::default()
-                        .borders(tui::widgets::Borders::ALL)
-                        .inner(self.popup_area)
-                };
-
-                // Build the same input area used in render_popup
-                let input_area = Rect::new(
-                    inner_area.x + prefix_width as u16,
-                    inner_area.y,
-                    inner_area.width.saturating_sub(prefix_width as u16),
-                    1,
-                );
-
-                // Compute cursor position accounting for horizontal scroll anchor
-                let byte_pos = self.prompt.position();
-                let anchor = self.prompt.anchor();
-                let line = self.prompt.line();
-
-                // Calculate cursor position relative to the visible portion (after anchor)
-                // Also account for truncation indicator if text is scrolled
-                let truncate_start = self.prompt.truncate_start();
-                let visible_cursor_offset = if byte_pos >= anchor {
-                    line[anchor..byte_pos].width()
-                } else {
-                    0
-                };
-
-                // Add 1 for the truncation indicator "…" if we're scrolled
-                let indicator_offset = if truncate_start { 1 } else { 0 };
-                let cursor_offset = (visible_cursor_offset + indicator_offset) as u16;
-                let clamped_offset = cursor_offset.min(input_area.width.saturating_sub(1));
-                let cursor_x = input_area.x as usize + clamped_offset as usize;
-                let cursor_y = input_area.y as usize;
-
+                let offset = self
+                    .prompt
+                    .cursor_offset(Self::line_width(input_area))
+                    .min(input_area.width.saturating_sub(1) as usize);
                 (
-                    Some(Position::new(cursor_y, cursor_x)),
+                    Some(Position::new(
+                        input_area.y as usize,
+                        input_area.x as usize + offset,
+                    )),
                     editor
                         .config()
                         .cursor_shape
@@ -493,9 +577,6 @@ mod tests {
         );
 
         assert_eq!(popup.style, CmdlineStyle::Popup);
-        assert_eq!(popup.min_width, 40);
-        assert_eq!(popup.max_width, 80);
-        assert_eq!(popup.padding, 2);
         assert!(popup.gradient_border.is_none());
         assert_eq!(popup.popup_area, Rect::default());
     }
@@ -528,11 +609,12 @@ mod tests {
         );
 
         let viewport = Rect::new(0, 0, 100, 50);
-        let area = popup.calculate_popup_area(viewport);
+        let config = CmdlineConfig::default();
+        let area = popup.calculate_popup_area(viewport, &config);
 
         // Width should be between min_width (40) and max_width (80)
-        assert!(area.width >= popup.min_width);
-        assert!(area.width <= popup.max_width);
+        assert!(area.width >= config.min_popup_width);
+        assert!(area.width <= config.max_popup_width);
 
         // Height should be 3 (base height for single line + borders)
         assert_eq!(area.height, 3);
@@ -558,7 +640,7 @@ mod tests {
 
         // Viewport smaller than max_width
         let viewport = Rect::new(0, 0, 50, 20);
-        let area = popup.calculate_popup_area(viewport);
+        let area = popup.calculate_popup_area(viewport, &CmdlineConfig::default());
 
         // Width should be constrained by viewport
         assert!(area.width <= viewport.width.saturating_sub(4));
@@ -583,7 +665,7 @@ mod tests {
             (200, 60),
         ] {
             let viewport = Rect::new(0, 0, width, height);
-            let area = popup.calculate_popup_area(viewport);
+            let area = popup.calculate_popup_area(viewport, &CmdlineConfig::default());
             assert_eq!(viewport.intersection(area), area, "{viewport:?}");
             for items in [1, 10, 500] {
                 let list = CmdlinePopup::completion_area(area, viewport, items);
@@ -595,19 +677,19 @@ mod tests {
             }
         }
         // a tall screen shows ten completions, a short one what fits
-        let area = popup.calculate_popup_area(Rect::new(0, 0, 80, 40));
+        let area = popup.calculate_popup_area(Rect::new(0, 0, 80, 40), &CmdlineConfig::default());
         let list = CmdlinePopup::completion_area(area, Rect::new(0, 0, 80, 40), 500);
         assert_eq!(list.height, 12);
         let short = Rect::new(0, 0, 80, 12);
-        let area = popup.calculate_popup_area(short);
+        let area = popup.calculate_popup_area(short, &CmdlineConfig::default());
         let list = CmdlinePopup::completion_area(area, short, 500);
         assert_eq!(list.bottom(), short.bottom());
 
         // a very long line doesn't overflow the width
         let viewport = Rect::new(0, 0, 100, 30);
         popup.prompt.set_line_unchecked("x".repeat(70_000));
-        let area = popup.calculate_popup_area(viewport);
-        assert_eq!(area.width, popup.max_width);
+        let area = popup.calculate_popup_area(viewport, &CmdlineConfig::default());
+        assert_eq!(area.width, CmdlineConfig::default().max_popup_width);
     }
 
     // ===========================================
@@ -631,5 +713,73 @@ mod tests {
         assert_eq!(CmdlineStyle::Popup, CmdlineStyle::Popup);
         assert_eq!(CmdlineStyle::Bottom, CmdlineStyle::Bottom);
         assert_ne!(CmdlineStyle::Popup, CmdlineStyle::Bottom);
+    }
+
+    #[test]
+    fn the_popup_width_follows_the_configuration() {
+        let popup = |line: &str| {
+            CmdlinePopup::new(
+                ":".into(),
+                None,
+                crate::ui::completers::none,
+                |_ctx, _input, _event| {},
+                CmdlineStyle::Popup,
+            )
+            .with_line_unchecked(line)
+        };
+        let viewport = Rect::new(0, 0, 200, 50);
+        let config = |min_popup_width: u16, max_popup_width: u16| CmdlineConfig {
+            min_popup_width,
+            max_popup_width,
+            ..Default::default()
+        };
+
+        // `min-popup-width` for a short line, growing with the line up to `max-popup-width`
+        let width: u16 = popup("w")
+            .calculate_popup_area(viewport, &config(60, 120))
+            .width;
+        assert_eq!(width, 60);
+        let width: u16 = popup(&"x".repeat(90))
+            .calculate_popup_area(viewport, &config(60, 120))
+            .width;
+        assert_eq!(width, 90 + 2 * PADDING);
+        let width: u16 = popup(&"x".repeat(500))
+            .calculate_popup_area(viewport, &config(60, 120))
+            .width;
+        assert_eq!(width, 120);
+        // a maximum below the minimum is the minimum, and the screen is the limit
+        let width: u16 = popup("w")
+            .calculate_popup_area(viewport, &config(50, 10))
+            .width;
+        assert_eq!(width, 50);
+        let width: u16 = popup("w")
+            .calculate_popup_area(Rect::new(0, 0, 30, 10), &config(60, 120))
+            .width;
+        assert_eq!(width, 26);
+    }
+
+    #[test]
+    fn the_icon_is_the_kind_of_prompt_not_what_is_typed() {
+        let icons = helix_view::editor::CmdlineIcons::default();
+        let icon = |label: &'static str, register: Option<char>, line: &str| -> String {
+            CmdlinePopup::new(
+                label.into(),
+                register,
+                crate::ui::completers::none,
+                |_ctx, _input, _event| {},
+                CmdlineStyle::Popup,
+            )
+            .with_line_unchecked(line)
+            .get_command_icon(&icons)
+            .to_string()
+        };
+        assert_eq!(icon("Cmdline", Some(':'), "write"), icons.command);
+        // typing `/` or `!` in the command line does not make it a search or a shell
+        assert_eq!(icon("Cmdline", Some(':'), "/x"), icons.command);
+        assert_eq!(icon("Cmdline", Some(':'), "!ls"), icons.command);
+        assert_eq!(icon("Search", Some('/'), ""), icons.search);
+        assert_eq!(icon("pipe:", Some('|'), "sort"), icons.shell);
+        assert_eq!(icon("insert-output:", Some('|'), ""), icons.shell);
+        assert_eq!(icon("rename-to:", None, "?x"), icons.general);
     }
 }

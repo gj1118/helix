@@ -19,6 +19,7 @@ mod test {
     mod blame;
     mod borders;
     mod breadcrumbs;
+    mod cmdline_popup;
     mod code_lenses;
     mod command_line;
     mod commands;

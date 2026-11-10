@@ -94,9 +94,12 @@ When providing multiple values to `:toggle-option` there should be no duplicates
 
 By default the command line sits on the bottom line. With `[editor.cmdline] style = "popup"` it
 is drawn as a centered popup instead, in the style of noice.nvim. The popup shows an icon for the
-kind of prompt (search, command, shell or other) and grows between `min-popup-width` and
-`max-popup-width` columns. `use-full-height = true` lets the popup use the full terminal height
-instead of leaving the bottom line free. All of these options are listed in
+kind of prompt (search, command, shell or other: what the prompt is, not what is typed in it)
+and grows with the input between `min-popup-width` and `max-popup-width` columns; a longer input
+scrolls. Like the bottom command line, it suggests the last entry of the prompt's history while
+nothing is typed, highlights the regex of a search, and shows the documentation of the command
+typed (below the popup and its completions). `use-full-height = true` lets the popup use the full
+terminal height instead of leaving the bottom line free. All of these options are listed in
 [`[editor.cmdline]`](./editor.md#editorcmdline-section).
 
 ```toml

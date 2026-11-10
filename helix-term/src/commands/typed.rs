@@ -5476,8 +5476,11 @@ pub(super) fn command_mode(cx: &mut Context) {
                 CmdlineStyle::Popup,
             );
 
-            // Configure popup-specific settings
-            cmdline = cmdline.with_language("sh", cx.editor.syn_loader.clone());
+            // The documentation of the command, below the popup.
+            let custom = cx.editor.config().commands.clone();
+            cmdline = cmdline.with_doc_fn(Box::new(move |input| {
+                custom_command_doc(&custom, input).or_else(|| command_line_doc(input))
+            }));
 
             cx.push_layer(Box::new(cmdline));
         }

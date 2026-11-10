@@ -660,7 +660,8 @@ show-icons = false
 - **Popup-style command line** - Centered floating window instead of bottom line
 - **Command type icons** - Visual indicators for different command types
 - **Enhanced completion** - Better visual feedback and layout
-- **Customizable appearance** - Full control over icons and dimensions
+- **Customizable appearance** - Full control over icons and dimensions (`min-popup-width` and `max-popup-width` are honoured)
+- **Like the bottom command line** - the documentation of the command typed (below the popup), the last history entry suggested while nothing is typed, and search regexes highlighted
 - **Backward compatibility** - Traditional bottom style still available
 
 ## Noice-style Notifications
@@ -673,13 +674,16 @@ This fork includes a modern notification system inspired by noice.nvim, displayi
 [editor.notifications]
 enable = true              # Enable notification system
 style = "popup"            # "popup" (noice-style) or "statusline" (traditional)
-position = "top-right"     # Position: "top-right", "top-left", "bottom-right", "bottom-left"
+position = "top-right"     # "top-right", "top-center", "top-left", "bottom-right", "bottom-center", "bottom-left"
 max-width = 60             # Maximum width for notification popups
 max-height = 10            # Maximum height for notification popups
 default-timeout = 5000     # Default timeout in milliseconds (0 = no timeout)
 show-icons = true          # Show notification type icons
 show-emojis = true         # Show notification type emojis
 max-history = 100          # Maximum notifications to keep in history
+enable-history = true      # Allow :notifications-history
+padding = 1                # Blank cells inside the popup
+shadow = { enable = true, offset-x = 1, offset-y = 1 }   # darkens the cells beside the popup
 
 # Border configuration
 [editor.notifications.border]
@@ -735,7 +739,9 @@ inherits = "your-base-theme"
 - **Popup-style notifications** - Non-intrusive floating windows
 - **Severity-based styling** - Different colors for errors, warnings, info, hints
 - **Configurable position** - Place notifications where you prefer
-- **Auto-dismiss** - Notifications fade out after timeout
+- **Auto-dismiss** - Notifications disappear after their timeout
+- **Newest first to stay** - when the stack does not fit, the oldest notifications are left out
+- **Layering** - over the views, under the completion menu, pickers, popups and the command line
 - **History** - Review past notifications with `:notifications-history`
 
 ## Aesthetic Gradient Borders

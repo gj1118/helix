@@ -1,132 +1,112 @@
 use crate::compositor::{Component, Context, Event, EventResult};
 use crate::ui::gradient_border::GradientBorder;
+use helix_core::unicode::segmentation::UnicodeSegmentation;
 use helix_core::unicode::width::UnicodeWidthStr;
-use helix_event::request_redraw;
 use helix_view::theme::Modifier;
 use helix_view::{
-    editor::{Notification, NotificationPosition, NotificationStyle, Severity},
+    editor::{
+        GradientBorderConfig, Notification, NotificationConfig, NotificationPosition,
+        NotificationStyle, Severity,
+    },
     graphics::{Color, Rect, Style},
     Editor,
 };
-use std::time::Instant;
+use std::collections::HashSet;
 use tokio::time::sleep as tokio_sleep;
 use tui::buffer::Buffer as Surface;
 
+/// The notifications of the editor in noice.nvim style: cards stacked in a corner (or at the
+/// center) of the screen, newest last. The editor keeps the notifications; this only lays
+/// them out and draws them, every frame.
+#[derive(Default)]
 pub struct NotificationPopup {
-    notifications: Vec<NotificationItem>,
+    /// The notifications whose dismiss timer is armed (see [`schedule_dismiss`]).
+    timers: HashSet<usize>,
     /// The gradient border, with the configuration it was made from.
-    gradient_border: Option<(helix_view::editor::GradientBorderConfig, GradientBorder)>,
-    // Cached layout params computed per render from editor config
-    layout_thickness: u16,
-    layout_rounded: bool,
-    layout_padding: u16,
+    gradient_border: Option<(GradientBorderConfig, GradientBorder)>,
 }
 
-#[derive(Debug, Clone)]
-struct NotificationItem {
-    notification: Notification,
+/// A notification laid out: where its card goes and the lines shown in it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Card {
+    id: usize,
     area: Rect,
-    fade_start: Option<Instant>,
+    /// The width of the border (each side): 0 without one.
+    border: u16,
+    /// The padding inside the border (each side), when there is room for it.
+    padding: u16,
+    /// The icon (or emoji) and a space before the first line, when there is room for it.
+    prefix: Option<String>,
+    /// The message wrapped to the card; the last line ends in `…` when the message is longer
+    /// than the card can show.
+    lines: Vec<String>,
 }
 
-impl NotificationItem {
-    fn new(notification: Notification) -> Self {
-        Self {
-            notification,
-            area: Rect::default(),
-            fade_start: None,
-        }
-    }
+/// The sizes of a card's frame, from the configuration.
+#[derive(Debug, Clone, Copy)]
+struct Frame {
+    border: u16,
+    padding: u16,
+}
 
-    fn fade_progress(&self) -> f32 {
-        if let Some(start) = self.fade_start {
-            let elapsed = start.elapsed().as_millis() as f32;
-            let fade_duration = 300.0; // 300ms fade
-            (elapsed / fade_duration).min(1.0)
+impl Frame {
+    fn new(config: &helix_view::editor::Config) -> Self {
+        let notifications = &config.notifications;
+        // The gradient border is always one cell wide (its thickness only picks glyphs); the
+        // simple border draws `border.width` nested frames.
+        let border = if !notifications.border.enable {
+            0
+        } else if BorderLook::new(config, notifications.border.radius)
+            .gradient
+            .is_some()
+        {
+            1
         } else {
-            0.0
+            notifications.border.width.max(1) as u16
+        };
+        Self {
+            border,
+            padding: notifications.padding,
         }
     }
 }
+
+/// Smallest card drawn.
+const MIN_WIDTH: u16 = 4;
+const MIN_HEIGHT: u16 = 3;
+/// Rows between stacked cards.
+const SPACING: u16 = 1;
 
 impl NotificationPopup {
     pub fn new() -> Self {
-        Self {
-            notifications: Vec::new(),
-            gradient_border: None,
-            layout_thickness: 1,
-            layout_rounded: false,
-            layout_padding: 1,
-        }
+        Self::default()
     }
 
-    pub fn update(&mut self, editor: &Editor) {
-        let config = &editor.config().notifications;
-
-        // Only show popup notifications when the notification style is Popup
-        if !config.enable || config.style != NotificationStyle::Popup {
-            self.notifications.clear();
-            return;
-        }
-
-        // Get active notifications (this will filter out expired ones automatically)
-        let active_notifications = editor.get_active_notifications();
-
-        // Force cleanup of expired notifications on every render
-        // Note: We can't call cleanup_expired here because editor is immutable,
-        // but get_active_notifications already filters out expired ones
-
-        // Remove expired checks/logs: get_active_notifications already filters them
-
-        // Immediately drop notifications that are no longer active (no fading).
-        // Refresh the kept copies: a duplicate message updates the timestamp of
-        // the original notification, which extends its lifetime.
-        self.notifications.retain_mut(|item| {
-            match active_notifications
-                .iter()
-                .find(|n| n.id == item.notification.id)
-            {
-                Some(current) => {
-                    item.notification = (*current).clone();
-                    true
-                }
-                None => false,
-            }
-        });
-
-        // Add new notifications
-        for notification in active_notifications {
-            if !self
-                .notifications
-                .iter()
-                .any(|item| item.notification.id == notification.id)
-            {
-                let id = notification.id;
-                let timeout_opt = notification.timeout;
-                self.notifications
-                    .push(NotificationItem::new(notification.clone()));
-                // New notification: ensure a redraw follows immediately
-                request_redraw();
-
-                // Schedule an exact-time dismiss on the UI thread if we have a timeout
-                if let Some(timeout) = timeout_opt {
-                    schedule_dismiss(id, remaining_time(notification.timestamp, timeout));
+    /// Arms a dismiss timer for each new notification with a timeout, and forgets those of
+    /// the notifications gone.
+    fn arm_timers(&mut self, active: &[&Notification]) {
+        self.timers
+            .retain(|id| active.iter().any(|notification| notification.id == *id));
+        for notification in active {
+            if let Some(timeout) = notification.timeout {
+                if self.timers.insert(notification.id) {
+                    schedule_dismiss(
+                        notification.id,
+                        remaining_time(notification.timestamp, timeout),
+                    );
                 }
             }
         }
-
-        // Avoid continuous redraws here to minimize refreshes.
     }
 
-    fn calculate_notification_areas(
-        &mut self,
+    /// The cards of `notifications` (oldest first) in `viewport`. When they do not all fit,
+    /// the oldest are left out: the newest notification is always shown (if anything fits).
+    fn layout(
+        notifications: &[&Notification],
         viewport: Rect,
-        config: &helix_view::editor::NotificationConfig,
-    ) {
-        // Smallest popup `render_notification` will draw.
-        const MIN_WIDTH: u16 = 4;
-        const MIN_HEIGHT: u16 = 3;
-
+        config: &NotificationConfig,
+        frame: Frame,
+    ) -> Vec<Card> {
         let max_width = config.max_width.min(viewport.width.saturating_sub(4));
         // Rows usable below/above the 1-row margin from the viewport edge.
         let max_height = config
@@ -134,260 +114,137 @@ impl NotificationPopup {
             .max(MIN_HEIGHT)
             .min(viewport.height.saturating_sub(1));
         if max_width < MIN_WIDTH || max_height < MIN_HEIGHT {
-            // No room (tiny terminal, narrow area beside a pinned panel, or a
-            // tiny `max-width`): don't render any notification.
-            for item in &mut self.notifications {
-                item.area = Rect::default();
-            }
-            return;
+            // No room (tiny terminal, narrow area beside a pinned panel, or a tiny
+            // `max-width`).
+            return Vec::new();
         }
-        let spacing = 1u16;
+
+        // Newest first, while they fit.
+        let mut cards = Vec::new();
+        let mut used = 0u16;
+        for notification in notifications.iter().rev() {
+            let (width, height, card) =
+                Self::card(notification, max_width, max_height, config, frame);
+            let needed = used.saturating_add(height).saturating_add(SPACING);
+            if needed > viewport.height {
+                break;
+            }
+            used = needed;
+            cards.push((width, height, card));
+        }
+        cards.reverse();
+
+        // Stacked from the edge, oldest first: downwards for top positions, upwards for
+        // bottom positions.
         let mut y_offset = 0u16;
-
-        // Calculate areas for each notification
-        let mut areas = Vec::new();
-        for item in &self.notifications {
-            let message = &item.notification.message;
-            // Estimate inner wrapping width: account for actual border thickness and padding only
-            // Rounded corners do not require extra space; border thickness already accounts for frame size
-            let wrap_inner_width = max_width
-                .saturating_sub(self.layout_thickness.saturating_mul(2))
-                .saturating_sub(self.layout_padding.saturating_mul(2))
-                .max(1);
-
-            // Build prefix for first line width calculation
-            let mut prefix = String::new();
-            if config.show_emojis {
-                let emoji =
-                    self.get_notification_emoji(&item.notification.severity, &config.emojis);
-                prefix.push_str(emoji);
-                prefix.push(' ');
-            } else if config.show_icons {
-                let icon = self.get_notification_icon(&item.notification.severity, &config.icons);
-                prefix.push_str(icon);
-                prefix.push(' ');
-            }
-            let prefix_width = prefix.width() as u16;
-
-            // Wrap content to the wrap_inner_width
-            let content_lines = Self::wrap_text_static(message, wrap_inner_width);
-            let content_height = content_lines.len() as u16;
-
-            // Compute max visible line width including prefix on first line
-            let mut content_max_w: u16 = 1;
-            for (i, ln) in content_lines.iter().enumerate() {
-                let mut w = ln.width() as u16;
-                if i == 0 {
-                    w = w.saturating_add(prefix_width);
-                }
-                if w > content_max_w {
-                    content_max_w = w;
-                }
-            }
-
-            // Outer size from content + padding + border thickness (no extra rounded margin)
-            // `max_width >= MIN_WIDTH` and `max_height >= MIN_HEIGHT` were checked
-            // above, so these clamps can't have min > max.
-            let width = content_max_w
-                .saturating_add(self.layout_padding.saturating_mul(2))
-                .saturating_add(self.layout_thickness.saturating_mul(2))
-                .clamp(MIN_WIDTH, max_width);
-
-            let height = content_height
-                .saturating_add(self.layout_padding.saturating_mul(2))
-                .saturating_add(self.layout_thickness.saturating_mul(2))
-                .clamp(MIN_HEIGHT, max_height);
-
-            if log::log_enabled!(log::Level::Debug) {
-                log::debug!(
-                    "layout calc id={} wrap_inner_width={} content_max_w={} -> width={} height={} (padding={}, thick={})",
-                    item.notification.id,
-                    wrap_inner_width,
-                    content_max_w,
-                    width,
-                    height,
-                    self.layout_padding,
-                    self.layout_thickness,
-                );
-            }
-
-            // Stacked notifications that no longer fit in the viewport are not drawn.
-            if y_offset.saturating_add(height).saturating_add(1) > viewport.height {
-                areas.push(Rect::default());
-                continue;
-            }
-
-            let (x, y) = match config.position {
-                NotificationPosition::TopLeft => (viewport.x + 2, viewport.y + y_offset + 1),
-                NotificationPosition::TopCenter => (
-                    viewport.x + (viewport.width.saturating_sub(width)) / 2,
-                    viewport.y + y_offset + 1,
-                ),
-                NotificationPosition::TopRight => (
-                    viewport.x + viewport.width.saturating_sub(width + 2),
-                    viewport.y + y_offset + 1,
-                ),
-                NotificationPosition::BottomLeft => (
-                    viewport.x + 2,
-                    viewport.y + viewport.height.saturating_sub(height + y_offset + 1),
-                ),
-                NotificationPosition::BottomCenter => (
-                    viewport.x + (viewport.width.saturating_sub(width)) / 2,
-                    viewport.y + viewport.height.saturating_sub(height + y_offset + 1),
-                ),
-                NotificationPosition::BottomRight => (
-                    viewport.x + viewport.width.saturating_sub(width + 2),
-                    viewport.y + viewport.height.saturating_sub(height + y_offset + 1),
-                ),
-            };
-
-            let rect = Rect::new(x, y, width, height);
-            if log::log_enabled!(log::Level::Debug) {
-                log::debug!(
-                    "assign area id={} -> x={} y={} w={} h={}",
-                    item.notification.id,
-                    rect.x,
-                    rect.y,
-                    rect.width,
-                    rect.height
-                );
-            }
-            areas.push(rect);
-
-            // For bottom positions, we need to stack upwards
-            // Stack the next notification (downwards for top positions,
-            // upwards for bottom positions).
-            y_offset = y_offset.saturating_add(height).saturating_add(spacing);
-        }
-
-        // Now assign the areas to the notifications
-        for (item, area) in self.notifications.iter_mut().zip(areas.iter()) {
-            item.area = *area;
-        }
+        cards
+            .into_iter()
+            .map(|(width, height, mut card)| {
+                let left = viewport.x + 2;
+                let center = viewport.x + viewport.width.saturating_sub(width) / 2;
+                let right = viewport.x + viewport.width.saturating_sub(width + 2);
+                let top = viewport.y + y_offset + 1;
+                let bottom = viewport.y + viewport.height.saturating_sub(height + y_offset + 1);
+                let (x, y) = match config.position {
+                    NotificationPosition::TopLeft => (left, top),
+                    NotificationPosition::TopCenter => (center, top),
+                    NotificationPosition::TopRight => (right, top),
+                    NotificationPosition::BottomLeft => (left, bottom),
+                    NotificationPosition::BottomCenter => (center, bottom),
+                    NotificationPosition::BottomRight => (right, bottom),
+                };
+                card.area = Rect::new(x, y, width, height);
+                y_offset = y_offset.saturating_add(height).saturating_add(SPACING);
+                card
+            })
+            .collect()
     }
 
-    // No shims needed – sizing is conservative and independent of global gradient thickness.
+    /// The card of `notification` (its area still to be placed), and its size: as wide as
+    /// its lines need, wrapped to `max_width` and cut to `max_height`.
+    fn card(
+        notification: &Notification,
+        max_width: u16,
+        max_height: u16,
+        config: &NotificationConfig,
+        frame: Frame,
+    ) -> (u16, u16, Card) {
+        let border = frame.border;
+        // The padding only when it leaves room inside the border.
+        let inside_width = max_width.saturating_sub(border * 2);
+        let inside_height = max_height.saturating_sub(border * 2);
+        let padding = if inside_width > frame.padding * 2 && inside_height > frame.padding * 2 {
+            frame.padding
+        } else {
+            0
+        };
+        let text_width = inside_width.saturating_sub(padding * 2) as usize;
+        let text_rows = inside_height.saturating_sub(padding * 2).max(1) as usize;
 
-    fn wrap_text_static(text: &str, max_width: u16) -> Vec<String> {
-        let mut lines = Vec::new();
-        let max_width = max_width as usize;
+        // The icon before the first line, when the line keeps a column for the text.
+        let prefix = severity_prefix(config, notification.severity)
+            .map(|icon| format!("{icon} "))
+            .filter(|prefix| prefix.width() < text_width);
+        let prefix_width = prefix.as_deref().map_or(0, UnicodeWidthStr::width);
 
-        for line in text.lines() {
-            if line.width() <= max_width {
-                lines.push(line.to_string());
+        let mut lines = wrap(
+            &notification.message,
+            text_width.saturating_sub(prefix_width).max(1),
+            text_width.max(1),
+        );
+        if lines.len() > text_rows {
+            lines.truncate(text_rows);
+            let last_width = if text_rows == 1 {
+                text_width.saturating_sub(prefix_width)
             } else {
-                let mut current_line = String::new();
-                let mut current_width = 0;
-
-                for word in line.split_whitespace() {
-                    let word_width = word.width();
-
-                    if current_width + word_width < max_width {
-                        if !current_line.is_empty() {
-                            current_line.push(' ');
-                            current_width += 1;
-                        }
-                        current_line.push_str(word);
-                        current_width += word_width;
-                    } else {
-                        if !current_line.is_empty() {
-                            lines.push(current_line);
-                            current_line = String::new();
-                            current_width = 0;
-                        }
-
-                        if word_width <= max_width {
-                            current_line = word.to_string();
-                            current_width = word_width;
-                        } else {
-                            // Word is too long, truncate it
-                            let truncated = word
-                                .chars()
-                                .take(max_width.saturating_sub(3))
-                                .collect::<String>()
-                                + "...";
-                            lines.push(truncated);
-                        }
-                    }
-                }
-
-                if !current_line.is_empty() {
-                    lines.push(current_line);
-                }
-            }
+                text_width
+            };
+            let last = lines.last_mut().unwrap();
+            *last = with_ellipsis(last, last_width);
         }
 
-        if lines.is_empty() {
-            lines.push(String::new());
-        }
-
-        lines
+        let content_width = lines
+            .iter()
+            .enumerate()
+            .map(|(i, line)| line.width() + if i == 0 { prefix_width } else { 0 })
+            .max()
+            .unwrap_or(0)
+            .max(1) as u16;
+        let frame_size = (border + padding) * 2;
+        let width = content_width
+            .saturating_add(frame_size)
+            .clamp(MIN_WIDTH, max_width);
+        let height = (lines.len() as u16)
+            .saturating_add(frame_size)
+            .clamp(MIN_HEIGHT, max_height);
+        let card = Card {
+            id: notification.id,
+            area: Rect::default(),
+            border,
+            padding,
+            prefix,
+            lines,
+        };
+        (width, height, card)
     }
 
-    fn wrap_text(&self, text: &str, max_width: u16) -> Vec<String> {
-        Self::wrap_text_static(text, max_width)
-    }
-
-    fn get_notification_icon<'a>(
-        &self,
-        severity: &Severity,
-        config: &'a helix_view::editor::NotificationIcons,
-    ) -> &'a str {
+    /// The style of the text of a notification of `severity`.
+    fn severity_style(severity: Severity, theme: &helix_view::Theme) -> Style {
         match severity {
-            Severity::Error => &config.error,
-            Severity::Warning => &config.warning,
-            Severity::Info => &config.info,
-            Severity::Hint => &config.info, // Use info icon for hints
-        }
-    }
-
-    fn get_notification_emoji<'a>(
-        &self,
-        severity: &Severity,
-        config: &'a helix_view::editor::NotificationEmojis,
-    ) -> &'a str {
-        match severity {
-            Severity::Error => &config.error,
-            Severity::Warning => &config.warning,
-            Severity::Info => &config.info,
-            Severity::Hint => &config.info, // Use info emoji for hints
-        }
-    }
-
-    fn get_notification_style(
-        &self,
-        severity: &Severity,
-        theme: &helix_view::Theme,
-        fade_progress: f32,
-    ) -> Style {
-        let base_style = match severity {
             Severity::Error => theme.get("error"),
             Severity::Warning => theme.get("warning"),
             Severity::Info => theme.get("info"),
             Severity::Hint => theme.get("hint"),
-        };
-
-        if fade_progress > 0.0 {
-            // Apply fade effect by reducing opacity (simulate with dimmed colors)
-            // For now, just use a dimmed version by using a gray color
-            if fade_progress > 0.5 {
-                base_style.fg(Color::Gray)
-            } else {
-                base_style
-            }
-        } else {
-            base_style
         }
     }
 
     // Render a simple (non-gradient) border without painting the background.
     fn render_simple_border(
-        &self,
         area: Rect,
         surface: &mut Surface,
         style: Style,
         symbols: &tui::symbols::line::Set,
-        width: u8,
+        width: u16,
     ) {
         let (h, v, tl, tr, bl, br) = (
             symbols.horizontal,
@@ -398,8 +255,7 @@ impl NotificationPopup {
             symbols.bottom_right,
         );
 
-        let w = width.max(1) as u16;
-        for s in 0..w {
+        for s in 0..width.max(1) {
             let x0 = area.x.saturating_add(s);
             let x1 = area.right().saturating_sub(1 + s);
             let y0 = area.y.saturating_add(s);
@@ -444,61 +300,67 @@ impl NotificationPopup {
         }
     }
 
-    fn render_notification(
-        &mut self,
-        item: &NotificationItem,
+    /// The drop shadow of `card`: the cells right of and below it (by the configured offset),
+    /// inside `viewport`, darkened. What they show stays readable: a shadow, not a hole.
+    fn render_shadow(
+        card: &Card,
+        viewport: Rect,
         surface: &mut Surface,
-        cx: &Context,
+        config: &NotificationConfig,
     ) {
-        let config = &cx.editor.config().notifications;
-        let theme = &cx.editor.theme;
-        let fade_progress = item.fade_progress();
+        let (dx, dy) = (config.shadow.offset_x, config.shadow.offset_y);
+        let area = card.area;
+        let strips = [
+            // right of the card
+            Rect::new(area.right(), area.y.saturating_add(dy), dx, area.height),
+            // below it
+            Rect::new(
+                area.x.saturating_add(dx),
+                area.bottom(),
+                area.width.saturating_sub(dx),
+                dy,
+            ),
+        ];
+        let shadow = Style::default()
+            .bg(Color::Rgb(0, 0, 0))
+            .add_modifier(Modifier::DIM);
+        for strip in strips {
+            let strip = strip.intersection(viewport).intersection(surface.area);
+            if strip.width > 0 && strip.height > 0 {
+                surface.set_style(strip, shadow);
+            }
+        }
+    }
 
-        if item.area.width < 4 || item.area.height < 3 {
-            return; // Too small to render
+    fn render_card(
+        &mut self,
+        card: &Card,
+        notification: &Notification,
+        surface: &mut Surface,
+        editor: &Editor,
+    ) {
+        let editor_config = editor.config();
+        let config = &editor_config.notifications;
+        let theme = &editor.theme;
+        if card.area.width < MIN_WIDTH || card.area.height < MIN_HEIGHT {
+            return;
         }
 
-        // Optional drop shadow behind the popup (transparent overlay otherwise)
-        if config.shadow.enable && item.area.width > 2 && item.area.height > 2 {
-            let sx = item.area.x.saturating_add(config.shadow.offset_x);
-            let sy = item.area.y.saturating_add(config.shadow.offset_y);
-            let shadow_area = Rect {
-                x: sx,
-                y: sy,
-                width: item.area.width,
-                height: item.area.height,
-            };
-            // Use a dimmed background for shadow
-            let mut shadow = theme.get("ui.popup");
-            shadow = shadow.bg(Color::Rgb(0, 0, 0)).add_modifier(Modifier::DIM);
-            surface.clear_with(shadow_area, shadow);
-        }
-
-        // Get notification style
-        let notification_style =
-            self.get_notification_style(&item.notification.severity, theme, fade_progress);
-        let border_style = crate::ui::border_style(theme);
+        let text_style = Self::severity_style(notification.severity, theme);
         let background_style = theme.get("ui.popup");
 
         // Per-notification corner radius override
-        let corner_radius = item
-            .notification
-            .corner_radius
-            .unwrap_or(config.border.radius);
-
-        let editor_config = cx.editor.config();
+        let corner_radius = notification.corner_radius.unwrap_or(config.border.radius);
         let look = BorderLook::new(&editor_config, corner_radius);
-        let gradient_config = look.gradient.as_ref();
-        let rounded = look.rounded;
         let border_type = look.border_type;
         // Whether the border cells take the card's background, as for every popup (see
         // `ui::border_cells_take_background`): without a border, without border glyphs,
         // and for borders along the outer edge of their cells. Otherwise they keep the
         // background behind the card. The card's background is painted before the border.
         let border_cells_take_background = !config.border.enable
-            || if let Some(gradient_config) = gradient_config {
+            || if let Some(gradient_config) = look.gradient.as_ref() {
                 border_type == tui::widgets::BorderType::Hidden
-                    || GradientBorder::hugs_the_edge(gradient_config.thickness, rounded)
+                    || GradientBorder::hugs_the_edge(gradient_config.thickness, look.rounded)
             } else {
                 matches!(
                     border_type,
@@ -509,134 +371,148 @@ impl NotificationPopup {
             };
         crate::ui::clear_bordered(
             surface,
-            item.area,
+            card.area,
             background_style,
             !border_cells_take_background,
         );
 
-        // Render border based on configuration
-        let inner_area = if config.border.enable {
+        if config.border.enable {
             if let Some(wanted) = look.gradient {
-                // Use gradient border, made again when its configuration changes (with
-                // the animation off).
+                // The gradient border, made again when its configuration changes (with the
+                // animation off).
                 if self
                     .gradient_border
                     .as_ref()
-                    .is_none_or(|(config, _)| *config != wanted)
+                    .is_none_or(|(made_for, _)| *made_for != wanted)
                 {
                     let mut border = GradientBorder::from_theme(theme, &wanted);
                     border.disable_animation();
                     self.gradient_border = Some((wanted, border));
                 }
-
                 if let Some((_, gradient_border)) = self.gradient_border.as_mut() {
                     if border_type != tui::widgets::BorderType::Hidden {
-                        gradient_border.render(item.area, surface, theme, rounded);
+                        gradient_border.render(card.area, surface, theme, look.rounded);
                     }
                 }
-
-                // Inner area inside the gradient border, which is one cell
-                // wide whatever its thickness.
-                GradientBorder::inner_area(item.area)
             } else {
-                // Render simple border without filling background
-                self.render_simple_border(
-                    item.area,
+                Self::render_simple_border(
+                    card.area,
                     surface,
-                    border_style,
+                    crate::ui::border_style(theme),
                     &look.symbols,
-                    config.border.width,
+                    card.border,
                 );
-
-                // `render_simple_border` draws at least one frame.
-                let bw = config.border.width.max(1) as u16;
-                Rect {
-                    x: item.area.x.saturating_add(bw),
-                    y: item.area.y.saturating_add(bw),
-                    width: item.area.width.saturating_sub(bw * 2),
-                    height: item.area.height.saturating_sub(bw * 2),
-                }
             }
-        } else {
-            // No border
-            item.area
-        };
-
-        // Content area starts as inner area (no extra rounded clipping to preserve space)
-        let mut content_area = inner_area;
-
-        // Apply configured padding
-        let pad = config.padding;
-        let pad2 = pad.saturating_mul(2);
-        if content_area.width > pad2 && content_area.height > pad2 {
-            content_area = Rect {
-                x: content_area.x + pad,
-                y: content_area.y + pad,
-                width: content_area.width - pad2,
-                height: content_area.height - pad2,
-            };
         }
 
-        // Nothing fits inside the border (e.g. a very wide `border.width`).
-        if content_area.width == 0 || content_area.height == 0 {
+        // The lines, inside the border and the padding, as laid out.
+        let inset = card.border + card.padding;
+        let content = Rect::new(
+            card.area.x + inset,
+            card.area.y + inset,
+            card.area.width.saturating_sub(inset * 2),
+            card.area.height.saturating_sub(inset * 2),
+        );
+        if content.width == 0 || content.height == 0 {
             return;
         }
-
-        // Render notification content inside the content_area
-        let wrap_width = content_area.width.max(1);
-        if log::log_enabled!(log::Level::Debug) {
-            log::debug!(
-                "render id={} item.area=({}, {}, {}, {}) inner=({}, {}, {}, {}) content=({}, {}, {}, {}) wrap_width={}",
-                item.notification.id,
-                item.area.x, item.area.y, item.area.width, item.area.height,
-                inner_area.x, inner_area.y, inner_area.width, inner_area.height,
-                content_area.x, content_area.y, content_area.width, content_area.height,
-                wrap_width
-            );
-        }
-        let content_lines = self.wrap_text(&item.notification.message, wrap_width);
-        // Calculate prefix (icon/emoji + space)
-        let mut prefix = String::new();
-        if config.show_emojis {
-            let emoji = self.get_notification_emoji(&item.notification.severity, &config.emojis);
-            prefix.push_str(emoji);
-            prefix.push(' ');
-        } else if config.show_icons {
-            let icon = self.get_notification_icon(&item.notification.severity, &config.icons);
-            prefix.push_str(icon);
-            prefix.push(' ');
-        }
-
-        let prefix_width = prefix.width() as u16;
-        let show_prefix = !prefix.is_empty() && content_area.width > prefix_width.saturating_add(1);
-
-        for (i, line) in content_lines.iter().enumerate() {
-            let y_pos = content_area.y + i as u16;
-            if y_pos >= content_area.y + content_area.height {
-                break; // No more space
+        for (i, line) in card.lines.iter().enumerate().take(content.height as usize) {
+            let y = content.y + i as u16;
+            let mut x = content.x;
+            if let (0, Some(prefix)) = (i, &card.prefix) {
+                let (end, _) =
+                    surface.set_stringn(x, y, prefix, content.width as usize, text_style);
+                x = end;
             }
-
-            // Render prefix only on first line
-            if i == 0 && show_prefix {
-                surface.set_string(content_area.x, y_pos, &prefix, notification_style);
-            }
-
-            // Render content
-            let x_offset = if i == 0 && show_prefix {
-                prefix_width
-            } else {
-                0
-            };
-            let available = content_area.width.saturating_sub(x_offset).max(1) as usize;
-            surface.set_stringn(
-                content_area.x + x_offset,
-                y_pos,
-                line,
-                available,
-                notification_style,
-            );
+            let available = content.right().saturating_sub(x) as usize;
+            surface.set_stringn(x, y, line, available, text_style);
         }
     }
+}
+
+/// The icon (or emoji, which wins) shown before a notification of `severity`, if any.
+fn severity_prefix(config: &NotificationConfig, severity: Severity) -> Option<&str> {
+    // hints use the info icon
+    let pick = |error, warning, info| match severity {
+        Severity::Error => error,
+        Severity::Warning => warning,
+        Severity::Info | Severity::Hint => info,
+    };
+    let prefix: &str = if config.show_emojis {
+        pick(
+            &config.emojis.error,
+            &config.emojis.warning,
+            &config.emojis.info,
+        )
+    } else if config.show_icons {
+        pick(
+            &config.icons.error,
+            &config.icons.warning,
+            &config.icons.info,
+        )
+    } else {
+        return None;
+    };
+    (!prefix.is_empty()).then_some(prefix)
+}
+
+/// `text` wrapped at word boundaries: the first line to `first_width` columns, the others to
+/// `width`. A word longer than a line is broken (nothing is dropped); tabs are spaces, and
+/// each line of `text` starts a new line.
+fn wrap(text: &str, first_width: usize, width: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let line_width = |lines: &Vec<String>| if lines.is_empty() { first_width } else { width };
+    for paragraph in text.replace('\t', "    ").lines() {
+        let mut current = String::new();
+        let mut current_width = 0;
+        for word in paragraph.split_whitespace() {
+            let word_width = word.width();
+            let gap = usize::from(!current.is_empty());
+            if current_width + gap + word_width <= line_width(&lines) {
+                if gap == 1 {
+                    current.push(' ');
+                }
+                current.push_str(word);
+                current_width += gap + word_width;
+                continue;
+            }
+            if !current.is_empty() {
+                lines.push(std::mem::take(&mut current));
+                current_width = 0;
+            }
+            // the word alone, broken over lines when longer than one
+            for grapheme in word.graphemes(true) {
+                let grapheme_width = grapheme.width();
+                if current_width + grapheme_width > line_width(&lines) && !current.is_empty() {
+                    lines.push(std::mem::take(&mut current));
+                    current_width = 0;
+                }
+                current.push_str(grapheme);
+                current_width += grapheme_width;
+            }
+        }
+        lines.push(current);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
+/// `line` ending in `…`, within `width` columns: what was cut is more than the card shows.
+fn with_ellipsis(line: &str, width: usize) -> String {
+    let mut fitted = String::new();
+    let mut fitted_width = 0;
+    for grapheme in line.graphemes(true) {
+        let grapheme_width = grapheme.width();
+        if fitted_width + grapheme_width + 1 > width {
+            break;
+        }
+        fitted.push_str(grapheme);
+        fitted_width += grapheme_width;
+    }
+    fitted.push('…');
+    fitted
 }
 
 impl Component for NotificationPopup {
@@ -646,47 +522,34 @@ impl Component for NotificationPopup {
     }
 
     fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
-        // Always update on every render call
-        self.update(cx.editor);
+        let editor = &*cx.editor;
+        let editor_config = editor.config();
+        let config = &editor_config.notifications;
 
-        // Update layout params cache from editor config
-        // Border width used for sizing. The gradient border is always one cell
-        // wide (its thickness only picks glyphs); the simple border draws
-        // `border.width` nested frames.
-        let editor_config = cx.editor.config();
-        let look = BorderLook::new(&editor_config, editor_config.notifications.border.radius);
-        self.layout_thickness = if !editor_config.notifications.border.enable {
-            0
-        } else if look.gradient.is_some() {
-            1
-        } else {
-            editor_config.notifications.border.width.max(1) as u16
-        };
-        self.layout_rounded = look.rounded;
-        self.layout_padding = editor_config.notifications.padding;
-
-        // No continuous redraws or fading logic – redraws only on add and timeout/dismiss.
-
-        if self.notifications.is_empty() {
+        // Only shown when the notification style is Popup
+        if !config.enable || config.style != NotificationStyle::Popup {
+            self.timers.clear();
             return;
         }
 
-        let config = &cx.editor.config().notifications;
-        self.calculate_notification_areas(area, config);
-
-        // Render notifications in reverse order so newer ones appear on top. They are
-        // taken out for the loop (`render_notification` needs `self` too), not cloned.
-        let notifications = std::mem::take(&mut self.notifications);
-        for item in notifications.iter().rev() {
-            self.render_notification(item, surface, cx);
+        let active = editor.get_active_notifications();
+        self.arm_timers(&active);
+        if active.is_empty() {
+            return;
         }
-        self.notifications = notifications;
-    }
-}
 
-impl Default for NotificationPopup {
-    fn default() -> Self {
-        Self::new()
+        let cards = Self::layout(&active, area, config, Frame::new(&editor_config));
+        // The shadows first: a card stacked close to another covers its shadow.
+        if config.shadow.enable {
+            for card in &cards {
+                Self::render_shadow(card, area, surface, config);
+            }
+        }
+        for card in &cards {
+            if let Some(notification) = active.iter().find(|n| n.id == card.id) {
+                self.render_card(card, notification, surface, editor);
+            }
+        }
     }
 }
 
@@ -824,22 +687,6 @@ fn schedule_dismiss(id: usize, after: std::time::Duration) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::borrow::Cow;
-
-    // ===========================================
-    // NotificationPopup Construction Tests
-    // ===========================================
-
-    #[test]
-    fn test_notification_popup_new() {
-        let popup = NotificationPopup::new();
-
-        assert!(popup.notifications.is_empty());
-        assert!(popup.gradient_border.is_none());
-        assert_eq!(popup.layout_thickness, 1);
-        assert!(!popup.layout_rounded);
-        assert_eq!(popup.layout_padding, 1);
-    }
 
     fn editor_config(toml: &str) -> helix_view::editor::Config {
         toml::from_str(toml).unwrap()
@@ -922,196 +769,102 @@ mod tests {
         assert_eq!(gradient.animation_speed, 0);
     }
 
-    #[test]
-    fn test_notification_popup_default() {
-        let popup = NotificationPopup::default();
-
-        assert!(popup.notifications.is_empty());
+    fn notification(id: usize, message: &str, severity: Severity) -> Notification {
+        let mut notification = Notification::new(message.to_string(), severity);
+        notification.id = id;
+        notification
     }
 
-    // ===========================================
-    // NotificationItem Tests
-    // ===========================================
-
-    #[test]
-    fn test_notification_item_new() {
-        let notification = Notification {
-            id: 1,
-            message: Cow::Borrowed("Test message"),
-            severity: Severity::Info,
-            timestamp: tokio::time::Instant::now(),
-            timeout: Some(std::time::Duration::from_secs(5)),
-            dismissed: false,
-            corner_radius: None,
-        };
-
-        let item = NotificationItem::new(notification.clone());
-
-        assert_eq!(item.notification.id, 1);
-        assert_eq!(item.notification.message, "Test message");
-        assert_eq!(item.area, Rect::default());
-        assert!(item.fade_start.is_none());
+    fn frame(border: u16, padding: u16) -> Frame {
+        Frame { border, padding }
     }
 
     #[test]
-    fn test_notification_item_fade_progress_no_fade() {
-        let notification = Notification {
-            id: 1,
-            message: Cow::Borrowed("Test"),
-            severity: Severity::Info,
-            timestamp: tokio::time::Instant::now(),
-            timeout: None,
-            dismissed: false,
-            corner_radius: None,
-        };
-
-        let item = NotificationItem::new(notification);
-
-        // No fade started, should return 0.0
-        assert_eq!(item.fade_progress(), 0.0);
-    }
-
-    #[test]
-    fn test_notification_item_fade_progress_with_fade() {
-        let notification = Notification {
-            id: 1,
-            message: Cow::Borrowed("Test"),
-            severity: Severity::Info,
-            timestamp: tokio::time::Instant::now(),
-            timeout: None,
-            dismissed: false,
-            corner_radius: None,
-        };
-
-        let mut item = NotificationItem::new(notification);
-        item.fade_start = Some(Instant::now());
-
-        // Immediately after starting fade, progress should be close to 0
-        let progress = item.fade_progress();
-        assert!((0.0..=1.0).contains(&progress));
-    }
-
-    // ===========================================
-    // Text Wrapping Tests
-    // ===========================================
-
-    #[test]
-    fn test_wrap_text_static_short_text() {
-        let lines = NotificationPopup::wrap_text_static("Hello", 20);
-        assert_eq!(lines, vec!["Hello"]);
-    }
-
-    #[test]
-    fn test_wrap_text_static_exact_width() {
-        let lines = NotificationPopup::wrap_text_static("Hello", 5);
-        assert_eq!(lines, vec!["Hello"]);
-    }
-
-    #[test]
-    fn test_wrap_text_static_needs_wrap() {
-        let lines = NotificationPopup::wrap_text_static("Hello World", 6);
-        assert_eq!(lines.len(), 2);
-        assert_eq!(lines[0], "Hello");
-        assert_eq!(lines[1], "World");
-    }
-
-    #[test]
-    fn test_wrap_text_static_multiple_words() {
-        let lines = NotificationPopup::wrap_text_static("one two three four", 10);
-        // Should wrap "one two" and "three four" or similar
-        assert!(lines.len() >= 2);
-    }
-
-    #[test]
-    fn test_wrap_text_static_empty_string() {
-        let lines = NotificationPopup::wrap_text_static("", 20);
-        assert_eq!(lines, vec![""]);
-    }
-
-    #[test]
-    fn test_wrap_text_static_single_long_word() {
-        // A word longer than max_width should still be included
-        let lines = NotificationPopup::wrap_text_static("superlongword", 5);
-        // The word is longer than max_width, but it should be included as-is
-        assert!(!lines.is_empty());
-        assert!(lines
-            .iter()
-            .any(|l| l.contains("superlongword") || !l.is_empty()));
-    }
-
-    #[test]
-    fn test_wrap_text_static_preserves_spaces_between_words() {
-        let lines = NotificationPopup::wrap_text_static("a b c d e", 100);
-        assert_eq!(lines, vec!["a b c d e"]);
-    }
-
-    // ===========================================
-    // Severity Mapping Tests
-    // ===========================================
-
-    #[test]
-    fn test_severity_variants() {
-        // Verify the severity enum variants exist and can be matched
-        let severities = [
-            Severity::Hint,
-            Severity::Info,
-            Severity::Warning,
-            Severity::Error,
+    fn wrapping_keeps_every_word_and_room_for_the_icon() {
+        let cases: [(&str, usize, usize, &[&str]); 7] = [
+            ("Hello", 20, 20, &["Hello"]),
+            ("Hello", 5, 5, &["Hello"]),
+            ("Hello World", 6, 6, &["Hello", "World"]),
+            // the first line leaves room for the icon
+            ("one two three four", 7, 10, &["one two", "three four"]),
+            // a word longer than a line is broken, not cut short
+            ("superlongword", 5, 5, &["super", "longw", "ord"]),
+            ("", 20, 20, &[""]),
+            // lines (an empty one too) stay lines; tabs are spaces
+            ("a\n\nb\tc", 20, 20, &["a", "", "b c"]),
         ];
-
-        // Verify all variants are covered
-        assert_eq!(severities.len(), 4);
-
-        // Verify each variant can be matched
-        for severity in severities {
-            let name = match severity {
-                Severity::Hint => "hint",
-                Severity::Info => "info",
-                Severity::Warning => "warning",
-                Severity::Error => "error",
-            };
-            assert!(!name.is_empty());
+        for (text, first, rest, expected) in cases {
+            let lines: Vec<String> = wrap(text, first, rest);
+            assert_eq!(lines, expected, "{text:?}");
+            for (i, line) in lines.iter().enumerate() {
+                let limit = if i == 0 { first } else { rest };
+                let width: usize = line.width();
+                assert!(width <= limit, "{text:?}: {line:?}");
+            }
         }
-    }
-
-    // ===========================================
-    // Notification Builder Tests
-    // ===========================================
-
-    #[test]
-    fn test_notification_new() {
-        let notification = Notification::new("Test message", Severity::Info);
-
-        assert_eq!(notification.message, "Test message");
-        assert_eq!(notification.severity, Severity::Info);
-        assert!(!notification.dismissed);
-        assert!(notification.timeout.is_none());
-        assert!(notification.corner_radius.is_none());
+        // nothing is lost
+        let text = "a fairly long notification message with averyveryverylongword in it";
+        let lines = wrap(text, 8, 12);
+        let joined: String = lines.concat().replace(' ', "");
+        assert_eq!(joined, text.replace(' ', ""));
     }
 
     #[test]
-    fn test_notification_with_timeout() {
-        let notification = Notification::new("Test", Severity::Warning)
-            .with_timeout(std::time::Duration::from_secs(10));
+    fn a_long_message_shows_its_first_line_whole_and_ends_in_an_ellipsis() {
+        let config = NotificationConfig {
+            max_width: 30,
+            max_height: 6,
+            ..Default::default()
+        };
+        let message = "the quick brown fox jumps over the lazy dog again and again and again";
+        let n = notification(1, message, Severity::Error);
+        let (width, height, card) = NotificationPopup::card(&n, 30, 6, &config, frame(1, 1));
+        assert_eq!(card.prefix.as_deref(), Some("❌ "));
+        // as wide as its widest line (and the frame), as tall as `max-height`
+        let widest = (card.lines[0].width() + 3).max(card.lines[1].width());
+        assert_eq!((width, height), (widest as u16 + 4, 6));
+        // 30 - 2 * (border + padding) = 26 columns; the first line after the icon (3)
+        assert_eq!(card.lines.len(), 2);
+        assert_eq!(card.lines[0], "the quick brown fox");
+        assert!(card.lines[0].width() + 3 <= 26);
+        assert!(card.lines[1].ends_with('…'), "{:?}", card.lines);
+        assert!(card.lines[1].width() <= 26);
 
-        assert_eq!(
-            notification.timeout,
-            Some(std::time::Duration::from_secs(10))
-        );
+        // a short one: as wide as it needs
+        let n = notification(2, "saved", Severity::Info);
+        let (width, height, card) = NotificationPopup::card(&n, 30, 6, &config, frame(1, 1));
+        assert_eq!(card.lines, ["saved"]);
+        assert_eq!(width, ("💡 saved".width() + 4) as u16);
+        assert_eq!(height, 5);
+        // without icons and emojis, none
+        let plain = NotificationConfig {
+            show_emojis: false,
+            show_icons: false,
+            ..config.clone()
+        };
+        let (_, _, card) = NotificationPopup::card(&n, 30, 6, &plain, frame(1, 1));
+        assert_eq!(card.prefix, None);
     }
 
     #[test]
-    fn test_notification_dismiss() {
-        let mut notification = Notification::new("Test", Severity::Error);
-        assert!(!notification.dismissed);
-
-        notification.dismiss();
-        assert!(notification.dismissed);
+    fn the_newest_notifications_are_shown_when_not_all_fit() {
+        let config = NotificationConfig::default();
+        let notifications: Vec<Notification> = (1..=6)
+            .map(|id| notification(id, &format!("message {id}"), Severity::Info))
+            .collect();
+        let refs: Vec<&Notification> = notifications.iter().collect();
+        // cards of 5 rows and a row between them: 3 fit in 20 rows
+        let cards = NotificationPopup::layout(&refs, Rect::new(0, 0, 80, 20), &config, frame(1, 1));
+        let ids: Vec<usize> = cards.iter().map(|card| card.id).collect();
+        assert_eq!(ids, [4, 5, 6]);
+        // stacked downwards from the top right, oldest first, without overlapping
+        let ys: Vec<u16> = cards.iter().map(|card| card.area.y).collect();
+        assert_eq!(ys, [1, 7, 13]);
+        assert!(cards.iter().all(|card| card.area.right() == 78));
     }
 
     #[test]
     fn test_layout_never_panics_and_stays_in_viewport() {
-        use helix_view::editor::NotificationConfig;
         let positions = [
             NotificationPosition::TopLeft,
             NotificationPosition::TopCenter,
@@ -1120,12 +873,10 @@ mod tests {
             NotificationPosition::BottomCenter,
             NotificationPosition::BottomRight,
         ];
-        let mut popup = NotificationPopup::new();
-        for id in 0..3 {
-            let mut n = Notification::new("a fairly long notification message", Severity::Info);
-            n.id = id;
-            popup.notifications.push(NotificationItem::new(n));
-        }
+        let notifications: Vec<Notification> = (0..3)
+            .map(|id| notification(id, "a fairly long notification message", Severity::Info))
+            .collect();
+        let refs: Vec<&Notification> = notifications.iter().collect();
         for max_width in [0, 1, 2, 3, 4, 60] {
             for position in positions {
                 let config = NotificationConfig {
@@ -1133,21 +884,77 @@ mod tests {
                     position,
                     ..Default::default()
                 };
-                for width in 0..12 {
-                    for height in 0..8 {
-                        let viewport = Rect::new(3, 2, width, height);
-                        popup.calculate_notification_areas(viewport, &config);
-                        for item in &popup.notifications {
-                            let area = item.area;
-                            if area.width > 0 && area.height > 0 {
-                                assert_eq!(viewport.intersection(area), area);
-                                assert!(area.width <= max_width);
+                for (border, padding) in [(0, 0), (1, 1), (3, 2)] {
+                    for width in 0..12 {
+                        for height in 0..8 {
+                            let viewport = Rect::new(3, 2, width, height);
+                            let cards = NotificationPopup::layout(
+                                &refs,
+                                viewport,
+                                &config,
+                                frame(border, padding),
+                            );
+                            for card in cards {
+                                assert_eq!(viewport.intersection(card.area), card.area);
+                                assert!(card.area.width <= max_width);
+                                let inside = card
+                                    .area
+                                    .height
+                                    .saturating_sub((card.border + card.padding) * 2);
+                                assert!(card.lines.len() <= (inside as usize).max(1));
                             }
                         }
                     }
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_shadow_darkens_beside_the_card_and_keeps_what_is_there() {
+        let mut surface = Surface::filled(Rect::new(0, 0, 20, 10), &{
+            let mut cell = tui::buffer::Cell::default();
+            cell.set_symbol("x");
+            cell
+        });
+        let card = Card {
+            id: 1,
+            area: Rect::new(2, 2, 6, 4),
+            border: 1,
+            padding: 0,
+            prefix: None,
+            lines: Vec::new(),
+        };
+        let config = NotificationConfig::default();
+        NotificationPopup::render_shadow(&card, Rect::new(0, 0, 20, 10), &mut surface, &config);
+        let shadowed = |x: u16, y: u16| surface[(x, y)].bg == Color::Rgb(0, 0, 0);
+        // right of the card (from a row down) and below it (from a column in)
+        assert!(shadowed(8, 3) && shadowed(8, 6) && shadowed(3, 6));
+        assert!(!shadowed(8, 2) && !shadowed(2, 6));
+        // never on the card itself, and the text under the shadow stays
+        assert!(!shadowed(7, 5) && !shadowed(2, 2));
+        assert_eq!(surface[(8, 3)].symbol.as_str(), "x");
+        // nothing outside the viewport
+        let mut surface = Surface::empty(Rect::new(0, 0, 20, 10));
+        NotificationPopup::render_shadow(&card, Rect::new(0, 0, 8, 6), &mut surface, &config);
+        assert!(!surface
+            .content
+            .iter()
+            .any(|cell| cell.bg == Color::Rgb(0, 0, 0)));
+    }
+
+    #[test]
+    fn severity_prefix_picks_emojis_then_icons() {
+        let mut config = NotificationConfig::default();
+        let prefix: Option<&str> = severity_prefix(&config, Severity::Error);
+        assert_eq!(prefix, Some(config.emojis.error.as_str()));
+        config.show_emojis = false;
+        assert_eq!(
+            severity_prefix(&config, Severity::Hint),
+            Some(config.icons.info.as_str())
+        );
+        config.show_icons = false;
+        assert_eq!(severity_prefix(&config, Severity::Warning), None);
     }
 
     #[test]

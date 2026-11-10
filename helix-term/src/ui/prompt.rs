@@ -578,6 +578,58 @@ impl Prompt {
         self.truncate_end
     }
 
+    /// The column of the cursor in the input drawn `line_width` columns wide from the scroll
+    /// anchor (see [`Self::update_scroll_anchor`]), with the ellipses of a truncated line.
+    pub(crate) fn cursor_offset(&self, line_width: usize) -> usize {
+        let anchor = if self.anchor <= self.cursor && self.line.is_char_boundary(self.anchor) {
+            self.anchor
+        } else {
+            0
+        };
+        let mut col = self.line[anchor..self.cursor].width();
+
+        // ensure the cursor does not go beyond the ellipsis at the end
+        if self.truncate_end && col >= line_width {
+            col = col.saturating_sub(1);
+        }
+
+        // the first grapheme shown is replaced by the ellipsis at the start
+        if self.truncate_start && self.cursor == anchor {
+            col += self.line[self.cursor..]
+                .graphemes(true)
+                .next()
+                .map_or(0, |g| g.width());
+        }
+        col
+    }
+
+    /// The style of each byte of the line, highlighted as its language (`with_language`);
+    /// `None` without a language, or when the highlighted text is not the line as it is.
+    pub(crate) fn highlighted_line_styles(
+        &self,
+        editor: &Editor,
+    ) -> Option<Vec<helix_view::graphics::Style>> {
+        let (language, loader) = self.language.as_ref()?;
+        let text: tui::text::Text = crate::ui::markdown::highlighted_code_block(
+            &self.line,
+            language,
+            Some(&editor.theme),
+            &loader.load(),
+            None,
+        );
+        // One line, whose text is the line's: then each byte of the line has a style.
+        let [line] = text.lines.as_slice() else {
+            return None;
+        };
+        let mut styles = Vec::with_capacity(self.line.len());
+        let mut highlighted = String::with_capacity(self.line.len());
+        for span in &line.0 {
+            styles.extend(std::iter::repeat_n(span.style, span.content.len()));
+            highlighted.push_str(&span.content);
+        }
+        (highlighted == *self.line).then_some(styles)
+    }
+
     /// Update the anchor position for horizontal scrolling based on cursor and available width.
     /// This should be called before rendering when the popup needs to handle its own scrolling.
     pub fn update_scroll_anchor(&mut self, line_width: usize) {
@@ -1000,27 +1052,7 @@ impl Component for Prompt {
             .clip_left(label_width)
             .clip_right(if label.is_empty() { 2 } else { 0 });
 
-        let anchor = if self.anchor <= self.cursor && self.line.is_char_boundary(self.anchor) {
-            self.anchor
-        } else {
-            0
-        };
-        let mut col = area.left() as usize + self.line[anchor..self.cursor].width();
-
-        // ensure the cursor does not go beyond elipses
-        if self.truncate_end
-            && self.line[anchor..self.cursor].width() >= self.line_area.width as usize
-        {
-            col = col.saturating_sub(1);
-        }
-
-        if self.truncate_start && self.cursor == anchor {
-            col += self.line[self.cursor..]
-                .graphemes(true)
-                .next()
-                .map_or(0, |g| g.width());
-        }
-
+        let col = area.left() as usize + self.cursor_offset(self.line_area.width as usize);
         let line = (area.height as usize).saturating_sub(1);
 
         (

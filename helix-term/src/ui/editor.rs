@@ -2994,19 +2994,20 @@ impl Component for EditorView {
             }
         }
 
-        if let Some(completion) = self.completion.as_mut() {
-            completion.render(area, surface, cx);
-        }
-
         // Cleanup expired notifications before rendering
         cx.editor.cleanup_notifications();
 
-        // Render notification popup. A pinned explorer panel is drawn above
-        // this view, so notifications are laid out in the area the panel
-        // leaves free instead of being painted underneath it.
+        // The notifications: over the views, under what is being used. The completion menu
+        // (below) and the layers above this one (pickers, popups, the command line) are
+        // drawn over them. A pinned explorer panel is drawn above this view, so they are
+        // laid out in the area the panel leaves free instead of being painted underneath it.
         let notification_area = crate::ui::explorer::layout(cx.editor, area);
         self.notification_popup
             .render(notification_area, surface, cx);
+
+        if let Some(completion) = self.completion.as_mut() {
+            completion.render(area, surface, cx);
+        }
     }
 
     fn cursor(&self, _area: Rect, editor: &Editor) -> (Option<Position>, CursorKind) {

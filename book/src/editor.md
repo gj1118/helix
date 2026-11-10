@@ -673,7 +673,7 @@ bottom line. See [Command line](./command-line.md#popup-style) for how it is use
 | `use-full-height` | With `style = "popup"`, use the full terminal height and drop the reserved bottom line | `false` |
 | `icons.search` | Icon for search prompts (`/`, `?`) | `"🔍"` |
 | `icons.command` | Icon for command mode (`:`) | `"🛠️"` |
-| `icons.shell` | Icon for shell prompts (`!`) | `"⚡"` |
+| `icons.shell` | Icon for shell prompts (`\|`, `!`, `A-\|`, `A-!`, `$`) | `"⚡"` |
 | `icons.general` | Icon for other prompts | `"💬"` |
 
 ```toml
@@ -694,26 +694,31 @@ Messages that used to go to the statusline can be shown as popups instead. The h
 available with `:notifications-history`, `:notifications-clear` clears it and
 `:notifications-dismiss` closes the active popups.
 
+The popups are stacked from the corner (or the middle of the edge) of `position`, oldest first;
+when they do not all fit, the oldest are left out, so the newest is always shown. They are drawn
+over the views but under what you are using: the completion menu, pickers, popups and the
+command line.
+
 | Key | Description | Default |
 |--|--|--|
 | `enable` | Turn the notification system on | `true` |
 | `style` | `"popup"` (noice-style popups) or `"statusline"` | `"popup"` |
 | `position` | `"top-right"`, `"top-center"`, `"top-left"`, `"bottom-right"`, `"bottom-center"` or `"bottom-left"` | `"top-right"` |
 | `max-width` | Maximum width of a popup, in columns | `60` |
-| `max-height` | Maximum height of a popup, in lines | `10` |
-| `default-timeout` | Time before a popup fades out, in milliseconds. `0` keeps it until dismissed | `5000` |
+| `max-height` | Maximum height of a popup, in lines; a longer message ends in `…` (the whole of it is in `:notifications-history`) | `10` |
+| `default-timeout` | Time before a popup disappears, in milliseconds. `0` keeps it until dismissed | `5000` |
 | `show-icons` | Show an icon for the severity (only when `show-emojis` is off) | `true` |
 | `show-emojis` | Show an emoji for the severity; takes the place of the icon | `true` |
 | `padding` | Blank space inside the popup, in cells | `1` |
 | `max-history` | Number of notifications kept for `:notifications-history` | `100` |
-| `enable-history` | Keep the history at all | `true` |
+| `enable-history` | Allow `:notifications-history` | `true` |
 | `border.enable` | Draw a border around each popup | `true` |
 | `border.width` | Number of nested border frames (ignored with gradient borders, which are one cell wide) | `1` |
 | `border.radius` | Above `0`, a `plain` border (from `border-style`, with `border.style = "solid"`) and a dashed or dotted one get rounded corners (`╭╮╰╯`), so by default notifications are rounded. `0` keeps the glyphs of `border-style` | `2` |
 | `border.style` | Glyphs of the notification border: `"solid"` uses those of the editor's `border-style`; `"dashed"` (`┄ ┆`) and `"dotted"` (`┈ ┊`) draw broken lines; or any `border-style` value (`"none"`, `"plain"`, `"rounded"`, `"double"`, `"thick"`, `"quadrant-inside"`, `"quadrant-outside"`) for notifications only, whatever `border.radius` says. A gradient border follows `"none"` and rounded corners only | `"solid"` |
 | `border.gradient` | Draw the notification border with a gradient from `border.gradient-start` to `border.gradient-end`, even when `[editor.gradient-borders]` is off; its line weight and direction come from [`gradient-borders`](#editorgradient-borders-section). When `false`, notifications follow `gradient-borders` like every popup | `false` |
 | `border.gradient-start`, `border.gradient-end` | Colors of the `border.gradient`, as `"#rrggbb"` (an invalid color falls back to the default) | `"#8A2BE2"`, `"#00BFFF"` |
-| `shadow.enable` | Draw a shadow behind each popup | `true` |
+| `shadow.enable` | Draw a shadow behind each popup: the cells right of and below it are darkened (what they show stays) | `true` |
 | `shadow.offset-x`, `shadow.offset-y` | Offset of the shadow, in cells | `1`, `1` |
 | `icons.info`, `icons.warning`, `icons.error`, `icons.success` | Icon text for each severity | `ℹ`, `⚠`, `✗`, `✓` |
 | `emojis.info`, `emojis.warning`, `emojis.error`, `emojis.success` | Emoji text for each severity | `💡`, `⚠️`, `❌`, `✅` |
