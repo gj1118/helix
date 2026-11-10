@@ -236,6 +236,16 @@ impl Compositor {
             }
             layer.render(area, surface, cx);
         }
+
+        // The info box of pending keys (the `space` menu and the like) goes over every layer:
+        // a panel above the editor, such as the explorer pinned on the right or floating, must
+        // not hide the keys it lists.
+        if cx.editor.config().auto_info {
+            if let Some(mut info) = cx.editor.autoinfo.take() {
+                info.render(area, surface, cx);
+                cx.editor.autoinfo = Some(info);
+            }
+        }
     }
 
     pub fn cursor(&self, area: Rect, editor: &Editor) -> (Option<Position>, CursorKind) {

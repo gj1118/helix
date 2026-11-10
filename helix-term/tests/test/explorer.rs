@@ -716,3 +716,35 @@ async fn the_focused_tree_hides_the_editor_cursor() -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+/// The info box of pending keys (the `space` menu) is drawn over the explorer, wherever the
+/// panel is: pinned on the right, it would cover the box's right half otherwise.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_key_info_box_is_drawn_over_the_panel() -> anyhow::Result<()> {
+    for side in ["right", "floating"] {
+        let (_dir, root) = repo()?;
+        let mut app = helpers::AppBuilder::new()
+            .with_config(config(&format!("side = \"{side}\"")))
+            .build()?;
+        open_explorer(&mut app, &root);
+        // the keys go to the editor
+        app.editor.explorer_panel.focused = false;
+        test_key_sequences(
+            &mut app,
+            vec![(
+                Some("<space>"),
+                Some(&|app| {
+                    let text = app.rendered_rows().join("\n");
+                    // an entry reaching to the box's right edge, over the panel
+                    assert!(
+                        text.contains("Paste clipboard after selections"),
+                        "{side}:\n{text}"
+                    );
+                }),
+            )],
+            false,
+        )
+        .await?;
+    }
+    Ok(())
+}

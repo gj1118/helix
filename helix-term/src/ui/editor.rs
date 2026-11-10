@@ -2819,12 +2819,8 @@ impl Component for EditorView {
         }
         self.terminal_secondary_cursors = self.secondary_cursor_cells(cx.editor, surface);
 
-        if config.auto_info {
-            if let Some(mut info) = cx.editor.autoinfo.take() {
-                info.render(area, surface, cx);
-                cx.editor.autoinfo = Some(info)
-            }
-        }
+        // The info box of pending keys (`cx.editor.autoinfo`) is drawn by the compositor, over
+        // every layer: see `Compositor::render`.
 
         let key_width = 15u16; // for showing pending keys
         let mut status_msg_width = 0;
