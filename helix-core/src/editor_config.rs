@@ -13,7 +13,6 @@ use std::{
     fs,
     num::{NonZeroU16, NonZeroU8},
     path::Path,
-    str::FromStr,
 };
 
 use encoding_rs::Encoding;
@@ -25,12 +24,17 @@ use crate::{
 };
 
 /// Configuration declared for a path in `.editorconfig` files.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct EditorConfig {
     pub indent_style: Option<IndentStyle>,
+    /// The columns of a level of indentation with spaces (`indent_size` as a number), also
+    /// without `indent_style`: it then sets the width of the spaces the file is indented with.
+    pub indent_width: Option<NonZeroU8>,
     pub tab_width: Option<NonZeroU8>,
     pub line_ending: Option<LineEnding>,
     pub encoding: Option<&'static Encoding>,
+    /// Whether a new file starts with a byte order mark (`charset = utf-8-bom`).
+    pub byte_order_mark: Option<bool>,
     // pub spelling_language: Option<SpellingLanguage>,
     pub trim_trailing_whitespace: Option<bool>,
     pub insert_final_newline: Option<bool>,
@@ -49,13 +53,8 @@ impl EditorConfig {
             let Ok(contents) = fs::read_to_string(&editor_config_file) else {
                 continue;
             };
-            let ini = match contents.parse::<Ini>() {
-                Ok(ini) => ini,
-                Err(err) => {
-                    log::warn!("Ignoring EditorConfig file at '{editor_config_file:?}' because a glob failed to compile: {err}");
-                    continue;
-                }
-            };
+            // A section whose glob does not compile is skipped (and logged), not the file.
+            let ini = Ini::parse(&contents, &editor_config_file);
             let is_root = ini.pairs.get("root").map(AsRef::as_ref) == Some("true");
             configs.push((ini, ancestor));
             // > The search shall stop if an EditorConfig file is found with the `root` key set to
@@ -135,15 +134,24 @@ impl EditorConfig {
                 "cr" => Some(LineEnding::CR),
                 _ => None,
             });
-        let encoding = pairs.get("charset").and_then(|value| match value.as_ref() {
+        let charset = pairs.get("charset").map(AsRef::as_ref);
+        let encoding = charset.and_then(|value| match value {
             "latin1" => Some(encoding_rs::WINDOWS_1252),
-            "utf-8" => Some(encoding_rs::UTF_8),
-            // `utf-8-bom` is intentionally ignored.
-            // > `utf-8-bom` is discouraged.
+            // > `utf-8-bom` is discouraged: UTF-8, and a new file starts with the mark.
+            "utf-8" | "utf-8-bom" => Some(encoding_rs::UTF_8),
             "utf-16le" => Some(encoding_rs::UTF_16LE),
             "utf-16be" => Some(encoding_rs::UTF_16BE),
             _ => None,
         });
+        let byte_order_mark = match charset {
+            Some("utf-8-bom") => Some(true),
+            Some("utf-8") => Some(false),
+            _ => None,
+        };
+        let indent_width = match indent_size {
+            Some(IndentSize::Spaces(spaces)) => NonZeroU8::new(spaces.get().clamp(1, MAX_INDENT)),
+            _ => None,
+        };
         let trim_trailing_whitespace =
             pairs
                 .get("trim_trailing_whitespace")
@@ -167,9 +175,11 @@ impl EditorConfig {
 
         Self {
             indent_style,
+            indent_width,
             tab_width,
             line_ending,
             encoding,
+            byte_order_mark,
             trim_trailing_whitespace,
             insert_final_newline,
             max_line_length,
@@ -191,12 +201,14 @@ struct Ini {
     sections: Vec<Section>,
 }
 
-impl FromStr for Ini {
-    type Err = globset::Error;
-
-    fn from_str(source: &str) -> Result<Self, Self::Err> {
+impl Ini {
+    /// The pairs and sections of `source` (the file `file`, for the log). A section whose glob
+    /// does not compile is skipped, with its pairs.
+    fn parse(source: &str, file: &Path) -> Self {
         // <https://spec.editorconfig.org/#file-format>
         let mut ini = Ini::default();
+        // Whether the pairs go to a section that was skipped.
+        let mut skipping = false;
         // > EditorConfig files are in an INI-like file format. To read an EditorConfig file, take
         // > one line at a time, from beginning to end. For each line:
         for full_line in source.lines() {
@@ -215,25 +227,21 @@ impl FromStr for Ini {
             if let Some(section) = line.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
                 // > * Section Header: starts with a `[` and ends with a `]`. These lines define
                 // >   globs...
-
-                // <https://spec.editorconfig.org/#glob-expressions>
-                // We need to modify the glob string slightly since EditorConfig's glob flavor
-                // doesn't match `globset`'s exactly. `globset` only allows '**' at the beginning
-                // or end of a glob or between two '/'s. (This replacement is not very fancy but
-                // should cover most practical cases.)
-                let mut glob_str = section.replace("**.", "**/*.");
-                if !is_glob_relative(section) {
-                    glob_str.insert_str(0, "**/");
+                match section_glob(section) {
+                    Ok(glob) => {
+                        skipping = false;
+                        ini.sections.push(Section {
+                            glob: glob.compile_matcher(),
+                            pairs: Pairs::new(),
+                        });
+                    }
+                    Err(err) => {
+                        skipping = true;
+                        log::warn!(
+                            "Ignoring the section [{section}] of the EditorConfig file {file:?}: {err}"
+                        );
+                    }
                 }
-                let glob = GlobBuilder::new(&glob_str)
-                    .literal_separator(true)
-                    .backslash_escape(true)
-                    .empty_alternates(true)
-                    .build()?;
-                ini.sections.push(Section {
-                    glob: glob.compile_matcher(),
-                    pairs: Pairs::new(),
-                });
             } else if let Some((key, value)) = line.split_once('=') {
                 // > * Key-Value Pair (or Pair): contains a key and a value, separated by an `=`.
                 // >     * Key: The part before the first `=` on the line.
@@ -241,6 +249,9 @@ impl FromStr for Ini {
                 // >     * Keys and values are trimmed of leading and trailing whitespace, but
                 // >       include any whitespace that is between non-whitespace characters.
                 // >     * If a value is not provided, then the value is an empty string.
+                if skipping {
+                    continue;
+                }
                 let key = key.trim().to_lowercase().into_boxed_str();
                 let value = value.trim().to_lowercase().into_boxed_str();
                 if let Some(section) = ini.sections.last_mut() {
@@ -250,8 +261,67 @@ impl FromStr for Ini {
                 }
             }
         }
-        Ok(ini)
+        ini
     }
+}
+
+/// The glob of a section header (`section`, without its brackets).
+fn section_glob(section: &str) -> Result<globset::Glob, globset::Error> {
+    // <https://spec.editorconfig.org/#glob-expressions>
+    // We need to modify the glob string slightly since EditorConfig's glob flavor
+    // doesn't match `globset`'s exactly. `globset` only allows '**' at the beginning
+    // or end of a glob or between two '/'s. (This replacement is not very fancy but
+    // should cover most practical cases.)
+    let mut glob_str = expand_number_ranges(&section.replace("**.", "**/*."));
+    if !is_glob_relative(section) {
+        glob_str.insert_str(0, "**/");
+    }
+    GlobBuilder::new(&glob_str)
+        .literal_separator(true)
+        .backslash_escape(true)
+        .empty_alternates(true)
+        .build()
+}
+
+/// The most numbers a range (`{1..3}`) is expanded to; a larger one stays as it is (and
+/// matches only its literal text).
+const MAX_RANGE: i64 = 1024;
+
+/// `glob` with its number ranges (`{num1..num2}`, which `globset` does not know) written as
+/// the alternatives they match: `{1..3}` is `{1,2,3}`.
+///
+/// > `{num1..num2}`: Matches any integer numbers between num1 and num2, where num1 and num2
+/// > can be either positive or negative
+fn expand_number_ranges(glob: &str) -> String {
+    let mut expanded = String::with_capacity(glob.len());
+    let mut rest = glob;
+    while let Some(open) = rest.find('{') {
+        // an escaped brace is not a range
+        let escaped = rest[..open].ends_with('\\');
+        expanded.push_str(&rest[..open]);
+        rest = &rest[open..];
+        let range = rest[1..].find('}').and_then(|close| {
+            let (from, to) = rest[1..1 + close].split_once("..")?;
+            let (from, to) = (from.parse::<i64>().ok()?, to.parse::<i64>().ok()?);
+            let (low, high) = (from.min(to), from.max(to));
+            (high - low < MAX_RANGE).then_some((low, high, close + 2))
+        });
+        match range.filter(|_| !escaped) {
+            Some((low, high, length)) => {
+                let numbers: Vec<String> = (low..=high).map(|n| n.to_string()).collect();
+                expanded.push('{');
+                expanded.push_str(&numbers.join(","));
+                expanded.push('}');
+                rest = &rest[length..];
+            }
+            None => {
+                expanded.push('{');
+                rest = &rest[1..];
+            }
+        }
+    }
+    expanded.push_str(rest);
+    expanded
 }
 
 /// Determines whether a glob is relative to the directory of the config file.
@@ -283,7 +353,7 @@ mod test {
 
     fn editor_config(path: impl AsRef<Path>, source: &str) -> EditorConfig {
         let path = path.as_ref();
-        let ini = source.parse::<Ini>().unwrap();
+        let ini = Ini::parse(source, Path::new(".editorconfig"));
         let pairs = ini
             .sections
             .into_iter()
@@ -350,6 +420,7 @@ mod test {
             editor_config("flake.nix", source),
             EditorConfig {
                 indent_style: None,
+                indent_width: NonZeroU8::new(2),
                 tab_width: NonZeroU8::new(2),
                 ..Default::default()
             }
@@ -358,6 +429,7 @@ mod test {
             editor_config("config.yml", source),
             EditorConfig {
                 indent_style: None,
+                indent_width: NonZeroU8::new(2),
                 tab_width: NonZeroU8::new(2),
                 ..Default::default()
             }
@@ -367,6 +439,7 @@ mod test {
             editor_config("flake.nix.foo", source),
             EditorConfig {
                 indent_style: None,
+                indent_width: NonZeroU8::new(2),
                 tab_width: NonZeroU8::new(2),
                 ..Default::default()
             }
@@ -376,9 +449,113 @@ mod test {
             editor_config("main.rs", source),
             EditorConfig {
                 indent_style: None,
+                indent_width: NonZeroU8::new(4),
                 tab_width: NonZeroU8::new(4),
                 ..Default::default()
             }
         );
+    }
+
+    #[test]
+    fn number_ranges_match_the_numbers_between() {
+        let expanded: String = expand_number_ranges("file{1..3}.txt");
+        assert_eq!(expanded, "file{1,2,3}.txt");
+        assert_eq!(expand_number_ranges("x{-1..1}"), "x{-1,0,1}");
+        assert_eq!(expand_number_ranges("x{3..1}"), "x{1,2,3}");
+        // not a range, an escaped brace, a huge range: as they are
+        assert_eq!(expand_number_ranges("*.{rs,toml}"), "*.{rs,toml}");
+        assert_eq!(expand_number_ranges("a\\{1..2}"), "a\\{1..2}");
+        assert_eq!(expand_number_ranges("a{0..99999}"), "a{0..99999}");
+
+        let source = r#"
+        [test{1..10}.rs]
+        indent_style = tab
+        "#;
+        let tabs = EditorConfig {
+            indent_style: Some(IndentStyle::Tabs),
+            ..Default::default()
+        };
+        assert_eq!(editor_config("test7.rs", source), tabs);
+        assert_eq!(editor_config("src/test10.rs", source), tabs);
+        assert_eq!(editor_config("test11.rs", source), EditorConfig::default());
+        assert_eq!(editor_config("test0.rs", source), EditorConfig::default());
+    }
+
+    #[test]
+    fn a_section_that_does_not_compile_is_skipped_alone() {
+        // `[a{b]` has an unclosed brace: its pairs go with it, the others stay
+        let source = r#"
+        root = true
+        [*]
+        insert_final_newline = true
+        [a{b]
+        indent_style = tab
+        [*.rs]
+        trim_trailing_whitespace = true
+        "#;
+        let ini = Ini::parse(source, Path::new(".editorconfig"));
+        let root: Option<&str> = ini.pairs.get("root").map(AsRef::as_ref);
+        assert_eq!(root, Some("true"));
+        assert_eq!(ini.sections.len(), 2);
+        assert_eq!(
+            editor_config("main.rs", source),
+            EditorConfig {
+                insert_final_newline: Some(true),
+                trim_trailing_whitespace: Some(true),
+                ..Default::default()
+            }
+        );
+    }
+
+    #[test]
+    fn indent_size_charset_and_unset() {
+        let config = editor_config("a.py", "[*]\nindent_size = 2\n");
+        let width: Option<NonZeroU8> = config.indent_width;
+        assert_eq!(width, NonZeroU8::new(2));
+        assert_eq!(config.indent_style, None);
+        // `indent_size = tab`: the width of a tab, no width of spaces
+        let config = editor_config("a.py", "[*]\nindent_size = tab\ntab_width = 8\n");
+        assert_eq!(config.indent_width, None);
+        assert_eq!(config.tab_width, NonZeroU8::new(8));
+
+        let config = editor_config("a.txt", "[*]\ncharset = utf-8-bom\n");
+        assert_eq!(config.encoding, Some(encoding_rs::UTF_8));
+        let bom: Option<bool> = config.byte_order_mark;
+        assert_eq!(bom, Some(true));
+        let config = editor_config("a.txt", "[*]\ncharset = UTF-8\n");
+        assert_eq!(
+            (config.encoding, config.byte_order_mark),
+            (Some(encoding_rs::UTF_8), Some(false))
+        );
+
+        // `unset` (in any case) undoes what a section before set
+        let source = "[*]\nindent_style = tab\nend_of_line = crlf\n[*.md]\nindent_style = UNSET\n";
+        let config = editor_config("a.md", source);
+        assert_eq!(config.indent_style, None);
+        assert_eq!(config.line_ending, Some(LineEnding::Crlf));
+    }
+
+    #[test]
+    fn the_closest_file_wins_and_root_stops_the_search() {
+        let dir = std::env::temp_dir().join(format!("helix-editorconfig-{}", std::process::id()));
+        let project = dir.join("project");
+        let sub = project.join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        // above the root: never read
+        fs::write(dir.join(".editorconfig"), "[*]\nmax_line_length = 10\n").unwrap();
+        fs::write(
+            project.join(".editorconfig"),
+            "root = true\n[*]\nindent_style = space\nindent_size = 4\nend_of_line = lf\n",
+        )
+        .unwrap();
+        fs::write(sub.join(".editorconfig"), "[*.go]\nindent_style = tab\n").unwrap();
+
+        let go = EditorConfig::find(&sub.join("main.go"));
+        assert_eq!(go.indent_style, Some(IndentStyle::Tabs));
+        assert_eq!(go.line_ending, Some(LineEnding::LF));
+        assert_eq!(go.max_line_length, None);
+        let rs = EditorConfig::find(&sub.join("main.rs"));
+        assert_eq!(rs.indent_style, Some(IndentStyle::Spaces(4)));
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

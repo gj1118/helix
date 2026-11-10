@@ -856,6 +856,10 @@ impl Application {
                     self.editor.set_error(err.to_string());
                 };
                 self.config.store(Arc::new(app_config));
+                // `:set editor-config`: the open files follow.
+                if old_editor_config.editor_config != self.editor.config().editor_config {
+                    self.refresh_editor_configs();
+                }
             }
             ConfigEvent::ThemeChanged => {
                 let _ = self.terminal.backend_mut().set_background_color(
@@ -905,8 +909,6 @@ impl Application {
             // Re-parse any open documents with the new language config.
             let lang_loader = self.editor.syn_loader.load();
             for document in self.editor.documents.values_mut() {
-                // Re-detect .editorconfig
-                document.detect_editor_config();
                 document.detect_language(&lang_loader);
                 let diagnostics = Editor::doc_diagnostics(
                     &self.editor.language_servers,
@@ -919,6 +921,9 @@ impl Application {
             self.terminal.reconfigure((&default_config.editor).into())?;
             // Store new config
             self.config.store(Arc::new(default_config));
+            // Re-read the .editorconfig files, applying what changed (once the new config, with
+            // its `editor-config`, and the languages, whose indent is the fallback, are in).
+            self.refresh_editor_configs();
             // On failure the previous snippets stay active.
             self.editor
                 .reload_snippets()
@@ -1059,6 +1064,31 @@ impl Application {
         }
     }
 
+    /// Reads the `.editorconfig` files of every open file again, applying what changed.
+    fn refresh_editor_configs(&mut self) {
+        for doc in self.editor.documents.values_mut() {
+            doc.refresh_editor_config();
+        }
+    }
+
+    /// After `saved` was written: when it is a `.editorconfig` file, reads it again for the
+    /// open files under its directory, applying what changed for them.
+    fn refresh_editor_config_after_save(&mut self, saved: &Path) {
+        if saved.file_name() != Some(std::ffi::OsStr::new(".editorconfig")) {
+            return;
+        }
+        let Some(dir) = saved.parent() else {
+            return;
+        };
+        let mut changed = 0;
+        for doc in self.editor.documents.values_mut() {
+            if doc.path().is_some_and(|path| path.starts_with(dir)) && doc.refresh_editor_config() {
+                changed += 1;
+            }
+        }
+        log::info!("EditorConfig {saved:?} saved: applied to {changed} open file(s)");
+    }
+
     pub fn handle_document_write(&mut self, doc_save_event: DocumentSavedEventResult) {
         let doc_save_event = match doc_save_event {
             Ok(event) => event,
@@ -1092,6 +1122,8 @@ impl Application {
         // A file saved (under a new name, say) is a recent one.
         let saved_path = doc_save_event.path.clone();
         self.editor.record_recent_file(&saved_path);
+        // A `.editorconfig` saved applies to the open files under its directory right away.
+        self.refresh_editor_config_after_save(&saved_path);
 
         let lines = doc_save_event.text.len_lines();
         let size = doc_save_event.text.len_bytes();

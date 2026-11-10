@@ -90,7 +90,7 @@
 | `jump-label-alphabet` | The characters that are used to generate two character jump labels. Characters at the start of the alphabet are used first. | `"abcdefghijklmnopqrstuvwxyz"` |
 | `end-of-line-diagnostics` | Minimum severity of diagnostics to render at the end of the line. Set to `disable` to disable entirely. Refer to the setting about `inline-diagnostics` for more details | `"hint"` |
 | `clipboard-provider` | Which API to use for clipboard interaction. One of `pasteboard` (MacOS), `wayland`, `x-clip`, `x-sel`, `win32-yank`, `termux`, `tmux`, `windows`, `termcode`, `none`, or a custom command set. | Platform and environment specific. |
-| `editor-config` | Whether to read settings from [EditorConfig](https://editorconfig.org) files | `true` |
+| `editor-config` | Whether to read settings from [EditorConfig](https://editorconfig.org) files, see [EditorConfig](#editorconfig) | `true` |
 | `rainbow-brackets` | Whether to render rainbow colors for matching brackets. Requires tree-sitter `rainbows.scm` queries for the language. | `false` |
 | `kitty-keyboard-protocol` | Whether to enable Kitty Keyboard Protocol. Can be `enabled`, `disabled` or `auto` | `"auto"` |
 | `terminal` | Where a debuggee that asks for a terminal is started: `launcher` or `command`/`args`, see [The terminal of the debuggee](./debugging.md#the-terminal-of-the-debuggee) | detected |
@@ -103,6 +103,34 @@
 | `max-panel-width`, `max-panel-height`, `max-panel-width-percent`, `max-panel-height-percent` | Limits of window resizing, see [Window resizing](#window-resizing-and-focus-mode) | `50`, `50`, `0.8`, `0.8` |
 
 [^3]: In most cases, you also need to enable the `auto-format` setting under `languages.toml`. You can find the reasoning [here](https://github.com/helix-editor/helix/discussions/9043#discussioncomment-7811497).
+
+### EditorConfig
+
+Helix reads the `.editorconfig` files of the directory of a file and of the directories above it,
+up to one with `root = true` in its preamble (the closest file wins), as the
+[EditorConfig specification](https://spec.editorconfig.org) describes. Turn it off with
+`editor-config = false`. The properties override the language's settings and what Helix detects
+in the file:
+
+| Property | In Helix |
+| --- | --- |
+| `indent_style` | `tab` or `space`: the indentation of the file, instead of the detected one |
+| `indent_size` | The columns of a level of spaces; `tab` for the tab width. Without `indent_style`, it sets the width of a file indented with spaces (a file indented with tabs keeps them) |
+| `tab_width` | The width of a tab (`indent_size` when not set) |
+| `end_of_line` | `lf` or `crlf` (`cr` with the `unicode-lines` build): the line ending of the file, and of new lines |
+| `charset` | `utf-8`, `utf-8-bom` (a new file starts with the byte order mark; an existing file keeps what it has), `latin1`, `utf-16be`, `utf-16le` |
+| `trim_trailing_whitespace` | Remove the whitespace at the end of lines on `:write` (not on auto-save, which would trim as you type) |
+| `insert_final_newline` | Whether `:write` ends the file with a line ending |
+| `max_line_length` | The [text width](#editor-section) (`:reflow`, soft wrap with `soft-wrap.wrap-at-text-width`) |
+
+A property set to `unset` falls back to Helix's own setting. Section names are globs: `*`, `**`,
+`?`, `[abc]`, `[!abc]`, `{a,b}` and number ranges (`{1..10}`, negative numbers too); a section
+whose name is not a valid glob is skipped, with a warning in the log, and the rest of the file
+still applies.
+
+The files are read when a file opens or is renamed. Saving a `.editorconfig` in Helix applies it
+right away to the open files under its directory, and `:config-reload` (or `:set editor-config`)
+reads them all again; an indent style set with `:indent-style` then gives way to the files.
 
 ### `[editor.bufferline]` Section
 

@@ -1157,7 +1157,10 @@ impl Document {
                 .line_ending
                 .unwrap_or_else(|| config.load().default_line_ending.into());
             let encoding = encoding.unwrap_or(encoding::UTF_8);
-            (Rope::from(line_ending.as_str()), encoding, false)
+            // `charset = utf-8-bom`: a new file starts with the mark.
+            let has_bom =
+                encoding == encoding::UTF_8 && editor_config.byte_order_mark.unwrap_or(false);
+            (Rope::from(line_ending.as_str()), encoding, has_bom)
         };
 
         let loader = syn_loader.load();
@@ -1573,11 +1576,17 @@ impl Document {
         self.indent_style = if let Some(indent_style) = self.editor_config.indent_style {
             indent_style
         } else {
-            auto_detect_indent_style(&self.text).unwrap_or_else(|| {
+            let detected = auto_detect_indent_style(&self.text).unwrap_or_else(|| {
                 self.language_config()
                     .and_then(|config| config.indent.as_ref())
                     .map_or(DEFAULT_INDENT, |config| IndentStyle::from_str(&config.unit))
-            })
+            });
+            // `indent_size` without `indent_style`: the width of the spaces, whichever the
+            // file (or its language) indents with.
+            match (detected, self.editor_config.indent_width) {
+                (IndentStyle::Spaces(_), Some(width)) => IndentStyle::Spaces(width.get()),
+                (detected, _) => detected,
+            }
         };
         if let Some(line_ending) = self
             .editor_config
@@ -1594,6 +1603,23 @@ impl Document {
                 self.editor_config = EditorConfig::find(path);
             }
         }
+    }
+
+    /// Reads the `.editorconfig` files again (one changed, or the `editor-config` option) and,
+    /// when what applies to the document changed, applies it: the indentation and the line
+    /// ending are detected again (a style set with `:indent-style` then gives way). Whether
+    /// it changed.
+    pub fn refresh_editor_config(&mut self) -> bool {
+        let editor_config = match self.path.as_ref() {
+            Some(path) if self.config.load().editor_config => EditorConfig::find(path),
+            _ => EditorConfig::default(),
+        };
+        if editor_config == self.editor_config {
+            return false;
+        }
+        self.editor_config = editor_config;
+        self.detect_indent_and_line_ending();
+        true
     }
 
     pub fn pickup_last_saved_time(&mut self) {

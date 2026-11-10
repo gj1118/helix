@@ -39,6 +39,7 @@ directory-open = " "  # expanded folder icon (default: open-folder glyph, or 
 6. LSP code lenses — `Run`, `Debug`, `12 references` labels at the end of lines, off by default (see [Code Lenses](#code-lenses) below)
 7. Lua plugins — event handlers, commands, buffer edits, annotations, overlay panels, prompts and pickers (see [Plugins](#plugins) below)
 8. Live-updating pickers — the file picker, global search, changed files, buffers, diagnostics and quicklist pickers follow changes while open; big previews load in the background
+9. EditorConfig — `.editorconfig` files applied when a file opens and again as soon as one is saved (see [EditorConfig](#editorconfig) below)
 
 
    
@@ -352,6 +353,21 @@ bottom view) focuses the panel again, `]q`/`[q` visit the next and previous entr
 code, `/` filters, and `q` closes it. `:copen` shows it again (or the quicklist), `:cclose`
 closes it. The floating explorer and the pickers that choose one thing (files, buffers,
 commands, ...) are unchanged. See the book's Quicklist page (`book/src/quicklist.md`).
+
+## EditorConfig
+
+`.editorconfig` files ([editorconfig.org](https://editorconfig.org)) set the indentation, tab
+width, line ending, charset, trimming, final newline and text width of the files under them;
+`editor-config = false` in `[editor]` turns them off. On top of upstream's support:
+
+- **Live** - saving a `.editorconfig` in Helix applies it at once to the open files under its
+  directory; `:config-reload` and `:set editor-config` read them all again
+- **`indent_size` alone** - sets the width of a file indented with spaces
+- **`charset = utf-8-bom`** - a new file starts with the byte order mark
+- **Number ranges** - section globs like `[file{1..10}.txt]`
+- **A broken section is skipped alone** - instead of the whole file being ignored (logged)
+
+See the book's editor configuration (`book/src/editor.md#editorconfig`).
 
 ## Window Title
 
