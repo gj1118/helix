@@ -648,6 +648,20 @@ impl Backend for TerminaBackend {
         self.capabilities.theme_mode
     }
 
+    fn push_title(&mut self) -> io::Result<()> {
+        // XTPUSHTITLE: the window title (2) on the title stack
+        write!(self.terminal, "\x1b[22;2t")
+    }
+
+    fn set_title(&mut self, title: &str) -> io::Result<()> {
+        write!(self.terminal, "{}", Osc::SetWindowTitle(title))
+    }
+
+    fn pop_title(&mut self) -> io::Result<()> {
+        // XTPOPTITLE: the window title (2) from the title stack
+        write!(self.terminal, "\x1b[23;2t")
+    }
+
     fn set_pointer_shape(&mut self, name: &str) -> io::Result<()> {
         write!(self.terminal, "\x1b]22;{name}\x1b\\")
     }

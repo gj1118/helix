@@ -418,6 +418,12 @@ impl Default for ScrolloffConfig {
 pub struct Config {
     /// Whether to enable the welcome screen
     pub welcome_screen: bool,
+    /// Whether Helix sets the window title of the terminal (to `title_format`). Off by default:
+    /// the terminal (or the shell) keeps its own.
+    pub set_title: bool,
+    /// The window title when `set_title` is on. Supports expansions (`%{buffer_name}`, ...),
+    /// except shell commands: the title is expanded for every frame.
+    pub title_format: String,
     /// Padding to keep between the edge of the screen and the cursor when scrolling. Defaults to 5.
     #[serde(deserialize_with = "deserialize_scrolloff_config")]
     pub scrolloff: ScrolloffConfig,
@@ -2056,10 +2062,15 @@ impl Config {
     }
 }
 
+/// The default `title-format`: `hx main.rs:12:5`.
+pub const DEFAULT_TITLE_FORMAT: &str = "hx %{buffer_name}:%{cursor_line}:%{cursor_column}";
+
 impl Default for Config {
     fn default() -> Self {
         Self {
             welcome_screen: true,
+            set_title: false,
+            title_format: DEFAULT_TITLE_FORMAT.to_string(),
             scrolloff: ScrolloffConfig::default(),
             scroll_lines: 3,
             mouse: true,

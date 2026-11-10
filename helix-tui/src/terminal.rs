@@ -80,6 +80,11 @@ where
     /// The secondary cursors last sent to the backend, or `None` when the terminal's are unknown
     /// (nothing sent yet, or a clear removed them).
     sent_secondary_cursors: Option<Vec<(u16, u16)>>,
+    /// The window title to set from the next draw on, see [`Terminal::set_title`].
+    title: Option<String>,
+    /// The window title last set, or `None` when the terminal has its own (the one saved on
+    /// its title stack when Helix set one).
+    sent_title: Option<String>,
 }
 
 /// Default terminal size: 80 columns, 24 lines
@@ -123,6 +128,8 @@ where
             force_clear: false,
             secondary_cursors: Vec::new(),
             sent_secondary_cursors: None,
+            title: None,
+            sent_title: None,
         })
     }
 
@@ -136,8 +143,21 @@ where
         self.backend.reconfigure(config)
     }
 
+    /// Gives the terminal back (on exit, or when suspended), with its own window title: the
+    /// title set by Helix comes back with the next draw after [`Terminal::claim`].
     pub fn restore(&mut self) -> io::Result<()> {
+        if self.sent_title.take().is_some() {
+            self.backend.pop_title()?;
+        }
         self.backend.restore()
+    }
+
+    /// The window title the terminal should show from the next draw on, or `None` for its own.
+    /// The first title saves the terminal's own on its title stack, and `None` (or
+    /// [`Terminal::restore`]) brings it back. Control characters are left out: a file name
+    /// must not end the escape sequence and write to the terminal.
+    pub fn set_title(&mut self, title: Option<&str>) {
+        self.title = title.map(|title| title.chars().filter(|c| !c.is_control()).collect());
     }
 
     // /// Get a Frame object which provides a consistent view into the terminal state for rendering.
@@ -264,6 +284,20 @@ where
         if self.sent_secondary_cursors.as_ref() != Some(&self.secondary_cursors) {
             self.backend.set_multiple_cursors(&self.secondary_cursors)?;
             self.sent_secondary_cursors = Some(self.secondary_cursors.clone());
+        }
+
+        // The title too: only when it changed.
+        if self.sent_title != self.title {
+            match &self.title {
+                Some(title) => {
+                    if self.sent_title.is_none() {
+                        self.backend.push_title()?;
+                    }
+                    self.backend.set_title(title)?;
+                }
+                None => self.backend.pop_title()?,
+            }
+            self.sent_title = self.title.clone();
         }
 
         self.backend.end_sync()?;

@@ -324,3 +324,56 @@ fn expand_variable(editor: &Editor, variable: Variable) -> Result<Cow<'static, s
         }
     }
 }
+
+/// Whether `content` (as [`Token::expand`] would expand it) runs a shell command: a `%sh{...}`
+/// expansion. For text expanded often, the window title say, where running one would block the
+/// editor each time. An expansion that does not parse is not a shell command (expanding it
+/// fails).
+pub fn has_shell_expansion(content: &str) -> bool {
+    let mut start = 0;
+    while let Some(offset) = content[start..].find('%') {
+        let idx = start + offset;
+        if content.as_bytes().get(idx + 1).copied() == Some(b'%') {
+            start = idx + 2;
+            continue;
+        }
+        let mut tokenizer = Tokenizer::new(&content[idx..], true);
+        match tokenizer.parse_percent_token() {
+            Some(Ok(token)) => {
+                if token.kind == TokenKind::Expansion(ExpansionKind::Shell) {
+                    return true;
+                }
+            }
+            _ => return false,
+        }
+        start = idx + tokenizer.pos().max(1);
+    }
+    false
+}
+
+#[cfg(test)]
+mod shell_expansion_tests {
+    use super::has_shell_expansion;
+
+    #[test]
+    fn shell_expansions_are_found() {
+        let cases: [(&str, bool); 9] = [
+            ("hx %{buffer_name}:%{cursor_line}", false),
+            ("plain title", false),
+            ("%sh{git branch --show-current}", true),
+            ("hx %{buffer_name} %sh(date)", true),
+            // an escaped percent is no expansion
+            ("100%%sh{x}", false),
+            ("%reg{a} %u{2192}", false),
+            // after another expansion, with other delimiters
+            ("%{buffer_name}%sh[pwd]", true),
+            // does not parse: expanding it fails, it runs nothing
+            ("%sh{unclosed", false),
+            ("", false),
+        ];
+        for (content, expected) in cases {
+            let found: bool = has_shell_expansion(content);
+            assert_eq!(found, expected, "{content:?}");
+        }
+    }
+}

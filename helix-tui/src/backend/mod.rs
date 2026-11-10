@@ -68,6 +68,21 @@ pub trait Backend {
     fn set_pointer_shape(&mut self, _name: &str) -> io::Result<()> {
         Ok(())
     }
+    /// Saves the terminal's window title on its title stack (`XTPUSHTITLE`), so that
+    /// [`Backend::pop_title`] can bring it back. Terminals without a title stack ignore it; the
+    /// default does nothing.
+    fn push_title(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+    /// Sets the terminal's window title (OSC 2). The default does nothing.
+    fn set_title(&mut self, _title: &str) -> io::Result<()> {
+        Ok(())
+    }
+    /// Restores the window title saved by [`Backend::push_title`] (`XTPOPTITLE`). The default
+    /// does nothing.
+    fn pop_title(&mut self) -> io::Result<()> {
+        Ok(())
+    }
     /// Writes bytes for the terminal as they are (a graphics protocol), with the cursor at
     /// the given cell. The default does nothing.
     fn write_raw(&mut self, _x: u16, _y: u16, _bytes: &[u8]) -> io::Result<()> {

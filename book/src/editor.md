@@ -40,6 +40,7 @@
 - [`[editor.persistence]` Section](#editorpersistence-section)
 - [Window resizing and focus mode](#window-resizing-and-focus-mode)
 - [Welcome screen](#welcome-screen)
+- [Window title](#window-title)
 - [Ruler character](#ruler-character)
 
 ### `[editor]` Section
@@ -94,6 +95,8 @@
 | `picker-symbol` | Drawn before the selected row of pickers and of the command line popup's completions | `">"` |
 | `fullscreen-overlay` | Pickers (and the command palette) take the whole screen on terminals narrower than 200 columns, instead of 90% of it. The file picker with [`file-picker.hide-preview`](#editorfile-picker-section) keeps its own size | `false` |
 | `welcome-screen` | Show the [welcome screen](#welcome-screen) when Helix starts without a file | `true` |
+| `set-title` | Set the window title of the terminal, see [Window title](#window-title) | `false` |
+| `title-format` | The window title when `set-title` is on; supports [expansions](./command-line.md#expansions) | `"hx %{buffer_name}:%{cursor_line}:%{cursor_column}"` |
 | `ruler-char` | Character used to draw the rulers, see [Ruler character](#ruler-character) | `""` |
 | `max-panel-width`, `max-panel-height`, `max-panel-width-percent`, `max-panel-height-percent` | Limits of window resizing, see [Window resizing](#window-resizing-and-focus-mode) | `50`, `50`, `0.8`, `0.8` |
 
@@ -618,6 +621,31 @@ one, and disappears as soon as you type in it or open a file in its place. Turn 
 [editor]
 welcome-screen = false
 ```
+
+### Window title
+
+With `set-title` on, Helix sets the window title of the terminal (the title of its window or
+tab) to `title-format`, like Vim's `title` and `titlestring`. It is off by default, which leaves
+the title to the terminal or the shell.
+
+```toml
+[editor]
+set-title = true
+title-format = "hx %{buffer_name}:%{cursor_line}:%{cursor_column}"   # the default
+```
+
+- `title-format` supports the [expansions](./command-line.md#expansions) of the command line:
+  variables such as `%{buffer_name}`, `%{cursor_line}`, `%{cursor_column}`, `%{language}`,
+  `%{file_path_absolute}` and `%{current_working_directory}`, registers (`%reg{...}`) and
+  Unicode characters (`%u{...}`). Shell commands (`%sh{...}`) are not run: the title is
+  expanded for every frame. A format that cannot be expanded sets the title to `hx`, and the
+  error is written to the log once.
+- The title is only sent to the terminal when it changes. Control characters (in a file name,
+  say) are left out of it.
+- The terminal's own title is saved on its title stack (`XTPUSHTITLE`) and comes back when
+  Helix exits or is suspended (`Ctrl-z`), and when `set-title` is turned off with
+  `:config-reload` or `:set set-title false`. A terminal without a title stack keeps the last
+  title Helix set.
 
 ### Ruler character
 

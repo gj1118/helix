@@ -51,6 +51,21 @@ helix_event::runtime_local! {
     static PENDING_PLUGIN_EVENTS: Mutex<Vec<PluginEvent>> = Mutex::new(Vec::new());
 }
 
+/// The window title `title-format` asks for. Shell commands (`%sh{...}`) are not run: the title
+/// is expanded for every frame.
+fn window_title(editor: &Editor) -> Result<String, String> {
+    use helix_core::command_line::Token;
+    use helix_view::expansion;
+
+    let format = &editor.config().title_format;
+    if expansion::has_shell_expansion(format) {
+        return Err("shell commands (`%sh{...}`) are not supported in the title".to_string());
+    }
+    expansion::expand(editor, Token::expand(format.as_str()))
+        .map(|title| title.into_owned())
+        .map_err(|err| err.to_string())
+}
+
 /// Queues a plugin event, fired before the next frame.
 fn queue_plugin_event(event: PluginEvent) {
     let mut events = match PENDING_PLUGIN_EVENTS.lock() {
@@ -146,6 +161,8 @@ pub struct Application {
     plugin_manager: Arc<PluginManager>,
     /// The language servers each document was last seen attached to, for `lsp_attach`.
     plugin_lsp_attached: HashMap<helix_view::DocumentId, Vec<helix_lsp::LanguageServerId>>,
+    /// Why the last window title could not be expanded (logged once, not for every frame).
+    title_error: Option<String>,
     ui_receiver: tokio::sync::mpsc::UnboundedReceiver<crate::plugin_registry::UiRequest>,
 
     theme_mode: Option<theme::Mode>,
@@ -481,6 +498,7 @@ impl Application {
             lsp_progress: LspProgressMap::new(),
             plugin_manager,
             plugin_lsp_attached: HashMap::new(),
+            title_error: None,
             ui_receiver,
             theme_mode,
         };
@@ -687,6 +705,18 @@ impl Application {
         let (pos, kind) = self.compositor.cursor(area, &self.editor);
         // reset cursor cache
         self.editor.cursor_cache.reset();
+
+        // The window title (`set-title`), sent with the frame when it changed.
+        let title = self.editor.config().set_title.then(|| {
+            window_title(&self.editor).unwrap_or_else(|err| {
+                if self.title_error.as_ref() != Some(&err) {
+                    log::error!("Failed to expand the window title (`title-format`): {err}");
+                    self.title_error = Some(err);
+                }
+                "hx".to_string()
+            })
+        });
+        self.terminal.set_title(title.as_deref());
 
         let pos = pos.map(|pos| (pos.col as u16, pos.row as u16));
         self.terminal.draw(pos, kind).unwrap();
@@ -2004,6 +2034,31 @@ impl Application {
     #[cfg(feature = "integration")]
     pub fn sent_secondary_cursors(&self) -> &[Vec<(u16, u16)>] {
         &self.terminal.backend().multiple_cursors
+    }
+
+    /// The window title of the (test) terminal, and the titles saved on its title stack.
+    #[cfg(feature = "integration")]
+    pub fn terminal_title(&self) -> (&str, &[String]) {
+        let backend = self.terminal.backend();
+        (&backend.title, &backend.title_stack)
+    }
+
+    /// The window titles sent to the (test) terminal, one per change.
+    #[cfg(feature = "integration")]
+    pub fn titles_set(&self) -> &[String] {
+        &self.terminal.backend().titles_set
+    }
+
+    /// Gives the (test) terminal back as on exit or when suspended (`Ctrl-z`), and claims it
+    /// again with a frame, as when resumed.
+    #[cfg(feature = "integration")]
+    pub async fn suspend_and_resume(&mut self, resume: bool) -> std::io::Result<()> {
+        self.restore_term()?;
+        if resume {
+            self.terminal.claim()?;
+            self.render().await;
+        }
+        Ok(())
     }
 
     /// A cell of the last frame drawn to the (test) terminal.

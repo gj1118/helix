@@ -21,6 +21,13 @@ pub struct TestBackend {
     pub cell_size: Option<(u16, u16)>,
     /// The secondary cursors set with `set_multiple_cursors`, one entry per call.
     pub multiple_cursors: Vec<Vec<(u16, u16)>>,
+    /// The window title, as a terminal with a title stack has it: the title before Helix
+    /// set one is `"terminal"`.
+    pub title: String,
+    /// The titles saved with `push_title`.
+    pub title_stack: Vec<String>,
+    /// The titles set with `set_title`, one entry per call.
+    pub titles_set: Vec<String>,
 }
 
 /// Returns a string representation of the given buffer for debugging purpose.
@@ -63,6 +70,9 @@ impl TestBackend {
             raw: Vec::new(),
             cell_size: None,
             multiple_cursors: Vec::new(),
+            title: "terminal".to_string(),
+            title_stack: Vec::new(),
+            titles_set: Vec::new(),
         }
     }
 
@@ -164,6 +174,24 @@ impl Backend for TestBackend {
 
     fn set_multiple_cursors(&mut self, cursors: &[(u16, u16)]) -> Result<(), io::Error> {
         self.multiple_cursors.push(cursors.to_vec());
+        Ok(())
+    }
+
+    fn push_title(&mut self) -> io::Result<()> {
+        self.title_stack.push(self.title.clone());
+        Ok(())
+    }
+
+    fn set_title(&mut self, title: &str) -> io::Result<()> {
+        self.title = title.to_string();
+        self.titles_set.push(title.to_string());
+        Ok(())
+    }
+
+    fn pop_title(&mut self) -> io::Result<()> {
+        if let Some(title) = self.title_stack.pop() {
+            self.title = title;
+        }
         Ok(())
     }
 

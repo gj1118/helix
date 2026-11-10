@@ -78,6 +78,7 @@ This fork of Helix implements the following pull requests. Future pull requests 
 32. https://github.com/helix-editor/helix/pull/16460 (clear completion before switching views with the mouse - fixes the "Savepoint must not be used with a different view!" crash; also covers this fork's bufferline clicks and files opened from the explorer)
 33. https://github.com/helix-editor/helix/pull/14757 (kitty multiple cursors protocol - with a bar or underline cursor, terminals supporting it (kitty 0.43+) draw the secondary cursors natively; detected automatically, block cursors stay editor-drawn; cursors under the completion menu or popups are left out)
 34. https://github.com/helix-editor/helix/pull/15777 (clear stale LSP data on language server stop/refresh - `:lsp-stop`, `:lang` and path changes drop the old server's document links, color swatches, highlights, code lenses, lightbulbs, symbols and ghost text; the servers that serve the buffer afterwards are asked again right away, so e.g. saving under a new name keeps links and swatches)
+35. https://github.com/helix-editor/helix/pull/15325 (set the terminal window title - off by default, `set-title = true` and `title-format` (with expansions) in `[editor]`; the terminal's own title is restored on exit, `Ctrl-z` and when turned off; only sent when it changes; `%sh{}` is not run per frame and control characters are stripped; see [Window Title](#window-title))
 
 ## Explorer
 
@@ -330,6 +331,22 @@ Plugin code runs in a sandbox (no `io`, no `os.execute`, `require` only from the
 directories) with a 2 second limit per call and 512 MiB of memory. `:reload-all-plugins`
 reloads them. See the book's Plugins chapter (`book/src/plugins.md`) for the events and the
 API, and [helix-plugin/README.md](helix-plugin/README.md).
+
+## Window Title
+
+Helix can set the window (or tab) title of the terminal, like Vim's `title`/`titlestring`. It is
+off by default:
+
+```toml
+[editor]
+set-title = true
+title-format = "hx %{buffer_name}:%{cursor_line}:%{cursor_column}"   # the default
+```
+
+`title-format` takes the command line's expansions (`%{buffer_name}`, `%{cursor_line}`,
+`%{language}`, `%{current_working_directory}`, ...) but not shell commands. The terminal's own
+title comes back when Helix exits or is suspended, and with `:set set-title false`. See the
+book's editor configuration (`book/src/editor.md#window-title`).
 
 ## Zenbones Themes
 

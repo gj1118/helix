@@ -332,6 +332,20 @@ where
         self.buffer.flush()
     }
 
+    fn push_title(&mut self) -> io::Result<()> {
+        // XTPUSHTITLE: the window title (2) on the title stack
+        write!(self.buffer, "\x1b[22;2t")
+    }
+
+    fn set_title(&mut self, title: &str) -> io::Result<()> {
+        queue!(self.buffer, terminal::SetTitle(title))
+    }
+
+    fn pop_title(&mut self) -> io::Result<()> {
+        // XTPOPTITLE: the window title (2) from the title stack
+        write!(self.buffer, "\x1b[23;2t")
+    }
+
     fn set_pointer_shape(&mut self, name: &str) -> io::Result<()> {
         write!(self.buffer, "\x1b]22;{name}\x1b\\")
     }
