@@ -60,8 +60,9 @@ preview = true  # preview the selected location over the code while the panel ha
 
 The panel takes the bottom rows of the views (it does not cover the code, and the statusline
 stays above it) and keeps the columns, filtering and live updates of the picker. Being part
-of the editor's frame rather than a window over it, the panel and its preview have plain
-borders, also with `gradient-borders` on. A new list
+of the editor's frame rather than a window over it, the panel has no border (its title is on
+the rule at its top, the query under it), and its preview takes the place of the code, above
+the statusline, without a border either (also with `gradient-borders` on). A new list
 replaces the one it shows. It opens with the focus: on its list, or on its query for a list
 that needs one to show anything (the global search).
 

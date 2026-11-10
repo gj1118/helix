@@ -101,6 +101,7 @@ pub fn border_style(theme: &helix_view::Theme) -> helix_view::graphics::Style {
 ///
 /// Without border glyphs the popup simply covers its whole area.
 pub fn border_cells_take_background(config: &helix_view::editor::Config) -> bool {
+    use helix_view::editor::BorderStyle;
     if config.borders_hidden() {
         return true;
     }
@@ -110,16 +111,6 @@ pub fn border_cells_take_background(config: &helix_view::editor::Config) -> bool
             config.gradient_borders.thickness,
             config.border_rounded(),
         );
-    }
-    plain_border_cells_take_background(config)
-}
-
-/// [`border_cells_take_background`] for a border drawn without the gradient even when
-/// `gradient-borders` is on (the quickfix panel's).
-pub fn plain_border_cells_take_background(config: &helix_view::editor::Config) -> bool {
-    use helix_view::editor::BorderStyle;
-    if config.borders_hidden() {
-        return true;
     }
     matches!(
         config.effective_border_style(),

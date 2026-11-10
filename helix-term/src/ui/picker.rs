@@ -1305,7 +1305,10 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         );
 
         // calculate the inner area inside the box
-        let inner = if self.gradient_border_shown(&cx.editor.config()) {
+        let inner = if self.docked.is_some() {
+            // The quickfix panel has no border: its title is on the rule at its top.
+            area
+        } else if self.gradient_border_shown(&cx.editor.config()) {
             if self.gradient_border.is_none() {
                 self.gradient_border = Some(GradientBorder::from_theme(
                     &cx.editor.theme,
@@ -1359,7 +1362,13 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             snapshot.item_count(),
         );
 
-        let area = inner.clip_left(1).with_height(1);
+        // The quickfix panel: the rule (with the title) first, then the query.
+        let docked = self.docked.is_some();
+        let prompt_row = if docked { 1 } else { 0 };
+        let area = inner
+            .clip_left(1)
+            .clip_top(prompt_row)
+            .with_height(1.min(inner.height.saturating_sub(prompt_row)));
         let line_area = area.clip_right(count.len() as u16 + 1);
 
         // render the prompt first since it will clear its background
@@ -1397,13 +1406,33 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             }
         }
 
-        // -- Separator
+        // -- Separator (the quickfix panel's top rule, with its title)
         let sep_style = cx.editor.theme.get("ui.background.separator");
         let borders = BorderType::line_symbols(crate::ui::separator_type(&cx.editor.config()));
+        let sep_y = if docked {
+            inner.y
+        } else {
+            inner.y + 1 + replace_rows
+        };
         for x in inner.left()..inner.right() {
-            if let Some(cell) = surface.get_mut(x, inner.y + 1 + replace_rows) {
+            if let Some(cell) = surface.get_mut(x, sep_y) {
                 cell.set_symbol(borders.horizontal).set_style(sep_style);
             }
+        }
+        if let (true, Some(title)) = (docked, self.title) {
+            let title_style = cx
+                .editor
+                .theme
+                .try_get("ui.popup.title")
+                .unwrap_or(text_style);
+            let title = format!(" {title} ");
+            surface.set_stringn(
+                inner.x.saturating_add(1),
+                sep_y,
+                &title,
+                inner.width.saturating_sub(2) as usize,
+                title_style,
+            );
         }
 
         // -- Render the contents:
@@ -1561,7 +1590,10 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         );
 
         // calculate the inner area inside the box
-        let base_inner = if self.gradient_border_shown(&cx.editor.config()) {
+        let base_inner = if self.docked.is_some() {
+            // The quickfix panel's preview takes the place of the code, without a border.
+            area
+        } else if self.gradient_border_shown(&cx.editor.config()) {
             if self.gradient_border.is_none() {
                 self.gradient_border = Some(GradientBorder::from_theme(
                     &cx.editor.theme,
@@ -2202,9 +2234,9 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         self
     }
 
-    /// Whether the borders are gradients (`gradient-borders`): not for the quickfix panel
-    /// (nor its preview over the code), a part of the editor's frame rather than a window
-    /// over it.
+    /// Whether the borders are gradients (`gradient-borders`): the quickfix panel (and its
+    /// preview over the code), a part of the editor's frame rather than a window over it, has
+    /// no border at all.
     fn gradient_border_shown(&self, config: &helix_view::editor::Config) -> bool {
         config.gradient_borders.enable && self.docked.is_none()
     }
@@ -2212,7 +2244,8 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
     /// See `ui::border_cells_take_background`, for the borders this picker draws.
     fn border_cells_take_background(&self, config: &helix_view::editor::Config) -> bool {
         if self.docked.is_some() {
-            crate::ui::plain_border_cells_take_background(config)
+            // no border: the whole area is the panel's
+            true
         } else {
             crate::ui::border_cells_take_background(config)
         }
@@ -2242,7 +2275,8 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             && self.show_preview
             && self.file_fn.is_some()
         {
-            let views = ui::quickfix::layout(cx.editor, frame);
+            // The statusline above the panel stays.
+            let views = ui::quickfix::layout(cx.editor, frame).clip_bottom(1);
             if views.width >= 10 && views.height >= 3 {
                 self.preview_height = views.height.saturating_sub(2);
                 self.render_preview(views, surface, cx);
@@ -2252,13 +2286,8 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
 
     /// The rows of the list in the panel `area`, and the index of the item on its first row.
     fn docked_list(&self, area: Rect) -> (Rect, u32) {
-        // the border is one cell wide, gradient or not
-        let inner = Rect::new(
-            area.x.saturating_add(1),
-            area.y.saturating_add(1),
-            area.width.saturating_sub(2),
-            area.height.saturating_sub(2),
-        );
+        // no border: the rule, the query (and the replacement), the list
+        let inner = area;
         let replace_rows = u16::from(self.replace.is_some() && inner.height > 4);
         let list = inner
             .clip_top(2 + replace_rows)
@@ -2279,13 +2308,8 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                 CursorKind::Hidden,
             );
         }
-        let inner = Rect::new(
-            panel.x.saturating_add(1),
-            panel.y.saturating_add(1),
-            panel.width.saturating_sub(2),
-            panel.height.saturating_sub(2),
-        );
-        let line = inner.clip_left(1).with_height(1);
+        // no border: the query is on the row under the rule
+        let line = panel.clip_left(1).clip_top(1).with_height(1);
         if let Some(replace) = self.replace.as_ref().filter(|replace| replace.focused) {
             let label_width = REPLACE_LABEL.len() as u16;
             let row = Rect::new(

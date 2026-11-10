@@ -156,7 +156,11 @@ async fn slash_filters_the_list_in_the_panel() -> anyhow::Result<()> {
     // the cursor is in the query
     let area = app.compositor.size();
     let (cursor, kind) = app.compositor.cursor(area, &app.editor);
-    assert!(cursor.is_some() && kind != helix_view::graphics::CursorKind::Hidden);
+    assert_ne!(kind, helix_view::graphics::CursorKind::Hidden);
+    // after the query, on the row under the panel's rule
+    let cursor = cursor.expect("a cursor");
+    let query_end = 1 + "%text row 19".len();
+    assert_eq!((cursor.row, cursor.col), (18, query_end));
 
     // Esc: the list again (the query stays), Enter visits the entry left
     send(&mut app, "<esc><ret>").await?;
@@ -171,20 +175,28 @@ async fn slash_filters_the_list_in_the_panel() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// While the panel has the focus, the selected location is previewed over the code; with the
-/// focus in the code, the code is shown.
+/// While the panel has the focus, the selected location is previewed over the code (in its
+/// place, without a border or a gutter); with the focus in the code, the code is shown. The
+/// statusline above the panel stays.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_panel_previews_over_the_code_while_focused() -> anyhow::Result<()> {
     let (mut app, _file) = app_with_quicklist(enabled()).await?;
     send(&mut app, "<space>q").await?;
     let focused = app.rendered_rows();
-    // the preview's frame on the first row, not the code
-    assert!(!focused[0].contains("row 00"), "{focused:#?}");
+    assert!(focused[0].starts_with(" row 00"), "{focused:#?}");
+    let statusline = &focused[16];
+    assert!(statusline.contains("NOR"), "{focused:#?}");
 
     send(&mut app, "<C-w>k").await?;
     assert!(!app.editor.quickfix_panel.focused);
     let unfocused = app.rendered_rows();
-    assert!(unfocused[0].contains("row 00"), "{unfocused:#?}");
+    // the code, with its gutter
+    let first = unfocused[0].trim_start();
+    assert!(
+        first.starts_with("1 ") && first.ends_with(" row 00"),
+        "{unfocused:#?}"
+    );
+    assert_eq!(&unfocused[16], statusline);
     // the panel is still there
     assert!(unfocused[17].contains("Quicklist"));
 
@@ -272,21 +284,28 @@ fn colors(app: &Application, y: u16, from: u16, to: u16) -> Vec<helix_view::grap
     colors
 }
 
-/// With `gradient-borders`, the panel and its preview over the code keep plain borders (they
-/// are part of the editor's frame), while a picker over the editor has its gradient.
+/// The panel and its preview over the code have no border (with `gradient-borders` too): the
+/// panel's title is on the rule at its top, the preview takes the place of the code. A picker
+/// over the editor keeps its (gradient) border.
 #[tokio::test(flavor = "multi_thread")]
-async fn the_panel_has_no_gradient_border() -> anyhow::Result<()> {
+async fn the_panel_has_no_border() -> anyhow::Result<()> {
     let gradient = "[editor.gradient-borders]\nenable = true\n";
     let with_panel = format!("{gradient}[editor.quickfix]\nenable = true\n");
     let (mut app, _file) = app_with_quicklist(config(&with_panel)).await?;
     send(&mut app, "<space>q").await?;
     assert!(app.editor.quickfix_panel.focused);
-    // along the top border of the panel (after its title) and of the preview: one color, the
-    // same
-    let panel = colors(&app, 17, 30, 80);
-    let preview = colors(&app, 0, 0, 80);
-    assert_eq!(panel.len(), 1, "{panel:?}");
-    assert_eq!(preview, panel);
+    let rows = app.rendered_rows();
+    // the rule with the title, across the panel, in one color
+    assert!(rows[17].starts_with("─ Quicklist ──"), "{rows:#?}");
+    assert!(rows[17].trim_end().ends_with('─'), "{rows:#?}");
+    let rule = colors(&app, 17, 12, 80);
+    assert_eq!(rule.len(), 1, "{rule:?}");
+    // nothing down the sides of the panel, nor around the preview
+    for (y, row) in rows.iter().enumerate().skip(18).take(11) {
+        let first = row.chars().next().unwrap_or(' ');
+        assert!(first == ' ' || first == '>', "row {y}: {row:?}");
+    }
+    assert!(rows[0].starts_with(" row 00"), "{rows:#?}");
     send(&mut app, ":q!<ret>").await?;
 
     // a picker over the editor: its gradient
