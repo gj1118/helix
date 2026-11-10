@@ -174,74 +174,82 @@ async fn the_filter_box_shows_the_filter_and_a_count() -> anyhow::Result<()> {
             .collect()
     };
 
-    test_key_sequences(
-        &mut app,
-        vec![
-            (Some("<C-n>"), None),
-            (
-                Some("<C-p>"),
-                Some(&|app| {
-                    let rows = rows_of(app);
-                    let text = rows.join("\n");
-                    // in the middle of the top border
-                    let (left, right) = rows[0].split_once(" Explorer ").expect(&text);
-                    let (left, right) = (left.chars().count(), right.chars().count());
-                    assert!(left.abs_diff(right) <= 1, "{text}");
-                    // the root's `sub`, `a.txt` and `new.txt`
-                    assert!(rows[1].trim_end().ends_with("3/3 ▕"), "{text}");
-                    // the empty box says how to search, wildcards included
-                    assert!(rows[1].contains("▏ > / to search (*.rs) "), "{text}");
-                }),
-            ),
-            (
-                Some("/"),
-                Some(&|app| {
-                    let rows = rows_of(app);
-                    assert!(rows[1].contains("> name or *.rs"), "{}", rows.join("\n"));
-                }),
-            ),
-            (
-                Some("tx"),
-                Some(&|app| {
-                    let rows = rows_of(app);
-                    let text = rows.join("\n");
-                    // `a.txt`, `sub/b.txt` and `new.txt` out of the four entries
-                    assert!(rows[1].contains("> tx"), "{text}");
-                    assert!(!rows[1].contains("*.rs"), "{text}");
-                    assert!(rows[1].trim_end().ends_with("3/4 ▕"), "{text}");
-                    // the cursor is after the filter, in the box
-                    let area = app.compositor.size();
-                    let (cursor, _) = app.compositor.cursor(area, &app.editor);
-                    let cursor = cursor.expect("a cursor in the filter box");
-                    let column = rows[1].split_once("> tx").unwrap().0.chars().count() + 4;
-                    assert_eq!((cursor.row, cursor.col), (1, column), "{text}");
-                }),
-            ),
-            // Escape drops the filter
-            (
-                Some("<esc>"),
-                Some(&|app| {
-                    // all listed again (`sub` stays open, as the cursor's file is in it)
-                    let rows = rows_of(app);
-                    let text = rows.join("\n");
-                    let count = rows[1].trim_end().trim_end_matches('▕').trim_end();
-                    let count = count.rsplit(' ').next().unwrap();
-                    let (shown, total) = count.split_once('/').expect(&text);
-                    let listed = rows[5..]
-                        .iter()
-                        .filter(|row| !row.trim().is_empty())
-                        .count();
-                    assert_eq!(
-                        (shown, total),
-                        (&*listed.to_string(), &*listed.to_string()),
-                        "{text}"
-                    );
-                }),
-            ),
-        ],
-        false,
-    )
-    .await
+    // Keys sent without quitting (`test_key_sequences` quits at its end), as the scan needs
+    // waiting for in the middle.
+    async fn send(app: &mut Application, keys: &str) -> anyhow::Result<()> {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        for key in helix_view::input::parse_macro(keys)? {
+            tx.send(Ok(termina::Event::Key(key.into())))?;
+        }
+        let mut stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
+        app.event_loop_until_idle(&mut stream).await;
+        Ok(())
+    }
+
+    send(&mut app, "<C-n><C-p>").await?;
+    {
+        let rows = rows_of(&app);
+        let text = rows.join("\n");
+        // in the middle of the top border
+        let (left, right) = rows[0].split_once(" Explorer ").expect(&text);
+        let (left, right) = (left.chars().count(), right.chars().count());
+        assert!(left.abs_diff(right) <= 1, "{text}");
+        // the root's `sub`, `a.txt` and `new.txt`
+        assert!(rows[1].trim_end().ends_with("3/3 ▕"), "{text}");
+        // the empty box says how to search, wildcards included
+        assert!(rows[1].contains("▏ > / to search (*.rs) "), "{text}");
+    }
+
+    send(&mut app, "/").await?;
+    let rows = rows_of(&app);
+    assert!(rows[1].contains("> name or *.rs"), "{}", rows.join("\n"));
+
+    // The count while filtering is of the entries scanned: wait for the scan (in a thread,
+    // whose speed varies from machine to machine) before checking it.
+    send(&mut app, "tx").await?;
+    app.compositor
+        .find_id::<Explorer>(EXPLORER_ID)
+        .expect("the explorer")
+        .wait_for_scan(&app.editor);
+    let size = app.compositor.size();
+    app.resize_terminal(size.width, size.height).await;
+    {
+        let rows = rows_of(&app);
+        let text = rows.join("\n");
+        // `a.txt`, `sub/b.txt` and `new.txt` out of the four entries
+        assert!(rows[1].contains("> tx"), "{text}");
+        assert!(!rows[1].contains("*.rs"), "{text}");
+        assert!(rows[1].trim_end().ends_with("3/4 ▕"), "{text}");
+        // the cursor is after the filter, in the box
+        let area = app.compositor.size();
+        let (cursor, _) = app.compositor.cursor(area, &app.editor);
+        let cursor = cursor.expect("a cursor in the filter box");
+        let column = rows[1].split_once("> tx").unwrap().0.chars().count() + 4;
+        assert_eq!((cursor.row, cursor.col), (1, column), "{text}");
+    }
+
+    // Escape drops the filter: all listed again (`sub` stays open, as the cursor's file is
+    // in it)
+    send(&mut app, "<esc>").await?;
+    {
+        let rows = rows_of(&app);
+        let text = rows.join("\n");
+        let count = rows[1].trim_end().trim_end_matches('▕').trim_end();
+        let count = count.rsplit(' ').next().unwrap();
+        let (shown, total) = count.split_once('/').expect(&text);
+        let listed = rows[5..]
+            .iter()
+            .filter(|row| !row.trim().is_empty())
+            .count();
+        assert_eq!(
+            (shown, total),
+            (&*listed.to_string(), &*listed.to_string()),
+            "{text}"
+        );
+    }
+
+    send(&mut app, "<esc><C-l>:q!<ret>").await?;
+    Ok(())
 }
 
 /// A panel too short for the box keeps the one-line header: the folder, or the filter.

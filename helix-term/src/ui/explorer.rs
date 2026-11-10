@@ -271,6 +271,16 @@ fn push_layer(layer: impl Component + 'static) -> EventResult {
     })))
 }
 
+impl Explorer {
+    /// Waits for the background scan of the filter to finish (the editor never does: the
+    /// results come in over a few frames). For tests, whose assertions on the count of
+    /// matches must not depend on how fast the scan thread is.
+    #[cfg(feature = "integration")]
+    pub fn wait_for_scan(&mut self, editor: &Editor) {
+        self.tree.wait_for_scan(tree_params(editor));
+    }
+}
+
 pub struct Explorer {
     root: PathBuf,
     tree: Tree,
