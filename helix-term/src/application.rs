@@ -1089,6 +1089,9 @@ impl Application {
         );
 
         doc.set_last_saved_revision(doc_save_event.revision, doc_save_event.save_time);
+        // A file saved (under a new name, say) is a recent one.
+        let saved_path = doc_save_event.path.clone();
+        self.editor.record_recent_file(&saved_path);
 
         let lines = doc_save_event.text.len_lines();
         let size = doc_save_event.text.len_bytes();
@@ -2114,6 +2117,9 @@ impl Application {
         }
 
         self.editor.close_language_servers(None).await;
+
+        // The recent files noted and not yet written (a tiny file).
+        self.editor.flush_recent_files();
 
         errs
     }

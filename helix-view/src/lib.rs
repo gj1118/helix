@@ -22,6 +22,7 @@ pub mod input;
 pub mod keyboard;
 pub mod persistence;
 pub mod quicklist;
+pub mod recent_files;
 pub mod regex;
 pub mod register;
 pub mod snippets;

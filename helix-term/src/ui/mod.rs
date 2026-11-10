@@ -434,6 +434,87 @@ fn picker_files(editor: &Editor, root: &Path) -> impl Iterator<Item = PathBuf> +
     })
 }
 
+/// The recently used files (opened or saved, in this editor or another one; see
+/// `[editor.recent-picker]`), most recent first, without the current buffer's file nor files
+/// that no longer exist. Listed in the background: opening it never waits for the disk.
+pub fn recent_picker(editor: &Editor, root: PathBuf) -> FilePicker {
+    let config = editor.config();
+    let data = FilePickerData {
+        root,
+        directory_style: editor.theme.get("ui.text.directory"),
+    };
+    let columns = [PickerColumn::new(
+        "path",
+        |item: &PathBuf, data: &FilePickerData| {
+            // In the workspace: relative to it; elsewhere: the full path, `~` for the home.
+            let path = match item.strip_prefix(&data.root) {
+                Ok(relative) => std::borrow::Cow::Borrowed(relative),
+                Err(_) => helix_stdx::path::fold_home_dir(item.as_path()),
+            };
+            let mut spans = Vec::with_capacity(3);
+            if let Some(dirs) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+                let separator = if dirs.parent().is_none() {
+                    // the root directory already ends with a separator
+                    ""
+                } else {
+                    std::path::MAIN_SEPARATOR_STR
+                };
+                spans.extend([
+                    Span::styled(dirs.to_string_lossy().into_owned(), data.directory_style),
+                    Span::styled(separator, data.directory_style),
+                ]);
+            }
+            let filename = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.to_string_lossy().into_owned());
+            spans.push(Span::raw(filename));
+            Spans::from(spans).into()
+        },
+    )];
+    let picker = Picker::new(columns, 0, [], data, move |cx, path: &PathBuf, action| {
+        let old_id = cx.editor.document_id_by_path(path);
+        match cx.editor.open(path, action) {
+            Ok(doc_id) => {
+                if old_id != Some(doc_id) {
+                    default_folding(cx.editor);
+                }
+            }
+            Err(e) => {
+                let err = if let Some(err) = e.source() {
+                    format!("{}", err)
+                } else {
+                    format!("unable to open \"{}\"", path.display())
+                };
+                cx.editor.set_error(err);
+            }
+        }
+    })
+    .with_preview(|_editor, path| Some((path.as_path().into(), None)))
+    .show_preview(!config.file_picker.hide_preview)
+    .with_title("Recent Files");
+
+    let injector = picker.injector();
+    let recent_files = editor.recent_files.clone();
+    let recents_path = config.recent_picker.recents_path.clone();
+    let max = config.recent_picker.max_show_entries;
+    let current = doc!(editor).path().map(|path| path.to_path_buf());
+    std::thread::spawn(move || {
+        // A file left (or the current one) is skipped, not counted: up to `max` shown.
+        let files = recent_files.list(&recents_path, usize::MAX);
+        let shown = files
+            .into_iter()
+            .filter(|file| Some(file) != current.as_ref() && file.is_file())
+            .take(max);
+        for file in shown {
+            if injector.push(file).is_err() {
+                break;
+            }
+        }
+    });
+    picker
+}
+
 pub fn file_picker(editor: &Editor, root: PathBuf) -> FilePicker {
     use std::time::Instant;
 

@@ -9,6 +9,7 @@
 - [`[editor.lsp]` Section](#editorlsp-section)
 - [`[editor.cursor-shape]` Section](#editorcursor-shape-section)
 - [`[editor.file-picker]` Section](#editorfile-picker-section)
+- [`[editor.recent-picker]` Section](#editorrecent-picker-section)
 - [`[editor.file-explorer]` Section](#editorfile-explorer-section)
 - [`[editor.explorer]` Section](#editorexplorer-section)
 - [`[editor.cmdline]` Section](#editorcmdline-section)
@@ -347,6 +348,25 @@ Example:
 !.github/
 !.gitignore
 !.gitattributes
+```
+
+### `[editor.recent-picker]` Section
+
+The recent file picker (`Space O`) lists the files you opened or saved most recently, in this
+editor or another one running, most recent first. They are kept in a small file of the cache
+directory, written in the background (opening and saving never wait for it), merged with what
+the other editors wrote, and replaced atomically.
+
+| Key | Description | Default |
+|--|--|---------|
+| `enable` | Note the files opened and saved (off, the picker shows what was noted before) | `true` |
+| `max-show-entries` | The most files the picker shows | `50` |
+| `max-save-entries` | The most files kept | `100` |
+| `recents-path` | The file they are kept in | `recents.txt` in the cache directory (`~/.cache/helix` on Linux) |
+
+```toml
+[editor.recent-picker]
+max-show-entries = 30
 ```
 
 ### `[editor.file-explorer]` Section

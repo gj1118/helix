@@ -108,6 +108,7 @@
 | `append_mode` | Append after selection | normal: `` a ``, select: `` a `` |
 | `command_mode` | Enter command mode | normal: `` : ``, select: `` : `` |
 | `file_picker` | Open file picker | normal: `` <space>f ``, select: `` <space>f `` |
+| `recent_picker` | Open recent file picker | normal: `` <space>O ``, select: `` <space>O `` |
 | `file_picker_in_current_buffer_directory` | Open file picker at current buffer's directory |  |
 | `file_picker_in_current_directory` | Open file picker at current working directory | normal: `` <space>F ``, select: `` <space>F `` |
 | `file_explorer` | Open file explorer in workspace root | normal: `` <space>e ``, select: `` <space>e `` |

@@ -10,6 +10,14 @@ If a picker shows multiple columns, you may apply the filter to a specific colum
 
 You can insert the contents of a [register](./registers.md) using `Ctrl-r` followed by a register name. For example, one could insert the currently selected text using `Ctrl-r`-`.`, or the directory of the current file using `Ctrl-r`-`%` followed by `Ctrl-w` to remove the last path section. The global search picker will use the contents of the [search register](./registers.md#default-registers) if you press `Enter` without typing a filter. For example, pressing `*`-`Space-/`-`Enter` will start a global search for the currently selected text.
 
+### Recent files
+
+The recent file picker (`Space O`, `recent_picker`) lists the files you opened or saved most
+recently (in any editor running), most recent first, so `Space O` `Enter` goes back to the file
+before the current one. The current file and the files that no longer exist are left out;
+files of the workspace are shown relative to it. See
+[`[editor.recent-picker]`](./editor.md#editorrecent-picker-section).
+
 ### Replacing from global search
 
 The global search picker (`Space-/`) can also replace what it found. `Alt-r` shows a

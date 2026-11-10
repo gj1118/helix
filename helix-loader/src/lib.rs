@@ -166,6 +166,11 @@ pub fn cache_dir() -> PathBuf {
     path
 }
 
+/// The file of the recently used files (see `[editor.recent-picker]`).
+pub fn default_recents_file() -> PathBuf {
+    cache_dir().join("recents.txt")
+}
+
 pub fn data_dir() -> PathBuf {
     let strategy = choose_base_strategy().expect("Unable to find the data directory!");
     let mut path = strategy.data_dir();

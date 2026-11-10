@@ -614,6 +614,8 @@ pub struct Config {
     pub cmdline: CmdlineConfig,
     /// The quickfix panel, for lists of locations (`[editor.quickfix]`).
     pub quickfix: QuickfixConfig,
+    /// The recently used files (`[editor.recent-picker]`).
+    pub recent_picker: RecentPickerConfig,
     /// Picker gradient border configuration
     #[serde(default)]
     pub gradient_borders: GradientBorderConfig,
@@ -791,6 +793,31 @@ impl Default for CmdlineConfig {
             max_popup_width: 80,
             use_full_height: false,
             icons: CmdlineIcons::default(),
+        }
+    }
+}
+
+/// `[editor.recent-picker]`: the recently used files, for the recent file picker.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct RecentPickerConfig {
+    /// Note the files opened and saved. Off: the picker shows what was noted before.
+    pub enable: bool,
+    /// The most files the picker shows.
+    pub max_show_entries: usize,
+    /// The most files the file keeps.
+    pub max_save_entries: usize,
+    /// The file the recent files are kept in (shared by the editors running).
+    pub recents_path: PathBuf,
+}
+
+impl Default for RecentPickerConfig {
+    fn default() -> Self {
+        Self {
+            enable: true,
+            max_show_entries: 50,
+            max_save_entries: 100,
+            recents_path: helix_loader::default_recents_file(),
         }
     }
 }
@@ -2179,6 +2206,7 @@ impl Default for Config {
             kitty_keyboard_protocol: Default::default(),
             cmdline: CmdlineConfig::default(),
             quickfix: QuickfixConfig::default(),
+            recent_picker: RecentPickerConfig::default(),
             gradient_borders: GradientBorderConfig::default(),
             notifications: NotificationConfig::default(),
             completion_highlight: CompletionHighlight::default(),
@@ -2480,6 +2508,8 @@ pub struct Editor {
     pub quicklist: Quicklist,
     /// The quickfix panel (see `[editor.quickfix]`): shown, and with the focus.
     pub quickfix_panel: crate::quicklist::QuickfixPanel,
+    /// The recently used files (see `[editor.recent-picker]`).
+    pub recent_files: crate::recent_files::RecentFiles,
 
     pub count: Option<std::num::NonZeroUsize>,
     pub selected_register: Option<char>,
@@ -2671,6 +2701,7 @@ impl Editor {
             snippets: Arc::new(Snippets::default()),
             quicklist: Quicklist::default(),
             quickfix_panel: crate::quicklist::QuickfixPanel::default(),
+            recent_files: crate::recent_files::RecentFiles::default(),
             count: None,
             selected_register: None,
             macro_recording: None,
@@ -3597,6 +3628,25 @@ impl Editor {
     }
 
     // ??? possible use for integration tests
+    /// Notes `path` (absolute) as the most recently used file, for the recent file picker
+    /// (`[editor.recent-picker]`); written in the background.
+    pub fn record_recent_file(&self, path: &Path) {
+        let config = self.config();
+        let recent = &config.recent_picker;
+        if recent.enable && recent.max_save_entries > 0 {
+            self.recent_files
+                .record(path, &recent.recents_path, recent.max_save_entries);
+        }
+    }
+
+    /// Writes the recently used files still to write (on exit).
+    pub fn flush_recent_files(&self) {
+        let config = self.config();
+        let recent = &config.recent_picker;
+        self.recent_files
+            .flush(&recent.recents_path, recent.max_save_entries.max(1));
+    }
+
     pub fn open(&mut self, path: &Path, action: Action) -> Result<DocumentId, DocumentOpenError> {
         let path = helix_stdx::path::canonicalize(path);
         let id = self.document_id_by_path(&path);
@@ -3644,6 +3694,7 @@ impl Editor {
 
         let new_doc = id_was_new;
         self.switch(id, action);
+        self.record_recent_file(&path);
 
         // Restore file position from persistent history when enabled.
         // This needs to happen after switch, since switch messes with view offsets.

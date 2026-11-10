@@ -41,6 +41,7 @@ mod test {
     mod prompt_completion;
     mod quickfix;
     mod quicklist;
+    mod recent_files;
     mod snippets;
     mod splits;
     mod todos;

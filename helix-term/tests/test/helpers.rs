@@ -406,9 +406,17 @@ impl AppBuilder {
             bail!("Having the directory {path:?} in args.files[0] is not yet supported for integration tests");
         }
 
+        // The recent files of a test never go to the user's (in their cache directory): not
+        // noted, unless the test picked a file for them.
+        let mut config = self.config;
+        let recent = &mut config.editor.recent_picker;
+        if recent.recents_path == helix_loader::default_recents_file() {
+            recent.enable = false;
+        }
+
         let mut app = Application::new(
             self.args,
-            self.config,
+            config,
             self.syn_loader,
             WorkspaceTrust::fully_trusted(),
         )?;

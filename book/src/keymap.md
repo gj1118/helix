@@ -329,6 +329,7 @@ This layer is a kludge of mappings, mostly pickers.
 | -----   | -----------                                                             | -------                                    |
 | `f`     | Open file picker at LSP workspace root                                  | `file_picker`                              |
 | `F`     | Open file picker at current working directory                           | `file_picker_in_current_directory`         |
+| `O`     | Open the [recent file picker](./pickers.md#recent-files) ("oldfiles")   | `recent_picker`                            |
 | `e`     | Open file explorer at LSP workspace root                                | `file_explorer`                            |
 | `E`     | Open file explorer at the opened file's directory                       | `file_explorer_in_current_buffer_directory`|
 | `x`     | Toggle the explorer file tree panel                                     | `explorer_toggle`                          |

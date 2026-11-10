@@ -452,6 +452,7 @@ impl MappableCommand {
         append_mode, "Append after selection",
         command_mode, "Enter command mode",
         file_picker, "Open file picker",
+        recent_picker, "Open recent file picker",
         file_picker_in_current_buffer_directory, "Open file picker at current buffer's directory",
         file_picker_in_current_directory, "Open file picker at current working directory",
         file_explorer, "Open file explorer in workspace root",
@@ -4072,6 +4073,15 @@ fn file_picker(cx: &mut Context) {
             cx.editor.config().fullscreen_overlay,
         )));
     }
+}
+
+fn recent_picker(cx: &mut Context) {
+    let root = find_workspace().0;
+    let picker = ui::recent_picker(cx.editor, root);
+    cx.push_layer(Box::new(overlaid(
+        picker,
+        cx.editor.config().fullscreen_overlay,
+    )));
 }
 
 fn file_picker_in_current_buffer_directory(cx: &mut Context) {
