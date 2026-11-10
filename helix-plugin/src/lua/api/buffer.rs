@@ -436,15 +436,6 @@ fn panel_from_table(table: &LuaTable) -> LuaResult<helix_view::annotations::pane
         }
         Some(width) => u16::try_from(width).unwrap_or(u16::MAX),
     };
-    let spacing = match table.get::<Option<i64>>("spacing")? {
-        None => defaults.spacing,
-        Some(rows) if rows < 0 => {
-            return Err(LuaError::RuntimeError(format!(
-                "invalid panel spacing: {rows} is negative"
-            )))
-        }
-        Some(rows) => u16::try_from(rows).unwrap_or(u16::MAX),
-    };
     Ok(PluginPanel {
         char_idx: table.get("char_idx")?,
         items,
@@ -465,7 +456,6 @@ fn panel_from_table(table: &LuaTable) -> LuaResult<helix_view::annotations::pane
             .get::<Option<String>>("right_cap")?
             .unwrap_or(defaults.right_cap),
         min_width,
-        spacing,
         // Strictly a boolean: Lua would read any other value as true.
         show_in_insert: match table.get::<LuaValue>("show_in_insert")? {
             LuaValue::Nil => defaults.show_in_insert,
@@ -660,13 +650,12 @@ mod tests {
         let defaults = helix_view::annotations::panel::PluginPanel::default();
         assert_eq!(panel.arrow, defaults.arrow);
         assert_eq!(panel.min_width, 30);
-        assert_eq!(panel.spacing, 1);
         assert!(!panel.show_in_insert);
         assert_eq!(panel.footer, None);
 
         let panel = read(
             r##"{ char_idx = 0, items = {}, footer = "+2 more", arrow = " < ",
-                  under_arrow = "^ ", left_cap = "(", right_cap = ")", min_width = 12, spacing = 0,
+                  under_arrow = "^ ", left_cap = "(", right_cap = ")", min_width = 12,
                   show_in_insert = true, fg = "#000000", bg = "#ffffff", arrow_fg = "#123456" }"##,
         )
         .unwrap();
@@ -680,7 +669,6 @@ mod tests {
             ("(", ")")
         );
         assert_eq!(panel.min_width, 12);
-        assert_eq!(panel.spacing, 0);
         assert!(panel.show_in_insert);
         assert_eq!(
             read("{ char_idx = 0, items = {}, min_width = 1e9 }")
@@ -694,7 +682,6 @@ mod tests {
         assert!(read("{ char_idx = 0 }").is_err());
         assert!(read("{ char_idx = 0, items = { { icon = 'x' } } }").is_err());
         assert!(read("{ char_idx = 0, items = {}, min_width = -1 }").is_err());
-        assert!(read("{ char_idx = 0, items = {}, spacing = -1 }").is_err());
         assert!(read("{ char_idx = 0, items = {}, show_in_insert = 'yes' }").is_err());
     }
 

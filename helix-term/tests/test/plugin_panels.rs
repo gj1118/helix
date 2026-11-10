@@ -52,8 +52,6 @@ fn panel(char_idx: usize) -> PluginPanel {
         footer: Some("+1 more".to_string()),
         fg: Some("#000000".to_string()),
         bg: Some("#cba6f7".to_string()),
-        // the rows next to each other (the plugin's test has the blank rows between items)
-        spacing: 0,
         ..Default::default()
     }
 }
@@ -381,20 +379,13 @@ async fn the_inline_diagnostic_plugin_shows_a_panel_for_the_cursor_line() -> any
         assert_eq!(panel.bg.as_deref(), Some("#cba6f7"));
         assert_eq!(panel.footer, None);
         assert_eq!(panel.min_width, 30);
-        assert_eq!(panel.spacing, 1);
         assert!(!panel.show_in_insert);
         assert_eq!(panel.char_idx, LINE_LEN + 1 + 5);
     }
     let with = screen(&app, 80);
     let (x, height) = text_area(&app);
     assert!(with[1].contains("BADTHING happened"), "{with:#?}");
-    // a blank row of the panel between the two: one block, but two messages
-    assert!(!with[2].contains("BADTHING") && !with[2].contains("WARNTHING"));
-    let panel_x = with[1].chars().position(|c| c == 'B').unwrap() as u16;
-    let bg = |y: u16| app.rendered_cell(panel_x, y).bg;
-    assert_eq!(bg(2), bg(1));
-    assert_eq!(bg(2), helix_view::graphics::Color::Rgb(0xcb, 0xa6, 0xf7));
-    assert!(with[3].contains("WARNTHING"), "{with:#?}");
+    assert!(with[2].contains("WARNTHING"), "{with:#?}");
     // the code stays on its rows
     for y in 0..height {
         assert_eq!(

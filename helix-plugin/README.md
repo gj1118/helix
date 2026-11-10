@@ -179,9 +179,8 @@ Buffer methods (they raise an error once the buffer is closed):
   Beside the line after an `arrow` when `min_width` (30) columns are left for the text,
   otherwise in a box under the line; texts wrap, and it is cut off at the bottom of the
   window. Fields: `char_idx`, `items` (`{ text, icon, icon_fg }`), and optionally `footer`,
-  `fg`/`bg`, `arrow`, `under_arrow`, `arrow_fg`, `left_cap`/`right_cap` (the ends of a one-row
-  panel; several rows are one block), `min_width`, `spacing` (blank rows between items,
-  default 1) and `show_in_insert` (default `false`). Laid out again on every frame; the anchor is not
+  `fg`/`bg`, `arrow`, `under_arrow`, `arrow_fg`, `left_cap`/`right_cap`, `min_width` and
+  `show_in_insert` (default `false`). Laid out again on every frame; the anchor is not
   moved by edits.
 
 ### `helix.editor`

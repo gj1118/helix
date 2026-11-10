@@ -36,9 +36,6 @@ local config = {
   -- (tiny-inline-diagnostic's `softwrap`)
   min_width = 30,
 
-  -- Blank rows between the diagnostics (in the panel's color), so they don't read as one
-  spacing = 1,
-
   -- Show the panel in insert mode too (tiny-inline-diagnostic's `enable_on_insert`)
   show_in_insert = false,
 }
@@ -127,7 +124,6 @@ local function update_diagnostics()
     left_cap = config.left_cap,
     right_cap = config.right_cap,
     min_width = config.min_width,
-    spacing = config.spacing,
     show_in_insert = config.show_in_insert,
   })
 end

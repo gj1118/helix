@@ -33,9 +33,6 @@ pub struct PluginPanel {
     pub right_cap: String,
     /// Fewer columns than this left for the text beside the line put the panel under it.
     pub min_width: u16,
-    /// Blank rows between the items (and before the footer), so that messages do not read as
-    /// one.
-    pub spacing: u16,
     /// Whether the panel is shown in insert mode.
     pub show_in_insert: bool,
 }
@@ -63,7 +60,6 @@ impl Default for PluginPanel {
             left_cap: String::new(),
             right_cap: String::new(),
             min_width: 30,
-            spacing: 1,
             show_in_insert: false,
         }
     }
@@ -147,24 +143,14 @@ pub fn layout(
         }
     };
 
-    // Each item's lines (with its icon on the first), then the footer's, `spacing` blank rows
-    // apart.
+    // Each item's lines (with its icon on the first), then the footer's.
     let mut lines: Vec<(Option<usize>, bool, String)> = Vec::new();
-    let gap = |lines: &mut Vec<(Option<usize>, bool, String)>| {
-        if !lines.is_empty() {
-            for _ in 0..panel.spacing {
-                lines.push((None, false, String::new()));
-            }
-        }
-    };
     for (idx, item) in panel.items.iter().enumerate() {
-        gap(&mut lines);
         for (n, line) in wrap(&item.text, text_width).into_iter().enumerate() {
             lines.push((Some(idx), n == 0, line));
         }
     }
     if let Some(footer) = &panel.footer {
-        gap(&mut lines);
         for line in wrap(footer, text_width) {
             lines.push((None, false, line));
         }
@@ -175,19 +161,6 @@ pub fn layout(
         .map(|(_, _, line)| width(line))
         .max()
         .unwrap_or(0);
-
-    // One row is a pill, between its caps. Several rows are one block: the caps (rounded
-    // ends, say) would make each row a pill of its own, so their columns take the panel's
-    // background instead, and the block keeps its width.
-    let caps = |cap: &String| -> (String, PanelPart) {
-        if lines.len() == 1 {
-            (cap.clone(), PanelPart::Cap)
-        } else {
-            (" ".repeat(width(cap)), PanelPart::Text)
-        }
-    };
-    let (left_cap, left_part) = caps(&panel.left_cap);
-    let (right_cap, right_part) = caps(&panel.right_cap);
 
     let mut rows = Vec::with_capacity(lines.len());
     for (n, (item, first, line)) in lines.into_iter().enumerate() {
@@ -207,7 +180,7 @@ pub fn layout(
             }
             col += w;
         };
-        push(left_cap.clone(), left_part);
+        push(panel.left_cap.clone(), PanelPart::Cap);
         if icon_width > 0 {
             match item {
                 Some(idx) if first => {
@@ -220,7 +193,7 @@ pub fn layout(
         }
         let pad = box_width - width(&line);
         push(format!(" {line}{} ", " ".repeat(pad)), PanelPart::Text);
-        push(right_cap.clone(), right_part);
+        push(panel.right_cap.clone(), PanelPart::Cap);
         rows.push(PanelRow {
             row: first_row + n,
             spans,
@@ -283,8 +256,6 @@ mod tests {
             under_arrow: "╰ ".to_string(),
             left_cap: "(".to_string(),
             right_cap: ")".to_string(),
-            // (the rows of the items next to each other; see the test of `spacing`)
-            spacing: 0,
             min_width: 10,
             ..Default::default()
         }
@@ -327,9 +298,9 @@ mod tests {
         assert_eq!(
             draw(&rows),
             [
-                (0, "        ←  ● one two three  ".to_string()),
-                (1, "             four five      ".to_string()),
-                (2, "           ● second         ".to_string()),
+                (0, "        ← (● one two three )".to_string()),
+                (1, "          (  four five     )".to_string()),
+                (2, "          (● second        )".to_string()),
             ]
         );
     }
@@ -342,8 +313,8 @@ mod tests {
         assert_eq!(
             draw(&rows),
             [
-                (1, "╰  ● one two three four  ".to_string()),
-                (2, "     five                ".to_string()),
+                (1, "╰ (● one two three four )".to_string()),
+                (2, "  (  five               )".to_string()),
             ]
         );
         // Below `min_width` too, even if the text would fit: 34 - 10 - 5 = 19 columns.
@@ -357,83 +328,6 @@ mod tests {
     }
 
     #[test]
-    fn several_rows_are_one_block_without_caps_between_them() {
-        let one = layout(&panel(&["only"]), Some(0), 80);
-        let caps: Vec<PanelPart> = one[0]
-            .spans
-            .iter()
-            .filter(|span| span.text == "(" || span.text == ")")
-            .map(|span| span.part)
-            .collect();
-        assert_eq!(caps, [PanelPart::Cap, PanelPart::Cap]);
-
-        // two diagnostics: one block, the caps' columns in the panel's background (`Text`),
-        // every row starting and ending at the same columns
-        let two = layout(
-            &panel(&["undefined: console", "unreachable code"]),
-            Some(7),
-            80,
-        );
-        assert_eq!(two.len(), 2);
-        for row in &two {
-            assert!(row.spans.iter().all(|span| span.part != PanelPart::Cap));
-            assert!(!row.spans.iter().any(|span| span.text.contains(['(', ')'])));
-        }
-        let bounds = |row: &PanelRow| -> (usize, usize) {
-            let spans: Vec<&PanelSpan> = row
-                .spans
-                .iter()
-                .filter(|span| span.part != PanelPart::Arrow)
-                .collect();
-            let first = spans.first().unwrap();
-            let last = spans.last().unwrap();
-            (first.col, last.col + width(&last.text))
-        };
-        assert_eq!(bounds(&two[0]), bounds(&two[1]));
-        // as wide as with caps
-        let with_caps = 1 + 1 + 2 + "undefined: console".len() + 1;
-        let (start, end) = bounds(&two[0]);
-        assert_eq!(end - start, with_caps);
-    }
-
-    #[test]
-    fn spacing_puts_blank_rows_between_the_items_and_before_the_footer() {
-        let mut spaced = panel(&["undefined: console", "unreachable code"]);
-        spaced.footer = Some("+1 more".to_string());
-        spaced.spacing = 1;
-        let rows = layout(&spaced, Some(7), 80);
-        assert_eq!(
-            draw(&rows),
-            [
-                (0, "         ←  ● undefined: console  ".to_string()),
-                (1, "                                  ".to_string()),
-                (2, "            ● unreachable code    ".to_string()),
-                (3, "                                  ".to_string()),
-                (4, "              +1 more             ".to_string()),
-            ]
-        );
-        // the blank rows are the panel's (its background), as wide as the others
-        let blank: Vec<PanelPart> = rows[1].spans.iter().map(|span| span.part).collect();
-        assert_eq!(
-            blank,
-            [
-                PanelPart::Text,
-                PanelPart::Text,
-                PanelPart::Text,
-                PanelPart::Text
-            ]
-        );
-        // one item: no blank row, and its caps
-        spaced.items.truncate(1);
-        spaced.footer = None;
-        let rows = layout(&spaced, Some(7), 80);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].spans[1].part, PanelPart::Cap);
-        // the default is one blank row
-        assert_eq!(PluginPanel::default().spacing, 1);
-    }
-
-    #[test]
     fn a_footer_has_no_icon_and_rows_are_one_box() {
         let mut with_footer = panel(&["a much longer message", "b"]);
         with_footer.footer = Some("+2 more".to_string());
@@ -441,9 +335,9 @@ mod tests {
         assert_eq!(
             draw(&rows),
             [
-                (0, "  ←  ● a much longer message  ".to_string()),
-                (1, "     ● b                      ".to_string()),
-                (2, "       +2 more                ".to_string()),
+                (0, "  ← (● a much longer message )".to_string()),
+                (1, "    (● b                     )".to_string()),
+                (2, "    (  +2 more               )".to_string()),
             ]
         );
         assert!(rows[2]

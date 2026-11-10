@@ -221,10 +221,8 @@ Buffer methods (they raise an error once the buffer is closed):
     icon = ..., icon_fg = ... }`; only `text` is required), and optionally `footer` (a last
     line without icon), `fg`/`bg` (`"#rrggbb"`; default: the theme's `ui.popup`), `arrow`
     (`" ← "`), `under_arrow` (`"╰ "`, before the box under the line), `arrow_fg` (default:
-    `bg`), `left_cap`/`right_cap` (drawn in `bg` at the ends of a one-row panel, e.g.
-    powerline caps; a panel of several rows is one block, their columns in `bg`), `min_width`
-    (`30`), `spacing` (`1`: blank rows between the items and before the footer, so that
-    messages do not read as one) and `show_in_insert` (`false`: hidden in insert mode).
+    `bg`), `left_cap`/`right_cap` (drawn in `bg` around each row, e.g. powerline caps),
+    `min_width` (`30`) and `show_in_insert` (`false`: hidden in insert mode).
   - The anchor is not moved by edits: set the panel again when the text changes.
 
 ### `helix.editor`
