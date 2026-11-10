@@ -1301,11 +1301,11 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             surface,
             area,
             background,
-            !crate::ui::border_cells_take_background(&cx.editor.config()),
+            !self.border_cells_take_background(&cx.editor.config()),
         );
 
         // calculate the inner area inside the box
-        let inner = if cx.editor.config().gradient_borders.enable {
+        let inner = if self.gradient_border_shown(&cx.editor.config()) {
             if self.gradient_border.is_none() {
                 self.gradient_border = Some(GradientBorder::from_theme(
                     &cx.editor.theme,
@@ -1557,11 +1557,11 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             surface,
             area,
             background,
-            !crate::ui::border_cells_take_background(&cx.editor.config()),
+            !self.border_cells_take_background(&cx.editor.config()),
         );
 
         // calculate the inner area inside the box
-        let base_inner = if cx.editor.config().gradient_borders.enable {
+        let base_inner = if self.gradient_border_shown(&cx.editor.config()) {
             if self.gradient_border.is_none() {
                 self.gradient_border = Some(GradientBorder::from_theme(
                     &cx.editor.theme,
@@ -2200,6 +2200,22 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             ..Default::default()
         });
         self
+    }
+
+    /// Whether the borders are gradients (`gradient-borders`): not for the quickfix panel
+    /// (nor its preview over the code), a part of the editor's frame rather than a window
+    /// over it.
+    fn gradient_border_shown(&self, config: &helix_view::editor::Config) -> bool {
+        config.gradient_borders.enable && self.docked.is_none()
+    }
+
+    /// See `ui::border_cells_take_background`, for the borders this picker draws.
+    fn border_cells_take_background(&self, config: &helix_view::editor::Config) -> bool {
+        if self.docked.is_some() {
+            crate::ui::plain_border_cells_take_background(config)
+        } else {
+            crate::ui::border_cells_take_background(config)
+        }
     }
 
     /// Whether the keys edit the query (or the replacement) rather than move in the list.

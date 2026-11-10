@@ -259,3 +259,46 @@ async fn a_global_search_in_the_panel_starts_with_its_query() -> anyhow::Result<
     send(&mut app, "<C-w>k:q!<ret>").await?;
     Ok(())
 }
+
+/// The distinct colors of row `y` from column `from` to `to` (exclusive).
+fn colors(app: &Application, y: u16, from: u16, to: u16) -> Vec<helix_view::graphics::Color> {
+    let mut colors: Vec<helix_view::graphics::Color> = Vec::new();
+    for x in from..to {
+        let color = app.rendered_fg(x, y);
+        if !colors.contains(&color) {
+            colors.push(color);
+        }
+    }
+    colors
+}
+
+/// With `gradient-borders`, the panel and its preview over the code keep plain borders (they
+/// are part of the editor's frame), while a picker over the editor has its gradient.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_panel_has_no_gradient_border() -> anyhow::Result<()> {
+    let gradient = "[editor.gradient-borders]\nenable = true\n";
+    let with_panel = format!("{gradient}[editor.quickfix]\nenable = true\n");
+    let (mut app, _file) = app_with_quicklist(config(&with_panel)).await?;
+    send(&mut app, "<space>q").await?;
+    assert!(app.editor.quickfix_panel.focused);
+    // along the top border of the panel (after its title) and of the preview: one color, the
+    // same
+    let panel = colors(&app, 17, 30, 80);
+    let preview = colors(&app, 0, 0, 80);
+    assert_eq!(panel.len(), 1, "{panel:?}");
+    assert_eq!(preview, panel);
+    send(&mut app, ":q!<ret>").await?;
+
+    // a picker over the editor: its gradient
+    let (mut app, _file) = app_with_quicklist(config(gradient)).await?;
+    send(&mut app, "<space>q").await?;
+    let rows = app.rendered_rows();
+    let top = rows
+        .iter()
+        .position(|row| row.contains("Quicklist"))
+        .expect("the picker") as u16;
+    let border = colors(&app, top, 30, 80);
+    assert!(border.len() > 2, "{border:?}");
+    send(&mut app, "<esc>:q!<ret>").await?;
+    Ok(())
+}
