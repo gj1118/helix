@@ -549,10 +549,7 @@ pub fn symbol_picker(cx: &mut Context) {
             .truncate_start(false)
             .with_title("Document Symbols");
 
-            compositor.push(Box::new(overlaid(
-                picker,
-                editor.config().fullscreen_overlay,
-            )))
+            crate::ui::quickfix::show(compositor, editor, picker)
         };
 
         Ok(Callback::EditorCompositor(Box::new(call)))
@@ -695,10 +692,7 @@ pub fn workspace_symbol_picker(cx: &mut Context) {
     .truncate_start(false)
     .with_title("Workspace Symbols");
 
-    cx.push_layer(Box::new(overlaid(
-        picker,
-        cx.editor.config().fullscreen_overlay,
-    )));
+    crate::ui::quickfix::show_from_command(cx, picker);
 }
 
 pub fn diagnostics_picker(cx: &mut Context) {
@@ -714,10 +708,7 @@ pub fn diagnostics_picker(cx: &mut Context) {
             Some(uri),
         )
         .with_title("Diagnostics");
-        cx.push_layer(Box::new(overlaid(
-            picker,
-            cx.editor.config().fullscreen_overlay,
-        )));
+        crate::ui::quickfix::show_from_command(cx, picker);
     }
 }
 
@@ -736,14 +727,10 @@ pub fn workspace_diagnostics_picker(cx: &mut Context) {
         None,
     )
     .with_title("Workspace Diagnostics");
-    cx.push_layer(Box::new(overlaid(
-        picker,
-        cx.editor.config().fullscreen_overlay,
-    )));
+    crate::ui::quickfix::show_from_command(cx, picker);
 }
 
 fn push_workspace_diagnostics_picker(editor: &mut Editor, compositor: &mut Compositor) {
-    let fullscreen = editor.config().fullscreen_overlay;
     let picker = live_diagnostics(
         diag_picker(
             editor,
@@ -753,7 +740,7 @@ fn push_workspace_diagnostics_picker(editor: &mut Editor, compositor: &mut Compo
         None,
     )
     .with_title("Workspace Diagnostics");
-    compositor.push(Box::new(overlaid(picker, fullscreen)));
+    crate::ui::quickfix::show(compositor, editor, picker);
 }
 
 /// Maximum number of files diagnostics are pulled for in a single workspace
@@ -1747,10 +1734,7 @@ fn goto_impl(
             })
             .with_preview(|_editor, location| location_to_file_location(location))
             .with_title(title);
-            compositor.push(Box::new(overlaid(
-                picker,
-                editor.config().fullscreen_overlay,
-            )));
+            crate::ui::quickfix::show(compositor, editor, picker);
         }
     }
 }

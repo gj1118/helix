@@ -16,6 +16,7 @@ pub mod overlay;
 pub mod picker;
 pub mod popup;
 pub mod prompt;
+pub mod quickfix;
 mod select;
 mod spinner;
 mod statusline;

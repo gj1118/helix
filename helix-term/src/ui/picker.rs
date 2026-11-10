@@ -394,6 +394,20 @@ pub struct Picker<T: 'static + Send + Sync, D: 'static> {
     replace: Option<ReplaceInput>,
 
     live: Option<LiveRefresh<T, D>>,
+
+    /// The docked mode: the picker is the quickfix panel (see [`Picker::docked`]).
+    docked: Option<Docked>,
+}
+
+/// The state of a picker shown as the quickfix panel (see `ui::quickfix`).
+#[derive(Debug, Default)]
+struct Docked {
+    /// Whether the keys edit the query (after `/`) rather than move through the list.
+    filtering: bool,
+    /// `Ctrl-w` was pressed: the next key picks the window to go to.
+    window_key: bool,
+    /// Where the panel was last drawn (for the mouse).
+    area: Rect,
 }
 
 impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
@@ -527,6 +541,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             replace: None,
             live: None,
             state_tracker: None,
+            docked: None,
         }
     }
 
@@ -1846,6 +1861,9 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
 
 impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I, D> {
     fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
+        if self.docked.is_some() {
+            return self.render_docked(area, surface, cx);
+        }
         // default render
         // +--title--+ +---------+
         // +---------+ +---------+
@@ -1901,6 +1919,9 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
                 state.query = self.prompt.line().clone();
                 state.cursor = self.cursor;
             }
+        }
+        if self.docked.is_some() {
+            return self.handle_docked_event(event, ctx);
         }
         let key_event = match event {
             Event::Key(event) => *event,
@@ -2089,6 +2110,9 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
     }
 
     fn cursor(&self, area: Rect, editor: &Editor) -> (Option<Position>, CursorKind) {
+        if self.docked.is_some() {
+            return self.docked_cursor(area, editor);
+        }
         // calculate the inner area inside the box
         let inner = if editor.config().gradient_borders.enable {
             // The gradient border is one cell wide whatever its thickness.
@@ -2134,9 +2158,339 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
     }
 
     fn id(&self) -> Option<&'static str> {
-        Some(ID)
+        if self.docked.is_some() {
+            Some(ui::quickfix::ID)
+        } else {
+            Some(ID)
+        }
+    }
+
+    fn quickfix_step(&mut self, forward: bool, count: usize, cx: &mut Context) -> bool {
+        if self.docked.is_none() {
+            return false;
+        }
+        let direction = if forward {
+            Direction::Forward
+        } else {
+            Direction::Backward
+        };
+        self.move_by(count.max(1).min(u32::MAX as usize) as u32, direction);
+        match self.selection() {
+            Some(option) => {
+                (self.callback_fn)(cx, option, Action::Replace);
+                let total = self.matcher.snapshot().matched_item_count();
+                cx.editor
+                    .set_status(format!("Quickfix {}/{total}", self.cursor + 1));
+            }
+            None => cx.editor.set_status("The quickfix list is empty"),
+        }
+        true
     }
 }
+
+/// The docked mode: the quickfix panel.
+impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
+    /// The picker as the quickfix panel (see `ui::quickfix`): drawn at the bottom of the
+    /// views and kept open while its entries are visited. A list that needs a query to show
+    /// anything (a global search) starts with the query to type; the others with the list.
+    pub fn docked(mut self) -> Self {
+        let filtering = self.dynamic_query_handler.is_some() && self.prompt.line().is_empty();
+        self.docked = Some(Docked {
+            filtering,
+            ..Default::default()
+        });
+        self
+    }
+
+    /// Whether the keys edit the query (or the replacement) rather than move in the list.
+    fn docked_typing(&self) -> bool {
+        self.docked.as_ref().is_some_and(|docked| docked.filtering)
+            || self.replace.as_ref().is_some_and(|replace| replace.focused)
+    }
+
+    fn render_docked(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
+        let frame = ui::editor::frame(cx.editor, area);
+        let panel = ui::quickfix::panel_area(cx.editor, frame);
+        if let Some(docked) = &mut self.docked {
+            docked.area = panel;
+        }
+        if panel.height == 0 || panel.width == 0 {
+            return;
+        }
+        self.render_picker(panel, surface, cx);
+
+        // With the focus, the selected location over the code.
+        let config = cx.editor.config();
+        if ui::quickfix::focused(cx.editor)
+            && config.quickfix.preview
+            && self.show_preview
+            && self.file_fn.is_some()
+        {
+            let views = ui::quickfix::layout(cx.editor, frame);
+            if views.width >= 10 && views.height >= 3 {
+                self.preview_height = views.height.saturating_sub(2);
+                self.render_preview(views, surface, cx);
+            }
+        }
+    }
+
+    /// The rows of the list in the panel `area`, and the index of the item on its first row.
+    fn docked_list(&self, area: Rect) -> (Rect, u32) {
+        // the border is one cell wide, gradient or not
+        let inner = Rect::new(
+            area.x.saturating_add(1),
+            area.y.saturating_add(1),
+            area.width.saturating_sub(2),
+            area.height.saturating_sub(2),
+        );
+        let replace_rows = u16::from(self.replace.is_some() && inner.height > 4);
+        let list = inner
+            .clip_top(2 + replace_rows)
+            .clip_top(self.header_height());
+        let rows = list.height.max(1) as u32;
+        (list, self.cursor - (self.cursor % rows))
+    }
+
+    fn docked_cursor(&self, area: Rect, editor: &Editor) -> (Option<Position>, CursorKind) {
+        if !ui::quickfix::focused(editor) {
+            return (None, CursorKind::Hidden);
+        }
+        let panel = ui::quickfix::panel_area(editor, ui::editor::frame(editor, area));
+        if !self.docked_typing() {
+            // The list has the focus: no cursor (nor the editor's, see `Compositor::render`).
+            return (
+                Some(Position::new(panel.y as usize, panel.x as usize)),
+                CursorKind::Hidden,
+            );
+        }
+        let inner = Rect::new(
+            panel.x.saturating_add(1),
+            panel.y.saturating_add(1),
+            panel.width.saturating_sub(2),
+            panel.height.saturating_sub(2),
+        );
+        let line = inner.clip_left(1).with_height(1);
+        if let Some(replace) = self.replace.as_ref().filter(|replace| replace.focused) {
+            let label_width = REPLACE_LABEL.len() as u16;
+            let row = Rect::new(
+                line.x + label_width,
+                line.y + 1,
+                line.width.saturating_sub(label_width),
+                1,
+            );
+            return replace.prompt.cursor(row, editor);
+        }
+        self.prompt.cursor(line, editor)
+    }
+
+    /// Opens the selected location with `action`; the code gets the focus unless `keep_focus`.
+    fn docked_open(&mut self, cx: &mut Context, action: Action, keep_focus: bool) {
+        if let Some(option) = self.selection() {
+            (self.callback_fn)(cx, option, action);
+        }
+        if !keep_focus {
+            cx.editor.quickfix_panel.focused = false;
+        }
+    }
+
+    /// Closes the panel, which `:copen` can show again.
+    fn docked_close(&mut self) -> EventResult {
+        // A closed list no longer follows the editor, nor keeps its previews.
+        self.live = None;
+        self.preview_cache.clear();
+        self.preview_cache_order.clear();
+        self.version.fetch_add(1, atomic::Ordering::Relaxed);
+        if let Some(docked) = &mut self.docked {
+            docked.filtering = false;
+            docked.window_key = false;
+        }
+        EventResult::Consumed(Some(Box::new(|compositor: &mut Compositor, cx| {
+            ui::quickfix::close(compositor, cx.editor)
+        })))
+    }
+
+    fn handle_docked_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
+        use helix_view::input::{MouseButton, MouseEventKind};
+
+        let area = self
+            .docked
+            .as_ref()
+            .map(|docked| docked.area)
+            .unwrap_or_default();
+        let key_event = match event {
+            Event::Mouse(mouse) => {
+                let inside = (area.left()..area.right()).contains(&mouse.column)
+                    && (area.top()..area.bottom()).contains(&mouse.row);
+                if !inside {
+                    // A click elsewhere gives the focus back to what is clicked.
+                    if matches!(mouse.kind, MouseEventKind::Down(_)) {
+                        cx.editor.quickfix_panel.focused = false;
+                    }
+                    return EventResult::Ignored(None);
+                }
+                match mouse.kind {
+                    MouseEventKind::Down(MouseButton::Left) => {
+                        ui::quickfix::focus(cx.editor);
+                        let (list, offset) = self.docked_list(area);
+                        if mouse.row >= list.y && mouse.row < list.bottom() {
+                            let index = offset + (mouse.row - list.y) as u32;
+                            if index < self.matcher.snapshot().matched_item_count() {
+                                self.cursor = index;
+                            }
+                        }
+                    }
+                    MouseEventKind::ScrollDown => self.move_by(1, Direction::Forward),
+                    MouseEventKind::ScrollUp => self.move_by(1, Direction::Backward),
+                    _ => {}
+                }
+                return EventResult::Consumed(None);
+            }
+            // The editor (under the panel) follows the size of the screen.
+            Event::Resize(..) => return EventResult::Ignored(None),
+            _ if !ui::quickfix::focused(cx.editor) => return EventResult::Ignored(None),
+            Event::Paste(..) if self.docked_typing() => return self.prompt_handle_event(event, cx),
+            Event::Paste(..) => return EventResult::Consumed(None),
+            Event::Key(key) => *key,
+            _ => return EventResult::Ignored(None),
+        };
+        let Some(key_event) = super::component_key(
+            cx.editor,
+            helix_view::component_keys::Component::Picker,
+            key_event,
+        ) else {
+            return EventResult::Consumed(None);
+        };
+
+        // Navigating cancels restoring the selection after a refresh.
+        if let Some(live) = &mut self.live {
+            live.reselect = None;
+        }
+
+        // `Ctrl-w` then a window key: back to the code.
+        if let Some(docked) = self.docked.as_mut().filter(|docked| docked.window_key) {
+            docked.window_key = false;
+            if matches!(
+                key_event,
+                key!('k') | key!(Up) | ctrl!('k') | key!('w') | ctrl!('w') | key!('p') | ctrl!('p')
+            ) {
+                cx.editor.quickfix_panel.focused = false;
+            }
+            return EventResult::Consumed(None);
+        }
+
+        // The replacement of a global search, as in the picker.
+        if self.replace_fn.is_some() {
+            match key_event {
+                alt!('r') => {
+                    self.toggle_replace_focus();
+                    return EventResult::Consumed(None);
+                }
+                ctrl!(Enter) | alt!('a') if self.replace.is_some() => {
+                    self.run_replace(cx, true);
+                    return EventResult::Consumed(None);
+                }
+                key!(Enter) if self.replace.as_ref().is_some_and(|replace| replace.focused) => {
+                    self.run_replace(cx, false);
+                    return EventResult::Consumed(None);
+                }
+                _ => {}
+            }
+        }
+
+        // Moving through the list, whatever has the keys.
+        match key_event {
+            key!(Down) | ctrl!('n') | key!(Tab) => {
+                self.move_by(1, Direction::Forward);
+                return EventResult::Consumed(None);
+            }
+            key!(Up) | ctrl!('p') | shift!(Tab) => {
+                self.move_by(1, Direction::Backward);
+                return EventResult::Consumed(None);
+            }
+            ctrl!('d') | key!(PageDown) => {
+                self.page_down();
+                return EventResult::Consumed(None);
+            }
+            ctrl!('u') | key!(PageUp) => {
+                self.page_up();
+                return EventResult::Consumed(None);
+            }
+            _ => {}
+        }
+
+        if self.docked_typing() {
+            match key_event {
+                // done typing: the keys move through the list again
+                key!(Esc) | key!(Enter) => {
+                    let replacing = self.replace.as_ref().is_some_and(|replace| replace.focused);
+                    if replacing {
+                        self.toggle_replace_focus();
+                    } else if key_event == key!(Enter)
+                        && self.prompt.line().is_empty()
+                        && self.prompt.first_history_completion(cx.editor).is_some()
+                    {
+                        // The last query, as in the picker.
+                        let completion = self
+                            .prompt
+                            .first_history_completion(cx.editor)
+                            .unwrap()
+                            .replace('%', "\\%");
+                        self.prompt.set_line(completion, cx.editor);
+                        self.handle_prompt_change(true);
+                    } else if let Some(docked) = &mut self.docked {
+                        docked.filtering = false;
+                        if let Some(register) = self.prompt.history_register() {
+                            let query = self.primary_query().to_string();
+                            if !query.is_empty() {
+                                if let Err(err) = cx.editor.registers.push(register, query) {
+                                    cx.editor.set_error(err.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    self.prompt_handle_event(event, cx);
+                }
+            }
+            return EventResult::Consumed(None);
+        }
+
+        if let EventResult::Consumed(_) = self.custom_key_event_handler(&key_event, cx) {
+            return EventResult::Consumed(None);
+        }
+
+        match key_event {
+            key!('j') => self.move_by(1, Direction::Forward),
+            key!('k') => self.move_by(1, Direction::Backward),
+            key!('g') | key!(Home) => self.to_start(),
+            key!('G') | key!(End) => self.to_end(),
+            key!(Enter) => self.docked_open(cx, self.default_action, false),
+            // open, keeping the focus in the list
+            alt!(Enter) | key!('o') => self.docked_open(cx, self.default_action, true),
+            ctrl!('s') => self.docked_open(cx, Action::HorizontalSplit, false),
+            ctrl!('v') => self.docked_open(cx, Action::VerticalSplit, false),
+            key!('/') => {
+                if let Some(docked) = &mut self.docked {
+                    docked.filtering = true;
+                }
+            }
+            ctrl!('w') => {
+                if let Some(docked) = &mut self.docked {
+                    docked.window_key = true;
+                }
+            }
+            ctrl!('t') => self.toggle_preview(),
+            ctrl!('q') => self.copy_to_quicklist(cx.editor),
+            key!('q') | key!(Esc) | ctrl!('c') => return self.docked_close(),
+            // The command line, from the list too.
+            key!(':') => return EventResult::Ignored(None),
+            _ => {}
+        }
+        EventResult::Consumed(None)
+    }
+}
+
 impl<T: 'static + Send + Sync, D> Drop for Picker<T, D> {
     fn drop(&mut self) {
         // ensure we cancel any ongoing background threads streaming into the picker

@@ -39,6 +39,7 @@ mod test {
     mod plugins;
     mod popups;
     mod prompt_completion;
+    mod quickfix;
     mod quicklist;
     mod snippets;
     mod splits;

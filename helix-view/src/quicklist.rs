@@ -10,6 +10,16 @@ use helix_core::Selection;
 
 use crate::DocumentId;
 
+/// The quickfix panel: a list of locations shown at the bottom of the editor, under the views
+/// (see `[editor.quickfix]`). The list itself is a component of the terminal UI.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct QuickfixPanel {
+    /// Whether the panel is shown (the views leave it the bottom rows).
+    pub visible: bool,
+    /// Whether it has the keyboard focus (otherwise the keys go to the code).
+    pub focused: bool,
+}
+
 /// What an entry points at.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Target {

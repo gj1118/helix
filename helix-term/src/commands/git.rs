@@ -698,10 +698,7 @@ pub fn changed_file_picker(cx: &mut Context) {
         |change| change.path.display().to_string(),
     );
 
-    cx.push_layer(Box::new(overlaid(
-        picker,
-        cx.editor.config().fullscreen_overlay,
-    )));
+    crate::ui::quickfix::show_from_command(cx, picker);
 }
 
 // --- blame popup -----------------------------------------------------------

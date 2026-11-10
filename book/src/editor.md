@@ -12,6 +12,7 @@
 - [`[editor.file-explorer]` Section](#editorfile-explorer-section)
 - [`[editor.explorer]` Section](#editorexplorer-section)
 - [`[editor.cmdline]` Section](#editorcmdline-section)
+- [`[editor.quickfix]` Section](#editorquickfix-section)
 - [`[editor.notifications]` Section](#editornotifications-section)
 - [`[editor.inline-blame]` Section](#editorinline-blame-section)
 - [`[editor.gradient-borders]` Section](#editorgradient-borders-section)
@@ -658,6 +659,18 @@ default) keeps the background style.
 rulers = [80, 100, 120]
 ruler-char = "┊"
 ```
+
+### `[editor.quickfix]` Section
+
+Lists of locations (search results, diagnostics, symbols, references, ...) in a panel at the
+bottom of the editor, like Vim's quickfix window, instead of a picker. See
+[Quickfix panel](./quicklist.md#quickfix-panel) for the lists and the keys.
+
+| Key | Description | Default |
+|--|--|--|
+| `enable` | Open the lists of locations in the panel (otherwise they are pickers) | `false` |
+| `height` | Rows of the panel, its border included (less on a short screen) | `12` |
+| `preview` | Preview the selected location over the code while the panel has the focus | `true` |
 
 ### `[editor.cmdline]` Section
 

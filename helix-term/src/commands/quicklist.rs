@@ -16,7 +16,7 @@ use helix_view::{
 use super::{push_jump, Context};
 use crate::{
     ctrl,
-    ui::{self, overlay::overlaid, picker::PathOrId, Picker, PickerColumn},
+    ui::{self, picker::PathOrId, Picker, PickerColumn},
 };
 
 /// How much of a line is kept as an entry's text.
@@ -166,6 +166,14 @@ pub fn visit(editor: &mut Editor, index: usize, action: Action) -> anyhow::Resul
 /// Visit the entry `count` entries away from the current one, only counting the entries in the
 /// focused file or buffer when `in_file` is set.
 fn step(cx: &mut Context, forward: bool, in_file: bool) {
+    // `]q`/`[q` visit the entries of the quickfix panel while it is shown.
+    if !in_file && cx.editor.quickfix_panel.visible {
+        let count = cx.count();
+        cx.callback.push(Box::new(move |compositor, cx| {
+            compositor.quickfix_step(forward, count, cx);
+        }));
+        return;
+    }
     if cx.editor.quicklist.is_empty() {
         cx.editor
             .set_status("The quicklist is empty, add locations with Alt-q or Ctrl-q in a picker");
@@ -265,10 +273,18 @@ fn index_of(editor: &Editor, id: u64) -> Option<usize> {
 }
 
 pub fn quicklist_picker(cx: &mut Context) {
-    if cx.editor.quicklist.is_empty() {
-        cx.editor
-            .set_status("The quicklist is empty, add locations with Alt-q or Ctrl-q in a picker");
-        return;
+    match picker(cx.editor) {
+        Some(picker) => ui::quickfix::show_from_command(cx, picker),
+        None => cx
+            .editor
+            .set_status("The quicklist is empty, add locations with Alt-q or Ctrl-q in a picker"),
+    }
+}
+
+/// The picker of the quicklist; `None` when it is empty.
+pub fn picker(editor: &Editor) -> Option<Picker<QuickItem, ()>> {
+    if editor.quicklist.is_empty() {
+        return None;
     }
     let columns = [
         PickerColumn::new("", |item: &QuickItem, _: &()| {
@@ -294,7 +310,7 @@ pub fn quicklist_picker(cx: &mut Context) {
     let picker = Picker::new(
         columns,
         1,
-        items(cx.editor),
+        items(editor),
         (),
         |cx, item: &QuickItem, action| {
             let Some(index) = index_of(cx.editor, item.id) else {
@@ -324,10 +340,7 @@ pub fn quicklist_picker(cx: &mut Context) {
         |item| item.id.to_string(),
     )
     .with_title("Quicklist");
-    cx.push_layer(Box::new(overlaid(
-        picker,
-        cx.editor.config().fullscreen_overlay,
-    )));
+    Some(picker)
 }
 
 #[cfg(test)]

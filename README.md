@@ -332,6 +332,26 @@ directories) with a 2 second limit per call and 512 MiB of memory. `:reload-all-
 reloads them. See the book's Plugins chapter (`book/src/plugins.md`) for the events and the
 API, and [helix-plugin/README.md](helix-plugin/README.md).
 
+## Quickfix Panel
+
+Lists of locations can open in a panel at the bottom of the editor, like Neovim's quickfix
+window (`:copen`), instead of in a picker. It is off by default:
+
+```toml
+[editor.quickfix]
+enable = true   # global search, diagnostics, symbols, references, changed files, jumplist,
+                # task tags and the quicklist open in the panel; other pickers stay pickers
+height = 12     # rows, border included
+preview = true  # preview the selected location over the code while the panel is focused
+```
+
+The panel sits under the views (nothing is covered) and stays open while you visit its
+entries: `j`/`k` move, `Enter` jumps and gives the focus to the code, `Ctrl-w j` (from the
+bottom view) focuses the panel again, `]q`/`[q` visit the next and previous entry from the
+code, `/` filters, and `q` closes it. `:copen` shows it again (or the quicklist), `:cclose`
+closes it. The floating explorer and the pickers that choose one thing (files, buffers,
+commands, ...) are unchanged. See the book's Quicklist page (`book/src/quicklist.md`).
+
 ## Window Title
 
 Helix can set the window (or tab) title of the terminal, like Vim's `title`/`titlestring`. It is

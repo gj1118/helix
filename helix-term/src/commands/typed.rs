@@ -3784,6 +3784,46 @@ const WRITE_NO_FORMAT_FLAG: Flag = Flag {
     ..Flag::DEFAULT
 };
 
+/// `:copen`: shows (or focuses) the quickfix panel, see `ui::quickfix::reopen`.
+fn quickfix_open(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    cx.jobs.callback(async {
+        let call: job::Callback = job::Callback::EditorCompositor(Box::new(
+            |editor: &mut Editor, compositor: &mut Compositor| {
+                ui::quickfix::reopen(compositor, editor);
+            },
+        ));
+        Ok(call)
+    });
+    Ok(())
+}
+
+/// `:cclose`: closes the quickfix panel.
+fn quickfix_close(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    cx.jobs.callback(async {
+        let call: job::Callback = job::Callback::EditorCompositor(Box::new(
+            |editor: &mut Editor, compositor: &mut Compositor| {
+                ui::quickfix::close(compositor, editor);
+            },
+        ));
+        Ok(call)
+    });
+    Ok(())
+}
+
 fn notifications_history(
     cx: &mut compositor::Context,
     _args: Args,
@@ -5092,6 +5132,28 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, None),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "copen",
+        aliases: &["quickfix-open"],
+        doc: "Show the quickfix panel: focus it, or show the last list it showed again, or the quicklist.",
+        fun: quickfix_open,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "cclose",
+        aliases: &["quickfix-close"],
+        doc: "Close the quickfix panel.",
+        fun: quickfix_close,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
             ..Signature::DEFAULT
         },
     },

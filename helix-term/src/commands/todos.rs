@@ -38,7 +38,7 @@ use tui::text::Span;
 use crate::{
     filter_picker_entry,
     job::Callback,
-    ui::{overlay::overlaid, picker::PathOrId, Picker, PickerColumn},
+    ui::{picker::PathOrId, Picker, PickerColumn},
 };
 
 use super::{
@@ -500,10 +500,7 @@ pub fn todos_picker(cx: &mut Context) {
             CommentTag::key,
         )
         .with_title("Todos");
-    cx.push_layer(Box::new(overlaid(
-        picker,
-        cx.editor.config().fullscreen_overlay,
-    )));
+    crate::ui::quickfix::show_from_command(cx, picker);
 }
 
 /// Set while the workspace is being scanned for task tags.
@@ -515,10 +512,7 @@ pub fn workspace_todos_picker(cx: &mut Context) {
         // Another scan is under way: open the picker for what the open
         // documents have (its live part) while it runs.
         let picker = make_workspace_todos_picker(cx.editor, Arc::new(Vec::new()));
-        cx.push_layer(Box::new(overlaid(
-            picker,
-            cx.editor.config().fullscreen_overlay,
-        )));
+        crate::ui::quickfix::show_from_command(cx, picker);
         return;
     }
 
@@ -557,10 +551,7 @@ pub fn workspace_todos_picker(cx: &mut Context) {
                 }
             };
             let picker = make_workspace_todos_picker(editor, scanned);
-            compositor.push(Box::new(overlaid(
-                picker,
-                editor.config().fullscreen_overlay,
-            )));
+            crate::ui::quickfix::show(compositor, editor, picker);
         });
         Ok(Callback::Editor(Box::new(|_| {})))
     });

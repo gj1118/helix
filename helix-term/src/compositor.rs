@@ -93,6 +93,12 @@ pub trait Component: Any + AnyComponent {
     fn id(&self) -> Option<&'static str> {
         None
     }
+
+    /// For the quickfix panel: visits its `count`th next (or previous) entry. `false` for
+    /// the other components.
+    fn quickfix_step(&mut self, _forward: bool, _count: usize, _cx: &mut Context) -> bool {
+        false
+    }
 }
 
 pub struct Compositor {
@@ -100,6 +106,8 @@ pub struct Compositor {
     area: Rect,
 
     pub(crate) last_picker: Option<Box<dyn Component>>,
+    /// The quickfix panel last closed, for `:copen` (see `ui::quickfix`).
+    pub(crate) last_quickfix: Option<Box<dyn Component>>,
     pub(crate) full_redraw: bool,
 }
 
@@ -109,6 +117,7 @@ impl Compositor {
             layers: Vec::new(),
             area,
             last_picker: None,
+            last_quickfix: None,
             full_redraw: false,
         }
     }
@@ -142,6 +151,28 @@ impl Compositor {
         } else {
             self.push(Box::new(layer))
         }
+    }
+
+    /// Adds a layer right above the editor (under the layers already above it): a part of
+    /// the editor's frame, such as the quickfix panel, rather than something over it.
+    pub fn insert_above_editor(&mut self, mut layer: Box<dyn Component>) {
+        let size = self.size();
+        layer.required_size((size.width, size.height));
+        let index = self
+            .layers
+            .iter()
+            .position(|layer| layer.as_any().is::<crate::ui::EditorView>())
+            .map_or(self.layers.len(), |index| index + 1);
+        self.layers.insert(index, layer);
+    }
+
+    /// Visits the `count`th next (or previous) entry of the quickfix panel; `false` when no
+    /// panel is shown.
+    pub fn quickfix_step(&mut self, forward: bool, count: usize, cx: &mut Context) -> bool {
+        self.layers
+            .iter_mut()
+            .find(|layer| layer.id() == Some(crate::ui::quickfix::ID))
+            .is_some_and(|layer| layer.quickfix_step(forward, count, cx))
     }
 
     pub fn pop(&mut self) -> Option<Box<dyn Component>> {

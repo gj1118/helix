@@ -612,6 +612,8 @@ pub struct Config {
     /// Command line configuration
     #[serde(default)]
     pub cmdline: CmdlineConfig,
+    /// The quickfix panel, for lists of locations (`[editor.quickfix]`).
+    pub quickfix: QuickfixConfig,
     /// Picker gradient border configuration
     #[serde(default)]
     pub gradient_borders: GradientBorderConfig,
@@ -789,6 +791,29 @@ impl Default for CmdlineConfig {
             max_popup_width: 80,
             use_full_height: false,
             icons: CmdlineIcons::default(),
+        }
+    }
+}
+
+/// `[editor.quickfix]`: lists of locations (search results, diagnostics, references,
+/// symbols, ...) in a panel at the bottom, like Vim's quickfix window, instead of a picker.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct QuickfixConfig {
+    /// Show the lists of locations in the panel. Off by default: they are pickers.
+    pub enable: bool,
+    /// The rows of the panel, its border included.
+    pub height: u16,
+    /// While the panel has the focus, preview the selected location over the code.
+    pub preview: bool,
+}
+
+impl Default for QuickfixConfig {
+    fn default() -> Self {
+        Self {
+            enable: false,
+            height: 12,
+            preview: true,
         }
     }
 }
@@ -2153,6 +2178,7 @@ impl Default for Config {
             rainbow_brackets: false,
             kitty_keyboard_protocol: Default::default(),
             cmdline: CmdlineConfig::default(),
+            quickfix: QuickfixConfig::default(),
             gradient_borders: GradientBorderConfig::default(),
             notifications: NotificationConfig::default(),
             completion_highlight: CompletionHighlight::default(),
@@ -2452,6 +2478,8 @@ pub struct Editor {
     pub snippets: Arc<Snippets>,
     /// Locations collected to revisit, see [`Quicklist`].
     pub quicklist: Quicklist,
+    /// The quickfix panel (see `[editor.quickfix]`): shown, and with the focus.
+    pub quickfix_panel: crate::quicklist::QuickfixPanel,
 
     pub count: Option<std::num::NonZeroUsize>,
     pub selected_register: Option<char>,
@@ -2642,6 +2670,7 @@ impl Editor {
             command_args: None,
             snippets: Arc::new(Snippets::default()),
             quicklist: Quicklist::default(),
+            quickfix_panel: crate::quicklist::QuickfixPanel::default(),
             count: None,
             selected_register: None,
             macro_recording: None,

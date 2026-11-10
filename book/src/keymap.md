@@ -438,8 +438,8 @@ These mappings are in the style of [vim-unimpaired](https://github.com/tpope/vim
 | `[Space` | Add newline above                            | `add_newline_above`     |
 | `]` `<char>` | Select inside the next `<char>` pair (`](`, `]"`, ...), with a count the n-th one | `select_textobject_inside_next_pair` |
 | `[` `<char>` | Select inside the previous `<char>` pair        | `select_textobject_inside_prev_pair` |
-| `]q`     | Go to the next quicklist entry               | `quicklist_next`        |
-| `[q`     | Go to the previous quicklist entry           | `quicklist_prev`        |
+| `]q`     | Go to the next quicklist entry (of the [quickfix panel](./quicklist.md#quickfix-panel) while it is shown) | `quicklist_next`        |
+| `[q`     | Go to the previous quicklist entry (of the quickfix panel while it is shown) | `quicklist_prev`        |
 | `]l`     | Go to the next quicklist entry in this file  | `quicklist_next_in_file` |
 | `[l`     | Go to the previous quicklist entry in this file | `quicklist_prev_in_file` |
 

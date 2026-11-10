@@ -3099,10 +3099,7 @@ fn global_search(cx: &mut Context) {
         |item| format!("{}:{}", item.path.display(), item.line_num),
     );
 
-    cx.push_layer(Box::new(overlaid(
-        picker,
-        cx.editor.config().fullscreen_overlay,
-    )));
+    crate::ui::quickfix::show_from_command(cx, picker);
 }
 
 /// Replaces the matches in one line (without its line ending); `None`
@@ -3569,10 +3566,7 @@ fn local_search_grep(cx: &mut Context) {
     .with_history_register(Some(reg))
     .with_dynamic_query(get_lines, Some(275))
     .with_title("Buffer Search");
-    cx.push_layer(Box::new(overlaid(
-        picker,
-        cx.editor.config().fullscreen_overlay,
-    )));
+    crate::ui::quickfix::show_from_command(cx, picker);
 }
 
 /// Fuzzy search over the lines of the current buffer.
@@ -4663,10 +4657,7 @@ fn jumplist_picker(cx: &mut Context) {
         Some((meta.id.into(), Some((line, line))))
     })
     .with_title("Jumplist");
-    cx.push_layer(Box::new(overlaid(
-        picker,
-        cx.editor.config().fullscreen_overlay,
-    )));
+    crate::ui::quickfix::show_from_command(cx, picker);
 }
 
 fn changed_file_picker(cx: &mut Context) {
@@ -7480,6 +7471,15 @@ fn jump_view_up(cx: &mut Context) {
 }
 
 fn jump_view_down(cx: &mut Context) {
+    // From the bottom view, down is the quickfix panel when it is shown.
+    let below = cx
+        .editor
+        .tree
+        .find_split_in_direction(cx.editor.tree.focus, tree::Direction::Down);
+    if below.is_none() && cx.editor.quickfix_panel.visible {
+        ui::quickfix::focus(cx.editor);
+        return;
+    }
     cx.editor.focus_direction(tree::Direction::Down)
 }
 

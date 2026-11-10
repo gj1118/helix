@@ -2869,33 +2869,10 @@ impl Component for EditorView {
         self.clear_stale_completion(cx.editor);
         // clear with background color
         surface.set_style(area, cx.editor.theme.get("ui.background"));
-        let config = cx.editor.config();
 
-        // check if bufferline should be rendered
-        use helix_view::editor::BufferLineRenderMode;
-        let use_bufferline = match config.bufferline.render_mode {
-            BufferLineRenderMode::Always => true,
-            BufferLineRenderMode::Multiple if cx.editor.documents.len() > 1 => true,
-            _ => false,
-        };
-
-        // Reserve bottom row for commandline only when NOT using popup with full-height
-        let mut editor_area = if config.cmdline.style == helix_view::editor::CmdlineStyle::Popup
-            && config.cmdline.use_full_height
-        {
-            area // Use full height
-        } else {
-            area.clip_bottom(1) // Reserve for commandline
-        };
-
-        if use_bufferline {
-            editor_area = editor_area.clip_top(1);
-        }
-
-        // Reserve the pinned explorer column from the editor framing so the
-        // views never allocate columns under the panel (no-op when the panel
-        // is hidden or floating).
-        let editor_area = crate::ui::explorer::layout(cx.editor, editor_area);
+        let use_bufferline = uses_bufferline(cx.editor);
+        // The views' frame, and in it the views: above the quickfix panel, when it is shown.
+        let editor_area = crate::ui::quickfix::layout(cx.editor, frame(cx.editor, area));
 
         // if the terminal size suddenly changed, we need to trigger a resize
         cx.editor.resize(editor_area);
@@ -2997,16 +2974,25 @@ impl Component for EditorView {
         // Cleanup expired notifications before rendering
         cx.editor.cleanup_notifications();
 
+        // The quickfix panel (a layer above this one) takes the bottom rows of the views'
+        // frame: what is drawn here over the views stays above it, or the panel would cover it.
+        let panel = crate::ui::quickfix::panel_area(cx.editor, frame(cx.editor, area));
+        let above_panel = if panel.height > 0 {
+            area.with_height(panel.y.saturating_sub(area.y))
+        } else {
+            area
+        };
+
         // The notifications: over the views, under what is being used. The completion menu
         // (below) and the layers above this one (pickers, popups, the command line) are
         // drawn over them. A pinned explorer panel is drawn above this view, so they are
         // laid out in the area the panel leaves free instead of being painted underneath it.
-        let notification_area = crate::ui::explorer::layout(cx.editor, area);
+        let notification_area = crate::ui::explorer::layout(cx.editor, above_panel);
         self.notification_popup
             .render(notification_area, surface, cx);
 
         if let Some(completion) = self.completion.as_mut() {
-            completion.render(area, surface, cx);
+            completion.render(above_panel, surface, cx);
         }
     }
 
@@ -3019,6 +3005,37 @@ impl Component for EditorView {
             (pos, CursorKind::Underline)
         }
     }
+}
+
+/// Whether the buffer line is drawn (`bufferline`).
+fn uses_bufferline(editor: &Editor) -> bool {
+    use helix_view::editor::BufferLineRenderMode;
+    match editor.config().bufferline.render_mode {
+        BufferLineRenderMode::Always => true,
+        BufferLineRenderMode::Multiple => editor.documents.len() > 1,
+        _ => false,
+    }
+}
+
+/// The frame of the views in the screen `area`: without the command line's row (unless the
+/// popup command line takes the full height), the buffer line and a pinned explorer panel.
+/// The quickfix panel takes its bottom rows (see `ui::quickfix`).
+pub fn frame(editor: &Editor, area: Rect) -> Rect {
+    let config = editor.config();
+    // Reserve bottom row for commandline only when NOT using popup with full-height
+    let mut frame = if config.cmdline.style == helix_view::editor::CmdlineStyle::Popup
+        && config.cmdline.use_full_height
+    {
+        area
+    } else {
+        area.clip_bottom(1)
+    };
+    if uses_bufferline(editor) {
+        frame = frame.clip_top(1);
+    }
+    // Reserve the pinned explorer column so the views never allocate columns under the panel
+    // (no-op when the panel is hidden or floating).
+    crate::ui::explorer::layout(editor, frame)
 }
 
 /// Truncate a breadcrumb name in the middle with `…` when it exceeds
