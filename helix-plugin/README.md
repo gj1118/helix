@@ -174,6 +174,14 @@ Buffer methods (they raise an error once the buffer is closed):
   row) and `dropped_text` (shown instead of `text` when inline annotations do not fit and
   move to a line below). A field of the wrong type is an error. Annotations are not moved
   by edits: set them again when the text changes. `set_annotations({})` clears them.
+- `set_panel(panel)` (focused buffer only): a panel after the end of a line, drawn over the
+  text (it takes no rows, so nothing moves or scrolls for it); `set_panel(nil)` removes it.
+  Beside the line after an `arrow` when `min_width` (30) columns are left for the text,
+  otherwise in a box under the line; texts wrap, and it is cut off at the bottom of the
+  window. Fields: `char_idx`, `items` (`{ text, icon, icon_fg }`), and optionally `footer`,
+  `fg`/`bg`, `arrow`, `under_arrow`, `arrow_fg`, `left_cap`/`right_cap`, `min_width` and
+  `show_in_insert` (default `false`). Laid out again on every frame; the anchor is not
+  moved by edits.
 
 ### `helix.editor`
 
@@ -231,8 +239,8 @@ Callbacks run later, after the current plugin code has returned.
 
 ## Example plugins
 
-`contrib/plugins/` has an `auto-save` skeleton and `inline-diagnostic`, which draws the
-diagnostics of the cursor line with annotations.
+`contrib/plugins/` has an `auto-save` skeleton and `inline-diagnostic`, which shows the
+diagnostics of the cursor line in a panel, like tiny-inline-diagnostic.nvim.
 
 ## Development
 

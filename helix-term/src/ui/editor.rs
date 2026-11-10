@@ -657,13 +657,17 @@ impl EditorView {
         let plugin_annotations = doc
             .plugin_annotations
             .get(&view.id)
-            .is_some_and(|annotations| !annotations.is_empty());
+            .is_some_and(|annotations| !annotations.is_empty())
+            || doc.plugin_panels.contains_key(&view.id);
         if config.inline_diagnostics.cursor_line == DiagnosticFilter::Disable
             && config.end_of_line_diagnostics == DiagnosticFilter::Disable
             && !plugin_annotations
         {
             Self::render_diagnostics(doc, view, inner, surface, theme);
         }
+
+        // A plugin's panel goes over everything drawn in the view (it takes no rows).
+        Self::render_plugin_panel(editor, doc, view, inner, surface, theme);
 
         // Statusline on the last row of the view area.
         // The cmdline space reservation is handled at the top level in EditorView::render.
@@ -673,6 +677,98 @@ impl EditorView {
             statusline::RenderContext::new(editor, doc, view, is_focused, &self.spinners);
 
         statusline::render(&mut context, statusline_area, surface);
+    }
+
+    /// The panel a plugin attached to a line (`buffer:set_panel`), drawn over the text like
+    /// tiny-inline-diagnostic.nvim: beside the end of its line, or under it when too few
+    /// columns are left, wrapping over the lines below. It takes no rows, so no line of the
+    /// document moves and scrolling is unaffected; rows past the bottom of the view are cut.
+    fn render_plugin_panel(
+        editor: &Editor,
+        doc: &Document,
+        view: &View,
+        inner: Rect,
+        surface: &mut Surface,
+        theme: &Theme,
+    ) {
+        use helix_view::annotations::panel::{layout, PanelPart};
+        use helix_view::graphics::Color;
+
+        let Some(panel) = doc.plugin_panels.get(&view.id) else {
+            return;
+        };
+        if editor.mode() == Mode::Insert && !panel.show_in_insert {
+            return;
+        }
+        let text = doc.text().slice(..);
+        if panel.char_idx > text.len_chars() {
+            return;
+        }
+        let line = text.char_to_line(panel.char_idx);
+        let line_end = helix_core::line_ending::line_end_char_index(&text, line);
+        // The last row of the line (soft wrap), and where its text ends.
+        let Some(end) = view.screen_coords_at_pos(doc, text, line_end) else {
+            return;
+        };
+
+        let hex = |color: &Option<String>| {
+            color
+                .as_deref()
+                .and_then(|color| Color::from_hex(color).ok())
+        };
+        let mut body = theme.get("ui.popup");
+        if let Some(fg) = hex(&panel.fg) {
+            body.fg = Some(fg);
+        }
+        if let Some(bg) = hex(&panel.bg) {
+            body.bg = Some(bg);
+        }
+        // Caps and arrows: in the panel's color, on whatever is under them.
+        let edge = Style::default().fg(hex(&panel.arrow_fg).or(body.bg).unwrap_or(Color::Reset));
+        let cap = Style::default().fg(body.bg.unwrap_or(Color::Reset));
+
+        for row in layout(panel, Some(end.col), inner.width as usize) {
+            let Some(y) = u16::try_from(end.row + row.row)
+                .ok()
+                .and_then(|row| inner.y.checked_add(row))
+                .filter(|&y| y < inner.bottom())
+            else {
+                break;
+            };
+            for span in &row.spans {
+                let (style, keep_bg) = match span.part {
+                    PanelPart::Arrow => (edge, true),
+                    PanelPart::Cap => (cap, true),
+                    PanelPart::Icon(idx) => {
+                        let mut style = body;
+                        if let Some(fg) = hex(&panel.items[idx].icon_fg) {
+                            style.fg = Some(fg);
+                        }
+                        (style, false)
+                    }
+                    PanelPart::Text => (body, false),
+                };
+                let Some(x) = u16::try_from(span.col)
+                    .ok()
+                    .and_then(|col| inner.x.checked_add(col))
+                    .filter(|&x| x < inner.right())
+                else {
+                    continue;
+                };
+                let width = (inner.right() - x) as usize;
+                // Whatever the text below had (its underlines, say) must not show through.
+                let span_width = span.text.width().min(width) as u16;
+                for cx in x..x + span_width {
+                    let cell = &mut surface[(cx, y)];
+                    let bg = cell.bg;
+                    cell.reset();
+                    if keep_bg {
+                        cell.bg = bg;
+                    }
+                }
+                surface.set_stringn(x, y, &span.text, width, style);
+            }
+        }
     }
 
     /// Labels of the code lenses on the visible lines, after the end of their line.

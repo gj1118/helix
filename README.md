@@ -37,7 +37,7 @@ directory-open = " "  # expanded folder icon (default: open-folder glyph, or 
 
 5. Explorer file tree panel — toggle with `<space>x`, pinned or floating, with file operations (see [Explorer](#explorer) below)
 6. LSP code lenses — `Run`, `Debug`, `12 references` labels at the end of lines, off by default (see [Code Lenses](#code-lenses) below)
-7. Lua plugins — event handlers, commands, buffer edits, annotations, prompts and pickers (see [Plugins](#plugins) below)
+7. Lua plugins — event handlers, commands, buffer edits, annotations, overlay panels, prompts and pickers (see [Plugins](#plugins) below)
 8. Live-updating pickers — the file picker, global search, changed files, buffers, diagnostics and quicklist pickers follow changes while open; big previews load in the background
 
 

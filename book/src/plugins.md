@@ -60,7 +60,7 @@ palette). `:reload-all-plugins` loads every plugin again without restarting Heli
 commands and pending callbacks of the old ones are dropped first.
 
 The repository has two examples in `contrib/plugins/`: an `auto-save` skeleton and
-`inline-diagnostic`, which draws the diagnostics of the cursor line with annotations.
+`inline-diagnostic`, which shows the diagnostics of the cursor line in a panel (`set_panel`).
 
 ## Configuration
 
@@ -208,6 +208,22 @@ Buffer methods (they raise an error once the buffer is closed):
   annotations do not fit and move to a line below). A field of the wrong type is an error.
   Annotations are not moved by edits: set them again when the text changes (on
   `buffer_changed`). `set_annotations({})` clears them.
+- `set_panel(panel)` (focused buffer only): shows a panel in the focused window, after the
+  end of a line, drawn over the text: unlike annotations it takes no rows, so the lines
+  below never move and the view does not scroll for it. `set_panel(nil)` removes it; a
+  window has one panel (shared by all plugins). Helix lays it out again on every frame, so
+  it follows edits of the line, resizes and scrolling:
+  - Beside the line, after an arrow, when at least `min_width` columns are left for the
+    text; otherwise in a box under the line, from its first column. Long texts wrap; the
+    rows after the first are drawn over the lines below, and the panel is cut off at the
+    bottom of the window.
+  - Fields: `char_idx` (anchor; it picks the line), `items` (a list of `{ text = ...,
+    icon = ..., icon_fg = ... }`; only `text` is required), and optionally `footer` (a last
+    line without icon), `fg`/`bg` (`"#rrggbb"`; default: the theme's `ui.popup`), `arrow`
+    (`" ← "`), `under_arrow` (`"╰ "`, before the box under the line), `arrow_fg` (default:
+    `bg`), `left_cap`/`right_cap` (drawn in `bg` around each row, e.g. powerline caps),
+    `min_width` (`30`) and `show_in_insert` (`false`: hidden in insert mode).
+  - The anchor is not moved by edits: set the panel again when the text changes.
 
 ### `helix.editor`
 

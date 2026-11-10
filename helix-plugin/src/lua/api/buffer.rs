@@ -235,6 +235,18 @@ impl LuaUserData for LuaBuffer {
             },
         );
 
+        // Show a panel next to a line, drawn over the text (`nil` removes it)
+        methods.add_method("set_panel", |_lua, this, panel: Option<LuaTable>| {
+            let panel = panel.as_ref().map(panel_from_table).transpose()?;
+            with_focused_doc(this.document_id, "Panels", |view, doc| {
+                match panel {
+                    Some(panel) => doc.plugin_panels.insert(view.id, panel),
+                    None => doc.plugin_panels.remove(&view.id),
+                };
+                Ok(())
+            })
+        });
+
         // Get cursor position (char index)
         methods.add_method("get_cursor", |_lua, this, ()| {
             crate::lua::with_editor(|editor| {
@@ -397,6 +409,67 @@ impl FromLua for LuaPluginAnnotation {
     }
 }
 
+/// Read a panel (`buffer:set_panel`) from a table: `char_idx` and `items` (each with `text`,
+/// and an optional `icon` and `icon_fg`) are required; the other fields keep their defaults
+/// when absent. A field of the wrong type is an error.
+fn panel_from_table(table: &LuaTable) -> LuaResult<helix_view::annotations::panel::PluginPanel> {
+    use helix_view::annotations::panel::{PanelItem, PluginPanel};
+
+    let defaults = PluginPanel::default();
+    let items = table
+        .get::<Vec<LuaTable>>("items")?
+        .iter()
+        .map(|item| {
+            Ok(PanelItem {
+                icon: item.get::<Option<String>>("icon")?.unwrap_or_default(),
+                icon_fg: item.get("icon_fg")?,
+                text: item.get("text")?,
+            })
+        })
+        .collect::<LuaResult<_>>()?;
+    let min_width = match table.get::<Option<i64>>("min_width")? {
+        None => defaults.min_width,
+        Some(width) if width < 0 => {
+            return Err(LuaError::RuntimeError(format!(
+                "invalid panel min_width: {width} is negative"
+            )))
+        }
+        Some(width) => u16::try_from(width).unwrap_or(u16::MAX),
+    };
+    Ok(PluginPanel {
+        char_idx: table.get("char_idx")?,
+        items,
+        footer: table.get("footer")?,
+        fg: table.get("fg")?,
+        bg: table.get("bg")?,
+        arrow: table
+            .get::<Option<String>>("arrow")?
+            .unwrap_or(defaults.arrow),
+        under_arrow: table
+            .get::<Option<String>>("under_arrow")?
+            .unwrap_or(defaults.under_arrow),
+        arrow_fg: table.get("arrow_fg")?,
+        left_cap: table
+            .get::<Option<String>>("left_cap")?
+            .unwrap_or(defaults.left_cap),
+        right_cap: table
+            .get::<Option<String>>("right_cap")?
+            .unwrap_or(defaults.right_cap),
+        min_width,
+        // Strictly a boolean: Lua would read any other value as true.
+        show_in_insert: match table.get::<LuaValue>("show_in_insert")? {
+            LuaValue::Nil => defaults.show_in_insert,
+            LuaValue::Boolean(show) => show,
+            other => {
+                return Err(LuaError::RuntimeError(format!(
+                    "invalid panel show_in_insert: expected a boolean, got {}",
+                    other.type_name()
+                )))
+            }
+        },
+    })
+}
+
 /// Lua wrapper for a text position
 #[derive(Clone, Copy)]
 pub struct LuaPosition {
@@ -551,6 +624,65 @@ mod tests {
             format!("{:?}", buffer.document_id),
             format!("{:?}", DocumentId::default())
         );
+    }
+
+    #[test]
+    fn panels_are_read_with_defaults_and_validated() {
+        let lua = Lua::new();
+        let read = |code: &str| {
+            let table: LuaTable = lua.load(code).eval().unwrap();
+            panel_from_table(&table)
+        };
+
+        let panel = read(
+            r##"{ char_idx = 7, items = {
+                { icon = "●", icon_fg = "#ff0000", text = "first" },
+                { text = "second" },
+            } }"##,
+        )
+        .unwrap();
+        assert_eq!(panel.char_idx, 7);
+        assert_eq!(panel.items.len(), 2);
+        assert_eq!(panel.items[0].icon, "●");
+        assert_eq!(panel.items[0].icon_fg.as_deref(), Some("#ff0000"));
+        assert_eq!(panel.items[1].icon, "");
+        assert_eq!(panel.items[1].text, "second");
+        let defaults = helix_view::annotations::panel::PluginPanel::default();
+        assert_eq!(panel.arrow, defaults.arrow);
+        assert_eq!(panel.min_width, 30);
+        assert!(!panel.show_in_insert);
+        assert_eq!(panel.footer, None);
+
+        let panel = read(
+            r##"{ char_idx = 0, items = {}, footer = "+2 more", arrow = " < ",
+                  under_arrow = "^ ", left_cap = "(", right_cap = ")", min_width = 12,
+                  show_in_insert = true, fg = "#000000", bg = "#ffffff", arrow_fg = "#123456" }"##,
+        )
+        .unwrap();
+        assert_eq!(panel.footer.as_deref(), Some("+2 more"));
+        assert_eq!(
+            (panel.arrow.as_str(), panel.under_arrow.as_str()),
+            (" < ", "^ ")
+        );
+        assert_eq!(
+            (panel.left_cap.as_str(), panel.right_cap.as_str()),
+            ("(", ")")
+        );
+        assert_eq!(panel.min_width, 12);
+        assert!(panel.show_in_insert);
+        assert_eq!(
+            read("{ char_idx = 0, items = {}, min_width = 1e9 }")
+                .unwrap()
+                .min_width,
+            65535
+        );
+
+        // missing or wrong fields
+        assert!(read("{ items = {} }").is_err());
+        assert!(read("{ char_idx = 0 }").is_err());
+        assert!(read("{ char_idx = 0, items = { { icon = 'x' } } }").is_err());
+        assert!(read("{ char_idx = 0, items = {}, min_width = -1 }").is_err());
+        assert!(read("{ char_idx = 0, items = {}, show_in_insert = 'yes' }").is_err());
     }
 
     #[test]

@@ -172,6 +172,8 @@ pub struct Document {
     /// Jump label overlays for each view.
     pub(crate) jump_labels: HashMap<ViewId, Vec<Overlay>>,
     pub plugin_annotations: HashMap<ViewId, Vec<PluginAnnotation>>,
+    /// The panel a plugin shows next to a line, by view (`buffer:set_panel`).
+    pub plugin_panels: HashMap<ViewId, crate::annotations::panel::PluginPanel>,
     fold_container: HashMap<ViewId, FoldContainer>,
     /// LSP document highlights for each view, stored as char ranges.
     pub(crate) document_highlights: HashMap<ViewId, DocumentHighlights>,
@@ -1074,6 +1076,7 @@ impl Document {
             title: None,
             jump_labels: HashMap::new(),
             plugin_annotations: HashMap::new(),
+            plugin_panels: HashMap::new(),
             document_highlights: HashMap::new(),
             code_action_hints: HashSet::new(),
             color_swatches: None,
@@ -1819,6 +1822,7 @@ impl Document {
         // edit keeps updating the folds of windows that no longer exist.
         self.fold_container.remove(&view_id);
         self.plugin_annotations.remove(&view_id);
+        self.plugin_panels.remove(&view_id);
     }
 
     /// Apply a [`Transaction`] to the [`Document`] to change its text.

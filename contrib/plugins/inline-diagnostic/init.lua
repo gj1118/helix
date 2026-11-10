@@ -1,15 +1,14 @@
--- Clean panel-style diagnostics with rounded corners and colored bullets
--- Inspired by tiny-inline-diagnostic.nvim
--- Now with proper rounded corners on ALL lines!
+-- Panel-style diagnostics with rounded caps and colored bullets, modelled after
+-- tiny-inline-diagnostic.nvim: the diagnostics of the cursor line are shown in a panel
+-- after the end of the line, drawn over the text (it never moves the lines below or
+-- scrolls the view). Long messages wrap, and further diagnostics follow, over the lines
+-- below; with too few columns left beside the line, the panel goes under it. Hidden in
+-- insert mode by default.
 
 local config = {
   -- Panel colors
-  -- panel_bg = "#2d4f5e",    -- Muted teal background
-  panel_bg = "#cba6f7",   -- Muted teal background
-
-  -- panel_fg = "#c0ccd4",    -- Soft gray text
-  panel_fg = "#1e1e2e",   -- Soft gray text
-
+  panel_bg = "#cba6f7",
+  panel_fg = "#1e1e2e",
 
   -- Severity colors (for bullets)
   error_color = "#ff6b6b",
@@ -17,10 +16,10 @@ local config = {
   info_color = "#6bcb77",
   hint_color = "#4d96ff",
 
-  -- Arrow pointing to the panel (used when inline on same line as code)
+  -- Arrow pointing from the line to the panel beside it
   arrow = "←",
 
-  -- Arrow for dropped diagnostics (used when moved to virtual line below)
+  -- Arrow pointing from the panel under the line to it
   arrow_dropped = "╰",
 
   -- Bullet character
@@ -30,8 +29,15 @@ local config = {
   left_cap = utf8.char(0xE0B6),    --
   right_cap = utf8.char(0xE0B4),   --
 
-  -- Max lines before truncation
+  -- Diagnostics shown before "+N more"
   max_lines = 4,
+
+  -- Fewer columns than this left for the messages beside the line put the panel under it
+  -- (tiny-inline-diagnostic's `softwrap`)
+  min_width = 30,
+
+  -- Show the panel in insert mode too (tiny-inline-diagnostic's `enable_on_insert`)
+  show_in_insert = false,
 }
 
 -- Load user config
@@ -63,261 +69,63 @@ local function get_bullet_color(severity)
   return config.info_color
 end
 
-local function calculate_visual_width(text, tab_width)
-  tab_width = tab_width or 4
-  local expanded = text:gsub("\t", string.rep(" ", tab_width))
-  return utf8.len(expanded) or #expanded
-end
-
 local function update_diagnostics()
   local buffer = helix.buffer.get_current()
   if not buffer then return end
 
   local cursor = buffer:get_cursor()
   local current_line_idx = buffer:char_to_line(cursor)
-  local diagnostics = buffer:get_diagnostics()
-
-  local tab_width = 4
 
   -- Collect diagnostics on current line
   local line_diags = {}
-  for _, diag in ipairs(diagnostics) do
+  for _, diag in ipairs(buffer:get_diagnostics()) do
     if diag.line == current_line_idx then
       table.insert(line_diags, diag)
     end
   end
 
   if #line_diags == 0 then
-    buffer:set_annotations({})
+    buffer:set_panel(nil)
     return
   end
 
-  -- Sort by severity
+  -- Most severe first
   table.sort(line_diags, function(a, b)
     local prio_a = severity_priority[a.severity] or 99
     local prio_b = severity_priority[b.severity] or 99
     return prio_a < prio_b
   end)
 
-  -- Truncate if too many
-  local show_diags = {}
-  local hidden_count = 0
+  local items = {}
+  for i = 1, math.min(#line_diags, config.max_lines) do
+    local diag = line_diags[i]
+    table.insert(items, {
+      icon = config.bullet,
+      icon_fg = get_bullet_color(diag.severity),
+      text = diag.message,
+    })
+  end
+
+  local footer = nil
   if #line_diags > config.max_lines then
-    hidden_count = #line_diags - config.max_lines
-    for i = 1, config.max_lines do
-      table.insert(show_diags, line_diags[i])
-    end
-  else
-    show_diags = line_diags
+    footer = "... (+" .. (#line_diags - config.max_lines) .. " more)"
   end
 
-  -- Calculate panel content width (for padding)
-  local max_msg_len = 0
-  for _, diag in ipairs(show_diags) do
-    local len = utf8.len(config.bullet .. " " .. diag.message) or #diag.message
-    if len > max_msg_len then
-      max_msg_len = len
-    end
-  end
-
-  if hidden_count > 0 then
-    local trunc_msg = "... (+" .. hidden_count .. " more)"
-    local trunc_len = utf8.len(trunc_msg) or #trunc_msg
-    if trunc_len > max_msg_len then
-      max_msg_len = trunc_len
-    end
-  end
-
-  local content_width = max_msg_len + 2
-
-  -- Calculate alignment
-  -- The whole line by its (1-based) number, without its line ending. (Slicing
-  -- `get_text()` with `sub` would mix char indices with Lua's byte indices and cut
-  -- lines with non-ASCII text in the wrong place.)
-  local current_line_text = buffer:get_line(current_line_idx + 1):gsub("[\r\n]+$", "")
-  local line_visual_width = calculate_visual_width(current_line_text, tab_width)
-  if current_line_text == "" then line_visual_width = 0 end
-
-  local annotations = {}
-  local char_idx = line_diags[1].range.start
-
-  -- ========================================
-  -- FIRST LINE (INLINE - same row as code)
-  -- ========================================
-  local first_diag = show_diags[1]
-  local first_bullet_color = get_bullet_color(first_diag.severity)
-
-  -- Don't add padding to inline message - only virtual lines need alignment padding
-  local first_msg = first_diag.message
-
-  local offset = 1
-
-  -- Arrow (uses dropped_text when diagnostic moves to virtual line)
-  table.insert(annotations, helix.buffer.annotation({
-    char_idx = char_idx,
-    text = " " .. config.arrow .. " ",
-    dropped_text = " " .. config.arrow_dropped .. " ",
-    fg = config.panel_bg,
-    offset = offset,
-    is_line = false
-  }))
-  offset = offset + 3
-
-  -- Left cap
-  table.insert(annotations, helix.buffer.annotation({
-    char_idx = char_idx,
-    text = config.left_cap,
-    fg = config.panel_bg,
-    offset = offset,
-    is_line = false
-  }))
-  offset = offset + 1
-
-  -- Colored bullet (no leading space - left cap provides transition)
-  table.insert(annotations, helix.buffer.annotation({
-    char_idx = char_idx,
-    text = config.bullet,
-    fg = first_bullet_color,
-    bg = config.panel_bg,
-    offset = offset,
-    is_line = false
-  }))
-  offset = offset + 1
-
-  -- Message text
-  table.insert(annotations, helix.buffer.annotation({
-    char_idx = char_idx,
-    text = " " .. first_msg .. " ",
+  -- Helix lays the panel out (beside or under the line, wrapped to the view) on every frame.
+  buffer:set_panel({
+    char_idx = line_diags[1].range.start,
+    items = items,
+    footer = footer,
     fg = config.panel_fg,
     bg = config.panel_bg,
-    offset = offset,
-    is_line = false
-  }))
-  offset = offset + utf8.len(" " .. first_msg .. " ")
-
-  -- Right cap
-  table.insert(annotations, helix.buffer.annotation({
-    char_idx = char_idx,
-    text = config.right_cap,
-    fg = config.panel_bg,
-    offset = offset,
-    is_line = false
-  }))
-
-  -- ========================================
-  -- SUBSEQUENT LINES (Virtual - multi-part with virt_line_idx!)
-  -- ========================================
-  local virt_line_base_offset = line_visual_width + 5
-
-  for i = 2, #show_diags do
-    local diag = show_diags[i]
-    local bullet_color = get_bullet_color(diag.severity)
-    local virt_idx = i - 2     -- 0-indexed virtual line row
-
-    local msg = diag.message
-    local msg_len = utf8.len(config.bullet .. " " .. msg) or #msg
-    local msg_padding = content_width - msg_len
-    if msg_padding > 0 then
-      msg = msg .. string.rep(" ", msg_padding)
-    end
-
-    local v_offset = virt_line_base_offset
-
-    -- Left cap (same virt_line_idx = same Y row)
-    table.insert(annotations, helix.buffer.annotation({
-      char_idx = char_idx,
-      text = config.left_cap,
-      fg = config.panel_bg,
-      offset = v_offset,
-      is_line = true,
-      virt_line_idx = virt_idx
-    }))
-    v_offset = v_offset + 1
-
-    -- Colored bullet
-    table.insert(annotations, helix.buffer.annotation({
-      char_idx = char_idx,
-      text = " " .. config.bullet,
-      fg = bullet_color,
-      bg = config.panel_bg,
-      offset = v_offset,
-      is_line = true,
-      virt_line_idx = virt_idx
-    }))
-    v_offset = v_offset + 2
-
-    -- Message
-    table.insert(annotations, helix.buffer.annotation({
-      char_idx = char_idx,
-      text = " " .. msg .. " ",
-      fg = config.panel_fg,
-      bg = config.panel_bg,
-      offset = v_offset,
-      is_line = true,
-      virt_line_idx = virt_idx
-    }))
-    v_offset = v_offset + utf8.len(" " .. msg .. " ")
-
-    -- Right cap
-    table.insert(annotations, helix.buffer.annotation({
-      char_idx = char_idx,
-      text = config.right_cap,
-      fg = config.panel_bg,
-      offset = v_offset,
-      is_line = true,
-      virt_line_idx = virt_idx
-    }))
-  end
-
-  -- ========================================
-  -- TRUNCATION LINE (if needed)
-  -- ========================================
-  if hidden_count > 0 then
-    local trunc_msg = "... (+" .. hidden_count .. " more)"
-    local trunc_len = utf8.len(trunc_msg) or #trunc_msg
-    local trunc_padding = content_width - trunc_len
-    if trunc_padding > 0 then
-      trunc_msg = trunc_msg .. string.rep(" ", trunc_padding)
-    end
-
-    local virt_idx = #show_diags - 1     -- After all diagnostic lines
-    local v_offset = virt_line_base_offset
-
-    -- Left cap
-    table.insert(annotations, helix.buffer.annotation({
-      char_idx = char_idx,
-      text = config.left_cap,
-      fg = config.panel_bg,
-      offset = v_offset,
-      is_line = true,
-      virt_line_idx = virt_idx
-    }))
-    v_offset = v_offset + 1
-
-    -- Truncation text
-    table.insert(annotations, helix.buffer.annotation({
-      char_idx = char_idx,
-      text = " " .. trunc_msg .. " ",
-      fg = config.panel_fg,
-      bg = config.panel_bg,
-      offset = v_offset,
-      is_line = true,
-      virt_line_idx = virt_idx
-    }))
-    v_offset = v_offset + utf8.len(" " .. trunc_msg .. " ")
-
-    -- Right cap
-    table.insert(annotations, helix.buffer.annotation({
-      char_idx = char_idx,
-      text = config.right_cap,
-      fg = config.panel_bg,
-      offset = v_offset,
-      is_line = true,
-      virt_line_idx = virt_idx
-    }))
-  end
-
-  buffer:set_annotations(annotations)
+    arrow = " " .. config.arrow .. " ",
+    under_arrow = config.arrow_dropped .. " ",
+    arrow_fg = config.panel_bg,
+    left_cap = config.left_cap,
+    right_cap = config.right_cap,
+    min_width = config.min_width,
+    show_in_insert = config.show_in_insert,
+  })
 end
 
 helix.on("selection_change", function(event)
@@ -328,4 +136,7 @@ helix.on("lsp_diagnostic", function(event)
   update_diagnostics()
 end)
 
-helix.log.info("[inline-diagnostic] Full rounded corners enabled with virt_line_idx!")
+-- The panel stays where it was put: follow edits (`dd`, say) until the new diagnostics come.
+helix.on("buffer_changed", function(event)
+  update_diagnostics()
+end)
