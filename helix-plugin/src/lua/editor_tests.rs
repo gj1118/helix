@@ -1318,3 +1318,369 @@ fn the_status_line_example_of_the_book_works() {
         "{saved:?}"
     );
 }
+
+/// A UI handler that records timers that are due and popups.
+#[derive(Default)]
+struct AsyncUi {
+    timers: parking_lot::Mutex<Vec<(String, u64)>>,
+    delivered: parking_lot::Mutex<Vec<(String, u64, serde_json::Value)>>,
+    popups: parking_lot::Mutex<Vec<crate::types::PluginPopup>>,
+    closed: parking_lot::Mutex<Vec<u64>>,
+}
+
+impl UiHandler for AsyncUi {
+    fn prompt(&self, _: &mut Editor, _: String, _: Option<String>, _: String, _: u64) {}
+    fn confirm(&self, _: &mut Editor, _: String, _: String, _: u64) {}
+    fn picker(&self, _: &mut Editor, _: Vec<String>, _: String, _: String, _: u64) {}
+    fn timer(&self, plugin: String, id: u64) {
+        self.timers.lock().push((plugin, id));
+    }
+    fn deliver(&self, plugin: String, id: u64, value: serde_json::Value) {
+        self.delivered.lock().push((plugin, id, value));
+    }
+    fn popup(&self, popup: crate::types::PluginPopup) {
+        self.popups.lock().push(popup);
+    }
+    fn popup_close(&self, id: u64) {
+        self.closed.lock().push(id);
+    }
+}
+
+/// An engine whose plugin `p` has the UI handler `ui` (set before its state is made, as the
+/// application does).
+fn engine_with_ui(ui: Arc<AsyncUi>) -> LuaEngine {
+    let mut engine = LuaEngine::new().unwrap();
+    engine.set_ui_handler(ui);
+    engine
+        .add_state("p", crate::permissions::Permissions::all())
+        .unwrap();
+    engine
+}
+
+fn timer_runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+}
+
+#[test]
+fn timers_fire_once_or_repeatedly_until_cancelled() {
+    let rt = timer_runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let ui = Arc::new(AsyncUi::default());
+    let engine = engine_with_ui(ui.clone());
+    run(
+        &engine,
+        &mut editor,
+        r#"
+        fired = {}
+        once = helix.defer(5, function() fired[#fired + 1] = "once" end)
+        tick = helix.every(10, function() fired[#fired + 1] = "tick" end)
+        "#,
+    )
+    .unwrap();
+    let (once, tick): (u64, u64) = (
+        lua(&engine).globals().get("once").unwrap(),
+        lua(&engine).globals().get("tick").unwrap(),
+    );
+    // the timers run on the runtime; a repeating one waits for its firing to be run
+    rt.block_on(tokio::time::sleep(std::time::Duration::from_millis(60)));
+    let due: Vec<u64> = ui.timers.lock().iter().map(|(_, id)| *id).collect();
+    assert_eq!(
+        due,
+        [once, tick],
+        "one firing of the repeating timer while it waits"
+    );
+
+    for (plugin, id) in std::mem::take(&mut *ui.timers.lock()) {
+        engine.fire_timer(&mut editor, &plugin, id).unwrap();
+    }
+    rt.block_on(tokio::time::sleep(std::time::Duration::from_millis(30)));
+    let due: Vec<u64> = ui.timers.lock().iter().map(|(_, id)| *id).collect();
+    assert_eq!(
+        due,
+        [tick],
+        "the one-shot timer is done, the other fired again"
+    );
+    // the one-shot timer is gone: firing it again does nothing
+    engine.fire_timer(&mut editor, "p", once).unwrap();
+
+    run(
+        &engine,
+        &mut editor,
+        "cancelled = helix.cancel(tick); again = helix.cancel(tick)",
+    )
+    .unwrap();
+    let (cancelled, again): (bool, bool) = (
+        lua(&engine).globals().get("cancelled").unwrap(),
+        lua(&engine).globals().get("again").unwrap(),
+    );
+    assert_eq!((cancelled, again), (true, false));
+    ui.timers.lock().clear();
+    rt.block_on(tokio::time::sleep(std::time::Duration::from_millis(30)));
+    assert!(ui.timers.lock().is_empty(), "a cancelled timer stops");
+    let fired: Vec<String> = lua(&engine).globals().get("fired").unwrap();
+    assert_eq!(fired, ["once", "tick"]);
+
+    let error = run(&engine, &mut editor, "helix.defer(-1, function() end)")
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("Invalid delay"), "{error}");
+}
+
+#[test]
+fn programs_run_in_the_background_and_need_shell() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let ui = Arc::new(AsyncUi::default());
+    let engine = engine_with_ui(ui.clone());
+    run(
+        &engine,
+        &mut editor,
+        r#"
+        helix.process.run({ "sh", "-c", "printf %s \"$0\"", "from argv" }, function(result)
+            got = result.stdout .. "|" .. tostring(result.success) .. "|" .. math.type(result.code)
+        end)
+        "#,
+    )
+    .unwrap();
+    // the program runs on the runtime; its result is delivered
+    for _ in 0..200 {
+        if !ui.delivered.lock().is_empty() {
+            break;
+        }
+        rt.block_on(tokio::time::sleep(std::time::Duration::from_millis(10)));
+    }
+    let (plugin, id, value) = ui.delivered.lock().pop().expect("the result was delivered");
+    engine
+        .handle_ui_callback(&mut editor, plugin, id, value)
+        .unwrap();
+    let got: String = lua(&engine).globals().get("got").unwrap();
+    assert_eq!(got, "from argv|true|integer");
+
+    let mut limited = LuaEngine::new().unwrap();
+    limited.set_ui_handler(ui.clone());
+    limited
+        .add_state("p", crate::permissions::Permissions::DEFAULT)
+        .unwrap();
+    let error = limited
+        .run_as(
+            "p",
+            &mut editor,
+            r#"helix.process.run({ "true" }, function() end)"#,
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("'shell' permission"), "{error}");
+}
+
+#[test]
+fn language_server_requests_are_checked_by_method() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let mut engine = LuaEngine::new().unwrap();
+    engine
+        .add_state("p", crate::permissions::Permissions::DEFAULT)
+        .unwrap();
+    // reading is allowed (but there is no server here), anything else needs `shell`
+    let hover = engine
+        .run_as(
+            "p",
+            &mut editor,
+            r#"helix.lsp.request("textDocument/hover", {}, function() end)"#,
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(
+        hover.contains("No language server for the buffer"),
+        "{hover}"
+    );
+    let execute = engine
+        .run_as(
+            "p",
+            &mut editor,
+            r#"helix.lsp.request("workspace/executeCommand", {}, function() end)"#,
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(execute.contains("'shell' permission"), "{execute}");
+    let notify = engine
+        .run_as("p", &mut editor, r#"helix.lsp.notify("$/note", {})"#)
+        .unwrap_err()
+        .to_string();
+    assert!(notify.contains("'shell' permission"), "{notify}");
+    let position = engine
+        .run_as("p", &mut editor, "helix.lsp.position_params()")
+        .unwrap_err()
+        .to_string();
+    assert!(position.contains("has no file"), "{position}");
+}
+
+#[test]
+fn popups_are_read_from_their_options() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let ui = Arc::new(AsyncUi::default());
+    let engine = engine_with_ui(ui.clone());
+    run(
+        &engine,
+        &mut editor,
+        r##"
+        handle = helix.ui.popup{
+            title = "Info",
+            lines = { "plain", { { text = "red", fg = "red" }, " and ", { text = "kw", style = "keyword" } } },
+            position = "center", max_width = 40, persistent = true,
+        }
+        handle:update{ markdown = "# Done", position = { row = 3, col = 4 } }
+        handle:close()
+        ok, err = pcall(helix.ui.popup, { text = "a", markdown = "b" })
+        err = tostring(err)
+        "##,
+    )
+    .unwrap();
+    use crate::types::{PopupContent, PopupPosition};
+    let popups = ui.popups.lock().clone();
+    assert_eq!(popups.len(), 2);
+    let first = &popups[0];
+    let (title, position, max_width, persistent) = (
+        first.title.as_deref(),
+        first.position,
+        first.max_width,
+        first.persistent,
+    );
+    assert_eq!(
+        (title, position, max_width, persistent),
+        (Some("Info"), PopupPosition::Center, Some(40), true)
+    );
+    let PopupContent::Lines(lines) = &first.content else {
+        panic!("lines expected: {:?}", first.content);
+    };
+    let texts: Vec<Vec<&str>> = lines
+        .iter()
+        .map(|line| line.iter().map(|(text, _, _)| text.as_str()).collect())
+        .collect();
+    assert_eq!(texts, [vec!["plain"], vec!["red", " and ", "kw"]]);
+    let (red, keyword) = (lines[1][0].2.fg, lines[1][2].1.as_deref());
+    assert_eq!(
+        (red, keyword),
+        (Some(helix_view::graphics::Color::Red), Some("keyword"))
+    );
+    assert_eq!(
+        (popups[1].content.clone(), popups[1].position, popups[1].id),
+        (
+            PopupContent::Markdown("# Done".into()),
+            PopupPosition::At { row: 3, col: 4 },
+            first.id
+        )
+    );
+    assert_eq!(*ui.closed.lock(), [first.id]);
+    let err: String = lua(&engine).globals().get("err").unwrap();
+    assert!(
+        err.contains("one of `text`, `lines` and `markdown`"),
+        "{err}"
+    );
+}
+
+#[test]
+fn decorations_follow_the_edits() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    run(
+        &engine,
+        &mut editor,
+        r#"
+        local b = helix.buffer.get_current()
+        b:set_text("aaa\nbbb\nccc\n")
+        b:set_signs({ { line = 2, text = "S" } })
+        b:set_highlights({ { from = 4, to = 7, style = "warning" }, { from = 8, to = 11, style = "info" } })
+        b:set_annotations({ { char_idx = 8, text = "note" } })
+        b:set_panel({ char_idx = 4, items = { { text = "panel" } } })
+        -- a new line at the top, and the third line deleted
+        b:insert(1, 0, "new\n")
+        b:delete(4, 0, 5, 0)
+        "#,
+    )
+    .unwrap();
+    let (view, doc) = helix_view::current_ref!(editor);
+    assert_eq!(doc.text().to_string(), "new\naaa\nbbb\n");
+    let sign_lines: Vec<usize> = doc.plugin_signs.iter().map(|s| s.line).collect();
+    assert_eq!(sign_lines, [2], "the sign stays on `bbb`");
+    let highlights: Vec<(usize, usize, &str)> = doc
+        .plugin_highlights
+        .iter()
+        .map(|h| (h.from, h.to, h.scope.as_str()))
+        .collect();
+    assert_eq!(
+        highlights,
+        [(8, 11, "warning")],
+        "`bbb` moved; `ccc` was deleted"
+    );
+    let annotation: usize = doc.plugin_annotations[&view.id][0].char_idx;
+    assert_eq!(
+        annotation, 12,
+        "its line went: it moved to where the deletion was"
+    );
+    let panel: usize = doc.plugin_panels[&view.id].char_idx;
+    assert_eq!(panel, 8, "with `bbb`");
+}
+
+/// A ```lua example of the book that starts with `start`.
+fn book_example(start: &str) -> &'static str {
+    let book = include_str!("../../../book/src/plugins.md");
+    let begin = book.find(start).expect("the example is in the book");
+    let end = begin + book[begin..].find("```").expect("the example ends");
+    &book[begin..end]
+}
+
+/// The examples of the book for programs and language server requests compile, and the
+/// program one runs (in Helix's repository: git is there).
+#[test]
+fn the_background_examples_of_the_book_work() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let ui = Arc::new(AsyncUi::default());
+    let engine = engine_with_ui(ui.clone());
+    let hover = book_example(r#"helix.register_command{ name = "hover-status""#);
+    let compiled = lua(&engine).load(hover).into_function();
+    assert!(compiled.is_ok(), "{:?}", compiled.err());
+
+    let git = book_example(r#"helix.register_command{ name = "git-branch""#);
+    run(&engine, &mut editor, git).unwrap();
+    engine
+        .execute_command(&mut editor, "git-branch", vec![])
+        .unwrap();
+    for _ in 0..500 {
+        if !ui.delivered.lock().is_empty() {
+            break;
+        }
+        rt.block_on(tokio::time::sleep(std::time::Duration::from_millis(10)));
+    }
+    let (plugin, id, value) = ui.delivered.lock().pop().expect("git ran");
+    let success: bool = value["success"].as_bool().unwrap_or(false);
+    // the example's own assertions hold
+    engine
+        .handle_ui_callback(&mut editor, plugin, id, value)
+        .unwrap();
+    if success {
+        let branch: Option<&str> = editor
+            .plugin_statusline
+            .iter()
+            .find(|s| s.id == "branch")
+            .map(|s| s.text.as_str());
+        assert!(branch.is_none_or(|b| !b.is_empty() && !b.ends_with('\n')));
+    }
+}

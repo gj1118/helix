@@ -123,7 +123,7 @@ permissions = ["edit", "files"]
 | `config` | Changing settings: `:set`, `:toggle`, `:config-reload`, `:lang`, `:cd`, `:lsp-restart`... | |
 | `keymaps` | Changing key bindings | |
 | `explorer` | Controlling the file explorer | |
-| `shell` | Running programs: `:sh`, `:pipe`, `:insert-output`, debug adapters, `:lsp-workspace-command`, `:workspace-trust`, and the settings that run programs (`:set shell`, `clipboard-provider`) | |
+| `shell` | Running programs: `helix.process`, `:sh`, `:pipe`, `:insert-output`, debug adapters, `:lsp-workspace-command`, `:workspace-trust`, the settings that run programs (`:set shell`, `clipboard-provider`), and the language server requests that are not only reads (`workspace/executeCommand`, a server's own methods, notifications) | |
 
 `"all"` grants everything. An unknown name is a config error.
 
@@ -148,7 +148,10 @@ permissions = ["edit", "files"]
 
 Plugin code runs on the editor's thread: while it runs, the editor does not draw or read
 keys. Keep handlers short, especially for frequent events (`key_press`, `selection_change`,
-`buffer_changed`).
+`buffer_changed`). What takes time runs in the background with a callback: timers
+(`helix.defer`, `helix.every`), programs (`helix.process`) and language server requests
+(`helix.lsp.request`); the callbacks run on the editor's thread, with the time limit, when
+the result is in.
 
 - **Time limit**: loading a plugin, and each call of an event handler, a command or a UI
   callback, may run for at most 2 seconds. Then it is aborted with the error
@@ -304,8 +307,9 @@ Buffer methods (they raise an error once the buffer is closed):
   lines) or `{ { from, to, style } }` (char indices); `style` is a theme key (`"warning"`,
   `"diff.plus"`, or one set with `helix.ui.set_style`). Replaces the plugin's highlights of
   the buffer; `set_highlights({})` clears them (`ui`).
-- Signs and highlights, like annotations, are not moved by edits: set them again on
-  `buffer_changed`.
+- Signs, highlights, annotations and panels move with the text as it is edited: an anchor
+  stays with the text after it, a highlight keeps what remains of its text (text typed at
+  its edges is not in it; it goes when all of it is deleted), a sign stays on its line.
 - `get_info()`: `{ indent_style = "tabs"|"spaces", indent_width, tab_width, line_ending =
   "lf"|"crlf", encoding, readonly, text_width }`.
 - `save(force)`: writes the buffer (`files`); `close(force)`: closes it (`force`: even with
@@ -318,8 +322,7 @@ Buffer methods (they raise an error once the buffer is closed):
   anchor's line instead of text after the end of the line), `virt_line_idx` (virtual lines
   with the same index share a row) and `dropped_text` (shown instead of `text` when inline
   annotations do not fit and move to a line below). A field of the wrong type is an error.
-  Annotations are not moved by edits: set them again when the text changes (on
-  `buffer_changed`). `set_annotations({})` clears them.
+  Annotations move with the text when it is edited. `set_annotations({})` clears them.
 - `set_panel(panel)` (focused buffer only): shows a panel in the focused window, after the
   end of a line, drawn over the text: unlike annotations it takes no rows, so the lines
   below never move and the view does not scroll for it. `set_panel(nil)` removes it; a
@@ -335,7 +338,7 @@ Buffer methods (they raise an error once the buffer is closed):
     (`" ← "`), `under_arrow` (`"╰ "`, before the box under the line), `arrow_fg` (default:
     `bg`), `left_cap`/`right_cap` (drawn in `bg` around each row, e.g. powerline caps),
     `min_width` (`30`) and `show_in_insert` (`false`: hidden in insert mode).
-  - The anchor is not moved by edits: set the panel again when the text changes.
+  - The anchor moves with the text when it is edited.
 
 ### `helix.editor`
 
@@ -399,6 +402,16 @@ Buffer methods (they raise an error once the buffer is closed):
   the theme's own back.
 - `get_theme()`, `set_theme(name)`, `get_terminal_size()` (`{width, height}` of the editor
   area), `redraw()`.
+- `popup{ text | lines | markdown, title, position, max_width, max_height, persistent }`: a
+  popup with plain `text`, styled `lines` (each line a string, or a list of strings and
+  `{ text, ... }` segments with a [style](#styles)), or `markdown` (drawn like the hover
+  documentation). `position` is `"cursor"` (default; next to it, like hover), `"center"`, or
+  `{ row, col }` (its top left corner on the screen, 0-based). `max_width` and `max_height`
+  limit its size (columns, rows of content). It closes with `Esc` and, unless `persistent`,
+  with the next key; a persistent popup lets the keys through to the editor. Returns a
+  handle: `handle:update(options)` shows other content (the same options),
+  `handle:close()` closes it. One plugin popup is shown at a time: a new one replaces it
+  (`ui`).
 - `show_help()` is not implemented (raises an error).
 
 Callbacks run later, after the current plugin code has returned. A prompt or picker that is
@@ -507,9 +520,76 @@ A plugin's own list can also go in the panel: `helix.ui.picker{ ..., dock = true
 What the explorer does to files is heard of with the `file_create`, `file_rename`,
 `file_copy` and `file_delete` events, and its cursor with `explorer_select`.
 
+### Timers
+
+- `helix.defer(ms, fn)`: runs `fn` once, `ms` milliseconds from now (`0`: as soon as the
+  running plugin code has returned); returns the timer's id.
+- `helix.every(ms, fn)`: runs `fn` every `ms` milliseconds (10 at least) until cancelled;
+  returns its id. While the editor is busy, a firing that is due waits, and the ones after it
+  are not queued up behind it.
+- `helix.cancel(id)`: stops a timer of the plugin; returns whether it was running.
+
+The functions run on the editor's thread like event handlers (with the editor and the time
+limit). `:reload-all-plugins` stops every timer.
+
+### `helix.process`
+
+Programs run in the background; their result comes to a callback (`shell`).
+
+- `run({ program, arg, ... }, options, function(result) end)`: runs `program` with the
+  arguments (no shell in between). `options` (may be left out) has `cwd`, `stdin` (a string
+  written to the program's input), `env` (`{ NAME = "value" }`, added to Helix's environment)
+  and `timeout` (milliseconds, default 60000; the program is killed after it).
+- `shell(command_line, options, function(result) end)`: the same with the configured shell
+  (`shell` of `[editor]`, `sh -c` by default).
+
+`result` is `{ success, code, stdout, stderr, timed_out, truncated, error }`: `code` is the
+exit code (`nil` when the program was killed by a signal), `stdout` and `stderr` are its
+output (each cut at 16 MiB, then `truncated` is true), `error` says why the program could not
+run (`success` is false then).
+
+```lua
+helix.register_command{ name = "git-branch", handler = function()
+    helix.process.run({ "git", "branch", "--show-current" }, function(result)
+        assert(type(result.success) == "boolean" and type(result.stdout) == "string")
+        if result.success then
+            local branch = result.stdout:gsub("%s+$", "")
+            assert(type(branch) == "string")
+            -- (empty on a detached HEAD)
+            if branch ~= "" then
+                helix.statusline.set("branch", { text = branch, position = "left" })
+            end
+        end
+    end)
+end }
+```
+
 ### `helix.lsp`
 
 - `get_clients()`: `{ {name = ..., id = ...}, ... }` for all running language servers.
+- `request(method, params, options, function(result, error) end)`: sends a request to a
+  language server of `options.buffer` (default: the focused buffer), the one named
+  `options.server` or its first (`options` may be left out). The answer comes to the callback:
+  `result` (`nil` for none) or `error` (a string). Requests that only read (`textDocument/*`,
+  `workspace/symbol`) need `read`; the others need `shell`.
+- `notify(method, params, options)`: sends a notification (`shell`).
+- `position_params(options)`: `{ textDocument = { uri }, position = { line, character } }` of
+  the focused window's cursor, in the position encoding of the server (`options.server`, or
+  the first): the params of most `textDocument/*` requests.
+
+```lua
+helix.register_command{ name = "hover-status", handler = function()
+    helix.lsp.request("textDocument/hover", helix.lsp.position_params(), function(result, err)
+        assert(err == nil or type(err) == "string")
+        if result then
+            local contents = result.contents
+            local text = type(contents) == "table" and (contents.value or contents[1]) or contents
+            assert(type(text) == "string")
+            helix.ui.popup{ markdown = text }
+        end
+    end)
+end }
+```
 
 ### `helix.log`
 

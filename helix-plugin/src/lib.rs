@@ -220,6 +220,11 @@ impl PluginManager {
         engine.handle_ui_callback(editor, plugin_name, callback_id, value)
     }
 
+    /// Runs the callback of a plugin's timer that is due.
+    pub fn fire_timer(&self, editor: &mut Editor, plugin_name: &str, timer_id: u64) -> Result<()> {
+        self.engine.read().fire_timer(editor, plugin_name, timer_id)
+    }
+
     /// Release a pending UI callback without calling it (e.g. the prompt was
     /// aborted or the picker was closed). Returns whether one was pending.
     pub fn release_ui_callback(&self, plugin_name: String, callback_id: u64) -> bool {

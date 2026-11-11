@@ -1909,6 +1909,43 @@ impl Document {
     }
 
     /// Apply a [`Transaction`] to the [`Document`] to change its text.
+    /// Moves plugins' annotations, panels, highlights and signs with the text through
+    /// `changes` (of `old_text`): an anchor stays with the text after it, a highlight shrinks
+    /// to what remains of its text (and goes when nothing does), a sign stays on its line (the
+    /// line of the start of a deletion when its line was deleted).
+    fn map_plugin_decorations(&mut self, changes: &helix_core::ChangeSet, old_text: &Rope) {
+        use helix_core::Assoc;
+        for annotations in self.plugin_annotations.values_mut() {
+            for annotation in annotations {
+                annotation.char_idx = changes.map_pos(annotation.char_idx, Assoc::After);
+            }
+        }
+        for panel in self.plugin_panels.values_mut() {
+            panel.char_idx = changes.map_pos(panel.char_idx, Assoc::After);
+        }
+        if !self.plugin_highlights.is_empty() {
+            for highlight in &mut self.plugin_highlights {
+                let from = changes.map_pos(highlight.from, Assoc::After);
+                let to = changes.map_pos(highlight.to, Assoc::Before);
+                highlight.from = from;
+                highlight.to = to.max(from);
+            }
+            self.plugin_highlights.retain(|h| h.from < h.to);
+        }
+        if !self.plugin_signs.is_empty() {
+            let old_lines = old_text.len_lines();
+            let new_text = self.text.slice(..);
+            for sign in &mut self.plugin_signs {
+                let start = old_text.line_to_char(sign.line.min(old_lines.saturating_sub(1)));
+                let mapped = changes
+                    .map_pos(start, Assoc::After)
+                    .min(new_text.len_chars());
+                sign.line = new_text.char_to_line(mapped);
+            }
+            self.plugin_signs.sort_by_key(|sign| sign.line);
+        }
+    }
+
     fn apply_impl(
         &mut self,
         transaction: &Transaction,
@@ -1998,6 +2035,9 @@ impl Document {
         if let Some(diff_handle) = &self.diff_handle {
             diff_handle.update_document(self.text.clone(), false);
         }
+
+        // Plugins' decorations follow the text they were put on.
+        self.map_plugin_decorations(changes, &old_doc);
 
         // map diagnostics over changes too
         changes.update_positions(self.diagnostics.iter_mut().map(|diagnostic| {

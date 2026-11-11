@@ -1015,3 +1015,211 @@ async fn plugins_draw_in_the_status_line_gutter_and_text() -> anyhow::Result<()>
     );
     Ok(())
 }
+
+/// Runs the event loop until `done` (or about 5 seconds): for results that come from other
+/// threads (timers, programs, language servers).
+async fn wait_for(app: &mut Application, done: impl Fn(&Application) -> bool) -> bool {
+    for _ in 0..200 {
+        if done(app) {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        helpers::run_event_loop_until_idle(app).await;
+    }
+    done(app)
+}
+
+/// Timers run on the editor's thread, a program's output comes back to Lua, and a popup is
+/// shown, updated and closed.
+#[tokio::test(flavor = "multi_thread")]
+async fn plugins_use_timers_programs_and_popups() -> anyhow::Result<()> {
+    let init = r##"
+        local ticks = 0
+        helix.register_command{ name = "start-timers", handler = function()
+            helix.defer(20, function()
+                helix.editor.set_register("z", { "deferred in " .. helix.editor.mode() })
+            end)
+            local id
+            id = helix.every(15, function()
+                ticks = ticks + 1
+                if ticks == 3 then
+                    helix.cancel(id)
+                    helix.editor.set_register("y", { "ticked " .. ticks })
+                end
+            end)
+        end }
+        helix.register_command{ name = "run", handler = function()
+            helix.process.run({ "sh", "-c", "cat; echo err >&2" }, { stdin = "input" },
+                function(result)
+                    helix.editor.set_register("x", {
+                        result.stdout .. "|" .. result.stderr:gsub("\n", "") .. "|"
+                            .. tostring(result.code)
+                    })
+                end)
+            helix.process.shell("exit 4", function(result)
+                helix.editor.set_register("w", { tostring(result.code) .. "|" .. tostring(result.success) })
+            end)
+        end }
+        local popup
+        helix.register_command{ name = "popup", handler = function()
+            popup = helix.ui.popup{ title = "Plugin popup", lines = { "first line", "second line" },
+                position = "center", persistent = true }
+        end }
+        helix.register_command{ name = "popup-update", handler = function()
+            popup:update{ text = "updated", position = { row = 2, col = 5 }, persistent = true }
+        end }
+        helix.register_command{ name = "popup-close", handler = function() popup:close() end }
+    "##;
+    let dir = plugin_dir(&[("async", init, None)])?;
+    let config = plugin_config(
+        dir.path(),
+        r#"
+        [[plugins]]
+        name = "async"
+        permissions = ["edit", "commands", "shell"]
+        "#,
+    )?;
+    let mut app = helpers::AppBuilder::new().with_config(config).build()?;
+
+    send_keys(&mut app, ":start-timers<ret>").await?;
+    let timers_ran = wait_for(&mut app, |app| {
+        !register(app, 'z').is_empty() && !register(app, 'y').is_empty()
+    })
+    .await;
+    assert!(timers_ran);
+    let (deferred, ticked): (Vec<String>, Vec<String>) = (register(&app, 'z'), register(&app, 'y'));
+    assert_eq!(
+        (deferred, ticked),
+        (
+            vec!["deferred in normal".to_string()],
+            vec!["ticked 3".to_string()]
+        )
+    );
+
+    send_keys(&mut app, ":run<ret>").await?;
+    let ran = wait_for(&mut app, |app| {
+        !register(app, 'x').is_empty() && !register(app, 'w').is_empty()
+    })
+    .await;
+    assert!(ran);
+    let (output, exit): (Vec<String>, Vec<String>) = (register(&app, 'x'), register(&app, 'w'));
+    // (`register` splits at `|`)
+    assert_eq!(output, ["input", "err", "0"]);
+    assert_eq!(exit, ["4", "false"]);
+
+    send_keys(&mut app, ":popup<ret>").await?;
+    let rows = app.rendered_rows();
+    let row = rows
+        .iter()
+        .position(|row| row.contains("first line"))
+        .expect("the popup is shown");
+    assert!(rows.iter().any(|row| row.contains("Plugin popup")));
+    // centered: about half way down
+    let height = rows.len();
+    assert!(
+        row > height / 4 && row < height * 3 / 4,
+        "row {row} of {height}"
+    );
+    // persistent: keys still reach the editor (here the command line)
+    send_keys(&mut app, ":popup-update<ret>").await?;
+    let rows = app.rendered_rows();
+    let updated = rows
+        .iter()
+        .position(|row| row.contains("updated"))
+        .expect("the popup was updated");
+    let (updated_row, col): (usize, usize) = (updated, rows[updated].find("updated").unwrap());
+    assert!(updated_row <= 4 && col >= 5, "at {updated_row}:{col}");
+    assert!(!rows.iter().any(|row| row.contains("first line")));
+    send_keys(&mut app, ":popup-close<ret>").await?;
+    assert!(!app
+        .rendered_rows()
+        .iter()
+        .any(|row| row.contains("updated")));
+    Ok(())
+}
+
+/// Plugins ask the language servers of a buffer: requests with an answer (or an error) to a
+/// callback, notifications, and the position of the cursor in the server's encoding.
+#[tokio::test(flavor = "multi_thread")]
+async fn plugins_send_language_server_requests() -> anyhow::Result<()> {
+    let log = tempfile::NamedTempFile::new()?;
+    let server = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/test/fixtures/fake_plugin_ls.py"
+    );
+    let languages = format!(
+        r#"
+        [language-server.fake-plugin]
+        command = "python3"
+        args = ["{server}", "{log}"]
+
+        [[language]]
+        name = "rust"
+        language-servers = ["fake-plugin"]
+        "#,
+        log = log.path().display()
+    );
+    let init = r#"
+        helix.register_command{ name = "ask", handler = function()
+            local params = helix.lsp.position_params()
+            helix.lsp.request("textDocument/hover", params, function(result, err)
+                helix.editor.set_register("z", { result.contents .. "|" .. tostring(err) })
+            end)
+            helix.lsp.request("$/echo", { value = 42, list = { "a" } }, { server = "fake-plugin" },
+                function(result)
+                    helix.editor.set_register("y", { math.type(result.value) .. ":" .. result.value .. ":" .. result.list[1] })
+                end)
+            helix.lsp.request("$/fail", {}, function(result, err)
+                helix.editor.set_register("x", { tostring(result) .. "|" .. tostring(err):match("failed on purpose") })
+            end)
+            helix.lsp.notify("$/note", { said = "hello" })
+        end }
+    "#;
+    let dir = plugin_dir(&[("asker", init, None)])?;
+    let config = plugin_config(
+        dir.path(),
+        r#"
+        [[plugins]]
+        name = "asker"
+        permissions = ["edit", "commands", "shell"]
+        "#,
+    )?;
+    // (the tests' config has no language servers)
+    let mut config = config;
+    config.editor.lsp.enable = true;
+    let file = tempfile::Builder::new().suffix(".rs").tempfile()?;
+    std::fs::write(file.path(), "fn main() {}\n")?;
+    let mut app = helpers::AppBuilder::new()
+        .with_file(file.path(), None)
+        .with_config(config)
+        .with_lang_loader(helpers::test_syntax_loader(Some(languages)))
+        .build()?;
+    // the server starts up
+    let started = wait_for(&mut app, |app| {
+        helix_view::doc!(app.editor)
+            .language_servers()
+            .any(|ls| ls.is_initialized())
+    })
+    .await;
+    assert!(started);
+
+    send_keys(&mut app, "w:ask<ret>").await?;
+    let answered = wait_for(&mut app, |app| {
+        ['z', 'y', 'x']
+            .iter()
+            .all(|r| !register(app, *r).is_empty())
+            && std::fs::read_to_string(log.path()).is_ok_and(|log| !log.is_empty())
+    })
+    .await;
+    assert!(answered, "{:?}", app.editor.get_status());
+    let hover: Vec<String> = register(&app, 'z');
+    // (`w` selects `fn `: the cursor is on the space, column 2)
+    assert_eq!(hover, ["hover at 0:2", "nil"]);
+    let echo: Vec<String> = register(&app, 'y');
+    assert_eq!(echo, ["integer:42:a"]);
+    let failed: Vec<String> = register(&app, 'x');
+    assert_eq!(failed, ["nil", "failed on purpose"]);
+    let notes = std::fs::read_to_string(log.path())?;
+    assert_eq!(notes.trim(), r#"{"said": "hello"}"#);
+    Ok(())
+}

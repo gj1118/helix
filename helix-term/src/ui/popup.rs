@@ -41,6 +41,10 @@ pub struct Popup<T: Component> {
     /// `gradient-borders` when it is enabled.
     panel_border: bool,
     border: PanelBorder,
+    /// The anchor stays where it was put instead of following the cursor (`fixed_position`).
+    fixed: bool,
+    /// The most columns and rows of the contents (`max_size`), under the usual limits.
+    max_size: (Option<u16>, Option<u16>),
 }
 
 impl<T: Component> Popup<T> {
@@ -57,7 +61,23 @@ impl<T: Component> Popup<T> {
             has_scrollbar: true,
             panel_border: false,
             border: PanelBorder::default(),
+            fixed: false,
+            max_size: (None, None),
         }
+    }
+
+    /// Anchors the popup at `pos` (drawn below it, or above when there is no room), wherever
+    /// the cursor is.
+    pub fn fixed_position(mut self, pos: Position) -> Self {
+        self.position = Some(pos);
+        self.fixed = true;
+        self
+    }
+
+    /// Limits the size of the contents (columns, rows) further.
+    pub fn max_size(mut self, width: Option<u16>, height: Option<u16>) -> Self {
+        self.max_size = (width, height);
+        self
     }
 
     /// Always draws a border around the popup (independent of the
@@ -137,7 +157,9 @@ impl<T: Component> Popup<T> {
 
     fn render_info(&mut self, viewport: Rect, editor: &Editor) -> RenderInfo {
         let mut position = editor.cursor().0.unwrap_or_default();
-        if let Some(old_position) = self
+        if let Some(fixed) = self.position.filter(|_| self.fixed) {
+            position = fixed;
+        } else if let Some(old_position) = self
             .position
             .filter(|old_position| old_position.row == position.row)
         {
@@ -186,6 +208,12 @@ impl<T: Component> Popup<T> {
         };
         max_height = max_height.min(MAX_HEIGHT);
         let mut max_width = viewport.width.saturating_sub(2).min(MAX_WIDTH);
+        if let Some(width) = self.max_size.0 {
+            max_width = max_width.min(width.saturating_add(2));
+        }
+        if let Some(height) = self.max_size.1 {
+            max_height = max_height.min(height.saturating_add(2));
+        }
         render_borders = render_borders && max_height > 3 && max_width > 3;
         if render_borders {
             max_width -= 2;

@@ -373,6 +373,22 @@ type EventHandlers = HashMap<EventType, Vec<(Arc<str>, Arc<RegistryKey>)>>;
 /// Commands: name -> (metadata, plugin name, callback in that plugin's state).
 type Commands = HashMap<String, (crate::types::CommandMetadata, Arc<str>, Arc<RegistryKey>)>;
 
+/// A timer of a plugin (`helix.defer`, `helix.every`).
+pub(crate) struct Timer {
+    callback: Arc<RegistryKey>,
+    repeat: bool,
+    /// Set while a firing waits to be run: a repeating timer does not queue up firings while
+    /// the editor is busy.
+    pending: Arc<std::sync::atomic::AtomicBool>,
+    task: Option<tokio::task::AbortHandle>,
+}
+
+/// The timers of all plugins: (plugin, id) -> timer.
+pub(crate) type Timers = Arc<RwLock<HashMap<(String, u64), Timer>>>;
+
+/// The shortest period of a repeating timer.
+const MIN_TIMER_PERIOD: Duration = Duration::from_millis(10);
+
 /// The Lua state of one plugin. Plugins share no Lua value: one cannot change the functions
 /// another one calls, nor call anything with another one's permissions.
 struct PluginState {
@@ -399,6 +415,8 @@ pub struct LuaEngine {
     ui_handler: Option<Arc<dyn crate::types::UiHandler>>,
     /// The `[plugins]` configuration (each plugin's `config` and grants).
     config: crate::types::PluginConfig,
+    /// The plugins' timers.
+    timers: Timers,
 }
 
 impl LuaEngine {
@@ -413,16 +431,153 @@ impl LuaEngine {
             next_ui_callback_id: Arc::new(std::sync::atomic::AtomicU64::new(1)),
             ui_handler: None,
             config: crate::types::PluginConfig::default(),
+            timers: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
     /// Reset the Lua engine, clearing all state and plugins
     pub fn reset(&mut self) -> Result<()> {
         self.clear_handlers();
+        self.clear_timers();
         self.commands.write().clear();
         self.ui_callbacks.write().clear();
         // Closes the states (after the registry keys into them are gone).
         self.states.clear();
+        Ok(())
+    }
+
+    /// Stops every timer.
+    fn clear_timers(&self) {
+        for (_, timer) in self.timers.write().drain() {
+            if let Some(task) = timer.task {
+                task.abort();
+            }
+        }
+    }
+
+    /// Runs the callback of the plugin's timer `timer_id` (a firing the UI handler passed
+    /// on). A one-shot timer is done after it.
+    pub fn fire_timer(&self, editor: &mut Editor, plugin_name: &str, timer_id: u64) -> Result<()> {
+        let key = (plugin_name.to_string(), timer_id);
+        let callback = {
+            let mut timers = self.timers.write();
+            let Some(timer) = timers.get(&key) else {
+                // cancelled meanwhile
+                return Ok(());
+            };
+            timer
+                .pending
+                .store(false, std::sync::atomic::Ordering::Release);
+            let callback = Arc::clone(&timer.callback);
+            if !timer.repeat {
+                timers.remove(&key);
+            }
+            callback
+        };
+        let lua = self.plugin_lua(plugin_name)?;
+        let function: LuaFunction = lua
+            .registry_value(&callback)
+            .map_err(PluginError::LuaError)?;
+        let name: Arc<str> = Arc::from(plugin_name);
+        with_plugin(&name, || {
+            with_editor_context(editor, || {
+                function
+                    .call::<()>(())
+                    .map_err(|e| PluginError::EventHandlerError {
+                        plugin: plugin_name.to_string(),
+                        error: format!("Timer failed: {e}"),
+                    })
+            })
+        })
+    }
+
+    /// Register `helix.defer`, `helix.every` and `helix.cancel`.
+    fn register_timer_api(&self, lua: &Lua, helix: &LuaTable) -> Result<()> {
+        let timers = Arc::clone(&self.timers);
+        let counter = Arc::clone(&self.next_ui_callback_id);
+        let handler = self.ui_handler.clone();
+        let start = move |lua: &Lua, ms: f64, callback: LuaFunction, repeat: bool| {
+            if !ms.is_finite() || ms < 0.0 {
+                return Err(LuaError::RuntimeError(format!(
+                    "Invalid delay {ms} (milliseconds, 0 or more)"
+                )));
+            }
+            let Some(handler) = handler.clone() else {
+                return Err(LuaError::RuntimeError(
+                    "Timers need the editor running".into(),
+                ));
+            };
+            let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+                return Err(LuaError::RuntimeError(
+                    "Timers need the editor running".into(),
+                ));
+            };
+            let mut period = Duration::from_secs_f64(ms / 1000.0);
+            if repeat {
+                period = period.max(MIN_TIMER_PERIOD);
+            }
+            let plugin = current_plugin_name().to_string();
+            let id = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let pending = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let callback = Arc::new(lua.create_registry_value(callback)?);
+            let task_pending = Arc::clone(&pending);
+            let task_plugin = plugin.clone();
+            let task = runtime.spawn(async move {
+                use std::sync::atomic::Ordering;
+                loop {
+                    tokio::time::sleep(period).await;
+                    // One firing at a time: skip while the last one waits to run.
+                    if !task_pending.swap(true, Ordering::AcqRel) {
+                        handler.timer(task_plugin.clone(), id);
+                    }
+                    if !repeat {
+                        break;
+                    }
+                }
+            });
+            timers.write().insert(
+                (plugin, id),
+                Timer {
+                    callback,
+                    repeat,
+                    pending,
+                    task: Some(task.abort_handle()),
+                },
+            );
+            Ok(id)
+        };
+
+        // helix.defer(ms, fn) - Runs `fn` once, `ms` milliseconds from now (0: as soon as the
+        // running plugin code has returned); returns its id for helix.cancel
+        let defer_start = start.clone();
+        let defer = lua.create_function(move |lua, (ms, callback): (f64, LuaFunction)| {
+            defer_start(lua, ms, callback, false)
+        })?;
+        helix.set("defer", defer)?;
+
+        // helix.every(ms, fn) - Runs `fn` every `ms` milliseconds (10 at least) until
+        // helix.cancel(id)
+        let every = lua.create_function(move |lua, (ms, callback): (f64, LuaFunction)| {
+            start(lua, ms, callback, true)
+        })?;
+        helix.set("every", every)?;
+
+        // helix.cancel(id) - Stops a timer of the plugin; whether it was running
+        let timers = Arc::clone(&self.timers);
+        let cancel = lua.create_function(move |_lua, id: u64| {
+            let plugin = current_plugin_name().to_string();
+            let timer = timers.write().remove(&(plugin, id));
+            Ok(match timer {
+                Some(timer) => {
+                    if let Some(task) = timer.task {
+                        task.abort();
+                    }
+                    true
+                }
+                None => false,
+            })
+        })?;
+        helix.set("cancel", cancel)?;
         Ok(())
     }
 
@@ -499,6 +654,7 @@ impl LuaEngine {
         self.register_event_api(&lua, &helix)?;
         self.register_command_api(&lua, &helix)?;
         self.register_keymap_api(&lua, &helix)?;
+        self.register_timer_api(&lua, &helix)?;
         register_config_api(&lua, &helix)?;
         api::register_buffer_api(&lua, &helix)?;
         api::register_editor_api(&lua, &helix)?;
@@ -508,6 +664,7 @@ impl LuaEngine {
         api::register_quickfix_api(&lua, &helix)?;
         api::register_explorer_api(&lua, &helix)?;
         api::register_statusline_api(&lua, &helix)?;
+        api::register_process_api(&lua, &helix)?;
         api::register_log_api(&lua, &helix)?;
         helix.set("version", env!("CARGO_PKG_VERSION"))?;
         lua.globals().set("helix", helix)?;
@@ -893,7 +1050,15 @@ impl LuaEngine {
                 .registry_value(&callback_ref)
                 .map_err(PluginError::LuaError)?;
 
-            let lua_value = lua.to_value(&value).map_err(PluginError::LuaError)?;
+            // JSON null is nil: a plugin checks `if result then`.
+            let lua_value = lua
+                .to_value_with(
+                    &value,
+                    LuaSerializeOptions::new()
+                        .serialize_none_to_null(false)
+                        .serialize_unit_to_null(false),
+                )
+                .map_err(PluginError::LuaError)?;
 
             with_plugin(&Arc::from(plugin_name), || {
                 with_editor_context(editor, || {
@@ -999,6 +1164,15 @@ impl LuaEngine {
         self.ui_callbacks
             .write()
             .retain(|(plugin, _), _| plugin != name);
+        self.timers.write().retain(|(plugin, _), timer| {
+            let keep = plugin != name;
+            if !keep {
+                if let Some(task) = &timer.task {
+                    task.abort();
+                }
+            }
+            keep
+        });
     }
 
     /// Whether some plugin of this engine has a handler for `event_type`.
@@ -1072,6 +1246,7 @@ impl LuaEngine {
 impl Drop for LuaEngine {
     fn drop(&mut self) {
         self.clear_handlers();
+        self.clear_timers();
     }
 }
 

@@ -159,6 +159,29 @@ pub fn register_ui_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     })?;
     ui_module.set("reset_style", reset_style)?;
 
+    // helix.ui.popup{ text | lines | markdown, title, position, max_width, max_height,
+    // persistent } - A popup; returns its handle: handle:update(options), handle:close()
+    let popup = lua.create_function(|lua, options: LuaTable| {
+        require(lua, Permission::Ui, "helix.ui.popup")?;
+        let counter = lua
+            .app_data_ref::<crate::types::UiCallbackCounter>()
+            .map(|c| Arc::clone(&c.0));
+        let Some(counter) = counter else {
+            return Ok(LuaValue::Nil);
+        };
+        let id = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let popup = read_popup(lua, id, &options)?;
+        if let Some(handler) = lua
+            .app_data_ref::<crate::types::UiHandlerWrapper>()
+            .map(|h| Arc::clone(&h.0))
+        {
+            handler.popup(popup);
+        }
+        lua.create_userdata(LuaPopupHandle { id })
+            .map(LuaValue::UserData)
+    })?;
+    ui_module.set("popup", popup)?;
+
     // helix.ui.set_status(message) - Set status line message
     let set_status = lua.create_function(|lua, message: String| {
         require(lua, Permission::Ui, "helix.ui.set_status")?;
@@ -271,6 +294,176 @@ where
         callbacks.write().remove(&key);
     }
     opened.map(|_| ())
+}
+
+/// Where a later result goes: the UI handler to `deliver` it with, the plugin and the id
+/// of its callback.
+pub(crate) type PendingCallback = (Arc<dyn crate::types::UiHandler>, String, u64);
+
+/// Keeps `callback` for a result that comes later from another thread (a program's output,
+/// a language server's answer): returns the UI handler, the plugin and the callback's id to
+/// `deliver` it with. `None` without an editor (nothing would ever deliver it).
+pub(crate) fn pending_callback(
+    lua: &Lua,
+    callback: LuaFunction,
+) -> LuaResult<Option<PendingCallback>> {
+    let handler = lua
+        .app_data_ref::<crate::types::UiHandlerWrapper>()
+        .map(|h| Arc::clone(&h.0));
+    let callbacks = lua
+        .app_data_ref::<crate::types::UiCallbackRegistry>()
+        .map(|r| Arc::clone(&r.0));
+    let counter = lua
+        .app_data_ref::<crate::types::UiCallbackCounter>()
+        .map(|c| Arc::clone(&c.0));
+    let (Some(handler), Some(callbacks), Some(counter)) = (handler, callbacks, counter) else {
+        return Ok(None);
+    };
+    if tokio::runtime::Handle::try_current().is_err() {
+        return Ok(None);
+    }
+    let plugin = crate::lua::current_plugin_name().to_string();
+    let id = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let key = lua.create_registry_value(callback)?;
+    callbacks.write().insert((plugin.clone(), id), key);
+    Ok(Some((handler, plugin, id)))
+}
+
+/// A plugin popup's handle.
+pub struct LuaPopupHandle {
+    id: u64,
+}
+
+impl LuaUserData for LuaPopupHandle {
+    fn add_methods<M: LuaUserDataMethods<Self>>(methods: &mut M) {
+        // handle:update(options) - Shows other content (or puts it elsewhere): the options of
+        // helix.ui.popup
+        methods.add_method("update", |lua, this, options: LuaTable| {
+            require(lua, Permission::Ui, "popup:update")?;
+            let popup = read_popup(lua, this.id, &options)?;
+            if let Some(handler) = lua
+                .app_data_ref::<crate::types::UiHandlerWrapper>()
+                .map(|h| Arc::clone(&h.0))
+            {
+                handler.popup(popup);
+            }
+            Ok(())
+        });
+
+        // handle:close() - Closes the popup
+        methods.add_method("close", |lua, this, ()| {
+            require(lua, Permission::Ui, "popup:close")?;
+            if let Some(handler) = lua
+                .app_data_ref::<crate::types::UiHandlerWrapper>()
+                .map(|h| Arc::clone(&h.0))
+            {
+                handler.popup_close(this.id);
+            }
+            Ok(())
+        });
+
+        methods.add_method("id", |_lua, this, ()| Ok(this.id));
+    }
+}
+
+/// A segment of a popup line: a string, or `{ text, style, fg, bg, modifiers }`.
+fn read_segment(
+    lua: &Lua,
+    value: LuaValue,
+) -> LuaResult<(String, Option<String>, helix_view::graphics::Style)> {
+    match value {
+        LuaValue::String(text) => Ok((text.to_str()?.to_string(), None, Default::default())),
+        LuaValue::Table(table) => {
+            let text: String = table.raw_get::<Option<String>>("text")?.unwrap_or_default();
+            let (scope, style) = super::style::read_style(lua, &table)?;
+            Ok((text, scope, style))
+        }
+        other => Err(LuaError::RuntimeError(format!(
+            "A popup line is made of strings and tables, not a {}",
+            other.type_name()
+        ))),
+    }
+}
+
+/// The popup of `helix.ui.popup`'s options.
+fn read_popup(lua: &Lua, id: u64, options: &LuaTable) -> LuaResult<crate::types::PluginPopup> {
+    use crate::types::{PopupContent, PopupPosition};
+    let markdown: Option<String> = options.raw_get("markdown")?;
+    let text: Option<String> = options.raw_get("text")?;
+    let lines: Option<LuaTable> = options.raw_get("lines")?;
+    let content = match (markdown, text, lines) {
+        (Some(markdown), None, None) => PopupContent::Markdown(markdown),
+        (None, Some(text), None) => PopupContent::Lines(
+            text.lines()
+                .map(|line| vec![(line.to_string(), None, Default::default())])
+                .collect(),
+        ),
+        (None, None, Some(lines)) => {
+            let mut content = Vec::new();
+            for i in 1..=lines.raw_len() {
+                let line: LuaValue = lines.raw_get(i)?;
+                let segments = match line {
+                    // a line of segments
+                    LuaValue::Table(table) if table.raw_get::<LuaValue>("text")?.is_nil() => {
+                        let mut segments = Vec::new();
+                        for j in 1..=table.raw_len() {
+                            segments.push(read_segment(lua, table.raw_get(j)?)?);
+                        }
+                        segments
+                    }
+                    other => vec![read_segment(lua, other)?],
+                };
+                if segments
+                    .iter()
+                    .any(|(text, _, _)| text.contains(['\n', '\r']))
+                {
+                    return Err(LuaError::RuntimeError(
+                        "A line of `lines` has no line breaks".into(),
+                    ));
+                }
+                content.push(segments);
+            }
+            PopupContent::Lines(content)
+        }
+        _ => {
+            return Err(LuaError::RuntimeError(
+                "A popup has one of `text`, `lines` and `markdown`".into(),
+            ))
+        }
+    };
+    let position = match options.raw_get::<LuaValue>("position")? {
+        LuaValue::Nil => PopupPosition::Cursor,
+        LuaValue::String(name) => match &*name.to_str()? {
+            "cursor" => PopupPosition::Cursor,
+            "center" => PopupPosition::Center,
+            other => {
+                return Err(LuaError::RuntimeError(format!(
+                    "Invalid position '{other}' (cursor, center or {{ row, col }})"
+                )))
+            }
+        },
+        LuaValue::Table(at) => PopupPosition::At {
+            row: at.raw_get("row")?,
+            col: at.raw_get("col")?,
+        },
+        other => {
+            return Err(LuaError::RuntimeError(format!(
+                "Invalid position: a name or {{ row, col }}, not a {}",
+                other.type_name()
+            )))
+        }
+    };
+    Ok(crate::types::PluginPopup {
+        id,
+        title: options.raw_get("title")?,
+        content,
+        position,
+        max_width: options.raw_get("max_width")?,
+        max_height: options.raw_get("max_height")?,
+        persistent: options
+            .raw_get::<Option<bool>>("persistent")?
+            .unwrap_or(false),
+    })
 }
 
 /// What `helix.ui.picker` was given.

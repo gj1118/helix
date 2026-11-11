@@ -103,6 +103,8 @@ pub struct Application {
     /// The language servers each document was last seen attached to, for `lsp_attach`.
     /// Finds the plugin events without a hook of their own (windows, renames, theme...).
     plugin_watch: plugin_events::Watch,
+    /// The id of the plugin popup that is shown.
+    plugin_popup: Option<u64>,
     /// Where items added to the open plugin pickers go, by picker id.
     plugin_pickers:
         HashMap<u64, crate::ui::picker::Injector<helix_plugin::types::PluginPickerItem, u64>>,
@@ -457,6 +459,7 @@ impl Application {
             base_keys,
             applied_keymaps: Some(0),
             plugin_pickers: HashMap::new(),
+            plugin_popup: None,
             title_error: None,
             ui_receiver,
             theme_mode,
@@ -1155,6 +1158,51 @@ impl Application {
                     .is_some_and(|picker| *picker.editor_data() == picker_id);
                 if docked {
                     ui::quickfix::close(&mut self.compositor, &mut self.editor);
+                }
+            }
+            UiRequest::Deliver {
+                plugin_name,
+                callback_id,
+                value,
+            } => {
+                if let Err(e) = self.plugin_manager.handle_ui_callback(
+                    &mut self.editor,
+                    plugin_name,
+                    callback_id,
+                    value,
+                ) {
+                    log::error!("Plugin callback failed: {e}");
+                    self.editor.set_error(format!("Plugin error: {e}"));
+                }
+            }
+            UiRequest::Timer {
+                plugin_name,
+                timer_id,
+            } => {
+                if let Err(e) =
+                    self.plugin_manager
+                        .fire_timer(&mut self.editor, &plugin_name, timer_id)
+                {
+                    log::error!("{e}");
+                    self.editor.set_error(format!("Plugin error: {e}"));
+                }
+            }
+            UiRequest::Popup(popup) => {
+                let id = popup.id;
+                let area = self.editor.tree.area();
+                let component = crate::plugin_registry::plugin_popup(popup, &self.editor, area);
+                self.compositor
+                    .remove(crate::plugin_registry::PLUGIN_POPUP_ID);
+                self.compositor.push(component);
+                self.plugin_popup = Some(id);
+            }
+            UiRequest::PopupClose { popup_id } => {
+                let shown = self
+                    .compositor
+                    .has_id(crate::plugin_registry::PLUGIN_POPUP_ID);
+                if shown && self.plugin_popup == Some(popup_id) {
+                    self.compositor
+                        .remove(crate::plugin_registry::PLUGIN_POPUP_ID);
                 }
             }
             UiRequest::Quickfix { open } => {

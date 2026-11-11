@@ -351,6 +351,13 @@ permissions = ["edit", "commands"]  # what it may do beyond looking ("read") and
   for every buffer or one), gutter signs, highlights of ranges with theme keys, explorer row
   texts, and theme styles (`helix.ui.set_style("ui.statusline", { bg = "#202020" })`, kept
   over theme changes).
+- **Background work** - timers (`helix.defer`, `helix.every`), programs whose output comes
+  back to Lua (`helix.process.run`, needs `shell`), and requests to the language servers
+  (`helix.lsp.request`, with the cursor's position in the server's encoding); the callbacks
+  run on the editor's thread when the result is in.
+- **Popups** - text, styled lines or markdown, at the cursor, centered or anywhere, updated
+  and closed through a handle.
+- Signs, highlights, annotations and panels move with the text as it is edited.
 - **Isolation** - each plugin runs in a Lua state of its own: one cannot change what another
   calls, nor act with another's permissions, nor take over its `:` commands.
 - **Events** - 40 of them: buffers (open, change, rename, save, failed save, close, focus

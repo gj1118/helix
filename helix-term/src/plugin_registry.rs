@@ -41,6 +41,21 @@ pub enum UiRequest {
     Quickfix {
         open: bool,
     },
+    /// A result for a plugin's pending callback (a program's output, a server's answer).
+    Deliver {
+        plugin_name: String,
+        callback_id: u64,
+        value: serde_json::Value,
+    },
+    /// A plugin's timer is due.
+    Timer {
+        plugin_name: String,
+        timer_id: u64,
+    },
+    Popup(helix_plugin::types::PluginPopup),
+    PopupClose {
+        popup_id: u64,
+    },
 }
 
 pub struct TermUiHandler {
@@ -118,6 +133,139 @@ impl UiHandler for TermUiHandler {
 
     fn quickfix(&self, open: bool) {
         let _ = self.sender.send(UiRequest::Quickfix { open });
+    }
+
+    fn deliver(&self, plugin_name: String, callback_id: u64, value: serde_json::Value) {
+        let _ = self.sender.send(UiRequest::Deliver {
+            plugin_name,
+            callback_id,
+            value,
+        });
+    }
+
+    fn timer(&self, plugin_name: String, timer_id: u64) {
+        let _ = self.sender.send(UiRequest::Timer {
+            plugin_name,
+            timer_id,
+        });
+    }
+
+    fn popup(&self, popup: helix_plugin::types::PluginPopup) {
+        let _ = self.sender.send(UiRequest::Popup(popup));
+    }
+
+    fn popup_close(&self, popup_id: u64) {
+        let _ = self.sender.send(UiRequest::PopupClose { popup_id });
+    }
+}
+
+/// The layer id of plugins' popups (one at a time).
+pub const PLUGIN_POPUP_ID: &str = "plugin-popup";
+
+/// The popup of a plugin, laid out in the editor area `area`.
+pub fn plugin_popup(
+    popup: helix_plugin::types::PluginPopup,
+    editor: &Editor,
+    area: helix_view::graphics::Rect,
+) -> Box<dyn crate::compositor::Component> {
+    use helix_plugin::types::{PopupContent, PopupPosition};
+    use helix_view::graphics::{Modifier, Style};
+    use tui::text::{Span, Spans, Text};
+    let theme = &editor.theme;
+    let title_style = theme
+        .try_get("ui.popup.title")
+        .unwrap_or_else(|| Style::default().add_modifier(Modifier::BOLD));
+    // The size of the content, to center it.
+    let (width, height) = match &popup.content {
+        PopupContent::Lines(lines) => (
+            lines
+                .iter()
+                .map(|line| {
+                    line.iter()
+                        .map(|(text, _, _)| {
+                            helix_core::unicode::width::UnicodeWidthStr::width(text.as_str())
+                        })
+                        .sum::<usize>()
+                })
+                .chain(popup.title.iter().map(|t| t.chars().count()))
+                .max()
+                .unwrap_or(0),
+            lines.len() + popup.title.as_ref().map_or(0, |_| 2),
+        ),
+        PopupContent::Markdown(text) => (
+            text.lines().map(|l| l.chars().count()).max().unwrap_or(0),
+            text.lines().count() + popup.title.as_ref().map_or(0, |_| 2),
+        ),
+    };
+    let width = popup.max_width.map_or(width, |max| width.min(max as usize)) as u16 + 2;
+    let height = popup
+        .max_height
+        .map_or(height, |max| height.min(max as usize)) as u16
+        + 2;
+    let anchor = match popup.position {
+        PopupPosition::Cursor => None,
+        PopupPosition::Center => Some(helix_core::Position::new(
+            (area.height.saturating_sub(height) / 2).saturating_sub(1) as usize,
+            area.width.saturating_sub(width) as usize / 2,
+        )),
+        // (the popup is drawn below its anchor)
+        PopupPosition::At { row, col } => Some(helix_core::Position::new(
+            row.saturating_sub(1) as usize,
+            col as usize,
+        )),
+    };
+    fn finish<T: crate::compositor::Component>(
+        popup: crate::ui::Popup<T>,
+        anchor: Option<helix_core::Position>,
+        spec: &helix_plugin::types::PluginPopup,
+    ) -> Box<dyn crate::compositor::Component> {
+        let popup = popup
+            .auto_close(!spec.persistent)
+            .max_size(spec.max_width, spec.max_height);
+        Box::new(match anchor {
+            Some(anchor) => popup.fixed_position(anchor),
+            None => popup,
+        })
+    }
+    match &popup.content {
+        PopupContent::Lines(lines) => {
+            let mut text: Vec<Spans<'static>> = Vec::new();
+            if let Some(title) = &popup.title {
+                text.push(Spans::from(Span::styled(title.clone(), title_style)));
+                text.push(Spans::default());
+            }
+            for line in lines {
+                text.push(Spans::from(
+                    line.iter()
+                        .map(|(segment, scope, style)| {
+                            let base = scope
+                                .as_deref()
+                                .map(|scope| theme.get(scope))
+                                .unwrap_or_default();
+                            Span::styled(segment.clone(), base.patch(*style))
+                        })
+                        .collect::<Vec<_>>(),
+                ));
+            }
+            let contents = crate::ui::Text::from(Text::from(text));
+            finish(
+                crate::ui::Popup::new(PLUGIN_POPUP_ID, contents),
+                anchor,
+                &popup,
+            )
+        }
+        PopupContent::Markdown(markdown) => {
+            let markdown = match &popup.title {
+                Some(title) => format!("**{title}**\n\n{markdown}"),
+                None => markdown.clone(),
+            };
+            let contents = crate::ui::Markdown::new(markdown, editor.syn_loader.clone());
+            finish(
+                crate::ui::Popup::new(PLUGIN_POPUP_ID, contents),
+                anchor,
+                &popup,
+            )
+        }
     }
 }
 

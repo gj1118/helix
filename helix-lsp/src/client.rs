@@ -564,6 +564,61 @@ impl Client {
         }
     }
 
+    /// Sends the request `method` with `params` as they are (a plugin's): the server's result,
+    /// as JSON. Times out like the other requests.
+    pub fn call_raw(&self, method: String, params: Value) -> impl Future<Output = Result<Value>> {
+        let server_tx = self.server_tx.clone();
+        let id = self.next_request_id();
+        let timeout_secs = self.req_timeout;
+        let request = jsonrpc::MethodCall {
+            jsonrpc: Some(jsonrpc::Version::V2),
+            id: id.clone(),
+            method,
+            params: Self::value_into_params(params),
+        };
+        let (tx, rx) = channel::<Result<Value>>(1);
+        // Sent right away, so requests keep their order.
+        let sent = server_tx
+            .send(Payload::Request {
+                chan: tx,
+                value: request,
+            })
+            .map_err(|e| Error::Other(e.into()));
+        let mut cancel = sent.is_ok().then(|| CancelOnDrop {
+            server_tx: self.server_tx.clone(),
+            id: id.clone(),
+            method: "$/plugin",
+        });
+        let mut rx = rx;
+        async move {
+            use std::time::Duration;
+            use tokio::time::timeout;
+            sent?;
+            let response = timeout(Duration::from_secs(timeout_secs), rx.recv())
+                .await
+                .map_err(|_| Error::Timeout(id))?;
+            if let Some(mut cancel) = cancel.take() {
+                cancel.disarm();
+            }
+            response.ok_or(Error::StreamClosed)?
+        }
+    }
+
+    /// Sends the notification `method` with `params` as they are (a plugin's).
+    pub fn notify_raw(&self, method: String, params: Value) {
+        let notification = jsonrpc::Notification {
+            jsonrpc: Some(jsonrpc::Version::V2),
+            method,
+            params: Self::value_into_params(params),
+        };
+        if let Err(err) = self.server_tx.send(Payload::Notification(notification)) {
+            log::error!(
+                "Failed to send a plugin's notification to server '{}': {err}",
+                self.name
+            );
+        }
+    }
+
     /// Send a RPC notification to the language server.
     pub fn notify<R: lsp::notification::Notification>(&self, params: R::Params)
     where

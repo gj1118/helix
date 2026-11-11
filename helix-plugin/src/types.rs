@@ -425,6 +425,47 @@ pub trait UiHandler: Send + Sync {
     fn picker_close(&self, _picker_id: u64) {}
     /// Shows the quicklist in the quickfix panel (`open`), or closes the panel.
     fn quickfix(&self, _open: bool) {}
+    /// Hands `value` to the plugin's pending callback `callback_id` on the editor's thread
+    /// (the result of a program, a language server request...). Called from any thread.
+    fn deliver(&self, _plugin_name: String, _callback_id: u64, _value: serde_json::Value) {}
+    /// The plugin's timer `timer_id` is due: run its callback on the editor's thread.
+    fn timer(&self, _plugin_name: String, _timer_id: u64) {}
+    /// Shows (or replaces) a plugin's popup.
+    fn popup(&self, _popup: PluginPopup) {}
+    /// Closes the plugin popup `popup_id` if it is open.
+    fn popup_close(&self, _popup_id: u64) {}
+}
+
+/// A popup a plugin shows (`helix.ui.popup`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PluginPopup {
+    pub id: u64,
+    pub title: Option<String>,
+    pub content: PopupContent,
+    pub position: PopupPosition,
+    /// The most columns and rows it takes (the popup is never larger than the editor).
+    pub max_width: Option<u16>,
+    pub max_height: Option<u16>,
+    /// Whether it stays open when keys are typed (closed with Esc or its handle).
+    pub persistent: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PopupContent {
+    /// Lines of styled segments: `(text, theme key, style)`.
+    Lines(Vec<Vec<(String, Option<String>, helix_view::graphics::Style)>>),
+    /// Markdown, drawn like the hover documentation.
+    Markdown(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PopupPosition {
+    /// At the cursor, like the hover documentation.
+    Cursor,
+    /// In the middle of the editor.
+    Center,
+    /// At a cell of the screen (0-based row and column).
+    At { row: u16, col: u16 },
 }
 
 /// A picker a plugin opens (`helix.ui.picker`).
