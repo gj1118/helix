@@ -1,7 +1,7 @@
 use crate::{
     buffer::Buffer,
     layout::Constraint,
-    text::Text,
+    text::{Span, Spans, Text},
     widgets::{Block, Widget},
 };
 use helix_core::unicode::width::UnicodeWidthStr;
@@ -208,6 +208,9 @@ pub struct Table<'a> {
     header: Option<Row<'a>>,
     /// Data to display in each row
     rows: Vec<Row<'a>>,
+    /// Whether the selected row shows all of its cells' text, wrapped to their columns
+    /// (the row grows to the lines it needs).
+    wrap_selected: bool,
 }
 
 impl<'a> Table<'a> {
@@ -224,6 +227,7 @@ impl<'a> Table<'a> {
             highlight_symbol: None,
             header: None,
             rows: rows.into_iter().collect(),
+            wrap_selected: false,
         }
     }
 
@@ -262,6 +266,13 @@ impl<'a> Table<'a> {
 
     pub fn highlight_style(mut self, highlight_style: Style) -> Self {
         self.highlight_style = highlight_style;
+        self
+    }
+
+    /// Shows all the text of the selected row's cells, wrapped to their columns (the other rows
+    /// keep one line each).
+    pub fn wrap_selected(mut self, wrap: bool) -> Self {
+        self.wrap_selected = wrap;
         self
     }
 
@@ -426,6 +437,18 @@ impl Table<'_> {
         if self.rows.is_empty() {
             return;
         }
+        if self.wrap_selected {
+            if let Some(row) = state.selected.and_then(|i| self.rows.get_mut(i)) {
+                let mut height = 1;
+                for (cell, width) in row.cells.iter_mut().zip(&columns_widths) {
+                    let lines = wrap_lines(&cell.content.lines, *width);
+                    height = height.max(lines.len() as u16);
+                    cell.content.lines = lines;
+                }
+                // (never taller than the table)
+                row.height = height.min(rows_height.max(1));
+            }
+        }
         let (start, end) = self.get_row_bounds(state.selected, state.offset, rows_height);
         state.offset = start;
         for (i, table_row) in self
@@ -482,6 +505,71 @@ impl Table<'_> {
     }
 }
 
+/// `lines` wrapped to `width` columns: at spaces when a word fits on a line, anywhere when it
+/// does not. The styles of the spans are kept.
+pub fn wrap_lines<'a>(lines: &[Spans<'a>], width: u16) -> Vec<Spans<'a>> {
+    use unicode_segmentation::UnicodeSegmentation;
+    let width = width.max(1) as usize;
+    let mut wrapped = Vec::new();
+    for line in lines {
+        // The line as (grapheme, width, style), words and spaces alike.
+        let graphemes: Vec<(&str, usize, Style)> = line
+            .0
+            .iter()
+            .flat_map(|span| {
+                span.content
+                    .graphemes(true)
+                    .map(move |g| (g, g.width(), span.style))
+            })
+            .collect();
+        if graphemes.is_empty() {
+            wrapped.push(Spans::default());
+            continue;
+        }
+        let mut start = 0;
+        while start < graphemes.len() {
+            // the most graphemes that fit
+            let mut end = start;
+            let mut used = 0;
+            while end < graphemes.len() && used + graphemes[end].1 <= width {
+                used += graphemes[end].1;
+                end += 1;
+            }
+            if end == start {
+                // a grapheme wider than the column
+                end += 1;
+            } else if end < graphemes.len() {
+                // break after the last space, unless the word is longer than the line
+                if let Some(space) = (start + 1..end)
+                    .rev()
+                    .find(|&i| graphemes[i - 1].0.trim().is_empty())
+                {
+                    end = space;
+                }
+            }
+            let mut spans: Vec<Span<'a>> = Vec::new();
+            for &(grapheme, _, style) in &graphemes[start..end] {
+                match spans.last_mut() {
+                    Some(last) if last.style == style => last.content.to_mut().push_str(grapheme),
+                    _ => spans.push(Span::styled(grapheme.to_string(), style)),
+                }
+            }
+            // the spaces a line breaks at are not drawn at its end
+            if let Some(last) = spans.last_mut() {
+                let trimmed = last.content.trim_end().to_string();
+                last.content = trimmed.into();
+            }
+            wrapped.push(Spans::from(spans));
+            start = end;
+            // nor at the start of the next one
+            while start < graphemes.len() && graphemes[start].0 == " " {
+                start += 1;
+            }
+        }
+    }
+    wrapped
+}
+
 fn render_cell(buf: &mut Buffer, cell: &Cell, area: Rect, truncate: bool) {
     buf.set_style(area, cell.style);
     for (i, spans) in cell.content.lines.iter().enumerate() {
@@ -506,6 +594,75 @@ impl Widget for Table<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn texts(lines: &[Spans]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|line| line.0.iter().map(|span| span.content.as_ref()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn lines_wrap_at_spaces_and_keep_their_styles() {
+        let bold = Style::default().add_modifier(helix_view::graphics::Modifier::BOLD);
+        let line = Spans::from(vec![
+            Span::raw("Show the "),
+            Span::styled("quickfix", bold),
+            Span::raw(" panel, or focus it"),
+        ]);
+        let wrapped = wrap_lines(&[line], 12);
+        let lines: Vec<String> = texts(&wrapped);
+        assert_eq!(lines, ["Show the", "quickfix", "panel, or", "focus it"]);
+        // the styled word keeps its style
+        let style: Style = wrapped[1].0[0].style;
+        assert_eq!(style, bold);
+        // a word longer than the line is broken; an empty line stays
+        let long = wrap_lines(&[Spans::from("abcdefghij"), Spans::default()], 4);
+        assert_eq!(texts(&long), ["abcd", "efgh", "ij", ""]);
+        // what fits stays as it is
+        let short = wrap_lines(&[Spans::from("fits")], 10);
+        assert_eq!(texts(&short), ["fits"]);
+    }
+
+    #[test]
+    fn the_selected_row_grows_to_show_all_its_text() {
+        let rows = vec![
+            Row::new(vec!["a", "short"]),
+            Row::new(vec!["b", "a description that does not fit on one line"]),
+            Row::new(vec!["c", "last"]),
+        ];
+        let widths = [Constraint::Length(2), Constraint::Length(20)];
+        let area = Rect::new(0, 0, 23, 6);
+        let mut buf = Buffer::empty(area);
+        let mut state = TableState {
+            offset: 0,
+            selected: Some(1),
+        };
+        Table::new(rows)
+            .widths(&widths)
+            .wrap_selected(true)
+            .render_table(area, &mut buf, &mut state, false);
+        let screen: Vec<String> = (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol.as_str())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(
+            screen,
+            [
+                "a  short",
+                "b  a description that",
+                "   does not fit on",
+                "   one line",
+                "c  last",
+                "",
+            ]
+        );
+    }
 
     #[test]
     #[should_panic]

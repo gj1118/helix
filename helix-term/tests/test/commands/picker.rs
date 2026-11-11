@@ -151,7 +151,9 @@ async fn the_command_palette_lists_commands_once() -> anyhow::Result<()> {
                         .filter(|row| {
                             let mut words =
                                 row.split(['▏', '>', ' ']).filter(|word| !word.is_empty());
-                            words.next() == Some(":write-quit")
+                            // (followed by its aliases: `:write-quit, :wq`)
+                            words.next().map(|word| word.trim_end_matches(','))
+                                == Some(":write-quit")
                                 && words.next().is_some_and(|word| !word.contains('/'))
                         })
                         .count();

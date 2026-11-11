@@ -22,6 +22,7 @@ mod test {
     mod cmdline_popup;
     mod code_lenses;
     mod command_line;
+    mod command_palette;
     mod commands;
     mod completion;
     mod component_keys;

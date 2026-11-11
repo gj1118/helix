@@ -80,7 +80,9 @@ that needs one to show anything (the global search).
 | `q`, `Esc` | Close the panel |
 | `:` | The command line |
 
-From the code, `Ctrl-w j` in the bottom view gives the focus to the panel, and `]q` / `[q` visit
+From the code, `Ctrl-w j` in the bottom view gives the focus to the panel (so does the
+`quickfix_focus` command, which can be bound to a key or run from the command palette; it
+shows the quicklist when the panel is closed, like `:copen`), and `]q` / `[q` visit
 the next and previous entry of the panel (while it is shown; `]l` and `[l` keep walking the
 quicklist in the file). A click in the panel focuses it and selects the entry clicked; a click
 in the code gives the focus back. `:copen` focuses the panel, or shows again the last list it

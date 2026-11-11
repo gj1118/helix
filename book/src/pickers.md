@@ -103,6 +103,9 @@ horizontal / vertical split. A file picker opened by `:vsplit <directory>` or
 leading `:`), your [custom commands](./custom-commands.md) (except hidden ones, with their
 `desc`; one named like a built-in typable command replaces it in the list) and the commands
 registered by [plugins](./plugins.md), with their key bindings.
+A typable command is listed with its aliases (`:copen, :quickfix-open`), and searching
+finds it by any of them (`quickfix` finds `:copen` and `:cclose`). The selected command shows
+its whole description, over as many lines as it takes; the others show the start of theirs.
 Commands that open a picker or a prompt (`:open`, `file_picker`, `rename_symbol`, ...) work
 from the palette: the picker or prompt opens once the palette has closed. Commands that wait
 for another key (`replace`, `select_register`, the `m` and `t` motions, ...) cannot run from

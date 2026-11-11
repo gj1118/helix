@@ -221,6 +221,8 @@ pub struct Column<T, D> {
     /// global search) is not used for filtering twice.
     filter: bool,
     hidden: bool,
+    /// The most columns it takes (`max_width`); longer texts are cut.
+    max_width: Option<u16>,
 }
 
 impl<T, D> Column<T, D> {
@@ -230,7 +232,15 @@ impl<T, D> Column<T, D> {
             format,
             filter: true,
             hidden: false,
+            max_width: None,
         }
+    }
+
+    /// Takes at most `width` columns, leaving the others more room: a longer text is cut
+    /// (and shown in full when its item is selected, with `Picker::wrap_selected`).
+    pub fn max_width(mut self, width: u16) -> Self {
+        self.max_width = Some(width);
+        self
     }
 
     /// A column which does not display any contents
@@ -242,6 +252,7 @@ impl<T, D> Column<T, D> {
             format,
             filter: false,
             hidden: true,
+            max_width: None,
         }
     }
 
@@ -369,6 +380,8 @@ pub struct Picker<T: 'static + Send + Sync, D: 'static> {
     custom_key_handlers: PickerKeyHandlers<T, D>,
 
     pub truncate_start: bool,
+    /// Whether the selected item shows all the text of its columns, wrapped (`wrap_selected`).
+    wrap_selected: bool,
     /// Caches paths to documents
     preview_cache: HashMap<Arc<Path>, CachedPreview>,
     /// The paths of `preview_cache`, oldest first, to evict beyond [`PREVIEW_CACHE_CAPACITY`].
@@ -525,6 +538,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             prompt,
             query,
             truncate_start: true,
+            wrap_selected: false,
             show_preview: true,
             callback_fn: Box::new(callback_fn),
             completion_height: 0,
@@ -805,6 +819,13 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             picker_version: self.version.clone(),
             _redraw: helix_event::RequestRedrawOnDrop,
         }
+    }
+
+    /// Shows all the text of the selected item's columns, wrapped over several lines (a long
+    /// description, say); the other items keep one line each.
+    pub fn wrap_selected(mut self, wrap: bool) -> Self {
+        self.wrap_selected = wrap;
+        self
     }
 
     pub fn truncate_start(mut self, truncate_start: bool) -> Self {
@@ -1514,7 +1535,11 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                     }
 
                     span_list.push(Span::styled(current_span, current_style));
-                    cell = Cell::from(Spans::from(span_list));
+                    // The matches are in the first line; the others stay (a doc of several
+                    // lines, shown in full by `wrap_selected`).
+                    let mut lines = vec![Spans::from(span_list)];
+                    lines.extend(cell.content.lines.iter().skip(1).cloned());
+                    cell = Cell::from(tui::text::Text::from(lines));
                     matcher_index += 1;
                     width
                 } else {
@@ -1525,6 +1550,9 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                         .unwrap_or_default()
                 };
 
+                let width = column
+                    .max_width
+                    .map_or(width, |cap| width.min(cap as usize));
                 if width as u16 > *max_width {
                     *max_width = width as u16;
                 }
@@ -1540,6 +1568,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             .highlight_style(selected)
             .highlight_symbol(picker_symbol)
             .column_spacing(1)
+            .wrap_selected(self.wrap_selected)
             .widths(&self.widths);
 
         // -- Header

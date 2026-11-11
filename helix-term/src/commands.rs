@@ -729,6 +729,7 @@ impl MappableCommand {
         quicklist_next_in_file, "Go to the next quicklist entry in this file",
         quicklist_prev_in_file, "Go to the previous quicklist entry in this file",
         quicklist_picker, "Open the quicklist picker",
+        quickfix_focus, "Focus the quickfix panel (shows the quicklist in it when it is closed, like :copen)",
         restore_change, "Restore the changes touched by the selections from the diff base (HEAD)",
         rotate_selections_first, "Make the first selection your primary one",
         rotate_selections_last, "Make the last selection your primary one",
@@ -4768,6 +4769,13 @@ fn quicklist_prev_in_file(cx: &mut Context) {
     quicklist::quicklist_prev_in_file(cx)
 }
 
+fn quickfix_focus(cx: &mut Context) {
+    cx.callback
+        .push(Box::new(|compositor: &mut Compositor, cx| {
+            ui::quickfix::reopen(compositor, cx.editor);
+        }));
+}
+
 fn quicklist_picker(cx: &mut Context) {
     quicklist::quicklist_picker(cx)
 }
@@ -4835,12 +4843,26 @@ pub fn command_palette(cx: &mut Context) {
 
             let columns = [
                 ui::PickerColumn::new("name", |item, _| match item {
-                    MappableCommand::Typable { name, .. } => format!(":{name}").into(),
+                    // with its aliases: searching `quickfix` finds `:copen, :quickfix-open`
+                    MappableCommand::Typable { name, .. } => {
+                        let aliases = typed::TYPABLE_COMMAND_MAP
+                            .get(name.as_str())
+                            .filter(|cmd| cmd.name == name)
+                            .map_or(&[][..], |cmd| cmd.aliases);
+                        let mut text = format!(":{name}");
+                        for alias in aliases {
+                            text.push_str(", :");
+                            text.push_str(alias);
+                        }
+                        text.into()
+                    }
                     MappableCommand::Static { name, .. } => (*name).into(),
                     MappableCommand::Macro { .. } => {
                         unreachable!("macros aren't included in the command palette")
                     }
-                }),
+                })
+                // The descriptions keep most of the width.
+                .max_width(32),
                 ui::PickerColumn::new(
                     "bindings",
                     |item: &MappableCommand, keymap: &crate::keymap::ReverseKeymap| {
@@ -4860,7 +4882,8 @@ pub fn command_palette(cx: &mut Context) {
                             .unwrap_or_default()
                             .into()
                     },
-                ),
+                )
+                .max_width(16),
                 ui::PickerColumn::new("doc", |item: &MappableCommand, _| item.doc().into()),
             ];
 
@@ -4903,7 +4926,10 @@ pub fn command_palette(cx: &mut Context) {
                     }
                 }
             })
-            .with_title("Command Palette");
+            .with_title("Command Palette")
+            // Descriptions are read from their start; the selected one is shown in full.
+            .truncate_start(false)
+            .wrap_selected(true);
             compositor.push(Box::new(overlaid(
                 picker,
                 cx.editor.config().fullscreen_overlay,

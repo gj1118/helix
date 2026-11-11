@@ -532,6 +532,7 @@ fn static_permissions(name: &str) -> &'static [Permission] {
         | "quicklist_prev"
         | "quicklist_next_in_file"
         | "quicklist_prev_in_file"
+        | "quickfix_focus"
         | "suspend" => &[Windows],
         // pickers, prompts and popups: what happens next is chosen by the user
         "command_mode"
@@ -827,7 +828,7 @@ mod tests {
     fn static_commands_are_classified() {
         let count = crate::commands::MappableCommand::STATIC_COMMAND_LIST.len();
         assert_eq!(
-            count, 391,
+            count, 392,
             "commands were added or removed: check `static_permissions` for them"
         );
         use helix_plugin::types::EditorCommandRegistry;

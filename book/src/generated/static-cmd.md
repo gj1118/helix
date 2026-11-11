@@ -385,6 +385,7 @@
 | `quicklist_next_in_file` | Go to the next quicklist entry in this file | normal: `` ]l ``, select: `` ]l `` |
 | `quicklist_prev_in_file` | Go to the previous quicklist entry in this file | normal: `` [l ``, select: `` [l `` |
 | `quicklist_picker` | Open the quicklist picker | normal: `` <space>q ``, select: `` <space>q `` |
+| `quickfix_focus` | Focus the quickfix panel (shows the quicklist in it when it is closed, like :copen) |  |
 | `restore_change` | Restore the changes touched by the selections from the diff base (HEAD) |  |
 | `rotate_selections_first` | Make the first selection your primary one |  |
 | `rotate_selections_last` | Make the last selection your primary one |  |
