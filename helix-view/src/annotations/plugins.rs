@@ -1,4 +1,4 @@
-use crate::document::PluginAnnotation;
+use crate::document::{AnnotationAlign, PluginAnnotation};
 use crate::Document;
 use crate::ViewId;
 use helix_core::doc_formatter::{FormattedGrapheme, TextFormat};
@@ -33,11 +33,25 @@ pub fn plugin_annotations_on_line<'a>(
 /// remain after the end of the line.
 const MIN_INLINE_WIDTH: u16 = 40;
 
-/// The inline (not `is_line`) annotations of a line.
+/// The inline (not `is_line`) annotations of a line drawn after its end (`align = "eol"`):
+/// they may drop to a virtual line below and take rows.
 pub fn inline_annotations(
     line_annots: &[PluginAnnotation],
 ) -> impl Iterator<Item = &PluginAnnotation> + Clone {
-    line_annots.iter().filter(|a| !a.is_line)
+    line_annots
+        .iter()
+        .filter(|a| !a.is_line && a.align == AnnotationAlign::Eol)
+}
+
+/// The inline annotations of a line pinned to the right edge of the window (`"right"`), or
+/// there when the end of the line leaves no room (`"eol_or_right"`): always on the line's
+/// row, cut to the window, never taking rows.
+pub fn pinned_annotations(
+    line_annots: &[PluginAnnotation],
+) -> impl Iterator<Item = &PluginAnnotation> {
+    line_annots
+        .iter()
+        .filter(|a| !a.is_line && a.align != AnnotationAlign::Eol)
 }
 
 /// Whether the inline annotations of a line all drop to a virtual line below it: when
@@ -226,6 +240,7 @@ mod tests {
             is_line: false,
             virt_line_idx: None,
             dropped_text: None,
+            align: Default::default(),
         }
     }
 

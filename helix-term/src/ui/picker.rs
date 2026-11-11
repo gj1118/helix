@@ -520,7 +520,8 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             None,
             ui::completers::none,
             |_editor: &mut Context, _pattern: &str, _event: PromptEvent| {},
-        );
+        )
+        .without_plugin_events();
 
         let widths = columns
             .iter()
@@ -756,7 +757,8 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                         None,
                         ui::completers::none,
                         |_cx: &mut Context, _line: &str, _event: PromptEvent| {},
-                    ),
+                    )
+                    .without_plugin_events(),
                     focused: true,
                 });
             }
@@ -859,7 +861,8 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             None,
             ui::completers::none,
             |_editor: &mut Context, _pattern: &str, _event: PromptEvent| {},
-        );
+        )
+        .without_plugin_events();
         prompt.with_history_register(history_register);
         self.prompt = prompt;
         self

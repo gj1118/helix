@@ -380,14 +380,18 @@ permissions = ["edit", "commands"]  # what it may do beyond looking ("read") and
   last search pattern (`helix.editor.last_search()`).
 - **Examples** - `contrib/plugins/` has `auto-save`, `inline-diagnostic` (the diagnostics of
   the cursor line in a panel) and `hlslens`, a port of
-  [nvim-hlslens](https://github.com/kevinhwang91/nvim-hlslens): after a search, `[3/12]` at
-  the end of the nearest match's line and `[5]` at the others', with the matches highlighted,
-  until `:hlslens-stop`. Copy one to `~/.config/helix/plugins/` to use it.
-- Signs, highlights, annotations and panels move with the text as it is edited.
+  [nvim-hlslens](https://github.com/kevinhwang91/nvim-hlslens): `[3/12]` at the end of the
+  nearest match's line and `[5]` at the others', with the matches highlighted, while the
+  search is typed and after it, until `:hlslens-stop`. Copy one to `~/.config/helix/plugins/`
+  to use it.
+- Signs, highlights, annotations and panels move with the text as it is edited. Annotations
+  belong to the plugin that drew them, and can be pinned to the window's right edge
+  (`align = "right"`, or `"eol_or_right"` for a line too long for the window).
 - **Isolation** - each plugin runs in a Lua state of its own: one cannot change what another
   calls, nor act with another's permissions, nor take over its `:` commands.
-- **Events** - 40 of them: buffers (open, change, rename, save, failed save, close, focus
-  lost, language), modes, keys, typed characters, every command run, selections, scrolling,
+- **Events** - 43 of them: buffers (open, change, rename, save, failed save, close, focus
+  lost, language), modes, keys, typed characters, every command run, prompts (open, every
+  change of their text, close), selections, scrolling,
   windows (open, close, focus), the terminal (resize, focus, paste, mouse), idle, settings,
   theme, working directory, language servers (start, attach, detach, exit, diagnostics), the
   explorer (cursor, files created, renamed, copied, deleted), exit.

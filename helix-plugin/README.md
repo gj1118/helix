@@ -197,6 +197,9 @@ error. The `event` table has a `type` field (the event name) and, depending on t
 | `file_rename` | `path`, `old_path` | when the file explorer renamed or moved (cut and paste) a file or folder |
 | `file_copy` | `path`, `source` | when the file explorer copied a file or folder |
 | `file_delete` | `path`, `is_dir` | when the file explorer deleted a file or folder |
+| `prompt_open` | `prompt`, `kind`, `text`, `register` | when a prompt opens: the command line, a search, select, a plugin's prompt... (not a picker's filter). `prompt` is its label, `kind` one of `search` (both directions), `command`, `select`, `split`, `keep`, `remove`, `replace`, `shell` or `other`, `register` its history register, if any |
+| `prompt_change` | `prompt`, `kind`, `text`, `register` | when its text changes: a key typed or deleted, a paste, a history entry, a completion |
+| `prompt_close` | `prompt`, `kind`, `text`, `register`, `accepted` | when it closes: `accepted` is `true` for Enter (`text` is then what runs, the last entry for an empty search), `false` for Esc or when something else closed it |
 
 `path` is `nil` for a buffer without a file. `document_id` is the same string `buffer:id()`
 returns (`helix.buffer.get_by_id(id)` turns it into a buffer), and `window_id` the one
@@ -292,8 +295,13 @@ Buffer methods (they raise an error once the buffer is closed):
   `char_idx` (anchor; it picks the line), `text`, and optionally `fg`/`bg` (`"#rrggbb"`),
   `style` (a theme key), `offset` (columns, 0-65535), `is_line` (a virtual line below the
   anchor's line instead of text after the end of the line), `virt_line_idx` (virtual lines
-  with the same index share a row) and `dropped_text` (shown instead of `text` when inline
-  annotations do not fit and move to a line below). A field of the wrong type is an error.
+  with the same index share a row), `dropped_text` (shown instead of `text` when inline
+  annotations do not fit and move to a line below) and `align`, where text after the end of
+  the line goes: `"eol"` (the default: after the end, or on a line below when the line
+  leaves too little room), `"right"` (against the window's right edge, over the text if the
+  line reaches it; the next one to the left of it) or `"eol_or_right"` (after the end while
+  it fits in the window there, else at the right edge: never moved below, never out of view,
+  for a long line or one scrolled sideways). A field of the wrong type is an error.
   Annotations move with the text when it is edited. `set_annotations({})` clears them.
 - `clear_annotations()`: removes the calling plugin's annotations of this buffer in every
   window (any buffer, focused or not) (`ui`).

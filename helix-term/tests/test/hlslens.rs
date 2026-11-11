@@ -217,3 +217,90 @@ async fn nearest_only_and_calm_down() -> anyhow::Result<()> {
     send_keys(&mut app, ":q!<ret>").await?;
     Ok(())
 }
+
+/// While the search is typed the lenses follow it (`incsearch`); Esc brings back those of the
+/// last search, or none.
+#[tokio::test(flavor = "multi_thread")]
+async fn lenses_follow_the_search_as_it_is_typed() -> anyhow::Result<()> {
+    let (mut app, _plugins, _file) = app("{}").await?;
+    // nothing searched yet: the lenses come and go with the prompt
+    send_keys(&mut app, "/fo").await?;
+    assert_eq!(
+        lenses(&app),
+        [lens(0, "[1/4]", NEAR), lens(2, "[2]", OTHER)]
+    );
+    send_keys(&mut app, "o g").await?;
+    assert_eq!(lenses(&app), [lens(2, "[1/1]", NEAR)]);
+    // an invalid pattern while typing: no lenses, no error
+    send_keys(&mut app, "<backspace><backspace><backspace><backspace>(").await?;
+    assert_eq!(lenses(&app), []);
+    send_keys(&mut app, "<esc>").await?;
+    assert_eq!(lenses(&app), []);
+    assert_eq!(highlights(&app), []);
+
+    // after a search: Esc shows its lenses again
+    send_keys(&mut app, "/foo<ret>/gam").await?;
+    assert_eq!(lenses(&app), [lens(2, "[1/1]", NEAR)]);
+    send_keys(&mut app, "<esc>").await?;
+    assert_eq!(
+        lenses(&app),
+        [lens(0, "[1/4]", NEAR), lens(2, "[2]", OTHER)]
+    );
+    send_keys(&mut app, ":q!<ret>").await?;
+    Ok(())
+}
+
+/// `per_line = "all"`: a lens for each match of a line; `"count"`: one, and how many more.
+#[tokio::test(flavor = "multi_thread")]
+async fn several_matches_on_a_line() -> anyhow::Result<()> {
+    let (mut app, _plugins, _file) = app("{ per_line = \"all\" }").await?;
+    send_keys(&mut app, "/foo<ret>n").await?;
+    assert_eq!(
+        lenses(&app),
+        [
+            lens(0, "[1]", OTHER),
+            lens(2, "[2/4]", NEAR),
+            lens(2, "[3]", OTHER)
+        ]
+    );
+    assert!(
+        app.rendered_rows()
+            .iter()
+            .any(|row| row.contains("foo gamma foo [2/4][3]")),
+        "{:#?}",
+        app.rendered_rows()
+    );
+    send_keys(&mut app, ":q!<ret>").await?;
+
+    let (mut app, _plugins, _file) = self::app("{ per_line = \"count\" }").await?;
+    send_keys(&mut app, "/foo<ret>").await?;
+    assert_eq!(
+        lenses(&app),
+        [lens(0, "[1/4]", NEAR), lens(2, "[2] +1", OTHER)]
+    );
+    send_keys(&mut app, "nn").await?;
+    assert_eq!(
+        lenses(&app),
+        [lens(0, "[1]", OTHER), lens(2, "[3/4] +1", NEAR)]
+    );
+    send_keys(&mut app, ":q!<ret>").await?;
+    Ok(())
+}
+
+/// A match on a line longer than the window: its lens is at the right edge of the window, on
+/// the match's row (not dropped below it, not out of view).
+#[tokio::test(flavor = "multi_thread")]
+async fn lenses_of_long_lines_stay_in_view() -> anyhow::Result<()> {
+    let (mut app, _plugins, _file) = app("{}").await?;
+    send_keys(
+        &mut app,
+        &format!("ggA {}<esc>gg/foo<ret>", "y".repeat(100)),
+    )
+    .await?;
+    let rows = app.rendered_rows();
+    assert!(rows[0].ends_with("[1/4]"), "{rows:#?}");
+    assert_eq!(rows[0].chars().count(), 80, "{rows:#?}");
+    assert!(rows[1].contains("line 1"), "{rows:#?}");
+    send_keys(&mut app, ":q!<ret>").await?;
+    Ok(())
+}

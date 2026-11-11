@@ -117,6 +117,12 @@ event_types! {
     OnFileDelete => "file_delete",
     /// The cursor of the explorer moved to another path.
     OnExplorerSelect => "explorer_select",
+    /// A prompt opened (the command line, search, select, a plugin's prompt...).
+    OnPromptOpen => "prompt_open",
+    /// The text of a prompt changed (a key typed, deleted, pasted, a history entry...).
+    OnPromptChange => "prompt_change",
+    /// A prompt closed: accepted (Enter) or not.
+    OnPromptClose => "prompt_close",
 }
 
 /// How many plugin handlers each event has, over every plugin engine of the process: the

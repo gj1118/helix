@@ -551,6 +551,7 @@ impl LuaUserData for LuaBuffer {
                         is_line: a.is_line,
                         virt_line_idx: a.virt_line_idx,
                         dropped_text: a.dropped_text,
+                        align: a.align,
                     })
                     .collect();
 
@@ -759,6 +760,7 @@ pub struct LuaPluginAnnotation {
     pub is_line: bool,
     pub virt_line_idx: Option<u16>,
     pub dropped_text: Option<String>,
+    pub align: helix_view::document::AnnotationAlign,
 }
 
 impl LuaUserData for LuaPluginAnnotation {
@@ -772,6 +774,14 @@ impl LuaUserData for LuaPluginAnnotation {
         fields.add_field_method_get("is_line", |_lua, this| Ok(this.is_line));
         fields.add_field_method_get("virt_line_idx", |_lua, this| Ok(this.virt_line_idx));
         fields.add_field_method_get("dropped_text", |_lua, this| Ok(this.dropped_text.clone()));
+        fields.add_field_method_get("align", |_lua, this| {
+            use helix_view::document::AnnotationAlign;
+            Ok(match this.align {
+                AnnotationAlign::Eol => "eol",
+                AnnotationAlign::Right => "right",
+                AnnotationAlign::EolOrRight => "eol_or_right",
+            })
+        });
     }
 
     fn add_methods<'lua, M: LuaUserDataMethods<Self>>(_methods: &mut M) {}
@@ -792,7 +802,21 @@ impl LuaPluginAnnotation {
             is_line: table.get::<Option<bool>>("is_line")?.unwrap_or(false),
             virt_line_idx: table.get("virt_line_idx")?,
             dropped_text: table.get("dropped_text")?,
+            align: Self::align_from_table(table)?,
         })
+    }
+
+    /// The `align` field: `"eol"` (the default), `"right"` or `"eol_or_right"`.
+    fn align_from_table(table: &LuaTable) -> LuaResult<helix_view::document::AnnotationAlign> {
+        use helix_view::document::AnnotationAlign;
+        match table.get::<Option<String>>("align")?.as_deref() {
+            None | Some("eol") => Ok(AnnotationAlign::Eol),
+            Some("right") => Ok(AnnotationAlign::Right),
+            Some("eol_or_right") => Ok(AnnotationAlign::EolOrRight),
+            Some(other) => Err(LuaError::RuntimeError(format!(
+                "invalid annotation align {other:?} (expected \"eol\", \"right\" or \"eol_or_right\")"
+            ))),
+        }
     }
 }
 

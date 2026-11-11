@@ -492,6 +492,7 @@ async fn diagnostics_are_shown_in_the_corner_when_inline_and_end_of_line_are_off
                             is_line: false,
                             virt_line_idx: None,
                             dropped_text: None,
+                            align: Default::default(),
                         }],
                     );
                 }

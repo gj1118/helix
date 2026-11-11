@@ -198,6 +198,22 @@ pub struct PluginAnnotation {
     /// Alternate text to use when this annotation is "dropped" to a virtual line
     /// (e.g., elbow symbol instead of arrow for diagnostics on narrow terminals)
     pub dropped_text: Option<String>,
+    /// Where an inline (not `is_line`) annotation goes on its line.
+    pub align: AnnotationAlign,
+}
+
+/// Where an inline plugin annotation goes on its line.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AnnotationAlign {
+    /// After the end of the line (on a virtual line below when the line leaves too little
+    /// room: it is "dropped").
+    #[default]
+    Eol,
+    /// At the right edge of the window, over the text if the line reaches it.
+    Right,
+    /// After the end of the line while it fits in the window there, else at its right edge
+    /// (a long line, or one scrolled sideways): never dropped, never out of view.
+    EolOrRight,
 }
 
 pub struct Document {

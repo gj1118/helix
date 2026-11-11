@@ -521,6 +521,8 @@ impl Component for CmdlinePopup {
     }
 
     fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
+        // the plugins hear that the command line opened before its first key
+        self.prompt.report_open();
         match self.style {
             CmdlineStyle::Popup => self.render_popup(area, surface, cx),
             CmdlineStyle::Bottom => self.render_bottom(area, surface, cx),

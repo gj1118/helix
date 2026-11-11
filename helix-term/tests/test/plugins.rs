@@ -1223,3 +1223,134 @@ async fn plugins_send_language_server_requests() -> anyhow::Result<()> {
     assert_eq!(notes.trim(), r#"{"said": "hello"}"#);
     Ok(())
 }
+
+/// `prompt_open`, `prompt_change` and `prompt_close`: the search and the command line, with
+/// their kind, text and register; a history entry is a change; a picker's filter is not a
+/// prompt for plugins.
+#[tokio::test(flavor = "multi_thread")]
+async fn plugins_hear_of_the_prompts() -> anyhow::Result<()> {
+    let init = r#"
+        local log = {}
+        local function record(entry)
+            log[#log + 1] = entry
+            helix.editor.set_register("p", { table.concat(log, "|") })
+        end
+        helix.on("prompt_open", function(e)
+            assert(type(e.prompt) == "string" and type(e.kind) == "string")
+            record("open " .. e.kind .. " " .. e.text .. " " .. tostring(e.register))
+        end)
+        helix.on("prompt_change", function(e)
+            record("change " .. e.kind .. " " .. e.text)
+        end)
+        helix.on("prompt_close", function(e)
+            assert(type(e.accepted) == "boolean")
+            record("close " .. e.kind .. " " .. e.text .. " " .. tostring(e.accepted))
+        end)
+        helix.register_command{ name = "prompt-log-clear", handler = function()
+            log = {}
+            helix.editor.set_register("p", { "" })
+        end }
+    "#;
+    let dir = plugin_dir(&[("prompts", init, None)])?;
+    let config = plugin_config(
+        dir.path(),
+        "[[plugins]]\nname = \"prompts\"\npermissions = [\"commands\", \"edit\"]\n",
+    )?;
+    let file = helpers::temp_file_with_contents("foo bar\nfoo\n")?;
+    let mut app = helpers::AppBuilder::new()
+        .with_file(file.path(), None)
+        .with_config(config)
+        .build()?;
+
+    send_keys(&mut app, "/fo<ret>").await?;
+    assert_eq!(
+        register(&app, 'p'),
+        [
+            "open search  /",
+            "change search f",
+            "change search fo",
+            "close search fo true",
+        ]
+    );
+
+    // the command line, left with Esc (its own `:prompt-log-clear` is a prompt too)
+    send_keys(&mut app, ":prompt-log-clear<ret>:ab<backspace><esc>").await?;
+    assert_eq!(
+        register(&app, 'p'),
+        [
+            "close command prompt-log-clear true",
+            "open command  :",
+            "change command a",
+            "change command ab",
+            "change command a",
+            "close command a false",
+        ]
+    );
+
+    // a history entry; Enter on an empty search repeats the last one
+    send_keys(&mut app, ":prompt-log-clear<ret>/<up><esc>/<ret>").await?;
+    assert_eq!(
+        register(&app, 'p'),
+        [
+            "close command prompt-log-clear true",
+            "open search  /",
+            "change search fo",
+            "close search fo false",
+            "open search  /",
+            "close search fo true",
+        ]
+    );
+
+    // a picker's filter is not a prompt for plugins
+    send_keys(&mut app, ":prompt-log-clear<ret><space>bfoo<esc>").await?;
+    assert_eq!(register(&app, 'p'), ["close command prompt-log-clear true"]);
+    Ok(())
+}
+
+/// Annotations aligned `"right"` sit against the right edge of the window, the next one to
+/// the left of the last; `"eol_or_right"` ones after the end of the line while there is room,
+/// else at the edge (a long line, a line scrolled sideways). `"eol"` ones stay as they were.
+/// A wrong `align` is an error.
+#[tokio::test(flavor = "multi_thread")]
+async fn annotations_align_to_the_right_edge() -> anyhow::Result<()> {
+    let long = "x".repeat(60);
+    let file = helpers::temp_file_with_contents(format!("short\n{long}\nend\n"))?;
+    let init = r#"
+        helix.register_command{ name = "annotate", handler = function()
+            local buffer = helix.buffer.get_current()
+            local long = buffer:line_to_char(1)
+            buffer:set_annotations({
+                { char_idx = 0, text = "EOL1", align = "eol_or_right" },
+                { char_idx = 0, text = "R1", align = "right" },
+                { char_idx = 0, text = "R2", align = "right" },
+                { char_idx = long, text = "EOL2", align = "eol_or_right" },
+                { char_idx = buffer:line_to_char(2), text = "PLAIN" },
+            })
+            local ok, err = pcall(buffer.set_annotations, buffer,
+                { { char_idx = 0, text = "?", align = "left" } })
+            assert(not ok and tostring(err):find("invalid annotation align"), tostring(err))
+        end }
+    "#;
+    let dir = plugin_dir(&[("align", init, None)])?;
+    let config = plugin_config(
+        dir.path(),
+        "[[plugins]]\nname = \"align\"\npermissions = [\"commands\"]\n",
+    )?;
+    let mut app = helpers::AppBuilder::new()
+        .with_file(file.path(), None)
+        .with_config(config)
+        .build()?;
+    app.resize_terminal(50, 8).await;
+    send_keys(&mut app, ":annotate<ret>").await?;
+    let rows = app.rendered_rows();
+    // "short", its end-of-line annotation, then the right-aligned ones from the edge leftwards
+    assert!(rows[0].contains("short EOL1"), "{rows:#?}");
+    assert!(rows[0].ends_with("R2 R1"), "{rows:#?}");
+    assert_eq!(rows[0].chars().count(), 50, "{rows:#?}");
+    // the long line reaches the edge: its annotation is drawn over its end, not dropped
+    assert!(rows[1].ends_with("xEOL2"), "{rows:#?}");
+    // an "eol" one in a narrow window drops to a row of its own below its line, as before
+    assert!(rows[2].ends_with("end"), "{rows:#?}");
+    assert_eq!(rows[3].trim(), "PLAIN", "{rows:#?}");
+    Ok(())
+}

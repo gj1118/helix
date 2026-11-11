@@ -1,9 +1,11 @@
 use crate::compositor::{Component, Compositor, Context, Event, EventResult};
+use crate::plugin_events;
 use crate::ui::completers::CompletionResult;
 use crate::{alt, ctrl, job, key, shift, ui};
 use arc_swap::ArcSwap;
 use helix_core::syntax;
 use helix_event::TaskController;
+use helix_plugin::{EventType, EventValue};
 use helix_view::document::Mode;
 use helix_view::input::KeyEvent;
 use helix_view::keyboard::KeyCode;
@@ -78,6 +80,9 @@ pub struct Prompt {
     pub doc_fn: DocFn,
     next_char_handler: Option<PromptCharHandler>,
     language: Option<(&'static str, Arc<ArcSwap<syntax::Loader>>)>,
+    /// What the plugins heard of this prompt (`prompt_open`, `prompt_change`,
+    /// `prompt_close`); `None` for a prompt inside another component (a picker's).
+    plugin_report: Option<PluginReport>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -138,6 +143,54 @@ impl Prompt {
             doc_fn: Box::new(|_| None),
             next_char_handler: None,
             language: None,
+            plugin_report: Some(PluginReport::default()),
+        }
+    }
+
+    /// A prompt inside another component (a picker's filter): the plugins do not hear of it.
+    pub fn without_plugin_events(mut self) -> Self {
+        self.plugin_report = None;
+        self
+    }
+
+    /// Tells the plugins that the prompt is open, once.
+    pub(crate) fn report_open(&mut self) {
+        let Some(report) = self.plugin_report.as_mut().filter(|r| r.line.is_none()) else {
+            return;
+        };
+        report.line = Some(self.line.clone());
+        plugin_events::queue_fields(
+            EventType::OnPromptOpen,
+            prompt_fields(&self.prompt, self.history_register, &self.line),
+        );
+    }
+
+    /// Tells the plugins what changed: the text, or that the prompt closed.
+    fn report_changes(&mut self) {
+        let Some(report) = self.plugin_report.as_mut() else {
+            return;
+        };
+        if report.closed || report.line.is_none() {
+            return;
+        }
+        if let Some((accepted, text)) = report.closing.take() {
+            report.closed = true;
+            let mut fields = prompt_fields(&self.prompt, self.history_register, &text);
+            fields.push(("accepted", EventValue::Bool(accepted)));
+            plugin_events::queue_fields(EventType::OnPromptClose, fields);
+        } else if report.line.as_deref() != Some(self.line.as_str()) {
+            report.line = Some(self.line.clone());
+            plugin_events::queue_fields(
+                EventType::OnPromptChange,
+                prompt_fields(&self.prompt, self.history_register, &self.line),
+            );
+        }
+    }
+
+    /// Records that the prompt closes, accepted with `text` or not.
+    fn closing(&mut self, accepted: bool, text: &str) {
+        if let Some(report) = self.plugin_report.as_mut() {
+            report.closing = Some((accepted, text.to_string()));
         }
     }
 
@@ -860,8 +913,9 @@ impl Prompt {
     }
 }
 
-impl Component for Prompt {
-    fn handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
+impl Prompt {
+    /// Handles an event of the prompt (the plugins hear of it in `handle_event`).
+    fn handle_prompt_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
         let event = match event {
             Event::Paste(data) => {
                 // (this computes the completions again)
@@ -891,6 +945,8 @@ impl Component for Prompt {
         match event {
             ctrl!('c') | key!(Esc) => {
                 (self.callback_fn)(cx, &self.line, PromptEvent::Abort);
+                let line = self.line.clone();
+                self.closing(false, &line);
                 return close_fn;
             }
             alt!('b') | ctrl!(Left) => self.move_cursor(Movement::BackwardWord(1)),
@@ -974,6 +1030,8 @@ impl Component for Prompt {
                     };
 
                     (self.callback_fn)(cx, input, PromptEvent::Validate);
+                    let input = input.to_string();
+                    self.closing(true, &input);
 
                     return close_fn;
                 }
@@ -1037,8 +1095,18 @@ impl Component for Prompt {
 
         EventResult::Consumed(None)
     }
+}
+
+impl Component for Prompt {
+    fn handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
+        self.report_open();
+        let result = self.handle_prompt_event(event, cx);
+        self.report_changes();
+        result
+    }
 
     fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
+        self.report_open();
         self.render_prompt(area, surface, cx)
     }
 
@@ -1094,5 +1162,62 @@ mod tests {
             prompt.update_scroll_anchor(10);
             assert!(prompt.line().is_char_boundary(prompt.anchor()));
         }
+    }
+}
+
+/// What the plugins heard of a prompt.
+#[derive(Default)]
+struct PluginReport {
+    /// The text they heard of: `None` until `prompt_open`.
+    line: Option<String>,
+    /// Set when the prompt closes, accepted or not, with the text.
+    closing: Option<(bool, String)>,
+    /// `prompt_close` was sent.
+    closed: bool,
+}
+
+/// What a prompt is for, from its label: `"search"`, `"command"`, `"select"`, `"split"`,
+/// `"keep"`, `"remove"`, `"replace"`, `"shell"`, or `"other"`.
+fn prompt_kind(label: &str) -> &'static str {
+    match label {
+        "Search" | "search:" | "rsearch:" => "search",
+        "Cmdline" | ":" => "command",
+        "select:" => "select",
+        "split:" => "split",
+        "keep:" => "keep",
+        "remove:" => "remove",
+        "replace:" => "replace",
+        "pipe:" | "pipe-to:" | "insert-output:" | "append-output:" | "keep-pipe:" => "shell",
+        _ => "other",
+    }
+}
+
+fn prompt_fields(
+    label: &str,
+    history_register: Option<char>,
+    text: &str,
+) -> Vec<(&'static str, EventValue)> {
+    let mut fields = vec![
+        ("prompt", EventValue::Str(label.to_string())),
+        ("kind", EventValue::Str(prompt_kind(label).to_string())),
+        ("text", EventValue::Str(text.to_string())),
+    ];
+    if let Some(register) = history_register {
+        fields.push(("register", EventValue::Str(register.to_string())));
+    }
+    fields
+}
+
+impl Drop for Prompt {
+    /// A prompt closed some other way (another layer replaced it): the plugins hear that it
+    /// closed, not accepted.
+    fn drop(&mut self) {
+        if let Some(report) = &self.plugin_report {
+            if report.line.is_some() && !report.closed && report.closing.is_none() {
+                let line = self.line.clone();
+                self.closing(false, &line);
+            }
+        }
+        self.report_changes();
     }
 }
