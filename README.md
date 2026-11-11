@@ -346,6 +346,11 @@ permissions = ["edit", "commands"]  # what it may do beyond looking ("read") and
   quicklist set, read and shown from Lua; the explorer opened, revealed at a path, read (root,
   selection) and decorated per row, with events for its cursor and for the files it creates,
   renames, copies and deletes.
+- **Drawing** - plugins set data and Helix draws it every frame, without running plugin code:
+  status line segments (`helix.statusline.set("branch", { text = "main", position = "left" })`,
+  for every buffer or one), gutter signs, highlights of ranges with theme keys, explorer row
+  texts, and theme styles (`helix.ui.set_style("ui.statusline", { bg = "#202020" })`, kept
+  over theme changes).
 - **Isolation** - each plugin runs in a Lua state of its own: one cannot change what another
   calls, nor act with another's permissions, nor take over its `:` commands.
 - **Events** - 40 of them: buffers (open, change, rename, save, failed save, close, focus

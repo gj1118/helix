@@ -8,6 +8,8 @@ pub mod explorer;
 pub mod log;
 pub mod lsp;
 pub mod quickfix;
+pub mod statusline;
+pub(crate) mod style;
 pub mod ui;
 pub mod window;
 
@@ -18,5 +20,6 @@ pub use explorer::*;
 pub use log::*;
 pub use lsp::*;
 pub use quickfix::*;
+pub use statusline::*;
 pub use ui::*;
 pub use window::*;

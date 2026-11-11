@@ -394,6 +394,7 @@ impl EditorView {
         }
 
         Self::doc_diagnostics_highlights_into(doc, theme, &mut overlays);
+        overlays.extend(Self::plugin_highlights(doc, theme));
 
         if is_focused {
             if config.lsp.auto_document_highlight {
@@ -888,6 +889,45 @@ impl EditorView {
     }
 
     /// Get highlight spans for document diagnostics
+    /// The ranges plugins highlight (`buffer:set_highlights`), one overlay per theme key (a
+    /// key the theme does not have is not drawn), clamped to the text.
+    fn plugin_highlights(
+        doc: &Document,
+        theme: &Theme,
+    ) -> impl Iterator<Item = OverlayHighlights> + 'static {
+        let len = doc.text().len_chars();
+        let mut by_scope: Vec<(helix_core::syntax::Highlight, Vec<std::ops::Range<usize>>)> =
+            Vec::new();
+        for highlight in &doc.plugin_highlights {
+            let Some(scope) = theme.find_highlight(&highlight.scope) else {
+                continue;
+            };
+            let range = highlight.from.min(len)..highlight.to.min(len);
+            if range.is_empty() {
+                continue;
+            }
+            match by_scope.iter_mut().find(|(h, _)| *h == scope) {
+                Some((_, ranges)) => ranges.push(range),
+                None => by_scope.push((scope, vec![range])),
+            }
+        }
+        by_scope.into_iter().map(|(highlight, mut ranges)| {
+            // Ranges of one overlay must not overlap: merge them.
+            ranges.sort_by_key(|r| (r.start, r.end));
+            let mut merged: Vec<std::ops::Range<usize>> = Vec::with_capacity(ranges.len());
+            for range in ranges {
+                match merged.last_mut() {
+                    Some(last) if range.start <= last.end => last.end = last.end.max(range.end),
+                    _ => merged.push(range),
+                }
+            }
+            OverlayHighlights::Homogeneous {
+                highlight,
+                ranges: merged,
+            }
+        })
+    }
+
     pub fn doc_diagnostics_highlights_into(
         doc: &Document,
         theme: &Theme,

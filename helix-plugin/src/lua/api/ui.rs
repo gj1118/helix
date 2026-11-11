@@ -135,6 +135,30 @@ pub fn register_ui_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     })?;
     ui_module.set("menu", menu)?;
 
+    // helix.ui.set_style(scope, style) - Sets the style of a theme key ("ui.statusline",
+    // "keyword", "diagnostic.error"...), written like in a theme; kept over theme changes
+    let set_style = lua.create_function(|lua, (scope, style): (String, LuaTable)| {
+        require(lua, Permission::Ui, "helix.ui.set_style")?;
+        let (_, style) = super::style::read_style(lua, &style)?;
+        crate::lua::with_editor(|editor| {
+            editor.set_plugin_style(&scope, style);
+            helix_event::request_redraw();
+            Ok(())
+        })
+    })?;
+    ui_module.set("set_style", set_style)?;
+
+    // helix.ui.reset_style(scope) - The theme's own style of `scope` again
+    let reset_style = lua.create_function(|lua, scope: String| {
+        require(lua, Permission::Ui, "helix.ui.reset_style")?;
+        crate::lua::with_editor(|editor| {
+            editor
+                .reset_plugin_style(&scope)
+                .map_err(|e| LuaError::RuntimeError(format!("{e}")))
+        })
+    })?;
+    ui_module.set("reset_style", reset_style)?;
+
     // helix.ui.set_status(message) - Set status line message
     let set_status = lua.create_function(|lua, message: String| {
         require(lua, Permission::Ui, "helix.ui.set_status")?;

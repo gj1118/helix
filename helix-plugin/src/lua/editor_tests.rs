@@ -1116,3 +1116,205 @@ fn the_explorer_is_asked_and_decorated() {
     run(&engine, &mut editor, "helix.explorer.clear_decorations()").unwrap();
     assert!(editor.plugin_explorer.decorations.is_empty());
 }
+
+#[test]
+fn status_line_segments_are_set_changed_and_removed() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    run(
+        &engine,
+        &mut editor,
+        r##"
+        helix.statusline.set("branch", { text = "main", position = "left", style = "ui.text" })
+        helix.statusline.set("clock", { text = "12:00", fg = "#ff0000", priority = 2 })
+        helix.statusline.set("clock", { text = "12:01", fg = "#ff0000", priority = 2 })
+        helix.statusline.set("here", { text = "only here", buffer = helix.buffer.get_current() })
+        removed = helix.statusline.remove("here")
+        again = helix.statusline.remove("here")
+        ok, err = pcall(helix.statusline.set, "bad", { text = "x", position = "top" })
+        ok2, err2 = pcall(helix.statusline.set, "bad", { text = "two\nlines" })
+        err, err2 = tostring(err), tostring(err2)
+        "##,
+    )
+    .unwrap();
+    let segments = editor.plugin_statusline.clone();
+    let texts: Vec<(&str, &str)> = segments
+        .iter()
+        .map(|s| (s.id.as_str(), s.text.as_str()))
+        .collect();
+    assert_eq!(texts, [("branch", "main"), ("clock", "12:01")]);
+    let positions: Vec<helix_view::editor::SegmentPosition> =
+        segments.iter().map(|s| s.position).collect();
+    assert_eq!(
+        positions,
+        [
+            helix_view::editor::SegmentPosition::Left,
+            helix_view::editor::SegmentPosition::Right
+        ]
+    );
+    let (scope, fg): (Option<&str>, Option<helix_view::graphics::Color>) =
+        (segments[0].scope.as_deref(), segments[1].style.fg);
+    assert_eq!(
+        (scope, fg),
+        (
+            Some("ui.text"),
+            Some(helix_view::graphics::Color::Rgb(255, 0, 0))
+        )
+    );
+    let globals = lua(&engine).globals();
+    let (removed, again): (bool, bool) = (
+        globals.get("removed").unwrap(),
+        globals.get("again").unwrap(),
+    );
+    assert_eq!((removed, again), (true, false));
+    let (err, err2): (String, String) = (globals.get("err").unwrap(), globals.get("err2").unwrap());
+    assert!(err.contains("Invalid position 'top'"), "{err}");
+    assert!(err2.contains("one line"), "{err2}");
+    run(&engine, &mut editor, "helix.statusline.clear()").unwrap();
+    assert!(editor.plugin_statusline.is_empty());
+}
+
+#[test]
+fn signs_and_highlights_are_kept_per_plugin() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    run(
+        &engine,
+        &mut editor,
+        r#"
+        local b = helix.buffer.get_current()
+        b:set_text("one\ntwo\nthree\n")
+        b:set_signs({
+            { line = 3, text = "●", style = "error" },
+            { line = 1, text = "wide ⚑", fg = "green" },
+        })
+        b:set_highlights({
+            { from = 0, to = 3, style = "warning" },
+            { start_line = 2, end_line = 2, style = "info" },
+        })
+        "#,
+    )
+    .unwrap();
+    let doc = helix_view::doc!(editor);
+    let signs: Vec<(usize, &str)> = doc
+        .plugin_signs
+        .iter()
+        .map(|s| (s.line, s.text.as_str()))
+        .collect();
+    // sorted by line; one cell each
+    assert_eq!(signs, [(0, "w"), (2, "●")]);
+    let highlights: Vec<(usize, usize, &str)> = doc
+        .plugin_highlights
+        .iter()
+        .map(|h| (h.from, h.to, h.scope.as_str()))
+        .collect();
+    // line 2 to its end (before the line ending)
+    assert_eq!(highlights, [(0, 3, "warning"), (4, 7, "info")]);
+
+    run(
+        &engine,
+        &mut editor,
+        r#"
+        local b = helix.buffer.get_current()
+        b:set_signs({})
+        ok, err = pcall(b.set_highlights, b, { { from = 0, to = 1 } })
+        err = tostring(err)
+        "#,
+    )
+    .unwrap();
+    assert!(helix_view::doc!(editor).plugin_signs.is_empty());
+    let err: String = lua(&engine).globals().get("err").unwrap();
+    assert!(err.contains("needs a `style`"), "{err}");
+}
+
+#[test]
+fn theme_styles_set_by_plugins_stay_over_theme_changes() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    run(
+        &engine,
+        &mut editor,
+        r##"
+        helix.ui.set_style("ui.statusline", { fg = "#010203", modifiers = { "bold" } })
+        helix.ui.set_style("plugin.custom", { bg = "blue" })
+        "##,
+    )
+    .unwrap();
+    let statusline = editor.theme.get("ui.statusline");
+    let expected = helix_view::graphics::Style::default()
+        .fg(helix_view::graphics::Color::Rgb(1, 2, 3))
+        .add_modifier(helix_view::graphics::Modifier::BOLD);
+    assert_eq!(statusline, expected);
+    // a scope new to the theme is a highlight too
+    let custom = editor.theme.find_highlight_exact("plugin.custom");
+    assert!(custom.is_some());
+
+    // another theme: the plugin's styles stay
+    let theme = editor.theme_loader.load("base16_default").unwrap();
+    editor.set_theme(theme).unwrap();
+    assert_eq!(editor.theme.get("ui.statusline"), expected);
+
+    run(
+        &engine,
+        &mut editor,
+        r#"helix.ui.reset_style("ui.statusline")"#,
+    )
+    .unwrap();
+    let restored: helix_view::graphics::Style = editor.theme.get("ui.statusline");
+    assert_ne!(restored, expected);
+    let name: &str = editor.theme.name();
+    assert_eq!(name, "base16_default");
+    let overrides: Vec<&str> = editor
+        .plugin_theme_overrides
+        .iter()
+        .map(|(scope, _)| scope.as_str())
+        .collect();
+    assert_eq!(overrides, ["plugin.custom"]);
+}
+
+/// The status line example of the book (`book/src/plugins.md`) does what it says.
+#[test]
+fn the_status_line_example_of_the_book_works() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    let book = include_str!("../../../book/src/plugins.md");
+    let start = book
+        .find("local changes = 0")
+        .expect("the example is in the book");
+    let end = start + book[start..].find("```").expect("the example ends");
+    run(&engine, &mut editor, &book[start..end]).unwrap();
+
+    let fire = |editor: &mut Editor, event_type: EventType| {
+        let event = PluginEvent {
+            event_type,
+            data: EventData::None,
+        };
+        engine.call_event_handlers(editor, &event).unwrap();
+    };
+    let text = |editor: &Editor| -> String {
+        editor
+            .plugin_statusline
+            .iter()
+            .find(|s| s.id == "changes")
+            .map(|s| s.text.clone())
+            .unwrap_or_default()
+    };
+    fire(&mut editor, EventType::OnBufferChanged);
+    fire(&mut editor, EventType::OnBufferChanged);
+    let changed: String = text(&editor);
+    assert_eq!(changed, "Δ2");
+    fire(&mut editor, EventType::OnBufferPostSave);
+    let saved: String = text(&editor);
+    assert!(
+        saved.starts_with("saved ") && saved.len() == "saved 12:34".len(),
+        "{saved:?}"
+    );
+}

@@ -76,6 +76,19 @@ where
     })
 }
 
+/// Run `f` with the document `id` (mutable, without a view), or error once it is closed.
+fn with_doc_mut_ref<F, R>(id: DocumentId, f: F) -> LuaResult<R>
+where
+    F: FnOnce(&mut helix_view::Document) -> LuaResult<R>,
+{
+    crate::lua::with_editor(|editor| {
+        let doc = editor
+            .document_mut(id)
+            .ok_or_else(|| LuaError::RuntimeError(format!("Buffer {:?} no longer exists", id)))?;
+        f(doc)
+    })
+}
+
 /// Applies the change of the chars `from..to` to `text` (`None`: a deletion).
 fn change(
     view: &mut helix_view::View,
@@ -344,6 +357,105 @@ impl LuaUserData for LuaBuffer {
                     doc,
                 );
                 doc.replace_diagnostics(diagnostics, &[], None);
+                Ok(())
+            })
+        });
+
+        // Gutter signs of the plugin: { {line (1-based), text, style, fg, ...}, ... } (replaces
+        // the plugin's signs of this buffer; `{}` clears them)
+        methods.add_method("set_signs", |lua, this, list: LuaTable| {
+            require(lua, Permission::Ui, "buffer:set_signs")?;
+            let plugin = crate::lua::current_plugin_name().to_string();
+            let mut signs = Vec::new();
+            for i in 1..=list.raw_len() {
+                let item: LuaTable = list.raw_get(i)?;
+                let line: usize = item.raw_get::<Option<usize>>("line")?.ok_or_else(|| {
+                    LuaError::RuntimeError("A sign needs a `line` (1-based)".into())
+                })?;
+                let text: String = item.raw_get::<Option<String>>("text")?.unwrap_or_default();
+                // The column is one cell wide.
+                let text: String =
+                    helix_core::unicode::segmentation::UnicodeSegmentation::graphemes(
+                        text.as_str(),
+                        true,
+                    )
+                    .next()
+                    .filter(|g| helix_core::unicode::width::UnicodeWidthStr::width(*g) == 1)
+                    .unwrap_or(" ")
+                    .to_string();
+                let (scope, style) = super::style::read_style(lua, &item)?;
+                signs.push(helix_view::document::PluginSign {
+                    plugin: plugin.clone(),
+                    line: line.saturating_sub(1),
+                    text,
+                    scope,
+                    style,
+                });
+            }
+            crate::lua::with_editor(|editor| {
+                let doc = editor.document_mut(this.document_id).ok_or_else(|| {
+                    LuaError::RuntimeError(format!(
+                        "Buffer {:?} no longer exists",
+                        this.document_id
+                    ))
+                })?;
+                doc.plugin_signs.retain(|s| s.plugin != plugin);
+                doc.plugin_signs.extend(signs);
+                // Sorted by line for the gutter (a plugin's earlier sign of a line wins).
+                doc.plugin_signs.sort_by_key(|s| s.line);
+                helix_event::request_redraw();
+                Ok(())
+            })
+        });
+
+        // Highlights of the plugin: { {start_line, start_col, end_line, end_col, style}, ...}
+        // (positions like `delete`) or { {from, to, style}, ... } (char indices); `style` is a
+        // theme key. Replaces the plugin's highlights of this buffer; `{}` clears them.
+        methods.add_method("set_highlights", |lua, this, list: LuaTable| {
+            require(lua, Permission::Ui, "buffer:set_highlights")?;
+            let plugin = crate::lua::current_plugin_name().to_string();
+            let mut items = Vec::new();
+            for i in 1..=list.raw_len() {
+                let item: LuaTable = list.raw_get(i)?;
+                let scope: String = item.raw_get::<Option<String>>("style")?.ok_or_else(|| {
+                    LuaError::RuntimeError("A highlight needs a `style` (a theme key)".into())
+                })?;
+                let chars: (Option<usize>, Option<usize>) =
+                    (item.raw_get("from")?, item.raw_get("to")?);
+                let lines: [Option<usize>; 4] = [
+                    item.raw_get("start_line")?,
+                    item.raw_get("start_col")?,
+                    item.raw_get("end_line")?,
+                    item.raw_get("end_col")?,
+                ];
+                items.push((scope, chars, lines));
+            }
+            with_doc_mut_ref(this.document_id, |doc| {
+                let text = doc.text();
+                let mut highlights = Vec::with_capacity(items.len());
+                for (scope, chars, lines) in items {
+                    let (from, to) = match (chars, lines) {
+                        ((Some(from), Some(to)), _) => (from, to),
+                        (_, [Some(sl), sc, Some(el), ec]) => (
+                            line_col_to_char(text, sl, sc.unwrap_or(0)),
+                            line_col_to_char(text, el, ec.unwrap_or(usize::MAX)),
+                        ),
+                        _ => {
+                            return Err(LuaError::RuntimeError(
+                                "A highlight needs `from`/`to` or `start_line`/`end_line`".into(),
+                            ))
+                        }
+                    };
+                    highlights.push(helix_view::document::PluginHighlight {
+                        plugin: plugin.clone(),
+                        from: from.min(to),
+                        to: from.max(to),
+                        scope,
+                    });
+                }
+                doc.plugin_highlights.retain(|h| h.plugin != plugin);
+                doc.plugin_highlights.extend(highlights);
+                helix_event::request_redraw();
                 Ok(())
             })
         });

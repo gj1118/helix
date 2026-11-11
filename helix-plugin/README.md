@@ -267,6 +267,17 @@ Buffer methods (they raise an error once the buffer is closed):
 - `get_lines(first, last)`: the lines `first` to `last` (1-based, inclusive; `last`
   defaults to the last line, not counting the empty one after a final line ending), without
   line endings; `get_range(start_line, start_col, end_line, end_col)`: the text between.
+- `set_signs(list)`: gutter signs of the plugin for this buffer, `{ { line, text, ... } }`
+  (`line` 1-based, `text` one cell wide, and a [style](#styles)); drawn in the diagnostics
+  column (the `diagnostics` gutter) on lines without a diagnostic. Replaces the plugin's
+  signs of the buffer; `set_signs({})` clears them (`ui`).
+- `set_highlights(list)`: ranges the plugin highlights with a theme key: `{ { start_line,
+  start_col, end_line, end_col, style } }` (positions like `delete`; without columns, whole
+  lines) or `{ { from, to, style } }` (char indices); `style` is a theme key (`"warning"`,
+  `"diff.plus"`, or one set with `helix.ui.set_style`). Replaces the plugin's highlights of
+  the buffer; `set_highlights({})` clears them (`ui`).
+- Signs and highlights, like annotations, are not moved by edits: set them again on
+  `buffer_changed`.
 - `get_info()`: `{ indent_style = "tabs"|"spaces", indent_width, tab_width, line_ending =
   "lf"|"crlf", encoding, readonly, text_width }`.
 - `save(force)`: writes the buffer (`files`); `close(force)`: closes it (`force`: even with
@@ -354,6 +365,10 @@ Buffer methods (they raise an error once the buffer is closed):
     `on_select` too); `handle:close()` closes it without a choice.
 - `menu(items, function(item, action) end)`: the same picker with the default title and
   label.
+- `set_style(scope, style)`: sets the style of a theme key (`"ui.statusline"`, `"keyword"`,
+  `"diagnostic.error"`, or a new one like `"plugin.mark"` for `set_highlights`), written like
+  in a theme ([styles](#styles)); it stays when the theme changes. `reset_style(scope)` brings
+  the theme's own back.
 - `get_theme()`, `set_theme(name)`, `get_terminal_size()` (`{width, height}` of the editor
   area), `redraw()`.
 - `show_help()` is not implemented (raises an error).
@@ -398,6 +413,44 @@ Window methods (they raise an error once the window is closed):
 The bindings go over the keys of `config.toml` (also after `:config-reload`); a later
 binding of the same keys replaces an earlier one, whichever plugin set it.
 `:reload-all-plugins` removes them all before loading the plugins again.
+
+### `helix.statusline`
+
+Texts in the status line, drawn by Helix every frame (no plugin code runs while drawing).
+
+- `set(id, { text, position, buffer, priority, ... })`: shows the plugin's segment `id`, or
+  changes it (set it again with another `text` to update it). `position` is `"left"` (after
+  the configured left elements), `"center"` or `"right"` (default; before the configured right
+  elements). With `buffer`, it is shown only in the status lines of windows showing that
+  buffer. Segments of a position are in `priority` order (default 0, lower first). A
+  [style](#styles) goes over the status line's (`ui.statusline`) (`ui`).
+- `remove(id)`: removes it, returns whether there was one; `clear()`: removes all of the
+  plugin's (`ui`).
+- `list()`: the segments of all plugins: `{ { plugin, id, text, position, priority } }`
+  (`read`).
+
+```lua
+-- the time of the last save, and a counter of the changes since
+local changes = 0
+helix.on("buffer_changed", function()
+    changes = changes + 1
+    assert(math.type(changes) == "integer" and changes >= 1)
+    helix.statusline.set("changes", { text = "Δ" .. changes, style = "warning" })
+end)
+helix.on("buffer_post_save", function()
+    changes = 0
+    local time = os.date("%H:%M")
+    assert(type(time) == "string" and time:match("^%d%d:%d%d$"))
+    helix.statusline.set("changes", { text = "saved " .. time, fg = "green" })
+end)
+```
+
+### Styles
+
+A style is written like in a theme: `fg` and `bg` (a color name such as `"red"` or
+`"light-blue"`, or `"#rrggbb"`), `modifiers` (`{ "bold", "italic", "underlined", ... }`),
+`underline` (`{ style = "curl", color = "red" }`), and `style`, a theme key the others go over:
+`{ style = "comment", modifiers = { "bold" } }`.
 
 ### `helix.quickfix`
 

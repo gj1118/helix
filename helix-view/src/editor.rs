@@ -7,7 +7,7 @@ use crate::{
     },
     events::{DocumentDidClose, DocumentDidOpen, DocumentFocusLost},
     explorer::{ExplorerClipboard, ExplorerConfig},
-    graphics::{CursorKind, Rect},
+    graphics::{CursorKind, Rect, Style},
     handlers::Handlers,
     info::Info,
     input::KeyEvent,
@@ -2603,6 +2603,10 @@ pub struct Editor {
     pub pre_save_hook: Option<PreSaveHook>,
     /// Key bindings set by plugins (`helix.keymap`), over the configured keys.
     pub plugin_keymaps: PluginKeymaps,
+    /// Status line segments of plugins (`helix.statusline`).
+    pub plugin_statusline: Vec<StatusSegment>,
+    /// Theme styles plugins set (`helix.ui.set_style`), kept over theme changes.
+    pub plugin_theme_overrides: Vec<(String, Style)>,
     /// The newest settings sent to the application (`:set`) and not applied yet: the next
     /// change builds on them, or two changes in a row would lose the first.
     pub pending_config: Option<Box<Config>>,
@@ -2666,6 +2670,34 @@ impl Action {
     pub fn align_view(&self, view: &View, new_doc: DocumentId) -> bool {
         !matches!((self, view.doc == new_doc), (Action::Load, false))
     }
+}
+
+/// Where a plugin's status line segment goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SegmentPosition {
+    /// After the configured left elements.
+    Left,
+    /// After the configured center elements.
+    Center,
+    /// Before the configured right elements.
+    Right,
+}
+
+/// A text a plugin shows in the status line (`helix.statusline.set`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct StatusSegment {
+    pub plugin: String,
+    /// The plugin's name for it (set again to change it).
+    pub id: String,
+    pub text: String,
+    /// A theme key, under `style`.
+    pub scope: Option<String>,
+    pub style: Style,
+    pub position: SegmentPosition,
+    /// Only in the status lines of windows showing this buffer.
+    pub document: Option<DocumentId>,
+    /// Lower first.
+    pub priority: i64,
 }
 
 /// Key bindings set by plugins. The application merges them over the configured keys each
@@ -2808,6 +2840,8 @@ impl Editor {
             pre_save_hook: None,
             plugin_keymaps: PluginKeymaps::default(),
             pending_config: None,
+            plugin_statusline: Vec::new(),
+            plugin_theme_overrides: Vec::new(),
             kitty_multi_cursor_support: false,
         }
     }
@@ -2865,6 +2899,29 @@ impl Editor {
 
     /// Call if the config has changed to let the editor update all
     /// relevant members.
+    /// Sets the style of a theme scope for plugins (kept over theme changes).
+    pub fn set_plugin_style(&mut self, scope: &str, style: Style) {
+        self.plugin_theme_overrides.retain(|(s, _)| s != scope);
+        self.plugin_theme_overrides.push((scope.to_string(), style));
+        if self.theme.set_style(scope, style) {
+            (*self.syn_loader)
+                .load()
+                .set_scopes(self.theme.scopes().to_vec());
+        }
+    }
+
+    /// Removes a plugin's style of `scope`: the theme's own comes back (the theme is loaded
+    /// again with the remaining overrides).
+    pub fn reset_plugin_style(&mut self, scope: &str) -> anyhow::Result<()> {
+        let before = self.plugin_theme_overrides.len();
+        self.plugin_theme_overrides.retain(|(s, _)| s != scope);
+        if before == self.plugin_theme_overrides.len() {
+            return Ok(());
+        }
+        let theme = self.theme_loader.load(self.theme.name())?;
+        self.set_theme(theme)
+    }
+
     /// The settings a change of settings (`:set`) builds on: the newest ones sent and not
     /// applied yet, or the current ones.
     pub fn config_to_change(&self) -> Config {
@@ -3127,10 +3184,14 @@ impl Editor {
         self.set_theme_impl(theme, ThemeAction::Set)
     }
 
-    fn set_theme_impl(&mut self, theme: Theme, preview: ThemeAction) -> anyhow::Result<()> {
+    fn set_theme_impl(&mut self, mut theme: Theme, preview: ThemeAction) -> anyhow::Result<()> {
         // `ui.selection` is the only scope required to be able to render a theme.
         if theme.find_highlight_exact("ui.selection").is_none() {
             bail!("Invalid theme: `ui.selection` required");
+        }
+        // Plugins' styles stay over any theme.
+        for (scope, style) in &self.plugin_theme_overrides {
+            theme.set_style(scope, *style);
         }
 
         let scopes = theme.scopes();

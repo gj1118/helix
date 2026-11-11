@@ -923,3 +923,95 @@ async fn plugins_follow_drive_and_decorate_the_explorer() -> anyhow::Result<()> 
     );
     Ok(())
 }
+
+/// The column of `needle` in a rendered row (cells, not bytes).
+fn cell_column(row: &str, needle: &str) -> Option<u16> {
+    let byte = row.find(needle)?;
+    Some(row[..byte].chars().count() as u16)
+}
+
+/// What plugins set is drawn every frame by Helix: status line segments (for every buffer or
+/// one), gutter signs, highlights and theme styles.
+#[tokio::test(flavor = "multi_thread")]
+async fn plugins_draw_in_the_status_line_gutter_and_text() -> anyhow::Result<()> {
+    let a = helpers::temp_file_with_contents("one\ntwo\nthree\n")?;
+    let b = helpers::temp_file_with_contents("other\n")?;
+    let init = r##"
+        helix.on("ready", function()
+            local buffer = helix.buffer.get_current()
+            helix.statusline.set("left", { text = "LEFT-SEG", position = "left" })
+            helix.statusline.set("right", { text = "RIGHT-SEG", fg = "#010203" })
+            helix.statusline.set("mine", { text = "ONLY-A", buffer = buffer, priority = -1 })
+            buffer:set_signs({ { line = 2, text = "◆", fg = "#040506" } })
+            buffer:set_highlights({ { start_line = 3, end_line = 3, style = "plugin.mark" } })
+            helix.ui.set_style("plugin.mark", { fg = "#070809" })
+        end)
+        helix.register_command{ name = "restyle", handler = function()
+            helix.ui.set_style("ui.statusline", { bg = "#0a0b0c" })
+        end }
+    "##;
+    let dir = plugin_dir(&[("draw", init, None)])?;
+    let mut config = plugin_config(
+        dir.path(),
+        r#"
+        [[plugins]]
+        name = "draw"
+        permissions = ["commands"]
+        "#,
+    )?;
+    config.editor.true_color = true;
+    let mut app = helpers::AppBuilder::new()
+        .with_file(a.path(), None)
+        .with_config(config)
+        .build()?;
+    send_keys(&mut app, "").await?;
+
+    let rows = app.rendered_rows();
+    let status_row = rows.len() - 2;
+    let status = rows[status_row].clone();
+    let (left, right, only_a) = (
+        cell_column(&status, "LEFT-SEG"),
+        cell_column(&status, "RIGHT-SEG"),
+        cell_column(&status, "ONLY-A"),
+    );
+    assert!(
+        left.is_some() && right.is_some() && only_a.is_some(),
+        "{status:?}"
+    );
+    // left on the left, the right ones on the right, by priority
+    assert!(left < only_a && only_a < right, "{status:?}");
+    let right_fg = app.rendered_fg(right.unwrap() + 1, status_row as u16);
+    assert_eq!(right_fg, helix_view::graphics::Color::Rgb(1, 2, 3));
+
+    // the sign, in the first column of line 2
+    let sign = app.rendered_cell(0, 1).clone();
+    let (symbol, fg): (&str, helix_view::graphics::Color) = (sign.symbol.as_str(), sign.fg);
+    assert_eq!(
+        (symbol, fg),
+        ("◆", helix_view::graphics::Color::Rgb(4, 5, 6))
+    );
+
+    // line 3 in the plugin's style
+    let three = cell_column(&rows[2], "three").expect("line 3 is shown");
+    let three_fg = app.rendered_fg(three, 2);
+    assert_eq!(three_fg, helix_view::graphics::Color::Rgb(7, 8, 9));
+    let one = cell_column(&rows[0], "one").expect("line 1 is shown");
+    assert_ne!(
+        app.rendered_fg(one, 0),
+        helix_view::graphics::Color::Rgb(7, 8, 9)
+    );
+
+    // a theme style of the plugin: the status line's background
+    send_keys(&mut app, ":restyle<ret>").await?;
+    let bg = app.rendered_cell(0, status_row as u16).bg;
+    assert_eq!(bg, helix_view::graphics::Color::Rgb(10, 11, 12));
+
+    // another buffer: the segment of buffer a is not shown
+    send_keys(&mut app, &format!(":open {}<ret>", b.path().display())).await?;
+    let status = app.rendered_rows()[status_row].clone();
+    assert!(
+        status.contains("RIGHT-SEG") && !status.contains("ONLY-A"),
+        "{status:?}"
+    );
+    Ok(())
+}

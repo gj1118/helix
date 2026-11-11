@@ -125,6 +125,30 @@ pub struct DocumentSavedEvent {
 
 pub type DocumentSavedEventResult = Result<DocumentSavedEvent, anyhow::Error>;
 
+/// A sign a plugin put in the gutter (`buffer:set_signs`): drawn in the diagnostics column on
+/// lines without a diagnostic.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PluginSign {
+    pub plugin: String,
+    /// The line (0-based).
+    pub line: usize,
+    /// One cell wide.
+    pub text: String,
+    /// A theme key, under `style`.
+    pub scope: Option<String>,
+    pub style: crate::graphics::Style,
+}
+
+/// A range a plugin highlights with a theme key (`buffer:set_highlights`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PluginHighlight {
+    pub plugin: String,
+    /// Char indices.
+    pub from: usize,
+    pub to: usize,
+    pub scope: String,
+}
+
 /// The context of the error of a failed save: which document, written to which path.
 /// Displayed like the error itself, so the message shown is unchanged; take it out with
 /// `error.downcast_ref::<DocumentSaveFailed>()`.
@@ -217,6 +241,10 @@ pub struct Document {
     pub restore_cursor: bool,
 
     /// Current indent style.
+    /// Gutter signs of plugins, by line.
+    pub plugin_signs: Vec<PluginSign>,
+    /// Highlights of plugins.
+    pub plugin_highlights: Vec<PluginHighlight>,
     pub indent_style: IndentStyle,
     editor_config: EditorConfig,
 
@@ -1068,6 +1096,8 @@ impl Document {
             fold_container: HashMap::default(),
             inlay_hints_oudated: false,
             view_data: Default::default(),
+            plugin_signs: Vec::new(),
+            plugin_highlights: Vec::new(),
             indent_style: DEFAULT_INDENT,
             editor_config: EditorConfig::default(),
             line_ending,

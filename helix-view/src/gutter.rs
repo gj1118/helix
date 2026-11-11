@@ -62,6 +62,19 @@ pub fn diagnostic<'doc>(
     let info = theme.get("info");
     let hint = theme.get("hint");
     let diagnostics = &doc.diagnostics;
+    // Plugins' signs (sorted by line) show where there is no diagnostic.
+    let signs: Vec<(usize, &str, Style)> = doc
+        .plugin_signs
+        .iter()
+        .map(|sign| {
+            let base = sign
+                .scope
+                .as_deref()
+                .map(|scope| theme.get(scope))
+                .unwrap_or_default();
+            (sign.line, sign.text.as_str(), base.patch(sign.style))
+        })
+        .collect();
 
     Box::new(
         move |line: usize, _selected: bool, first_visual_line: bool, out: &mut String| {
@@ -80,19 +93,24 @@ pub fn diagnostic<'doc>(
                         })
                 });
 
-            diagnostics_on_line
-                .max_by_key(|d| d.severity)
-                .map(move |d| {
-                    let icons = ICONS.load();
-                    let (style, symbol) = match d.severity {
-                        Some(Severity::Error) => (error, icons.diagnostic().error()),
-                        Some(Severity::Warning) | None => (warning, icons.diagnostic().warning()),
-                        Some(Severity::Info) => (info, icons.diagnostic().info()),
-                        Some(Severity::Hint) => (hint, icons.diagnostic().hint()),
-                    };
-                    out.push_str(symbol);
-                    style
-                })
+            if let Some(d) = diagnostics_on_line.max_by_key(|d| d.severity) {
+                let icons = ICONS.load();
+                let (style, symbol) = match d.severity {
+                    Some(Severity::Error) => (error, icons.diagnostic().error()),
+                    Some(Severity::Warning) | None => (warning, icons.diagnostic().warning()),
+                    Some(Severity::Info) => (info, icons.diagnostic().info()),
+                    Some(Severity::Hint) => (hint, icons.diagnostic().hint()),
+                };
+                out.push_str(symbol);
+                return Some(style);
+            }
+            let &(sign_line, text, style) =
+                signs.get(signs.partition_point(|(l, _, _)| *l < line))?;
+            if sign_line != line {
+                return None;
+            }
+            out.push_str(text);
+            Some(style)
         },
     )
 }

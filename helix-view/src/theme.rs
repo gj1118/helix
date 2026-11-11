@@ -423,6 +423,26 @@ impl Theme {
         &self.name
     }
 
+    /// Sets the style of `scope` (a plugin's override), for the UI and for syntax highlighting.
+    /// Returns whether the scope is new to the theme: the syntax loader then needs the scopes
+    /// again ([`Theme::scopes`]).
+    pub fn set_style(&mut self, scope: &str, style: Style) -> bool {
+        self.styles.insert(scope.to_string(), style);
+        match self.scope_index.get(scope) {
+            Some(highlight) => {
+                self.highlights[highlight.idx()] = style;
+                false
+            }
+            None => {
+                let highlight = Highlight::new(self.highlights.len() as u32);
+                self.scopes.push(scope.to_string());
+                self.highlights.push(style);
+                self.scope_index.insert(scope.to_string(), highlight);
+                true
+            }
+        }
+    }
+
     pub fn get(&self, scope: &str) -> Style {
         self.try_get(scope).unwrap_or_default()
     }
@@ -505,6 +525,14 @@ impl Theme {
         };
         (theme, load_errors)
     }
+}
+
+/// A style written like in a theme (`{ fg = "red", bg = "#123456", modifiers = ["bold"],
+/// underline = { style = "curl", color = "red" } }`), with the standard color names.
+pub fn parse_style(value: Value) -> Result<Style, String> {
+    let mut style = Style::default();
+    ThemePalette::default().parse_style(&mut style, value)?;
+    Ok(style)
 }
 
 struct ThemePalette {

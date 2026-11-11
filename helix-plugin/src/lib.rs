@@ -129,8 +129,26 @@ impl PluginManager {
 
     /// Reload all plugins
     pub fn reload_plugins(&self, editor: &mut Editor) -> Result<()> {
-        // Their bindings go with them (a function binding's command is gone).
+        // Their bindings go with them (a function binding's command is gone), and what they
+        // drew: they set it again as they load.
         editor.plugin_keymaps.clear();
+        editor.plugin_statusline.clear();
+        editor.plugin_explorer.decorations.clear();
+        for doc in editor.documents.values_mut() {
+            doc.plugin_signs.clear();
+            doc.plugin_highlights.clear();
+        }
+        if !editor.plugin_theme_overrides.is_empty() {
+            editor.plugin_theme_overrides.clear();
+            match editor.theme_loader.load(editor.theme.name()) {
+                Ok(theme) => {
+                    if let Err(e) = editor.set_theme(theme) {
+                        log::error!("Plugins reloaded: theme not restored: {e}");
+                    }
+                }
+                Err(e) => log::error!("Plugins reloaded: theme not restored: {e}"),
+            }
+        }
         // Reset engine state
         {
             let mut engine = self.engine.write();

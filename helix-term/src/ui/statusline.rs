@@ -72,6 +72,11 @@ pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface
             append(&mut context.parts.left, span, base_style)
         });
     }
+    // Plugins' segments: after the left elements, after the center ones, before the right ones.
+    let plugin_segments = plugin_segments(context);
+    for span in plugin_segments.left {
+        append(&mut context.parts.left, span, base_style);
+    }
 
     surface.set_spans(
         viewport.x,
@@ -82,6 +87,9 @@ pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface
 
     // Right side of the status line.
 
+    for span in plugin_segments.right {
+        append(&mut context.parts.right, span, base_style);
+    }
     for element_id in &config.statusline.right {
         let render = get_render_function(*element_id);
         (render)(context, |context, span| {
@@ -107,6 +115,9 @@ pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface
             append(&mut context.parts.center, span, base_style)
         })
     }
+    for span in plugin_segments.center {
+        append(&mut context.parts.center, span, base_style);
+    }
 
     // Width of the empty space between the left and center area and between the center and right area.
     let spacing = 1u16;
@@ -121,6 +132,46 @@ pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface
         &context.parts.center,
         center_width,
     );
+}
+
+/// The spans of plugins' status line segments, by position: those of every buffer and those
+/// of this window's buffer, by priority, each with a space on either side.
+#[derive(Default)]
+struct PluginSpans<'a> {
+    left: Vec<Span<'a>>,
+    center: Vec<Span<'a>>,
+    right: Vec<Span<'a>>,
+}
+
+fn plugin_segments<'a>(context: &RenderContext<'a>) -> PluginSpans<'a> {
+    use helix_view::editor::SegmentPosition;
+    let mut spans = PluginSpans::default();
+    let segments = &context.editor.plugin_statusline;
+    if segments.is_empty() {
+        return spans;
+    }
+    let doc = context.doc.id();
+    let mut shown: Vec<_> = segments
+        .iter()
+        .filter(|segment| segment.document.is_none_or(|id| id == doc))
+        .filter(|segment| !segment.text.is_empty())
+        .collect();
+    shown.sort_by_key(|segment| segment.priority);
+    for segment in shown {
+        let style = segment
+            .scope
+            .as_deref()
+            .map(|scope| context.editor.theme.get(scope))
+            .unwrap_or_default()
+            .patch(segment.style);
+        let span = Span::styled(format!(" {} ", segment.text), style);
+        match segment.position {
+            SegmentPosition::Left => spans.left.push(span),
+            SegmentPosition::Center => spans.center.push(span),
+            SegmentPosition::Right => spans.right.push(span),
+        }
+    }
+    spans
 }
 
 fn append<'a>(buffer: &mut Spans<'a>, mut span: Span<'a>, base_style: Style) {
