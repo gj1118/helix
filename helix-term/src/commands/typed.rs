@@ -5289,14 +5289,6 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         signature: Signature { positionals: (0, Some(0)), ..Signature::DEFAULT },
     },
     TypableCommand {
-        name: "explorer-float-reset",
-        aliases: &[],
-        doc: "Put the floating explorer window back in the center at its configured size, undoing a mouse move or resize",
-        fun: explorer_float_reset,
-        completer: CommandCompleter::none(),
-        signature: Signature { positionals: (0, Some(0)), ..Signature::DEFAULT },
-    },
-    TypableCommand {
         name: "explorer-refresh",
         aliases: &[],
         doc: "Reload expanded directories in the explorer panel from disk",
@@ -6175,18 +6167,6 @@ fn explorer_float(
         return Ok(());
     }
     explorer_typable(cx, crate::commands::explorer_float)
-}
-
-fn explorer_float_reset(
-    cx: &mut compositor::Context,
-    _args: Args,
-    event: PromptEvent,
-) -> anyhow::Result<()> {
-    if event != PromptEvent::Validate {
-        return Ok(());
-    }
-    cx.editor.explorer_panel.floating_geometry = None;
-    Ok(())
 }
 
 fn explorer_refresh(

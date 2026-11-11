@@ -693,13 +693,8 @@ fn typable_permissions(name: &str) -> Option<&'static [Permission]> {
         | "lsp-stop"
         | "workspace-untrust"
         | "workspace-exclude" => &[Config],
-        "explorer"
-        | "explorer-focus"
-        | "explorer-float"
-        | "explorer-float-reset"
-        | "explorer-refresh"
-        | "explorer-reveal"
-        | "explorer-width" => &[Explorer],
+        "explorer" | "explorer-focus" | "explorer-float" | "explorer-refresh"
+        | "explorer-reveal" | "explorer-width" => &[Explorer],
         // running programs (trusting a workspace lets its settings run them)
         "insert-output"
         | "append-output"

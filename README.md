@@ -313,7 +313,7 @@ not saved, not even in the config; `floating-x` / `floating-y` are ignored.
 
 While it is open, it can be moved and resized with the mouse: drag the top
 border to move it, any other border (or a corner) to resize it. The next time
-it opens it is centered again; `:explorer-float-reset` centers the open one.
+it opens it is centered again (close and reopen it with `<space>X` to center it).
 
 The separator between a pinned panel and the editor can be dragged to resize
 the panel. Dividers between editor splits can be dragged too. Notifications

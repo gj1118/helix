@@ -944,3 +944,49 @@ async fn window_moves_reach_the_explorer_on_its_side() -> anyhow::Result<()> {
     .await?;
     Ok(())
 }
+
+/// A floating window moved or resized with the mouse is centered again at its configured size
+/// when it is closed and opened again (`<space>X` twice): there is no command for it.
+#[tokio::test(flavor = "multi_thread")]
+async fn reopening_the_floating_window_centers_it() -> anyhow::Result<()> {
+    let (_dir, root) = repo()?;
+    let mut app = helpers::AppBuilder::new()
+        .with_config(config("side = \"floating\""))
+        .build()?;
+    open_explorer(&mut app, &root);
+    // as a drag with the mouse leaves it
+    app.editor.explorer_panel.floating_geometry = Some(helix_view::explorer::FloatGeometry {
+        x: 2,
+        y: 3,
+        width: 20,
+        height: 8,
+    });
+    test_key_sequences(
+        &mut app,
+        vec![
+            (
+                Some("<space>X"),
+                Some(&|app| assert!(!app.editor.explorer_panel.visible)),
+            ),
+            (
+                Some("<space>X"),
+                Some(&|app| {
+                    let panel = &app.editor.explorer_panel;
+                    assert!(panel.visible && panel.focused);
+                    assert_eq!(panel.floating_geometry, None);
+                }),
+            ),
+            // the old command is gone
+            (
+                Some("<esc>:explorer-float-reset<ret>"),
+                Some(&|app| {
+                    let (status, _) = app.editor.get_status().unwrap();
+                    assert!(status.contains("Command not found"), "{status}");
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}
