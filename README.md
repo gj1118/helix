@@ -85,7 +85,8 @@ This fork of Helix implements the following pull requests. Future pull requests 
 ## Explorer
 
 A keyboard-driven file tree sidebar. Toggle it with `<space>x` or
-`:explorer-toggle`: when the panel is hidden it opens and takes focus, and when it is
+`:explorer`: when the panel is hidden it opens on the side set in the config (`side`,
+below) and takes focus, and when it is
 open it hides, whether the tree or the editor has focus. `C-h` and `<space>wx` (the Window
 submode) move focus to the open panel without hiding it, and `C-l` moves it back to the buffer.
 While the panel is focused (in normal mode) a bare `x` cuts the file under the
@@ -124,11 +125,12 @@ side = "left"
 width = 35
 ```
 
-The side and width can also be switched at runtime with `:explorer-left`,
-`:explorer-right`, `:explorer-float`, and `:explorer-width <columns>`.
-`:explorer-reveal` selects the current buffer's file, and `:explorer-refresh`
-re-reads the expanded directories from disk. `:explorer-focus` moves focus back
-to an open panel.
+The side comes from `side` and is read each time the panel opens: change it in the
+config and run `:config-reload`, or set it for the session with
+`:set explorer.side right` (`left`, `right` or `floating`). `:explorer-width <columns>`
+sets the width for the session. `:explorer-reveal` selects the current buffer's file,
+and `:explorer-refresh` re-reads the expanded directories from disk. `:explorer-focus`
+moves focus back to an open panel.
 
 ### Overriding the icons
 
@@ -282,10 +284,10 @@ buffer also moves focus there. Both keys are ordinary keymap entries, so they ca
 
 ### Floating explorer
 
-The floating window has its own toggle, independent of the pinned panel:
-`<space>X` / `:explorer-float-toggle`. `<space>x` keeps toggling the pinned
-panel; if the float is showing it switches to the pinned panel instead of
-re-opening the float.
+`<space>X` / `:explorer-float` shows the tree as a floating window, whatever side the
+config sets, and hides it when it is one. With `side = "floating"`, `<space>x` opens the
+floating window too. Otherwise, `<space>x` while a floating window of `<space>X` is
+showing switches to the configured side instead of hiding it.
 
 ### Mouse
 

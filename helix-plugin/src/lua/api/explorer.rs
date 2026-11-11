@@ -10,11 +10,11 @@ fn path_string(path: Option<PathBuf>) -> Option<String> {
     path.map(|p| p.to_string_lossy().into_owned())
 }
 
-/// Shows the explorer unless it is shown (`:explorer-toggle`).
+/// Shows the explorer unless it is shown (`:explorer`).
 fn show(lua: &Lua) -> LuaResult<()> {
     let visible = crate::lua::with_editor(|editor| Ok(editor.explorer_panel.visible))?;
     if !visible {
-        super::editor::run_typable(lua, "explorer-toggle", &[], false)?;
+        super::editor::run_typable(lua, "explorer", &[], false)?;
     }
     Ok(())
 }

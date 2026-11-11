@@ -756,3 +756,99 @@ async fn the_key_info_box_is_drawn_over_the_panel() -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+/// `<space>x` / `:explorer` shows the explorer on the side the config sets, read each time
+/// it opens, and hides it; `<space>X` / `:explorer-float` shows a floating window instead,
+/// and hides it.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_explorer_opens_on_the_configured_side() -> anyhow::Result<()> {
+    use helix_view::explorer::ExplorerSide;
+
+    fn shown(app: &Application) -> Option<ExplorerSide> {
+        let panel = &app.editor.explorer_panel;
+        panel.visible.then(|| app.editor.explorer_side())
+    }
+
+    let mut app = helpers::AppBuilder::new()
+        .with_config(config("side = \"right\""))
+        .build()?;
+    test_key_sequences(
+        &mut app,
+        vec![
+            (
+                Some("<space>x"),
+                Some(&|app| {
+                    assert_eq!(shown(app), Some(ExplorerSide::Right));
+                    assert!(app.editor.explorer_panel.focused);
+                }),
+            ),
+            (Some("<space>x"), Some(&|app| assert_eq!(shown(app), None))),
+            // the side is read when the panel opens
+            (
+                Some(":set explorer.side left<ret>:explorer<ret>"),
+                Some(&|app| assert_eq!(shown(app), Some(ExplorerSide::Left))),
+            ),
+            // a floating window over the configured side
+            (
+                Some("<space>X"),
+                Some(&|app| assert_eq!(shown(app), Some(ExplorerSide::Floating))),
+            ),
+            // `<space>x` swaps it for the configured side
+            (
+                Some("<space>x"),
+                Some(&|app| assert_eq!(shown(app), Some(ExplorerSide::Left))),
+            ),
+            (
+                Some("<space>X"),
+                Some(&|app| assert_eq!(shown(app), Some(ExplorerSide::Floating))),
+            ),
+            (Some("<space>X"), Some(&|app| assert_eq!(shown(app), None))),
+            // the closed float leaves the configured side as it was
+            (
+                Some(":explorer<ret>"),
+                Some(&|app| assert_eq!(shown(app), Some(ExplorerSide::Left))),
+            ),
+        ],
+        false,
+    )
+    .await?;
+
+    // `side = "floating"`: `<space>x` opens a floating window, and `<space>X` closes it
+    let mut app = helpers::AppBuilder::new()
+        .with_config(config("side = \"floating\""))
+        .build()?;
+    test_key_sequences(
+        &mut app,
+        vec![
+            (
+                Some("<space>x"),
+                Some(&|app| assert_eq!(shown(app), Some(ExplorerSide::Floating))),
+            ),
+            (Some("<space>X"), Some(&|app| assert_eq!(shown(app), None))),
+            (
+                Some(":explorer<ret>"),
+                Some(&|app| assert_eq!(shown(app), Some(ExplorerSide::Floating))),
+            ),
+            (Some("<space>x"), Some(&|app| assert_eq!(shown(app), None))),
+        ],
+        false,
+    )
+    .await?;
+
+    // the side commands are gone: the config sets the side
+    let mut app = helpers::AppBuilder::new().build()?;
+    test_key_sequences(
+        &mut app,
+        vec![(
+            Some(":explorer-left<ret>"),
+            Some(&|app| {
+                let (status, _) = app.editor.get_status().unwrap();
+                assert!(status.contains("Command not found"), "{status}");
+                assert_eq!(shown(app), None);
+            }),
+        )],
+        false,
+    )
+    .await?;
+    Ok(())
+}

@@ -418,7 +418,7 @@ Note that the ignore files consulted by the file explorer when `ignore` is set t
 ### `[editor.explorer]` Section
 
 Configuration for the explorer file tree panel (toggled with `<space>x` or
-`:explorer-toggle`). The panel is a real tree sidebar: pinned to one edge of
+`:explorer`, which opens it on the side set here). The panel is a real tree sidebar: pinned to one edge of
 the terminal it resizes the editor views around itself, or it can float over
 the editor. Opening the panel does not scan the whole workspace — directory
 children are read from disk on first expansion only.
@@ -445,9 +445,9 @@ side = "left"
 width = 35
 ```
 
-The side and width can also be switched at runtime with
-`:explorer-left`, `:explorer-right`, `:explorer-float`, and
-`:explorer-width <columns>`.
+The side is read each time the panel opens: change it in the config and run
+`:config-reload`, or set it for the session with `:set explorer.side right` (`left`,
+`right` or `floating`). `:explorer-width <columns>` sets the width for the session.
 
 `<space>x` is a two-state toggle: it opens and focuses the panel when it is
 hidden, and hides it when it is open, whether the tree or the editor has the keyboard. To move
@@ -600,10 +600,10 @@ drawn instead and `ui.explorer.border` is ignored. The priority for the floating
 
 ### Floating explorer
 
-The floating window has its own toggle, independent of the pinned panel:
-`<space>X` / `:explorer-float-toggle`. `<space>x` keeps toggling the pinned
-panel; if the float is showing it switches to the pinned panel instead of
-re-opening the float.
+`<space>X` / `:explorer-float` shows the tree as a floating window, whatever side the
+config sets, and hides it when it is one. With `side = "floating"`, `<space>x` opens the
+floating window too. Otherwise, `<space>x` while a floating window of `<space>X` is
+showing switches to the configured side instead of hiding it.
 
 ### Mouse
 

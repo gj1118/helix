@@ -458,13 +458,10 @@ impl MappableCommand {
         file_explorer, "Open file explorer in workspace root",
         file_explorer_in_current_buffer_directory, "Open file explorer at current buffer's directory",
         file_explorer_in_current_directory, "Open file explorer at current working directory",
-        explorer_toggle, "Toggle the explorer file tree panel",
+        explorer, "Show the explorer on the side set by [editor.explorer] side (left, right or floating), or hide it when it is open",
         explorer_focus, "Focus the explorer file tree panel (opening it if hidden)",
         explorer_blur, "Move keyboard focus from the explorer file tree to the buffer area",
-        explorer_left, "Show the explorer panel pinned to the left",
-        explorer_right, "Show the explorer panel pinned to the right",
-        explorer_float, "Show the explorer panel as a floating window",
-        explorer_float_toggle, "Toggle the explorer panel as a floating window",
+        explorer_float, "Show the explorer as a floating window, or hide it when it is one",
         explorer_refresh, "Refresh the explorer panel from disk",
         explorer_reveal, "Reveal the current file in the explorer panel",
         code_action, "Perform code action",
@@ -4128,19 +4125,22 @@ fn file_picker_in_current_directory(cx: &mut Context) {
     )));
 }
 
-/// Toggles the pinned explorer panel. The floating window has its own toggle
-/// (`explorer_float_toggle`) and is never opened from here: an open float is
-/// swapped for the pinned panel instead.
-pub fn explorer_toggle(cx: &mut Context) {
+/// Shows the explorer on the side the config sets (`[editor.explorer] side`: `left`,
+/// `right` or `floating`), read when it opens, or hides it. A floating window opened with
+/// `explorer_float` is swapped for the configured side instead of being hidden.
+pub fn explorer(cx: &mut Context) {
+    let configured = cx.editor.config().explorer.side;
     let panel = &mut cx.editor.explorer_panel;
     if !panel.visible {
-        // Hidden: show the panel and take focus.
+        // Hidden: show it where the config says, and take focus.
         panel.visible = true;
         panel.focused = true;
+        panel.floating = false;
+        // A floating window opens centered at its configured size.
+        panel.floating_geometry = None;
         explorer_install_layer(cx);
-    } else if panel.floating {
-        // A float is up: this key belongs to the pinned panel, so show that
-        // one in its place.
+    } else if panel.floating && configured != helix_view::explorer::ExplorerSide::Floating {
+        // A float of `explorer_float` is up: show the configured side in its place.
         panel.floating = false;
         panel.focused = true;
     } else {
@@ -4150,12 +4150,12 @@ pub fn explorer_toggle(cx: &mut Context) {
     }
 }
 
-/// Toggles the explorer as a floating window, independently of the pinned
-/// panel's toggle and of its side: closing the window leaves no trace that
-/// makes `explorer_toggle` reopen it.
-pub fn explorer_float_toggle(cx: &mut Context) {
+/// Shows the explorer as a floating window, whatever side the config sets, or hides it
+/// when it is one. Closing it leaves no trace: `explorer` opens the configured side again.
+pub fn explorer_float(cx: &mut Context) {
+    let floating = cx.editor.explorer_side() == helix_view::explorer::ExplorerSide::Floating;
     let panel = &mut cx.editor.explorer_panel;
-    if panel.visible && panel.floating {
+    if panel.visible && floating {
         panel.hide();
     } else {
         panel.visible = true;
@@ -4178,26 +4178,6 @@ pub fn explorer_focus(cx: &mut Context) {
 /// stays visible; this only changes where keys go.
 pub fn explorer_blur(cx: &mut Context) {
     cx.editor.explorer_panel.focused = false;
-}
-
-pub fn explorer_left(cx: &mut Context) {
-    explorer_show_side(cx, helix_view::explorer::ExplorerSide::Left);
-}
-
-pub fn explorer_right(cx: &mut Context) {
-    explorer_show_side(cx, helix_view::explorer::ExplorerSide::Right);
-}
-
-pub fn explorer_float(cx: &mut Context) {
-    // Show the floating window (without touching the pinned side), and take
-    // focus.
-    let panel = &mut cx.editor.explorer_panel;
-    panel.visible = true;
-    panel.focused = true;
-    panel.floating = true;
-    // Every floating window opens centered at its configured size.
-    panel.floating_geometry = None;
-    explorer_install_layer(cx);
 }
 
 pub fn explorer_refresh(cx: &mut Context) {
@@ -4273,15 +4253,7 @@ fn explorer_refresh_job(cx: &mut Context, keep: Option<std::path::PathBuf>) {
 
 /// Shows the panel pinned on `side` (and records the override). Any floating
 /// window is replaced by the pinned panel.
-fn explorer_show_side(cx: &mut Context, side: helix_view::explorer::ExplorerSide) {
-    cx.editor.explorer_panel.side = Some(side);
-    cx.editor.explorer_panel.floating = false;
-    cx.editor.explorer_panel.visible = true;
-    cx.editor.explorer_panel.focused = true;
-    explorer_install_layer(cx);
-}
-
-/// Installs the explorere layer (building the tree on first use). The layer
+/// Installs the explorer layer (building the tree on first use). The layer
 /// is never removed again: toggling only flips `explorer_panel.visible`, so
 /// hide/show stays cheap and stateful.
 fn explorer_install_layer(cx: &mut Context) {

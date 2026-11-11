@@ -116,12 +116,9 @@
 | `:workspace-untrust` | Revoke the current workspace's trust grant or exclusion. |
 | `:workspace-exclude` | Mark the current workspace as never-prompt. Never prompts for trust again. |
 | `:reload-history` | Reload history files for persistent state |
-| `:explorer-toggle` | Toggle the explorer file tree panel |
+| `:explorer` | Show the explorer on the side set by [editor.explorer] side (left, right or floating), or hide it when it is open |
 | `:explorer-focus` | Focus the explorer file tree panel (opening it if hidden) |
-| `:explorer-left` | Show the explorer panel pinned to the editor's left edge |
-| `:explorer-right` | Show the explorer panel pinned to the editor's right edge |
-| `:explorer-float` | Show the explorer panel as a floating window over the editor |
-| `:explorer-float-toggle` | Toggle the explorer panel as a floating window, independently of the pinned panel |
+| `:explorer-float` | Show the explorer as a floating window, or hide it when it is one |
 | `:explorer-float-reset` | Put the floating explorer window back in the center at its configured size, undoing a mouse move or resize |
 | `:explorer-refresh` | Reload expanded directories in the explorer panel from disk |
 | `:explorer-reveal` | Reveal and select the current file in the explorer panel |

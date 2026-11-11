@@ -575,6 +575,7 @@ fn static_permissions(name: &str) -> &'static [Permission] {
         | "blame_line"
         | "blame_details"
         | "completion" => &[Ui],
+        "explorer" => &[Explorer],
         name if name.starts_with("explorer_") => &[Explorer],
         _ => &[Edit],
     }
@@ -690,12 +691,9 @@ fn typable_permissions(name: &str) -> Option<&'static [Permission]> {
         | "lsp-stop"
         | "workspace-untrust"
         | "workspace-exclude" => &[Config],
-        "explorer-toggle"
+        "explorer"
         | "explorer-focus"
-        | "explorer-left"
-        | "explorer-right"
         | "explorer-float"
-        | "explorer-float-toggle"
         | "explorer-float-reset"
         | "explorer-refresh"
         | "explorer-reveal"
@@ -828,7 +826,7 @@ mod tests {
     fn static_commands_are_classified() {
         let count = crate::commands::MappableCommand::STATIC_COMMAND_LIST.len();
         assert_eq!(
-            count, 392,
+            count, 389,
             "commands were added or removed: check `static_permissions` for them"
         );
         use helix_plugin::types::EditorCommandRegistry;
@@ -840,7 +838,8 @@ mod tests {
         assert_eq!(needs("dap_launch"), Some(vec![Shell]));
         assert_eq!(needs("vsplit"), Some(vec![Windows]));
         assert_eq!(needs("file_picker"), Some(vec![Ui]));
-        assert_eq!(needs("explorer_toggle"), Some(vec![Explorer]));
+        assert_eq!(needs("explorer"), Some(vec![Explorer]));
+        assert_eq!(needs("explorer_float"), Some(vec![Explorer]));
         assert_eq!(needs("rename_symbol"), Some(vec![Edit, Files]));
         assert_eq!(needs("no_such_command"), None);
     }

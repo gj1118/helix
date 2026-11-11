@@ -114,13 +114,10 @@
 | `file_explorer` | Open file explorer in workspace root | normal: `` <space>e ``, select: `` <space>e `` |
 | `file_explorer_in_current_buffer_directory` | Open file explorer at current buffer's directory | normal: `` <space>. ``, select: `` <space>. `` |
 | `file_explorer_in_current_directory` | Open file explorer at current working directory |  |
-| `explorer_toggle` | Toggle the explorer file tree panel | normal: `` <space>x ``, select: `` <space>x `` |
+| `explorer` | Show the explorer on the side set by [editor.explorer] side (left, right or floating), or hide it when it is open | normal: `` <space>x ``, select: `` <space>x `` |
 | `explorer_focus` | Focus the explorer file tree panel (opening it if hidden) | normal: `` <C-h> ``, `` <C-w>x ``, `` <space>wx ``, select: `` <C-h> ``, `` <C-w>x ``, `` <space>wx `` |
 | `explorer_blur` | Move keyboard focus from the explorer file tree to the buffer area | normal: `` <C-l> ``, select: `` <C-l> `` |
-| `explorer_left` | Show the explorer panel pinned to the left |  |
-| `explorer_right` | Show the explorer panel pinned to the right |  |
-| `explorer_float` | Show the explorer panel as a floating window |  |
-| `explorer_float_toggle` | Toggle the explorer panel as a floating window | normal: `` <space>X ``, select: `` <space>X `` |
+| `explorer_float` | Show the explorer as a floating window, or hide it when it is one | normal: `` <space>X ``, select: `` <space>X `` |
 | `explorer_refresh` | Refresh the explorer panel from disk |  |
 | `explorer_reveal` | Reveal the current file in the explorer panel |  |
 | `code_action` | Perform code action | normal: `` <space>a ``, select: `` <space>a `` |

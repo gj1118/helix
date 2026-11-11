@@ -332,8 +332,8 @@ This layer is a kludge of mappings, mostly pickers.
 | `O`     | Open the [recent file picker](./pickers.md#recent-files) ("oldfiles")   | `recent_picker`                            |
 | `e`     | Open file explorer at LSP workspace root                                | `file_explorer`                            |
 | `E`     | Open file explorer at the opened file's directory                       | `file_explorer_in_current_buffer_directory`|
-| `x`     | Toggle the explorer file tree panel                                     | `explorer_toggle`                          |
-| `X`     | Toggle the explorer as a floating window                                | `explorer_float_toggle`                    |
+| `x`     | Toggle the explorer on the side set in the config                       | `explorer`                                 |
+| `X`     | Toggle the explorer as a floating window                                | `explorer_float`                           |
 | `b`     | Open buffer picker                                                      | `buffer_picker`                            |
 | `j`     | Open jumplist picker                                                    | `jumplist_picker`                          |
 | `g`     | Open changed file picker                                                | `changed_file_picker`                      |
@@ -451,8 +451,8 @@ keymap (see [Remapping](./remapping.md)).
 
 | Key | Mode | Command | Action |
 | --- | --- | --- | --- |
-| `Space x` | normal | `explorer_toggle` | Show the explorer panel and focus it, or hide it when it is open |
-| `Space X` | normal | `explorer_float_toggle` | Toggle the explorer as a floating window |
+| `Space x` | normal | `explorer` | Show the explorer on the side set by `[editor.explorer] side` and focus it, or hide it when it is open |
+| `Space X` | normal | `explorer_float` | Show the explorer as a floating window, or hide it when it is one |
 | `C-h` | normal | `explorer_focus` | Move keyboard focus to the explorer (opens it if hidden) |
 | `C-l` | normal | `explorer_blur` | Move keyboard focus from the explorer back to the buffer area |
 | `Space w x` | normal | `explorer_focus` | Move focus to the explorer, opening it if hidden |

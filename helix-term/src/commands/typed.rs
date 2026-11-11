@@ -5231,10 +5231,10 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         },
     },
     TypableCommand {
-        name: "explorer-toggle",
+        name: "explorer",
         aliases: &[],
-        doc: "Toggle the explorer file tree panel",
-        fun: explorer_toggle,
+        doc: "Show the explorer on the side set by [editor.explorer] side (left, right or floating), or hide it when it is open",
+        fun: explorer,
         completer: CommandCompleter::none(),
         signature: Signature { positionals: (0, Some(0)), ..Signature::DEFAULT },
     },
@@ -5247,34 +5247,10 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         signature: Signature { positionals: (0, Some(0)), ..Signature::DEFAULT },
     },
     TypableCommand {
-        name: "explorer-left",
-        aliases: &[],
-        doc: "Show the explorer panel pinned to the editor's left edge",
-        fun: explorer_left,
-        completer: CommandCompleter::none(),
-        signature: Signature { positionals: (0, Some(0)), ..Signature::DEFAULT },
-    },
-    TypableCommand {
-        name: "explorer-right",
-        aliases: &[],
-        doc: "Show the explorer panel pinned to the editor's right edge",
-        fun: explorer_right,
-        completer: CommandCompleter::none(),
-        signature: Signature { positionals: (0, Some(0)), ..Signature::DEFAULT },
-    },
-    TypableCommand {
         name: "explorer-float",
         aliases: &[],
-        doc: "Show the explorer panel as a floating window over the editor",
+        doc: "Show the explorer as a floating window, or hide it when it is one",
         fun: explorer_float,
-        completer: CommandCompleter::none(),
-        signature: Signature { positionals: (0, Some(0)), ..Signature::DEFAULT },
-    },
-    TypableCommand {
-        name: "explorer-float-toggle",
-        aliases: &[],
-        doc: "Toggle the explorer panel as a floating window, independently of the pinned panel",
-        fun: explorer_float_toggle,
         completer: CommandCompleter::none(),
         signature: Signature { positionals: (0, Some(0)), ..Signature::DEFAULT },
     },
@@ -6138,15 +6114,11 @@ fn explorer_typable(
     Ok(())
 }
 
-fn explorer_toggle(
-    cx: &mut compositor::Context,
-    _args: Args,
-    event: PromptEvent,
-) -> anyhow::Result<()> {
+fn explorer(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
     }
-    explorer_typable(cx, crate::commands::explorer_toggle)
+    explorer_typable(cx, crate::commands::explorer)
 }
 
 fn explorer_focus(
@@ -6160,28 +6132,6 @@ fn explorer_focus(
     explorer_typable(cx, crate::commands::explorer_focus)
 }
 
-fn explorer_left(
-    cx: &mut compositor::Context,
-    _args: Args,
-    event: PromptEvent,
-) -> anyhow::Result<()> {
-    if event != PromptEvent::Validate {
-        return Ok(());
-    }
-    explorer_typable(cx, crate::commands::explorer_left)
-}
-
-fn explorer_right(
-    cx: &mut compositor::Context,
-    _args: Args,
-    event: PromptEvent,
-) -> anyhow::Result<()> {
-    if event != PromptEvent::Validate {
-        return Ok(());
-    }
-    explorer_typable(cx, crate::commands::explorer_right)
-}
-
 fn explorer_float(
     cx: &mut compositor::Context,
     _args: Args,
@@ -6191,17 +6141,6 @@ fn explorer_float(
         return Ok(());
     }
     explorer_typable(cx, crate::commands::explorer_float)
-}
-
-fn explorer_float_toggle(
-    cx: &mut compositor::Context,
-    _args: Args,
-    event: PromptEvent,
-) -> anyhow::Result<()> {
-    if event != PromptEvent::Validate {
-        return Ok(());
-    }
-    explorer_typable(cx, crate::commands::explorer_float_toggle)
 }
 
 fn explorer_float_reset(

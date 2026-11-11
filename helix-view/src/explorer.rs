@@ -149,13 +149,10 @@ pub struct ExplorerState {
     /// Whether the panel has keyboard focus (tree navigation and file
     /// mutations only respond to keys while this is set).
     pub focused: bool,
-    /// Runtime side override (`:explorer-left` / `:explorer-right`). Only ever
-    /// holds a pinned side; the floating window is tracked by `floating`.
-    pub side: Option<ExplorerSide>,
-    /// Whether the panel is currently shown as a floating window. This is a
-    /// transient presentation of the one tree, owned by the floating toggle
-    /// (`:explorer-float-toggle`); closing the window clears it, so the pinned
-    /// panel's toggle never reopens a float.
+    /// Whether the panel is shown as a floating window although the config sets a
+    /// pinned side: a transient presentation of the one tree, owned by `:explorer-float`.
+    /// Closing the window clears it, so `:explorer` never reopens a float the config
+    /// doesn't ask for.
     pub floating: bool,
     /// Position and size of the floating window as moved or resized with the mouse
     /// while it is open. Forgotten when it closes: it opens centered every time.
@@ -167,12 +164,13 @@ pub struct ExplorerState {
 }
 
 impl ExplorerState {
-    /// Effective side of the panel.
+    /// Effective side of the panel: the config's (`[editor.explorer] side`), unless a
+    /// floating window of `:explorer-float` is open.
     pub fn side(&self, config: &ExplorerConfig) -> ExplorerSide {
         if self.floating {
             ExplorerSide::Floating
         } else {
-            self.side.unwrap_or(config.side)
+            config.side
         }
     }
 
@@ -2688,11 +2686,11 @@ mod tests {
 
     #[test]
     fn floating_is_independent_of_the_pinned_side() {
-        let config = ExplorerConfig::default();
-        let mut state = ExplorerState {
-            side: Some(ExplorerSide::Right),
-            ..ExplorerState::default()
+        let config = ExplorerConfig {
+            side: ExplorerSide::Right,
+            ..ExplorerConfig::default()
         };
+        let mut state = ExplorerState::default();
         assert_eq!(state.side(&config), ExplorerSide::Right);
 
         state.visible = true;
