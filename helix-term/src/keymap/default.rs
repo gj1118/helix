@@ -278,9 +278,10 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
         // move under <space>c
         "C-c" => toggle_comments,
 
-        // the view (or panel: the explorer, the quickfix panel) on the left / right
-        "C-h" => jump_view_left,
-        "C-l" => jump_view_right,
+        // to the explorer and back to the buffer, whatever side the explorer is on (`C-w h`
+        // / `C-w l` move by direction, the explorer included)
+        "C-h" => explorer_focus,
+        "C-l" => explorer_blur,
 
         // z family for save/restore/combine from/to sels from register
 

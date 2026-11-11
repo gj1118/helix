@@ -385,9 +385,8 @@ async fn ctrl_h_and_ctrl_l_move_focus_between_tree_and_buffer() -> anyhow::Resul
     Ok(())
 }
 
-/// `C-h` moves left: it does not open a hidden explorer (`<space>x` does). Once it is open,
-/// `C-l` moves to the buffer and `C-h` moves back, again and again. The panel stays open
-/// throughout.
+/// From a hidden explorer: `C-h` opens and focuses the tree, `C-l` moves to the buffer and
+/// `C-h` moves back, again and again. The panel stays open throughout.
 #[tokio::test(flavor = "multi_thread")]
 async fn ctrl_h_and_ctrl_l_move_between_tree_and_buffer_repeatedly() -> anyhow::Result<()> {
     let (_dir, _root) = repo()?;
@@ -395,14 +394,7 @@ async fn ctrl_h_and_ctrl_l_move_between_tree_and_buffer_repeatedly() -> anyhow::
     test_key_sequences(
         &mut app,
         vec![
-            (
-                Some("<C-h>"),
-                Some(&|app| {
-                    let panel = &app.editor.explorer_panel;
-                    assert!(!panel.visible && !panel.focused);
-                }),
-            ),
-            (Some("<space>x"), Some(&|app| assert_tree_focus(app, true))),
+            (Some("<C-h>"), Some(&|app| assert_tree_focus(app, true))),
             (Some("<C-l>"), Some(&|app| assert_tree_focus(app, false))),
             (Some("<C-h>"), Some(&|app| assert_tree_focus(app, true))),
             (Some("<C-l>"), Some(&|app| assert_tree_focus(app, false))),
@@ -863,9 +855,10 @@ async fn the_explorer_opens_on_the_configured_side() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `C-w h` / `C-w l` (and `C-h` / `C-l`) move between the views and the pinned explorer, on
+/// `C-w h` / `C-w l` move between the views and the pinned explorer by direction, on
 /// whichever side it is: past the last view towards it, and away from its edge back to the
-/// code. Up and down from the tree do nothing.
+/// code. Up and down from the tree do nothing. `C-h` / `C-l` do not depend on the side:
+/// `C-h` to the tree, `C-l` back to the code, from any view.
 #[tokio::test(flavor = "multi_thread")]
 async fn window_moves_reach_the_explorer_on_its_side() -> anyhow::Result<()> {
     for (side, towards, away) in [("left", "h", "l"), ("right", "l", "h")] {
@@ -877,8 +870,6 @@ async fn window_moves_reach_the_explorer_on_its_side() -> anyhow::Result<()> {
         let start = format!("<space>x<C-w>{away}:vsplit<ret>");
         let to_explorer = format!("<C-w>{towards}");
         let back = format!("<C-w>{away}");
-        let ctrl_to_explorer = format!("<C-{towards}>");
-        let ctrl_back = format!("<C-{away}>");
         test_key_sequences(
             &mut app,
             vec![
@@ -895,21 +886,19 @@ async fn window_moves_reach_the_explorer_on_its_side() -> anyhow::Result<()> {
                 // the opposite direction is the code again
                 (Some(&back), Some(&|app| assert!(!tree_focused(app)))),
                 (Some("<C-w>j"), Some(&|app| assert!(!tree_focused(app)))),
-                (Some(&ctrl_to_explorer), None),
-                (
-                    Some(&ctrl_to_explorer),
-                    Some(&|app| assert!(tree_focused(app))),
-                ),
+                // `C-h` / `C-l`: the same on both sides, from the view next to the explorer
+                // too
+                (Some("<C-h>"), Some(&|app| assert!(tree_focused(app)))),
                 // towards the edge, up and down: the tree keeps the focus
+                (Some(&to_explorer), Some(&|app| assert!(tree_focused(app)))),
                 (
-                    Some(&ctrl_to_explorer),
+                    Some("<C-w>j<C-w>k<C-h>"),
                     Some(&|app| assert!(tree_focused(app))),
                 ),
-                (
-                    Some("<C-w>j<C-w>k"),
-                    Some(&|app| assert!(tree_focused(app))),
-                ),
-                (Some(&ctrl_back), Some(&|app| assert!(!tree_focused(app)))),
+                (Some("<C-l>"), Some(&|app| assert!(!tree_focused(app)))),
+                (Some(&back), Some(&|app| assert!(!tree_focused(app)))),
+                (Some("<C-h>"), Some(&|app| assert!(tree_focused(app)))),
+                (Some("<C-l>"), Some(&|app| assert!(!tree_focused(app)))),
                 // one view again, for the `:q!` that ends the test
                 (Some("<C-w>o"), None),
             ],
@@ -918,7 +907,7 @@ async fn window_moves_reach_the_explorer_on_its_side() -> anyhow::Result<()> {
         .await?;
     }
 
-    // a floating explorer is in no direction; Esc closes it
+    // a floating explorer is in no direction (`C-h` keeps the focus in it); Esc closes it
     let (_dir, root) = repo()?;
     let mut app = helpers::AppBuilder::new()
         .with_config(config("side = \"floating\""))
@@ -928,7 +917,7 @@ async fn window_moves_reach_the_explorer_on_its_side() -> anyhow::Result<()> {
         &mut app,
         vec![
             (
-                Some("<C-w>l<C-w>h<C-h><C-l>"),
+                Some("<C-w>l<C-w>h<C-h>"),
                 Some(&|app| {
                     let panel = &app.editor.explorer_panel;
                     assert!(panel.visible && panel.focused);
@@ -984,6 +973,55 @@ async fn reopening_the_floating_window_centers_it() -> anyhow::Result<()> {
                     assert!(status.contains("Command not found"), "{status}");
                 }),
             ),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}
+
+/// The keys to the tree and back can be bound to others (`explorer_focus` /
+/// `explorer_blur`), and they work from the tree and its filter box, like `C-h` / `C-l`.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_focus_keys_can_be_rebound() -> anyhow::Result<()> {
+    let raw: helix_term::config::ConfigRaw = toml::from_str(
+        r#"
+        [editor.explorer]
+        side = "right"
+
+        [keys.normal]
+        C-e = "explorer_focus"
+        C-b = "explorer_blur"
+        "#,
+    )?;
+    let mut keys = helix_term::keymap::default();
+    helix_term::keymap::merge_keys(&mut keys, raw.keys.unwrap().modes);
+    let config = Config {
+        keys,
+        editor: raw.editor.unwrap().try_into().unwrap(),
+        ..Default::default()
+    };
+    let (_dir, root) = repo()?;
+    let mut app = helpers::AppBuilder::new().with_config(config).build()?;
+    open_explorer(&mut app, &root);
+    test_key_sequences(
+        &mut app,
+        vec![
+            (Some("<C-b>"), Some(&|app| assert_tree_focus(app, false))),
+            (Some("<C-e>"), Some(&|app| assert_tree_focus(app, true))),
+            // from the filter box too: it stops typing, the filter stays
+            (
+                Some("/sub<C-b>"),
+                Some(&|app| {
+                    assert_tree_focus(app, false);
+                    let rows = app.rendered_rows().join("\n");
+                    assert!(rows.contains("sub"), "{rows}");
+                }),
+            ),
+            (Some("<C-e>"), Some(&|app| assert_tree_focus(app, true))),
+            // the default keys still work
+            (Some("<C-l>"), Some(&|app| assert_tree_focus(app, false))),
+            (Some("<C-h>"), Some(&|app| assert_tree_focus(app, true))),
         ],
         false,
     )

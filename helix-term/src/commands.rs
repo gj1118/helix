@@ -4169,16 +4169,19 @@ pub fn explorer_float(cx: &mut Context) {
 }
 
 pub fn explorer_focus(cx: &mut Context) {
-    // Move keyboard focus to the tree, opening the panel if it was hidden.
+    // Move keyboard focus to the tree (from the code or the quickfix panel), opening the
+    // panel if it was hidden. The same whatever side it is on.
     cx.editor.explorer_panel.visible = true;
     cx.editor.explorer_panel.focused = true;
+    cx.editor.quickfix_panel.focused = false;
     explorer_install_layer(cx);
 }
 
-/// Hands keyboard focus from the explorer tree to the buffer area. The tree
-/// stays visible; this only changes where keys go.
+/// Hands keyboard focus to the buffer area, from the explorer tree or the quickfix panel.
+/// The panels stay visible; this only changes where keys go.
 pub fn explorer_blur(cx: &mut Context) {
     cx.editor.explorer_panel.focused = false;
+    cx.editor.quickfix_panel.focused = false;
 }
 
 pub fn explorer_refresh(cx: &mut Context) {

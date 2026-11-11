@@ -327,8 +327,9 @@ async fn the_panel_has_no_border() -> anyhow::Result<()> {
 
 /// `<space>Q` / `:quickfix` shows the panel with the focus and hides it, from the code and
 /// from the panel. Its keys and the explorer's are separate: each toggles only its panel.
-/// Moving: `Ctrl-w j` from the code, `Ctrl-w h` (or `C-h`) to the explorer pinned on the left,
-/// `Ctrl-w l` from the explorer back to the code.
+/// Moving: `Ctrl-w j` from the code, `Ctrl-w h` to the explorer pinned on the left, `Ctrl-w l`
+/// from the explorer back to the code; `C-h` to the explorer and `C-l` to the code from the
+/// panel too.
 #[tokio::test(flavor = "multi_thread")]
 async fn space_q_toggles_the_panel_and_window_keys_move_between_the_panels() -> anyhow::Result<()> {
     let (mut app, _file) = app_with_quicklist(enabled()).await?;
@@ -369,11 +370,13 @@ async fn space_q_toggles_the_panel_and_window_keys_move_between_the_panels() -> 
     send(&mut app, "<C-w>l").await?;
     assert_eq!(explorer(&app), (true, false));
     assert_eq!(quickfix(&app), (true, false));
-    // `C-h` from the panel; `C-l` from the panel: nothing on its right
+    // from the panel, `C-l` goes back to the code and `C-h` to the explorer
     send(&mut app, "<C-w>j<C-l>").await?;
-    assert_eq!(quickfix(&app), (true, true));
-    send(&mut app, "<C-h>").await?;
+    assert_eq!(quickfix(&app), (true, false));
+    assert_eq!(explorer(&app), (true, false));
+    send(&mut app, "<C-w>j<C-h>").await?;
     assert_eq!(explorer(&app), (true, true));
+    assert!(!app.editor.quickfix_panel.focused);
 
     // `<space>x` hides only the explorer, `<space>Q` only the panel
     send(&mut app, "<space>x").await?;

@@ -453,8 +453,8 @@ keymap (see [Remapping](./remapping.md)).
 | --- | --- | --- | --- |
 | `Space x` | normal | `explorer` | Show the explorer on the side set by `[editor.explorer] side` and focus it, or hide it when it is open |
 | `Space X` | normal | `explorer_float` | Show the explorer as a floating window, or hide it when it is one |
-| `C-h` | normal | `jump_view_left` | Move to the split (or panel) on the left: the explorer pinned on the left, or back to the code from an explorer on the right |
-| `C-l` | normal | `jump_view_right` | Move to the split (or panel) on the right: the explorer pinned on the right, or back to the code from an explorer on the left |
+| `C-h` | normal | `explorer_focus` | Move keyboard focus to the explorer, whatever side it is on (opens it if hidden) |
+| `C-l` | normal | `explorer_blur` | Move keyboard focus back to the buffer (from the explorer or the quickfix panel) |
 | `Space Q` | normal | `quickfix` | Show the quickfix panel with the focus, or hide it when it is open |
 | `C-j` | normal | `move_lines_down` | Move the selected lines down |
 | `C-k` | normal | `move_lines_up` | Move the selected lines up |

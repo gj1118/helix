@@ -75,7 +75,9 @@ that needs one to show anything (the global search).
 | `Ctrl-s`, `Ctrl-v` | Visit the entry in a horizontal or vertical split |
 | `/` | Type the query (filter the list); `Esc` or `Enter` gives the keys back to the list |
 | `Esc`, `Ctrl-w k` (or `Ctrl-w w`, `Ctrl-w p`) | Give the focus to the code; the panel stays |
-| `Ctrl-w h`, `Ctrl-h` / `Ctrl-w l`, `Ctrl-l` | Give the focus to the explorer, when it is pinned on that side |
+| `Ctrl-h` | Give the focus to the explorer (opening it if hidden) |
+| `Ctrl-l` | Give the focus to the code |
+| `Ctrl-w h` / `Ctrl-w l` | Give the focus to the explorer, when it is pinned on that side |
 | `Space Q` | Hide the panel (the space menu works from the panel) |
 | `Ctrl-q` | Copy the matched entries to the quicklist |
 | `Ctrl-t` | Turn the preview on or off |

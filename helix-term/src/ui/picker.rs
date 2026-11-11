@@ -2578,9 +2578,8 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             }
             ctrl!('t') => self.toggle_preview(),
             ctrl!('q') => self.copy_to_quicklist(cx.editor),
-            // `C-h` / `C-l`, like `C-w h` / `C-w l`
-            ctrl!('h') => Self::docked_to_explorer(cx.editor, tree::Direction::Left),
-            ctrl!('l') => Self::docked_to_explorer(cx.editor, tree::Direction::Right),
+            // `C-h` / `C-l`: the editor's keys (to the explorer, back to the code by default)
+            ctrl!('h') | ctrl!('l') => return EventResult::Ignored(None),
             // Esc gives the focus back to the code, the panel stays (like the explorer's)
             key!(Esc) => cx.editor.quickfix_panel.focused = false,
             key!('q') | ctrl!('c') => return self.docked_close(),
