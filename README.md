@@ -87,8 +87,9 @@ This fork of Helix implements the following pull requests. Future pull requests 
 A keyboard-driven file tree sidebar. Toggle it with `<space>x` or
 `:explorer`: when the panel is hidden it opens on the side set in the config (`side`,
 below) and takes focus, and when it is
-open it hides, whether the tree or the editor has focus. `C-h` and `<space>wx` (the Window
-submode) move focus to the open panel without hiding it, and `C-l` moves it back to the buffer.
+open it hides, whether the tree or the editor has focus. `C-h` moves focus to the open panel
+without hiding it (`C-l` with the panel on the right), and the opposite key moves it back to
+the buffer, like moving between splits (see below).
 While the panel is focused (in normal mode) a bare `x` cuts the file under the
 cursor, which is why the toggle itself is a two-key sequence. Moving back to a
 buffer is symmetrical: opening a file with `l`/Enter lands focus on that buffer
@@ -256,10 +257,17 @@ and move focus as usual.
 
 ### Moving focus between the tree and the buffers
 
-`C-h` moves keyboard focus from the buffer to the tree (opening the panel if it is
-hidden), and `C-l` moves it back to the buffer area while the tree stays open. Clicking in a
-buffer also moves focus there. Both keys are ordinary keymap entries, so they can be changed in
-`[keys.normal]`. `<space>x` only toggles the panel.
+Moving between the code and the panels works like moving between splits, in the direction
+of the panel: `Ctrl-w h` / `Ctrl-w l` (or `C-h` / `C-l`) past the last view on the
+explorer's side gives the keyboard to the explorer, and the opposite direction gives it
+back to the code. With `side = "right"` it is `C-l` to the tree and `C-h` back. `Ctrl-w j`
+from the bottom view reaches the quickfix panel. A floating explorer is in no direction:
+`Esc` closes it. These keys only move the focus; they do not open a hidden panel
+(`<space>x` does) and close nothing. Clicking in a buffer also moves focus there.
+`:explorer-focus` (`explorer_focus`) gives the tree the keyboard from anywhere, opening the
+panel if it is hidden; it has no default key.
+`<space>x` only toggles the panel. All of these are ordinary keymap entries
+(`jump_view_left`, `jump_view_right`, ...), so they can be changed in `[keys.normal]`.
 
 ### Theming the explorer
 
@@ -388,10 +396,13 @@ preview = true  # preview the selected location over the code while the panel is
 ```
 
 The panel sits under the views (nothing is covered) and stays open while you visit its
-entries: `j`/`k` move, `Enter` jumps and gives the focus to the code, `Ctrl-w j` (from the
-bottom view) focuses the panel again, `]q`/`[q` visit the next and previous entry from the
-code, `/` filters, and `q` closes it. `:copen` shows it again (or the quicklist), `:cclose`
-closes it. The floating explorer and the pickers that choose one thing (files, buffers,
+entries: `j`/`k` move, `Enter` jumps and gives the focus to the code, `Esc` (or `Ctrl-w k`)
+gives the focus to the code without jumping, `Ctrl-w j` (from the bottom view) focuses the
+panel again, `]q`/`[q` visit the next and previous entry from the code, `/` filters, and `q`
+closes it. `<space>Q` / `:quickfix` shows it with the focus (the last list it showed, or the
+quicklist) and hides it, like `<space>x` for the explorer; each key only toggles its own
+panel. `:copen` shows it again, `:cclose` closes it. `Ctrl-w h` / `C-h` (or `l`) from the
+panel reaches the explorer when it is pinned on that side. The floating explorer and the pickers that choose one thing (files, buffers,
 commands, ...) are unchanged. See the book's Quicklist page (`book/src/quicklist.md`).
 
 ## EditorConfig

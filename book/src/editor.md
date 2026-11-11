@@ -451,7 +451,7 @@ The side is read each time the panel opens: change it in the config and run
 
 `<space>x` is a two-state toggle: it opens and focuses the panel when it is
 hidden, and hides it when it is open, whether the tree or the editor has the keyboard. To move
-focus to an open panel without hiding it, use `C-h`, `<space>wx` (the Window submode) or
+focus to an open panel without hiding it, use `C-h` (`C-l` with the panel on the right) or
 `:explorer-focus`.
 Opening a file with `l`/Enter lands focus on that buffer directly; `Esc`
 hands focus back to the editor while keeping the tree open, and `q` hides
@@ -559,13 +559,18 @@ and move focus as usual.
 
 ### Moving focus between the tree and the buffers
 
-Focus moves in both directions with keys that are bound by default and can be changed in your
-keymap (see [Fork-specific keys](./keymap.md#fork-specific-keys)):
+Focus moves with keys that are bound by default and can be changed in your keymap (see
+[Fork-specific keys](./keymap.md#fork-specific-keys)):
 
-- `C-h` (`explorer_focus`) moves keyboard focus from the buffer to the tree. If the panel is
-  hidden, it opens.
-- `C-l` (`explorer_blur`) moves keyboard focus from the tree back to the buffer area. The panel
-  stays open.
+- `Ctrl-w h` / `Ctrl-w l` (`jump_view_left` / `jump_view_right`, also on `C-h` / `C-l`)
+  move like between splits: past the last view on the explorer's side they give the keyboard
+  to the tree, and from the tree the opposite direction gives it back to the code. With
+  `side = "right"` it is `C-l` to the tree and `C-h` back. They do not open a hidden panel.
+- `Ctrl-w j` from the bottom view reaches the [quickfix panel](./quicklist.md#quickfix-panel),
+  and `Ctrl-w h` / `Ctrl-w l` from there reach the explorer pinned on that side.
+- A floating explorer is in no direction: `Esc` closes it.
+- `:explorer-focus` (`explorer_focus`) gives the tree the keyboard from anywhere, opening the
+  panel if it is hidden; `explorer_blur` gives it back to the code. Neither has a default key.
 - Clicking in a buffer (or its gutter) moves focus to that buffer as well.
 
 `<space>x` only toggles the panel: it shows it and takes focus when hidden, and hides it when open.

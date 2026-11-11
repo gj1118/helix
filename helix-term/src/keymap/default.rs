@@ -269,7 +269,6 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "J" | "S-down" => swap_view_down,
             "K" | "S-up" => swap_view_up,
             "L" | "S-right" => swap_view_right,
-            "x" => explorer_focus,
             "n" => { "New split scratch buffer"
                 "C-s" | "s" => hsplit_new,
                 "C-v" | "v" => vsplit_new,
@@ -279,9 +278,9 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
         // move under <space>c
         "C-c" => toggle_comments,
 
-        // explorer focus: C-h moves to the explorer tree, C-l back to the buffer area
-        "C-h" => explorer_focus,
-        "C-l" => explorer_blur,
+        // the view (or panel: the explorer, the quickfix panel) on the left / right
+        "C-h" => jump_view_left,
+        "C-l" => jump_view_right,
 
         // z family for save/restore/combine from/to sels from register
 
@@ -298,6 +297,7 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "." => file_explorer_in_current_buffer_directory,
             "x" => explorer,
             "X" => explorer_float,
+            "Q" => quickfix,
             "b" => buffer_picker,
             "j" => jumplist_picker,
             "s" => lsp_or_syntax_symbol_picker,
@@ -350,7 +350,6 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
                 "J" | "S-down" => swap_view_down,
                 "K" | "S-up" => swap_view_up,
                 "L" | "S-right" => swap_view_right,
-                "x" => explorer_focus,
                 "n" => { "New split scratch buffer"
                     "C-s" | "s" => hsplit_new,
                     "C-v" | "v" => vsplit_new,

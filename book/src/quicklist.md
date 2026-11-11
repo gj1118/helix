@@ -74,15 +74,20 @@ that needs one to show anything (the global search).
 | `o`, `Alt-Enter` | Visit the entry, keeping the focus in the panel |
 | `Ctrl-s`, `Ctrl-v` | Visit the entry in a horizontal or vertical split |
 | `/` | Type the query (filter the list); `Esc` or `Enter` gives the keys back to the list |
-| `Ctrl-w k` (or `Ctrl-w w`, `Ctrl-w p`) | Give the focus to the code |
+| `Esc`, `Ctrl-w k` (or `Ctrl-w w`, `Ctrl-w p`) | Give the focus to the code; the panel stays |
+| `Ctrl-w h`, `Ctrl-h` / `Ctrl-w l`, `Ctrl-l` | Give the focus to the explorer, when it is pinned on that side |
+| `Space Q` | Hide the panel (the space menu works from the panel) |
 | `Ctrl-q` | Copy the matched entries to the quicklist |
 | `Ctrl-t` | Turn the preview on or off |
-| `q`, `Esc` | Close the panel |
+| `q`, `Ctrl-c` | Close the panel |
 | `:` | The command line |
 
-From the code, `Ctrl-w j` in the bottom view gives the focus to the panel (so does the
-`quickfix_focus` command, which can be bound to a key or run from the command palette; it
-shows the quicklist when the panel is closed, like `:copen`), and `]q` / `[q` visit
+`Space Q` (`quickfix`, `:quickfix`) shows the panel with the focus (the last list it showed,
+or the quicklist) and hides it when it is open, like `Space x` for the explorer; each only
+toggles its own panel. From the code, `Ctrl-w j` in the bottom view gives the focus to the
+panel (so does the `quickfix_focus` command, which can be bound to a key or run from the
+command palette; it shows the quicklist when the panel is closed, like `:copen`), and
+`]q` / `[q` visit
 the next and previous entry of the panel (while it is shown; `]l` and `[l` keep walking the
 quicklist in the file). A click in the panel focuses it and selects the entry clicked; a click
 in the code gives the focus back. `:copen` focuses the panel, or shows again the last list it

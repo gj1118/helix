@@ -51,6 +51,7 @@ use helix_view::{
     graphics::{CursorKind, Margin, Modifier, Rect},
     input::KeyEvent,
     theme::Style,
+    tree,
     view::ViewPosition,
     Document, DocumentId, Editor,
 };
@@ -2372,6 +2373,14 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         }
     }
 
+    /// Gives the focus to the explorer when it is pinned in `direction` (left or right of the
+    /// panel); nothing otherwise.
+    fn docked_to_explorer(editor: &mut Editor, direction: tree::Direction) {
+        if ui::explorer::pinned_direction(editor) == Some(direction) {
+            ui::explorer::focus(editor);
+        }
+    }
+
     /// Closes the panel, which `:copen` can show again.
     fn docked_close(&mut self) -> EventResult {
         // A closed list no longer follows the editor, nor keeps its previews.
@@ -2427,6 +2436,11 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             // The editor (under the panel) follows the size of the screen.
             Event::Resize(..) => return EventResult::Ignored(None),
             _ if !ui::quickfix::focused(cx.editor) => return EventResult::Ignored(None),
+            // A key sequence of the editor's keymap is pending (the `<space>` of `<space>Q`):
+            // the next key completes it.
+            Event::Key(_) if !cx.editor.keymap_pending.is_empty() => {
+                return EventResult::Ignored(None)
+            }
             Event::Paste(..) if self.docked_typing() => return self.prompt_handle_event(event, cx),
             Event::Paste(..) => return EventResult::Consumed(None),
             Event::Key(key) => *key,
@@ -2445,7 +2459,8 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             live.reselect = None;
         }
 
-        // `Ctrl-w` then a window key: back to the code.
+        // `Ctrl-w` then a window key: up to the code, or left / right to the explorer when it
+        // is pinned on that side.
         if let Some(docked) = self.docked.as_mut().filter(|docked| docked.window_key) {
             docked.window_key = false;
             if matches!(
@@ -2453,6 +2468,8 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                 key!('k') | key!(Up) | ctrl!('k') | key!('w') | ctrl!('w') | key!('p') | ctrl!('p')
             ) {
                 cx.editor.quickfix_panel.focused = false;
+            } else if let Some(direction) = horizontal_direction(key_event) {
+                Self::docked_to_explorer(cx.editor, direction);
             }
             return EventResult::Consumed(None);
         }
@@ -2561,9 +2578,15 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             }
             ctrl!('t') => self.toggle_preview(),
             ctrl!('q') => self.copy_to_quicklist(cx.editor),
-            key!('q') | key!(Esc) | ctrl!('c') => return self.docked_close(),
-            // The command line, from the list too.
-            key!(':') => return EventResult::Ignored(None),
+            // `C-h` / `C-l`, like `C-w h` / `C-w l`
+            ctrl!('h') => Self::docked_to_explorer(cx.editor, tree::Direction::Left),
+            ctrl!('l') => Self::docked_to_explorer(cx.editor, tree::Direction::Right),
+            // Esc gives the focus back to the code, the panel stays (like the explorer's)
+            key!(Esc) => cx.editor.quickfix_panel.focused = false,
+            key!('q') | ctrl!('c') => return self.docked_close(),
+            // The command line, from the list too; and the space menu, so that its
+            // `quickfix` (`<space>Q`) hides the panel from the panel too.
+            key!(':') | key!(' ') => return EventResult::Ignored(None),
             _ => {}
         }
         EventResult::Consumed(None)
@@ -2595,6 +2618,15 @@ pub(super) fn find_picker<T: 'static + Send + Sync, D: 'static + Send + Sync>(
 
 type PickerCallback<T> = Box<dyn Fn(&mut Context, &T, Action)>;
 pub type PickerKeyHandler<T, D> = Box<dyn Fn(&mut Context, &T, Arc<D>, u32) + 'static>;
+/// The direction of a window key after `Ctrl-w`, when it is left or right.
+fn horizontal_direction(key: KeyEvent) -> Option<tree::Direction> {
+    match key {
+        key!('h') | key!(Left) | ctrl!('h') => Some(tree::Direction::Left),
+        key!('l') | key!(Right) | ctrl!('l') => Some(tree::Direction::Right),
+        _ => None,
+    }
+}
+
 pub type PickerKeyHandlers<T, D> = HashMap<KeyEvent, PickerKeyHandler<T, D>>;
 
 #[cfg(test)]

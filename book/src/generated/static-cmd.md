@@ -115,8 +115,8 @@
 | `file_explorer_in_current_buffer_directory` | Open file explorer at current buffer's directory | normal: `` <space>. ``, select: `` <space>. `` |
 | `file_explorer_in_current_directory` | Open file explorer at current working directory |  |
 | `explorer` | Show the explorer on the side set by [editor.explorer] side (left, right or floating), or hide it when it is open | normal: `` <space>x ``, select: `` <space>x `` |
-| `explorer_focus` | Focus the explorer file tree panel (opening it if hidden) | normal: `` <C-h> ``, `` <C-w>x ``, `` <space>wx ``, select: `` <C-h> ``, `` <C-w>x ``, `` <space>wx `` |
-| `explorer_blur` | Move keyboard focus from the explorer file tree to the buffer area | normal: `` <C-l> ``, select: `` <C-l> `` |
+| `explorer_focus` | Focus the explorer file tree panel (opening it if hidden) |  |
+| `explorer_blur` | Move keyboard focus from the explorer file tree to the buffer area |  |
 | `explorer_float` | Show the explorer as a floating window, or hide it when it is one | normal: `` <space>X ``, select: `` <space>X `` |
 | `explorer_refresh` | Refresh the explorer panel from disk |  |
 | `explorer_reveal` | Reveal the current file in the explorer panel |  |
@@ -270,8 +270,8 @@
 | `jump_forward` | Jump forward on jumplist | normal: `` <C-i> ``, `` <tab> ``, select: `` <C-i> ``, `` <tab> `` |
 | `jump_backward` | Jump backward on jumplist | normal: `` <C-o> ``, select: `` <C-o> `` |
 | `save_selection` | Save current selection to jumplist | normal: `` <C-s> ``, select: `` <C-s> `` |
-| `jump_view_right` | Jump to right split | normal: `` <C-w>l ``, `` <space>wl ``, `` <C-w><C-l> ``, `` <C-w><right> ``, `` <space>w<C-l> ``, `` <space>w<right> ``, select: `` <C-w>l ``, `` <space>wl ``, `` <C-w><C-l> ``, `` <C-w><right> ``, `` <space>w<C-l> ``, `` <space>w<right> `` |
-| `jump_view_left` | Jump to left split | normal: `` <C-w>h ``, `` <space>wh ``, `` <C-w><C-h> ``, `` <C-w><left> ``, `` <space>w<C-h> ``, `` <space>w<left> ``, select: `` <C-w>h ``, `` <space>wh ``, `` <C-w><C-h> ``, `` <C-w><left> ``, `` <space>w<C-h> ``, `` <space>w<left> `` |
+| `jump_view_right` | Jump to right split | normal: `` <C-l> ``, `` <C-w>l ``, `` <space>wl ``, `` <C-w><C-l> ``, `` <C-w><right> ``, `` <space>w<C-l> ``, `` <space>w<right> ``, select: `` <C-l> ``, `` <C-w>l ``, `` <space>wl ``, `` <C-w><C-l> ``, `` <C-w><right> ``, `` <space>w<C-l> ``, `` <space>w<right> `` |
+| `jump_view_left` | Jump to left split | normal: `` <C-h> ``, `` <C-w>h ``, `` <space>wh ``, `` <C-w><C-h> ``, `` <C-w><left> ``, `` <space>w<C-h> ``, `` <space>w<left> ``, select: `` <C-h> ``, `` <C-w>h ``, `` <space>wh ``, `` <C-w><C-h> ``, `` <C-w><left> ``, `` <space>w<C-h> ``, `` <space>w<left> `` |
 | `jump_view_up` | Jump to split above | normal: `` <C-w>k ``, `` <C-w><up> ``, `` <space>wk ``, `` <C-w><C-k> ``, `` <space>w<up> ``, `` <space>w<C-k> ``, select: `` <C-w>k ``, `` <C-w><up> ``, `` <space>wk ``, `` <C-w><C-k> ``, `` <space>w<up> ``, `` <space>w<C-k> `` |
 | `jump_view_down` | Jump to split below | normal: `` <C-w>j ``, `` <space>wj ``, `` <C-w><C-j> ``, `` <C-w><down> ``, `` <space>w<C-j> ``, `` <space>w<down> ``, select: `` <C-w>j ``, `` <space>wj ``, `` <C-w><C-j> ``, `` <C-w><down> ``, `` <space>w<C-j> ``, `` <space>w<down> `` |
 | `swap_view_right` | Swap with right split | normal: `` <C-w>L ``, `` <space>wL ``, `` <C-w><S-right> ``, `` <space>w<S-right> ``, select: `` <C-w>L ``, `` <space>wL ``, `` <C-w><S-right> ``, `` <space>w<S-right> `` |
@@ -382,6 +382,7 @@
 | `quicklist_next_in_file` | Go to the next quicklist entry in this file | normal: `` ]l ``, select: `` ]l `` |
 | `quicklist_prev_in_file` | Go to the previous quicklist entry in this file | normal: `` [l ``, select: `` [l `` |
 | `quicklist_picker` | Open the quicklist picker | normal: `` <space>q ``, select: `` <space>q `` |
+| `quickfix` | Show the quickfix panel with the focus (the last list it showed, or the quicklist), or hide it when it is open | normal: `` <space>Q ``, select: `` <space>Q `` |
 | `quickfix_focus` | Focus the quickfix panel (shows the quicklist in it when it is closed, like :copen) |  |
 | `restore_change` | Restore the changes touched by the selections from the diff base (HEAD) |  |
 | `rotate_selections_first` | Make the first selection your primary one |  |

@@ -726,6 +726,7 @@ impl MappableCommand {
         quicklist_next_in_file, "Go to the next quicklist entry in this file",
         quicklist_prev_in_file, "Go to the previous quicklist entry in this file",
         quicklist_picker, "Open the quicklist picker",
+        quickfix, "Show the quickfix panel with the focus (the last list it showed, or the quicklist), or hide it when it is open",
         quickfix_focus, "Focus the quickfix panel (shows the quicklist in it when it is closed, like :copen)",
         restore_change, "Restore the changes touched by the selections from the diff base (HEAD)",
         rotate_selections_first, "Make the first selection your primary one",
@@ -4741,6 +4742,17 @@ fn quicklist_prev_in_file(cx: &mut Context) {
     quicklist::quicklist_prev_in_file(cx)
 }
 
+fn quickfix(cx: &mut Context) {
+    cx.callback
+        .push(Box::new(|compositor: &mut Compositor, cx| {
+            if cx.editor.quickfix_panel.visible {
+                ui::quickfix::close(compositor, cx.editor);
+            } else {
+                ui::quickfix::reopen(compositor, cx.editor);
+            }
+        }));
+}
+
 fn quickfix_focus(cx: &mut Context) {
     cx.callback
         .push(Box::new(|compositor: &mut Compositor, cx| {
@@ -7467,28 +7479,56 @@ fn rotate_view_reverse(cx: &mut Context) {
 }
 
 fn jump_view_right(cx: &mut Context) {
-    cx.editor.focus_direction(tree::Direction::Right)
+    jump_view(cx, tree::Direction::Right)
 }
 
 fn jump_view_left(cx: &mut Context) {
-    cx.editor.focus_direction(tree::Direction::Left)
+    jump_view(cx, tree::Direction::Left)
 }
 
 fn jump_view_up(cx: &mut Context) {
-    cx.editor.focus_direction(tree::Direction::Up)
+    jump_view(cx, tree::Direction::Up)
 }
 
 fn jump_view_down(cx: &mut Context) {
-    // From the bottom view, down is the quickfix panel when it is shown.
-    let below = cx
-        .editor
-        .tree
-        .find_split_in_direction(cx.editor.tree.focus, tree::Direction::Down);
-    if below.is_none() && cx.editor.quickfix_panel.visible {
-        ui::quickfix::focus(cx.editor);
+    jump_view(cx, tree::Direction::Down)
+}
+
+/// Moves the focus to the view in `direction`, or past the last view to a panel: the pinned
+/// explorer on its side, the quickfix panel under the bottom view (the panel itself handles
+/// the keys that leave it, see `Picker::handle_docked_event`). From the explorer, the
+/// direction away from its edge goes back to the code.
+fn jump_view(cx: &mut Context, direction: tree::Direction) {
+    use tree::Direction;
+    let editor = &mut *cx.editor;
+    let explorer = ui::explorer::pinned_direction(editor);
+    if editor.explorer_panel.focused {
+        let away = match explorer {
+            Some(Direction::Left) => Some(Direction::Right),
+            Some(Direction::Right) => Some(Direction::Left),
+            _ => None,
+        };
+        if away == Some(direction) {
+            editor.explorer_panel.focused = false;
+            editor.quickfix_panel.focused = false;
+        }
         return;
     }
-    cx.editor.focus_direction(tree::Direction::Down)
+    if editor
+        .tree
+        .find_split_in_direction(editor.tree.focus, direction)
+        .is_none()
+    {
+        if direction == Direction::Down && editor.quickfix_panel.visible {
+            ui::quickfix::focus(editor);
+            return;
+        }
+        if explorer == Some(direction) {
+            ui::explorer::focus(editor);
+            return;
+        }
+    }
+    editor.focus_direction(direction)
 }
 
 fn swap_view_right(cx: &mut Context) {

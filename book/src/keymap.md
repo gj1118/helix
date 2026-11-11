@@ -305,10 +305,10 @@ This layer is similar to Vim keybindings as Kakoune does not support windows.
 | `t`, `Ctrl-t`          | Transpose the two adjacent splits                    | `transpose_view`  |
 | `f`                    | Go to files/URLs in selections in horizontal splits  | `goto_file_hsplit`|
 | `F`                    | Go to files/URLs in selections in vertical splits    | `goto_file_vsplit`|
-| `h`, `Ctrl-h`, `Left`  | Move to left split                                   | `jump_view_left`  |
-| `j`, `Ctrl-j`, `Down`  | Move to split below                                  | `jump_view_down`  |
+| `h`, `Ctrl-h`, `Left`  | Move to left split (or the explorer pinned on the left) | `jump_view_left`  |
+| `j`, `Ctrl-j`, `Down`  | Move to split below (or the quickfix panel)          | `jump_view_down`  |
 | `k`, `Ctrl-k`, `Up`    | Move to split above                                  | `jump_view_up`    |
-| `l`, `Ctrl-l`, `Right` | Move to right split                                  | `jump_view_right` |
+| `l`, `Ctrl-l`, `Right` | Move to right split (or the explorer pinned on the right) | `jump_view_right` |
 | `q`, `Ctrl-q`          | Close current window                                 | `wclose`          |
 | `o`, `Ctrl-o`          | Only keep the current window, closing all the others | `wonly`           |
 | `H`, `Shift-Left`      | Swap window to the left                              | `swap_view_left`  |
@@ -453,9 +453,9 @@ keymap (see [Remapping](./remapping.md)).
 | --- | --- | --- | --- |
 | `Space x` | normal | `explorer` | Show the explorer on the side set by `[editor.explorer] side` and focus it, or hide it when it is open |
 | `Space X` | normal | `explorer_float` | Show the explorer as a floating window, or hide it when it is one |
-| `C-h` | normal | `explorer_focus` | Move keyboard focus to the explorer (opens it if hidden) |
-| `C-l` | normal | `explorer_blur` | Move keyboard focus from the explorer back to the buffer area |
-| `Space w x` | normal | `explorer_focus` | Move focus to the explorer, opening it if hidden |
+| `C-h` | normal | `jump_view_left` | Move to the split (or panel) on the left: the explorer pinned on the left, or back to the code from an explorer on the right |
+| `C-l` | normal | `jump_view_right` | Move to the split (or panel) on the right: the explorer pinned on the right, or back to the code from an explorer on the left |
+| `Space Q` | normal | `quickfix` | Show the quickfix panel with the focus, or hide it when it is open |
 | `C-j` | normal | `move_lines_down` | Move the selected lines down |
 | `C-k` | normal | `move_lines_up` | Move the selected lines up |
 | `Space l` | normal | `local_search_grep` | Search the current buffer for text (grep-style) |

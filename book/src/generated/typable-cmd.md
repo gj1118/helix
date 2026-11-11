@@ -106,6 +106,7 @@
 | `:fold` | Fold text. |
 | `:unfold` | Unfold text. |
 | `:noop` | Does nothing. |
+| `:quickfix` | Show the quickfix panel with the focus (the last list it showed, or the quicklist), or hide it when it is open |
 | `:copen`, `:quickfix-open` | Show the quickfix panel: focus it, or show the last list it showed again, or the quicklist. |
 | `:cclose`, `:quickfix-close` | Close the quickfix panel. |
 | `:notifications-history`, `:notif-history`, `:nh` | Show notification history. |

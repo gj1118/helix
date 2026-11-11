@@ -146,6 +146,28 @@ pub fn tree_params(editor: &Editor) -> TreeParams {
 /// result stable pass over pass: the panel column is subtracted from the
 /// current edges rather than remembered. Returns the area unchanged when the
 /// panel is hidden or floating.
+/// Where the open, pinned explorer is from the code: `Left` or `Right`. `None` when it is
+/// hidden or floating (a floating window is in no direction).
+pub fn pinned_direction(editor: &Editor) -> Option<helix_view::tree::Direction> {
+    use helix_view::tree::Direction;
+    if !editor.explorer_panel.visible {
+        return None;
+    }
+    match editor.explorer_side() {
+        ExplorerSide::Left => Some(Direction::Left),
+        ExplorerSide::Right => Some(Direction::Right),
+        ExplorerSide::Floating => None,
+    }
+}
+
+/// Gives the keyboard to the open explorer (from the code or the quickfix panel).
+pub fn focus(editor: &mut Editor) {
+    if editor.explorer_panel.visible {
+        editor.explorer_panel.focused = true;
+        editor.quickfix_panel.focused = false;
+    }
+}
+
 pub fn layout(editor: &Editor, editor_area: Rect) -> Rect {
     if !editor.explorer_panel.visible {
         return editor_area;

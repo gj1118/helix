@@ -167,8 +167,11 @@ async fn slash_filters_the_list_in_the_panel() -> anyhow::Result<()> {
     assert_eq!(cursor_line(&app), 19);
     assert!(app.editor.quickfix_panel.visible);
 
-    // Esc in the list closes the panel
+    // Esc in the list gives the focus back to the code, the panel stays; `q` closes it
     send(&mut app, "<C-w>j<esc>").await?;
+    assert!(app.editor.quickfix_panel.visible);
+    assert!(!app.editor.quickfix_panel.focused);
+    send(&mut app, "<C-w>jq").await?;
     assert!(!app.editor.quickfix_panel.visible);
 
     send(&mut app, ":q!<ret>").await?;
@@ -319,5 +322,66 @@ async fn the_panel_has_no_border() -> anyhow::Result<()> {
     let border = colors(&app, top, 30, 80);
     assert!(border.len() > 2, "{border:?}");
     send(&mut app, "<esc>:q!<ret>").await?;
+    Ok(())
+}
+
+/// `<space>Q` / `:quickfix` shows the panel with the focus and hides it, from the code and
+/// from the panel. Its keys and the explorer's are separate: each toggles only its panel.
+/// Moving: `Ctrl-w j` from the code, `Ctrl-w h` (or `C-h`) to the explorer pinned on the left,
+/// `Ctrl-w l` from the explorer back to the code.
+#[tokio::test(flavor = "multi_thread")]
+async fn space_q_toggles_the_panel_and_window_keys_move_between_the_panels() -> anyhow::Result<()> {
+    let (mut app, _file) = app_with_quicklist(enabled()).await?;
+    let quickfix = |app: &Application| {
+        let panel = &app.editor.quickfix_panel;
+        (panel.visible, panel.focused)
+    };
+    let explorer = |app: &Application| {
+        let panel = &app.editor.explorer_panel;
+        (panel.visible, panel.focused)
+    };
+
+    send(&mut app, "<space>Q").await?;
+    assert_eq!(quickfix(&app), (true, true));
+    assert!(app.rendered_rows()[17].contains("Quicklist"));
+    // from the panel too
+    send(&mut app, "<space>Q").await?;
+    assert_eq!(quickfix(&app), (false, false));
+    send(&mut app, ":quickfix<ret>").await?;
+    assert_eq!(quickfix(&app), (true, true));
+    send(&mut app, "<esc>:quickfix<ret>").await?;
+    assert_eq!(quickfix(&app), (false, false));
+
+    // both panels: each key toggles its own
+    send(&mut app, "<space>Q<esc><space>x").await?;
+    assert_eq!(explorer(&app), (true, true));
+    assert!(quickfix(&app).0);
+    send(&mut app, "<C-w>l").await?;
+    assert_eq!(explorer(&app), (true, false));
+    assert_eq!(quickfix(&app), (true, false));
+
+    // the code, the panel, the explorer on its left, the code
+    send(&mut app, "<C-w>j").await?;
+    assert_eq!(quickfix(&app), (true, true));
+    send(&mut app, "<C-w>h").await?;
+    assert_eq!(explorer(&app), (true, true));
+    assert!(!app.editor.quickfix_panel.focused);
+    send(&mut app, "<C-w>l").await?;
+    assert_eq!(explorer(&app), (true, false));
+    assert_eq!(quickfix(&app), (true, false));
+    // `C-h` from the panel; `C-l` from the panel: nothing on its right
+    send(&mut app, "<C-w>j<C-l>").await?;
+    assert_eq!(quickfix(&app), (true, true));
+    send(&mut app, "<C-h>").await?;
+    assert_eq!(explorer(&app), (true, true));
+
+    // `<space>x` hides only the explorer, `<space>Q` only the panel
+    send(&mut app, "<space>x").await?;
+    assert_eq!(explorer(&app), (false, false));
+    assert!(quickfix(&app).0);
+    send(&mut app, "<space>Q").await?;
+    assert_eq!(quickfix(&app), (false, false));
+
+    send(&mut app, ":q!<ret>").await?;
     Ok(())
 }

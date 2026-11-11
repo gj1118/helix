@@ -3779,6 +3779,29 @@ const WRITE_NO_FORMAT_FLAG: Flag = Flag {
 };
 
 /// `:copen`: shows (or focuses) the quickfix panel, see `ui::quickfix::reopen`.
+fn quickfix_toggle(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    cx.jobs.callback(async {
+        let call: job::Callback = job::Callback::EditorCompositor(Box::new(
+            |editor: &mut Editor, compositor: &mut Compositor| {
+                if editor.quickfix_panel.visible {
+                    ui::quickfix::close(compositor, editor);
+                } else {
+                    ui::quickfix::reopen(compositor, editor);
+                }
+            },
+        ));
+        Ok(call)
+    });
+    Ok(())
+}
+
 fn quickfix_open(
     cx: &mut compositor::Context,
     _args: Args,
@@ -5126,6 +5149,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, None),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "quickfix",
+        aliases: &[],
+        doc: "Show the quickfix panel with the focus (the last list it showed, or the quicklist), or hide it when it is open",
+        fun: quickfix_toggle,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
             ..Signature::DEFAULT
         },
     },

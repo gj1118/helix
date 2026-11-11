@@ -532,6 +532,7 @@ fn static_permissions(name: &str) -> &'static [Permission] {
         | "quicklist_prev"
         | "quicklist_next_in_file"
         | "quicklist_prev_in_file"
+        | "quickfix"
         | "quickfix_focus"
         | "suspend" => &[Windows],
         // pickers, prompts and popups: what happens next is chosen by the user
@@ -663,6 +664,7 @@ fn typable_permissions(name: &str) -> Option<&'static [Permission]> {
         | "snippets-open"
         | "snippets-open-workspace"
         | "log-open"
+        | "quickfix"
         | "copen"
         | "cclose"
         | "quit-all"
@@ -826,7 +828,7 @@ mod tests {
     fn static_commands_are_classified() {
         let count = crate::commands::MappableCommand::STATIC_COMMAND_LIST.len();
         assert_eq!(
-            count, 389,
+            count, 390,
             "commands were added or removed: check `static_permissions` for them"
         );
         use helix_plugin::types::EditorCommandRegistry;
