@@ -17,6 +17,7 @@
 //! bindings keep working even with the panel focused. `/` moves the keys to
 //! the filter box at the top of the panel until `Enter`/`Esc`.
 
+use helix_plugin::{EventType, EventValue};
 use std::error::Error as _;
 use std::io;
 use std::path::{Component as PathComponent, Path, PathBuf};
@@ -1388,11 +1389,18 @@ impl Explorer {
                         })
                 };
                 match created {
-                    Ok(()) => cx.editor.set_status(format!(
-                        "Created {} {}",
-                        if is_dir { "folder" } else { "file" },
-                        dest.display()
-                    )),
+                    Ok(()) => {
+                        file_event(
+                            EventType::OnFileCreate,
+                            &dest,
+                            ("is_dir", EventValue::Bool(is_dir)),
+                        );
+                        cx.editor.set_status(format!(
+                            "Created {} {}",
+                            if is_dir { "folder" } else { "file" },
+                            dest.display()
+                        ))
+                    }
                     Err(err) => {
                         cx.editor
                             .set_error(format!("Failed to create {}: {err}", dest.display()));
@@ -1457,6 +1465,11 @@ impl Explorer {
                         // Open buffers follow their file, or saving them
                         // would recreate it under the old name.
                         retarget_buffers(cx.editor, &from, &dest);
+                        file_event(
+                            EventType::OnFileRename,
+                            &dest,
+                            path_field("old_path", &from),
+                        );
                         cx.editor.set_status(format!(
                             "Renamed {} to {}",
                             from.display(),
@@ -1485,6 +1498,7 @@ impl Explorer {
             return EventResult::Consumed(None);
         }
         let path = entry.path.clone();
+        let is_dir = entry.is_dir;
         let keep = path
             .parent()
             .map(Path::to_path_buf)
@@ -1517,7 +1531,14 @@ impl Explorer {
                     move || remove_path(&target),
                     move |editor, compositor, result| {
                         match result {
-                            Ok(()) => editor.set_status(format!("Deleted {}", path.display())),
+                            Ok(()) => {
+                                file_event(
+                                    EventType::OnFileDelete,
+                                    &path,
+                                    ("is_dir", EventValue::Bool(is_dir)),
+                                );
+                                editor.set_status(format!("Deleted {}", path.display()))
+                            }
                             Err(err) => editor
                                 .set_error(format!("Failed to delete {}: {err}", path.display())),
                         }
@@ -1765,11 +1786,13 @@ fn paste_now(cx: &mut Context, clip: &ExplorerClipboard, dest: &Path) {
                     return;
                 }
                 Ok(None) if !cut => {
+                    file_event(EventType::OnFileCopy, &to, path_field("source", &from));
                     editor.set_status(format!("Copied {} to {}", from.display(), to.display()))
                 }
                 Ok(None) => {
                     editor.explorer_clipboard = None;
                     retarget_buffers(editor, &from, &to);
+                    file_event(EventType::OnFileRename, &to, path_field("old_path", &from));
                     editor.set_status(format!("Moved {} to {}", from.display(), to.display()));
                 }
                 Ok(Some(err)) => {
@@ -1789,6 +1812,18 @@ fn paste_now(cx: &mut Context, clip: &ExplorerClipboard, dest: &Path) {
     );
 }
 
+/// Queues a plugin event about a file the explorer changed: its `path` and `extra`.
+fn file_event(event: EventType, path: &Path, extra: (&'static str, EventValue)) {
+    crate::plugin_events::queue_fields(
+        event,
+        vec![("path", path.to_string_lossy().into_owned().into()), extra],
+    );
+}
+
+fn path_field(name: &'static str, path: &Path) -> (&'static str, EventValue) {
+    (name, path.to_string_lossy().into_owned().into())
+}
+
 /// Runs a tree refresh after a mutation prompt's file operation finished,
 /// revealing and selecting `show` (the entry that was created, renamed or
 /// pasted). Callable from inside prompt callbacks, which have `jobs` but no
@@ -1805,12 +1840,33 @@ fn refresh_after(cx: &mut Context, show: PathBuf) {
     cx.jobs.callback(callback);
 }
 
-impl Component for Explorer {
-    fn id(&self) -> Option<&'static str> {
-        Some(EXPLORER_ID)
+impl Explorer {
+    /// Carries out what plugins asked of the explorer (`helix.explorer`).
+    fn plugin_requests(&mut self, editor: &mut Editor) {
+        let requests = std::mem::take(&mut editor.plugin_explorer.requests);
+        for request in requests {
+            match request {
+                helix_view::explorer::ExplorerRequest::Reveal(path) => {
+                    self.refresh_reveal(editor, path)
+                }
+                helix_view::explorer::ExplorerRequest::Refresh => self.refresh_keep(editor, None),
+            }
+        }
     }
 
-    fn handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
+    /// Tells plugins the root and the path under the cursor.
+    fn publish(&self, editor: &mut Editor) {
+        let shown = &mut editor.plugin_explorer;
+        if shown.root.as_deref() != Some(self.root()) {
+            shown.root = Some(self.root().to_path_buf());
+        }
+        let selected = self.entry().filter(|e| !e.is_parent).map(|e| &e.path);
+        if shown.selected.as_ref() != selected {
+            shown.selected = selected.cloned();
+        }
+    }
+
+    fn handle_explorer_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
         if !cx.editor.explorer_panel.visible {
             return EventResult::Ignored(None);
         }
@@ -1865,6 +1921,21 @@ impl Component for Explorer {
         }
         result
     }
+}
+
+impl Component for Explorer {
+    fn id(&self) -> Option<&'static str> {
+        Some(EXPLORER_ID)
+    }
+
+    fn handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
+        let result = self.handle_explorer_event(event, cx);
+        // What plugins see follows the cursor right away (not only when drawn).
+        if cx.editor.explorer_panel.visible {
+            self.publish(cx.editor);
+        }
+        result
+    }
 
     fn cursor(&self, _area: Rect, editor: &Editor) -> (Option<Position>, CursorKind) {
         let focused = editor.explorer_panel.visible && editor.explorer_panel.focused;
@@ -1900,6 +1971,8 @@ impl Component for Explorer {
             self.float_drag = None;
             return;
         }
+        self.plugin_requests(cx.editor);
+        self.publish(cx.editor);
         // Only a shown panel refreshes git status: the layer stays installed while
         // hidden, and `git status` on a large repo is not free.
         self.request_git_status(cx);
@@ -2268,15 +2341,32 @@ impl Component for Explorer {
             }
             // Not for a panel so narrow that the marker would be all there is.
             .filter(|(text, _)| rows_area.width as usize > text.width() + 6);
-            let name_width = match &marker {
-                Some((text, _)) => rows_area.width as usize - text.width() - 2,
-                None => rows_area.width as usize,
+            let marker_width = marker.as_ref().map_or(0, |(text, _)| text.width() + 1);
+            // A plugin's text for the row (`helix.explorer.decorate`), left of the marker.
+            let decoration = cx
+                .editor
+                .plugin_explorer
+                .decorations
+                .get(&entry.path)
+                .filter(|_| !entry.is_parent)
+                .map(|d| (d.text.clone(), decoration_style(&cx.editor.theme, d)))
+                .filter(|(text, _)| {
+                    !text.is_empty() && rows_area.width as usize > text.width() + marker_width + 6
+                });
+            let decoration_width = decoration.as_ref().map_or(0, |(text, _)| text.width() + 1);
+            let name_width = match (&marker, &decoration) {
+                (None, None) => rows_area.width as usize,
+                _ => rows_area.width as usize - marker_width - decoration_width - 1,
             };
 
             let mut x = rows_area.x;
             for span in truncate_spans(spans, name_width) {
                 surface.set_string(x, y, &span.content, span.style);
                 x += span.content.width() as u16;
+            }
+            if let Some((text, style)) = decoration {
+                let x = rows_area.right() - marker_width as u16 - text.width() as u16 - 1;
+                surface.set_string(x, y, &text, style);
             }
             if let Some((text, style)) = marker {
                 let marker_x = rows_area.right() - text.width() as u16 - 1;
@@ -2318,6 +2408,30 @@ fn explorer_border_style(
 /// The style of a git status marker: only the foreground of the change's `diff.*` style.
 /// Many themes give those a background for diff views, which would paint a block behind
 /// the marker instead of keeping the row's own background (and the selection highlight).
+/// The style of a plugin's text on a row: its color, or its theme key (the row's background
+/// stays either way).
+fn decoration_style(
+    theme: &helix_view::Theme,
+    decoration: &helix_view::explorer::ExplorerDecoration,
+) -> Style {
+    let rgb = decoration.fg.as_deref().and_then(|hex| {
+        let hex = hex.strip_prefix('#')?;
+        if hex.len() != 6 {
+            return None;
+        }
+        let channel = |i: usize| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok();
+        Some(Color::Rgb(channel(0)?, channel(2)?, channel(4)?))
+    });
+    match (rgb, decoration.style.as_deref()) {
+        (Some(color), _) => Style::default().fg(color),
+        (None, Some(key)) => {
+            let style = theme.get(key);
+            Style { bg: None, ..style }
+        }
+        (None, None) => Style::default(),
+    }
+}
+
 fn marker_style(theme: &helix_view::Theme, kind: ChangeKind) -> Style {
     let style = change_style(theme, kind);
     match style.fg {

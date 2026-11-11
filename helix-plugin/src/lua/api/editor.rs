@@ -508,7 +508,12 @@ pub(crate) fn selection_from(
 /// Run the typable command `cmd` (e.g. `"write"`) with `args`, one argument per element,
 /// if the calling plugin has the permissions it needs (and `commands`, for
 /// `execute_command`). Does nothing outside of an editor context.
-fn run_typable(lua: &Lua, cmd: &str, args: &[String], any_command: bool) -> LuaResult<()> {
+pub(crate) fn run_typable(
+    lua: &Lua,
+    cmd: &str,
+    args: &[String],
+    any_command: bool,
+) -> LuaResult<()> {
     let registry = lua
         .app_data_ref::<crate::types::CommandRegistryWrapper>()
         .map(|wrapper| std::sync::Arc::clone(&wrapper.0));

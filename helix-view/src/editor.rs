@@ -2566,6 +2566,8 @@ pub struct Editor {
 
     /// State of the file tree explorer panel.
     pub explorer_panel: crate::explorer::ExplorerState,
+    /// What plugins see of the explorer and ask of it.
+    pub plugin_explorer: crate::explorer::PluginExplorer,
     /// Explorer internal clipboard for cut/copy-paste entries.
     pub explorer_clipboard: Option<ExplorerClipboard>,
 
@@ -2789,6 +2791,7 @@ impl Editor {
             last_cwd: None,
             keymap_pending: Vec::new(),
             explorer_panel: crate::explorer::ExplorerState::default(),
+            plugin_explorer: crate::explorer::PluginExplorer::default(),
             explorer_clipboard: None,
             config,
             auto_pairs,

@@ -2,7 +2,7 @@ use crate::compositor::Context;
 use crate::job::{Job, Jobs};
 use crate::ui::PromptEvent;
 use helix_core::command_line::Args;
-use helix_plugin::types::{EditorCommandRegistry, UiHandler};
+use helix_plugin::types::{EditorCommandRegistry, PluginPicker, PluginPickerItem, UiHandler};
 use helix_plugin::{Permission, PluginManager};
 use helix_view::Editor;
 use std::sync::Arc;
@@ -25,6 +25,21 @@ pub enum UiRequest {
         prompt: String,
         plugin_name: String,
         callback_id: u64,
+    },
+    OpenPicker {
+        picker: PluginPicker,
+        plugin_name: String,
+        callback_id: u64,
+    },
+    PickerAdd {
+        picker_id: u64,
+        items: Vec<PluginPickerItem>,
+    },
+    PickerClose {
+        picker_id: u64,
+    },
+    Quickfix {
+        open: bool,
     },
 }
 
@@ -77,6 +92,104 @@ impl UiHandler for TermUiHandler {
             plugin_name,
             callback_id,
         });
+    }
+
+    fn open_picker(
+        &self,
+        _editor: &mut Editor,
+        picker: PluginPicker,
+        plugin_name: String,
+        callback_id: u64,
+    ) {
+        let _ = self.sender.send(UiRequest::OpenPicker {
+            picker,
+            plugin_name,
+            callback_id,
+        });
+    }
+
+    fn picker_add(&self, picker_id: u64, items: Vec<PluginPickerItem>) {
+        let _ = self.sender.send(UiRequest::PickerAdd { picker_id, items });
+    }
+
+    fn picker_close(&self, picker_id: u64) {
+        let _ = self.sender.send(UiRequest::PickerClose { picker_id });
+    }
+
+    fn quickfix(&self, open: bool) {
+        let _ = self.sender.send(UiRequest::Quickfix { open });
+    }
+}
+
+/// The text of a column of a plugin picker item (a column format is a plain function).
+fn column_cell(item: &PluginPickerItem, column: usize) -> tui::widgets::Cell<'_> {
+    item.columns
+        .get(column)
+        .map(String::as_str)
+        .unwrap_or("")
+        .into()
+}
+
+type ColumnCell = for<'a> fn(&'a PluginPickerItem, &'a u64) -> tui::widgets::Cell<'a>;
+
+/// The columns a plugin picker may have (`helix_plugin::MAX_PICKER_COLUMNS`).
+const COLUMN_CELLS: [ColumnCell; helix_plugin::MAX_PICKER_COLUMNS] = [
+    |item, _| column_cell(item, 0),
+    |item, _| column_cell(item, 1),
+    |item, _| column_cell(item, 2),
+    |item, _| column_cell(item, 3),
+    |item, _| column_cell(item, 4),
+    |item, _| column_cell(item, 5),
+    |item, _| column_cell(item, 6),
+    |item, _| column_cell(item, 7),
+];
+
+/// The picker of a plugin: its items' columns, a preview of their files or buffers, and the
+/// plugin's callback with `{index, action}` of the item chosen. Its data is its id.
+pub fn plugin_picker(
+    picker: PluginPicker,
+    pending: PendingUiCallback,
+) -> crate::ui::Picker<PluginPickerItem, u64> {
+    let names: Vec<String> = if picker.columns.is_empty() {
+        vec!["item".to_string()]
+    } else {
+        picker.columns.clone()
+    };
+    let columns: Vec<_> = names
+        .into_iter()
+        .zip(COLUMN_CELLS)
+        .map(|(name, cell)| crate::ui::PickerColumn::new(name, cell))
+        .collect();
+    let built = crate::ui::Picker::new(
+        columns,
+        0,
+        picker.items,
+        picker.id,
+        move |cx, item: &PluginPickerItem, action| {
+            let action = match action {
+                helix_view::editor::Action::HorizontalSplit => "hsplit",
+                helix_view::editor::Action::VerticalSplit => "vsplit",
+                helix_view::editor::Action::Load => "load",
+                helix_view::editor::Action::Replace => "replace",
+            };
+            pending.fire(
+                cx.editor,
+                serde_json::json!({ "index": item.index, "action": action }),
+            );
+        },
+    )
+    .with_title(picker.title)
+    .with_prompt(picker.prompt);
+    if picker.preview {
+        built.with_preview(|_editor, item: &PluginPickerItem| {
+            if let Some(path) = item.path.as_deref() {
+                Some((path.into(), item.lines))
+            } else {
+                item.document.map(|doc| (doc.into(), item.lines))
+            }
+        })
+    } else {
+        built
     }
 }
 

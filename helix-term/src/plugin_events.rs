@@ -298,6 +298,8 @@ pub(crate) struct Watch {
     docs: HashMap<DocumentId, DocState>,
     theme: String,
     cwd: PathBuf,
+    /// The path under the explorer's cursor.
+    explorer_selected: Option<PathBuf>,
     /// Whether the snapshot is out of date (nobody listened at the last frame): the next
     /// frame takes one without events.
     stale: bool,
@@ -315,6 +317,7 @@ const WATCHED: &[EventType] = &[
     EventType::OnCwdChange,
     EventType::OnLspAttach,
     EventType::OnLspDetach,
+    EventType::OnExplorerSelect,
 ];
 
 impl Watch {
@@ -352,6 +355,7 @@ impl Watch {
             .collect();
         self.theme = editor.theme.name().to_string();
         self.cwd = helix_stdx::env::current_working_dir();
+        self.explorer_selected = editor.plugin_explorer.selected.clone();
         self.stale = false;
     }
 
@@ -498,6 +502,17 @@ impl Watch {
                 ],
             );
             self.cwd = cwd;
+        }
+
+        let selected = &editor.plugin_explorer.selected;
+        if *selected != self.explorer_selected {
+            if let Some(path) = selected {
+                push(
+                    EventType::OnExplorerSelect,
+                    vec![("path", path_value(Some(path)))],
+                );
+            }
+            self.explorer_selected = selected.clone();
         }
 
         events

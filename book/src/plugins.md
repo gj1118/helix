@@ -217,6 +217,11 @@ error. The `event` table has a `type` field (the event name) and, depending on t
 | `lsp_detach` | `document_id`, `language_server_id`, `name` | when a language server stops serving a buffer that stays open |
 | `lsp_exit` | `language_server_id`, `name` | when a language server exits |
 | `lsp_diagnostic` | `document_id`, `path` | when a buffer's diagnostics change |
+| `explorer_select` | `path` | when the cursor of the file explorer moves to another path |
+| `file_create` | `path`, `is_dir` | when the file explorer created a file or folder |
+| `file_rename` | `path`, `old_path` | when the file explorer renamed or moved (cut and paste) a file or folder |
+| `file_copy` | `path`, `source` | when the file explorer copied a file or folder |
+| `file_delete` | `path`, `is_dir` | when the file explorer deleted a file or folder |
 
 `path` is `nil` for a buffer without a file. `document_id` is the same string `buffer:id()`
 returns (`helix.buffer.get_by_id(id)` turns it into a buffer), and `window_id` the one
@@ -364,10 +369,19 @@ Buffer methods (they raise an error once the buffer is closed):
 - `prompt(message, default, function(input) end)`: asks for a line of text; the callback is
   not called when the prompt is cancelled.
 - `confirm(message, function(confirmed) end)`: a yes/no question (`false` when cancelled).
-- `picker{ items = {...}, prompt = "...", on_select = function(item) end }`: a picker titled
-  `Plugin` over `items` (strings); `prompt` is the label of its input line (`"Select:"` when
-  omitted). `on_select` is required and gets the chosen string.
-- `menu(items, function(item) end)`: the same picker with the default label.
+- `picker{ items, on_select, title, prompt, columns, preview, dock }`: a picker over `items`
+  and returns its handle. An item is a string, or a table with `text` (or `columns`, the text
+  of each column), `path` or `buffer` to preview, `line`/`end_line` (1-based) to show in the
+  preview, and anything else the plugin wants back (`data`, say). `on_select(item, action)`
+  (required) gets the item chosen, the very value from `items`, and how: `"replace"`
+  (`Enter`), `"hsplit"` (`C-s`), `"vsplit"` (`C-v`). `title` defaults to `Plugin`,
+  `prompt` to `"Select:"`; `columns` names up to 8 columns (one without a header when
+  omitted); `preview` defaults to whether an item has a `path` or `buffer`; `dock = true`
+  shows it in the quickfix panel at the bottom instead of over the editor.
+  - `handle:add(items)` adds items to the open picker (and to `items`, so they come back to
+    `on_select` too); `handle:close()` closes it without a choice.
+- `menu(items, function(item, action) end)`: the same picker with the default title and
+  label.
 - `get_theme()`, `set_theme(name)`, `get_terminal_size()` (`{width, height}` of the editor
   area), `redraw()`.
 - `show_help()` is not implemented (raises an error).
@@ -412,6 +426,33 @@ Window methods (they raise an error once the window is closed):
 The bindings go over the keys of `config.toml` (also after `:config-reload`); a later
 binding of the same keys replaces an earlier one, whichever plugin set it.
 `:reload-all-plugins` removes them all before loading the plugins again.
+
+### `helix.quickfix`
+
+The quicklist, shown in the quickfix panel at the bottom (`:copen`, see
+[Quicklist](./quicklist.md)).
+
+- `set(items, open)`: replaces the quicklist with `items`, each `{ path = ... }` or
+  `{ buffer = ... }` with `line`, `end_line` (1-based; `line` defaults to 1) and `text`;
+  shows it in the panel when `open` is true (`edit`, and `ui` to open).
+- `add(item)`, `clear()` (`edit`); `get()`: the entries, as given to `set` (`read`).
+- `open()`: shows the quicklist in the panel; `close()`: closes the panel (`ui`);
+  `is_open()` (`read`).
+
+A plugin's own list can also go in the panel: `helix.ui.picker{ ..., dock = true }`.
+
+### `helix.explorer`
+
+- `is_open()`, `is_focused()`, `get_root()`, `get_selected()` (the path under the cursor;
+  `nil` until the explorer was shown) (`read`).
+- `open()`, `close()`, `focus()`, `refresh()` (reads the folders again), `reveal(path)` (shows
+  the explorer with the cursor on `path`, the folders above it expanded) (`explorer`).
+- `decorate(path, { text, fg, style })`: a text at the right of the row of `path`, left of the
+  git marker, in `fg` (`"#rrggbb"`) or the theme key `style`; `decorate(path, nil)` removes it;
+  `clear_decorations()` removes the calling plugin's (`ui`).
+
+What the explorer does to files is heard of with the `file_create`, `file_rename`,
+`file_copy` and `file_delete` events, and its cursor with `explorer_select`.
 
 ### `helix.lsp`
 

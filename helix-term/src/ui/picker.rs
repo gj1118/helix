@@ -196,6 +196,11 @@ impl<I, D> Clone for Injector<I, D> {
 pub struct InjectorShutdown;
 
 impl<T, D> Injector<T, D> {
+    /// Whether the picker it feeds is still open (items pushed are shown).
+    pub fn is_open(&self) -> bool {
+        self.version == self.picker_version.load(atomic::Ordering::Relaxed)
+    }
+
     pub fn push(&self, item: T) -> Result<(), InjectorShutdown> {
         if self.version != self.picker_version.load(atomic::Ordering::Relaxed) {
             return Err(InjectorShutdown);
@@ -387,7 +392,7 @@ pub struct Picker<T: 'static + Send + Sync, D: 'static> {
     /// Cached gradient border for rendering when enabled in config
     gradient_border: Option<GradientBorder>,
     /// Title to display at the top of the picker
-    title: Option<&'static str>,
+    title: Option<Cow<'static, str>>,
 
     /// Replace action (`Alt-r` reveals the replacement input).
     replace_fn: Option<ReplaceCallback<T>>,
@@ -844,8 +849,8 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
     }
 
     /// Set a title to display at the top of the picker
-    pub fn with_title(mut self, title: &'static str) -> Self {
-        self.title = Some(title);
+    pub fn with_title(mut self, title: impl Into<Cow<'static, str>>) -> Self {
+        self.title = Some(title.into());
         self
     }
 
@@ -1323,7 +1328,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                         area,
                         surface,
                         &cx.editor.theme,
-                        self.title,
+                        self.title.as_deref(),
                         rounded,
                     );
                 }
@@ -1332,7 +1337,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             // The gradient border is one cell wide whatever its thickness.
             crate::ui::gradient_border::GradientBorder::inner_area(area)
         } else {
-            let block = if let Some(title) = self.title {
+            let block = if let Some(title) = self.title.as_deref() {
                 // `ui.popup.title` when the theme sets it; otherwise the title takes the
                 // border's style, as upstream.
                 match cx.editor.theme.try_get("ui.popup.title") {
@@ -1419,7 +1424,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                 cell.set_symbol(borders.horizontal).set_style(sep_style);
             }
         }
-        if let (true, Some(title)) = (docked, self.title) {
+        if let (true, Some(title)) = (docked, self.title.as_deref()) {
             let title_style = cx
                 .editor
                 .theme
@@ -2225,6 +2230,11 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
     /// The picker as the quickfix panel (see `ui::quickfix`): drawn at the bottom of the
     /// views and kept open while its entries are visited. A list that needs a query to show
     /// anything (a global search) starts with the query to type; the others with the list.
+    /// The data the columns are formatted with.
+    pub fn editor_data(&self) -> &D {
+        &self.editor_data
+    }
+
     pub fn docked(mut self) -> Self {
         let filtering = self.dynamic_query_handler.is_some() && self.prompt.line().is_empty();
         self.docked = Some(Docked {
@@ -2597,7 +2607,7 @@ mod tests {
         )
         .with_title("Test Title");
 
-        assert_eq!(picker.title, Some("Test Title"));
+        assert_eq!(picker.title.as_deref(), Some("Test Title"));
     }
 
     #[test]
@@ -2617,7 +2627,7 @@ mod tests {
         .with_title("Chained Title")
         .show_preview(false);
 
-        assert_eq!(picker.title, Some("Chained Title"));
+        assert_eq!(picker.title.as_deref(), Some("Chained Title"));
         assert!(!picker.truncate_start);
         assert!(!picker.show_preview);
     }
@@ -2631,7 +2641,7 @@ mod tests {
             Picker::new(columns, 0, vec![], (), |_cx, _item, _action| {}).with_title("");
 
         // Empty string is still Some("")
-        assert_eq!(picker.title, Some(""));
+        assert_eq!(picker.title.as_deref(), Some(""));
     }
 
     #[test]
@@ -2643,7 +2653,7 @@ mod tests {
             Picker::new(columns, 0, vec![], (), |_cx, _item, _action| {})
                 .with_title("Files 📁 & Folders");
 
-        assert_eq!(picker.title, Some("Files 📁 & Folders"));
+        assert_eq!(picker.title.as_deref(), Some("Files 📁 & Folders"));
     }
 
     #[test]
@@ -2662,7 +2672,7 @@ mod tests {
             |_cx, _item, _action| {},
         )
         .with_title("String Picker");
-        assert_eq!(picker_str.title, Some("String Picker"));
+        assert_eq!(picker_str.title.as_deref(), Some("String Picker"));
 
         // Integer items
         let columns_int = [Column::new("num", |item: &i32, _: &()| {
@@ -2671,7 +2681,7 @@ mod tests {
         let picker_int: Picker<i32, ()> =
             Picker::new(columns_int, 0, vec![1, 2, 3], (), |_cx, _item, _action| {})
                 .with_title("Integer Picker");
-        assert_eq!(picker_int.title, Some("Integer Picker"));
+        assert_eq!(picker_int.title.as_deref(), Some("Integer Picker"));
     }
 
     // ===========================================

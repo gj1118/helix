@@ -103,6 +103,9 @@ pub struct Application {
     /// The language servers each document was last seen attached to, for `lsp_attach`.
     /// Finds the plugin events without a hook of their own (windows, renames, theme...).
     plugin_watch: plugin_events::Watch,
+    /// Where items added to the open plugin pickers go, by picker id.
+    plugin_pickers:
+        HashMap<u64, crate::ui::picker::Injector<helix_plugin::types::PluginPickerItem, u64>>,
     /// The configured keys, under the plugins' bindings (`helix.keymap`).
     base_keys: HashMap<helix_view::document::Mode, crate::keymap::KeyTrie>,
     /// The version of the plugins' bindings merged into the keys (`None`: merge again).
@@ -453,6 +456,7 @@ impl Application {
             plugin_watch,
             base_keys,
             applied_keymaps: Some(0),
+            plugin_pickers: HashMap::new(),
             title_error: None,
             ui_receiver,
             theme_mode,
@@ -1102,6 +1106,67 @@ impl Application {
     async fn handle_ui_request(&mut self, request: crate::plugin_registry::UiRequest) {
         use crate::plugin_registry::UiRequest;
         match request {
+            UiRequest::OpenPicker {
+                picker,
+                plugin_name,
+                callback_id,
+            } => {
+                // Dropping the picker (closed with Esc) releases the pending callback.
+                let pending = crate::plugin_registry::PendingUiCallback::new(
+                    self.plugin_manager.clone(),
+                    plugin_name,
+                    callback_id,
+                );
+                let (id, docked) = (picker.id, picker.docked);
+                let picker = crate::plugin_registry::plugin_picker(picker, pending);
+                // Items added later go through its injector (until it is closed).
+                self.plugin_pickers.retain(|_, injector| injector.is_open());
+                self.plugin_pickers.insert(id, picker.injector());
+                if docked {
+                    ui::quickfix::dock(&mut self.compositor, &mut self.editor, picker);
+                } else {
+                    self.compositor.push(Box::new(overlaid(
+                        picker,
+                        self.editor.config().fullscreen_overlay,
+                    )));
+                }
+            }
+            UiRequest::PickerAdd { picker_id, items } => {
+                if let Some(injector) = self.plugin_pickers.get(&picker_id) {
+                    let closed = items.into_iter().any(|item| injector.push(item).is_err());
+                    if closed {
+                        self.plugin_pickers.remove(&picker_id);
+                    }
+                }
+            }
+            UiRequest::PickerClose { picker_id } => {
+                type PluginPicker = ui::Picker<helix_plugin::types::PluginPickerItem, u64>;
+                self.plugin_pickers.remove(&picker_id);
+                let overlaid = self
+                    .compositor
+                    .find_id::<ui::overlay::Overlay<PluginPicker>>(ui::picker::ID)
+                    .is_some_and(|overlay| *overlay.content.editor_data() == picker_id);
+                if overlaid {
+                    self.compositor.remove(ui::picker::ID);
+                }
+                let docked = self
+                    .compositor
+                    .find_id::<PluginPicker>(ui::quickfix::ID)
+                    .is_some_and(|picker| *picker.editor_data() == picker_id);
+                if docked {
+                    ui::quickfix::close(&mut self.compositor, &mut self.editor);
+                }
+            }
+            UiRequest::Quickfix { open } => {
+                if open {
+                    // The quicklist, as it is now (not the last list the panel showed).
+                    ui::quickfix::close(&mut self.compositor, &mut self.editor);
+                    self.compositor.last_quickfix = None;
+                    ui::quickfix::reopen(&mut self.compositor, &mut self.editor);
+                } else {
+                    ui::quickfix::close(&mut self.compositor, &mut self.editor);
+                }
+            }
             UiRequest::Prompt {
                 message,
                 default,

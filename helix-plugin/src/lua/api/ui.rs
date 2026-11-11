@@ -71,32 +71,67 @@ pub fn register_ui_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     })?;
     ui_module.set("confirm", confirm)?;
 
-    // helix.ui.picker(options) - Show picker/menu
+    // helix.ui.picker(options) - A picker over `options.items`: strings, or tables with
+    // `text` (or `columns`, the text of each column), `path` or `buffer` to preview, and
+    // `line`/`end_line` (1-based) to show. `on_select(item, action)` gets the item chosen
+    // (the value from `items`) and how ("replace", "hsplit", "vsplit"). Returns a handle:
+    // `handle:add(items)`, `handle:close()`.
     let picker = lua.create_function(|lua, options: LuaTable| {
         require(lua, Permission::Ui, "helix.ui.picker")?;
-        // Extract picker options before touching the editor (`get` may run metamethods)
-        let items: Vec<String> = options
-            .get::<Option<Vec<String>>>("items")?
-            .unwrap_or_default();
-        let prompt_text: String = options
+        let items: LuaTable = match options.get::<LuaValue>("items")? {
+            LuaValue::Table(items) => items,
+            LuaValue::Nil => lua.create_table()?,
+            other => {
+                return Err(LuaError::RuntimeError(format!(
+                    "items must be a list, not a {}",
+                    other.type_name()
+                )))
+            }
+        };
+        let on_select: LuaFunction = options
+            .get::<Option<LuaFunction>>("on_select")?
+            .ok_or_else(|| LuaError::RuntimeError("on_select callback required".into()))?;
+        let title: String = options
+            .get::<Option<String>>("title")?
+            .unwrap_or_else(|| "Plugin".to_string());
+        let prompt: String = options
             .get::<Option<String>>("prompt")?
             .unwrap_or_else(|| "Select:".to_string());
-        let callback: LuaFunction = options
-            .get("on_select")
-            .map_err(|_| LuaError::RuntimeError("on_select callback required".into()))?;
-
-        open_ui(lua, callback, move |handler, editor, plugin_name, id| {
-            handler.picker(editor, items, prompt_text, plugin_name, id)
-        })
+        let columns: Vec<String> = options
+            .get::<Option<Vec<String>>>("columns")?
+            .unwrap_or_default();
+        let preview: Option<bool> = options.get("preview")?;
+        let docked: bool = options.get::<Option<bool>>("dock")?.unwrap_or(false);
+        open_picker(
+            lua,
+            PickerOptions {
+                items,
+                on_select,
+                title,
+                prompt,
+                columns,
+                preview,
+                docked,
+            },
+        )
     })?;
     ui_module.set("picker", picker)?;
 
-    // helix.ui.menu(items, callback) - Pick one of `items` (a picker without a prompt)
-    let menu = lua.create_function(|lua, (items, callback): (Vec<String>, LuaFunction)| {
+    // helix.ui.menu(items, callback) - Pick one of `items` (a picker with the default label)
+    let menu = lua.create_function(|lua, (items, callback): (LuaTable, LuaFunction)| {
         require(lua, Permission::Ui, "helix.ui.menu")?;
-        open_ui(lua, callback, move |handler, editor, plugin_name, id| {
-            handler.picker(editor, items, "Select:".to_string(), plugin_name, id)
-        })
+        open_picker(
+            lua,
+            PickerOptions {
+                items,
+                on_select: callback,
+                title: "Plugin".to_string(),
+                prompt: "Select:".to_string(),
+                columns: Vec::new(),
+                preview: None,
+                docked: false,
+            },
+        )
     })?;
     ui_module.set("menu", menu)?;
 
@@ -212,6 +247,192 @@ where
         callbacks.write().remove(&key);
     }
     opened.map(|_| ())
+}
+
+/// What `helix.ui.picker` was given.
+struct PickerOptions {
+    items: LuaTable,
+    on_select: LuaFunction,
+    title: String,
+    prompt: String,
+    columns: Vec<String>,
+    preview: Option<bool>,
+    docked: bool,
+}
+
+/// A plugin picker's handle: items are added to the picker and its list (`items`, which the
+/// selection callback reads).
+pub struct LuaPickerHandle {
+    id: u64,
+    items: std::sync::Arc<LuaRegistryKey>,
+    columns: usize,
+}
+
+impl LuaUserData for LuaPickerHandle {
+    fn add_methods<M: LuaUserDataMethods<Self>>(methods: &mut M) {
+        // handle:add(items) - Add items to the picker (and to its list)
+        methods.add_method("add", |lua, this, new: LuaTable| {
+            require(lua, Permission::Ui, "picker:add")?;
+            let items: LuaTable = lua.registry_value(&this.items)?;
+            let mut added = Vec::new();
+            for i in 1..=new.raw_len() {
+                let item: LuaValue = new.raw_get(i)?;
+                let index = items.raw_len() + 1;
+                added.push(read_item(&item, index, this.columns)?);
+                items.raw_set(index, item)?;
+            }
+            if let Some(handler) = lua
+                .app_data_ref::<crate::types::UiHandlerWrapper>()
+                .map(|h| Arc::clone(&h.0))
+            {
+                handler.picker_add(this.id, added);
+            }
+            Ok(())
+        });
+
+        // handle:close() - Close the picker (its callback is not called)
+        methods.add_method("close", |lua, this, ()| {
+            require(lua, Permission::Ui, "picker:close")?;
+            if let Some(handler) = lua
+                .app_data_ref::<crate::types::UiHandlerWrapper>()
+                .map(|h| Arc::clone(&h.0))
+            {
+                handler.picker_close(this.id);
+            }
+            Ok(())
+        });
+
+        methods.add_method("id", |_lua, this, ()| Ok(this.id));
+    }
+}
+
+/// A picker item read from a plugin's `items[index]`.
+fn read_item(
+    item: &LuaValue,
+    index: usize,
+    columns: usize,
+) -> LuaResult<crate::types::PluginPickerItem> {
+    let mut picker_item = crate::types::PluginPickerItem {
+        index,
+        columns: Vec::new(),
+        path: None,
+        document: None,
+        lines: None,
+    };
+    match item {
+        LuaValue::String(text) => picker_item.columns.push(text.to_str()?.to_string()),
+        LuaValue::Integer(_) | LuaValue::Number(_) => {
+            picker_item.columns.push(item.to_string()?);
+        }
+        LuaValue::Table(table) => {
+            // `raw_get`: no metamethods run here.
+            let cells: Option<LuaTable> = table.raw_get("columns")?;
+            match cells {
+                Some(cells) => {
+                    for i in 1..=cells.raw_len() {
+                        let cell: LuaValue = cells.raw_get(i)?;
+                        picker_item.columns.push(match cell {
+                            LuaValue::Nil => String::new(),
+                            LuaValue::String(s) => s.to_str()?.to_string(),
+                            other => other.to_string()?,
+                        });
+                    }
+                }
+                None => {
+                    let text: Option<String> = table.raw_get("text")?;
+                    picker_item.columns.push(text.unwrap_or_default());
+                }
+            }
+            let path: Option<String> = table.raw_get("path")?;
+            picker_item.path = path.map(std::path::PathBuf::from);
+            let buffer: LuaValue = table.raw_get("buffer")?;
+            picker_item.document = match buffer {
+                LuaValue::UserData(ud) => ud
+                    .borrow::<super::buffer::LuaBuffer>()
+                    .ok()
+                    .map(|b| b.document_id),
+                _ => None,
+            };
+            let line: Option<usize> = table.raw_get("line")?;
+            let end_line: Option<usize> = table.raw_get("end_line")?;
+            if let Some(line) = line {
+                let start = line.saturating_sub(1);
+                let end = end_line.map_or(start, |end| end.saturating_sub(1).max(start));
+                picker_item.lines = Some((start, end));
+            }
+        }
+        other => {
+            return Err(LuaError::RuntimeError(format!(
+                "A picker item is a string or a table, not a {}",
+                other.type_name()
+            )))
+        }
+    }
+    picker_item.columns.resize(columns.max(1), String::new());
+    Ok(picker_item)
+}
+
+/// Opens a plugin picker; returns its handle (nil without an editor).
+fn open_picker(lua: &Lua, options: PickerOptions) -> LuaResult<LuaValue> {
+    let columns = options.columns.len();
+    if columns > crate::MAX_PICKER_COLUMNS {
+        return Err(LuaError::RuntimeError(format!(
+            "A picker has at most {} columns",
+            crate::MAX_PICKER_COLUMNS
+        )));
+    }
+    let mut items = Vec::new();
+    for i in 1..=options.items.raw_len() {
+        let item: LuaValue = options.items.raw_get(i)?;
+        items.push(read_item(&item, i, columns)?);
+    }
+    let preview = options.preview.unwrap_or_else(|| {
+        items
+            .iter()
+            .any(|i| i.path.is_some() || i.document.is_some())
+    });
+    let counter = lua
+        .app_data_ref::<crate::types::UiCallbackCounter>()
+        .map(|c| Arc::clone(&c.0));
+    let Some(counter) = counter else {
+        return Ok(LuaValue::Nil);
+    };
+    let id = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    // The callback hands the plugin its own item: the list is kept (and grows with `add`).
+    let list_key = std::sync::Arc::new(lua.create_registry_value(options.items.clone())?);
+    let callback: LuaFunction = lua
+        .load(
+            r#"
+            local items, on_select = ...
+            return function(choice)
+                return on_select(items[choice.index], choice.action)
+            end
+            "#,
+        )
+        .set_name("=picker")
+        .call((options.items, options.on_select))?;
+    let picker = crate::types::PluginPicker {
+        id,
+        title: options.title,
+        prompt: options.prompt,
+        columns: options.columns,
+        items,
+        preview,
+        docked: options.docked,
+    };
+    open_ui(
+        lua,
+        callback,
+        move |handler, editor, plugin_name, callback_id| {
+            handler.open_picker(editor, picker, plugin_name, callback_id)
+        },
+    )?;
+    lua.create_userdata(LuaPickerHandle {
+        id,
+        items: list_key,
+        columns,
+    })
+    .map(LuaValue::UserData)
 }
 
 #[cfg(test)]

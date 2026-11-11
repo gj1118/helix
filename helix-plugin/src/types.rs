@@ -107,6 +107,16 @@ event_types! {
     OnLspExit => "lsp_exit",
     /// The diagnostics of a buffer changed.
     OnLspDiagnostic => "lsp_diagnostic",
+    /// The explorer created a file or folder.
+    OnFileCreate => "file_create",
+    /// The explorer renamed or moved a file or folder.
+    OnFileRename => "file_rename",
+    /// The explorer copied a file or folder.
+    OnFileCopy => "file_copy",
+    /// The explorer deleted a file or folder.
+    OnFileDelete => "file_delete",
+    /// The cursor of the explorer moved to another path.
+    OnExplorerSelect => "explorer_select",
 }
 
 /// How many plugin handlers each event has, over every plugin engine of the process: the
@@ -400,6 +410,52 @@ pub trait UiHandler: Send + Sync {
         plugin_name: String,
         callback_id: u64,
     );
+    /// Opens a picker of structured items; the callback gets `{index, action}`.
+    fn open_picker(
+        &self,
+        _editor: &mut helix_view::Editor,
+        _picker: PluginPicker,
+        _plugin_name: String,
+        _callback_id: u64,
+    ) {
+    }
+    /// Adds items to the open picker `picker_id` (nothing once it is closed).
+    fn picker_add(&self, _picker_id: u64, _items: Vec<PluginPickerItem>) {}
+    /// Closes the picker `picker_id` if it is open.
+    fn picker_close(&self, _picker_id: u64) {}
+    /// Shows the quicklist in the quickfix panel (`open`), or closes the panel.
+    fn quickfix(&self, _open: bool) {}
+}
+
+/// A picker a plugin opens (`helix.ui.picker`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PluginPicker {
+    /// Identifies the picker for `add` and `close` of its handle.
+    pub id: u64,
+    pub title: String,
+    pub prompt: String,
+    /// The column names; one column without a header when empty.
+    pub columns: Vec<String>,
+    pub items: Vec<PluginPickerItem>,
+    /// Whether to preview the items' files or buffers.
+    pub preview: bool,
+    /// In the quickfix panel at the bottom instead of over the editor.
+    pub docked: bool,
+}
+
+/// An item of a plugin picker.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PluginPickerItem {
+    /// Its index in the plugin's list (1-based), handed back when it is chosen.
+    pub index: usize,
+    /// The text of each column.
+    pub columns: Vec<String>,
+    /// A file to preview (and to open by the plugin)...
+    pub path: Option<std::path::PathBuf>,
+    /// ...or a buffer.
+    pub document: Option<helix_view::DocumentId>,
+    /// The lines to show in the preview (0-based, inclusive).
+    pub lines: Option<(usize, usize)>,
 }
 
 /// Wrapper for UiHandler to store in Lua app data

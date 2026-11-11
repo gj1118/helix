@@ -105,6 +105,40 @@ pub struct ExplorerClipboard {
     pub cut: bool,
 }
 
+/// What plugins see of the explorer and ask of it (`helix.explorer`). The explorer publishes
+/// its root and the path under its cursor when it draws, and carries out the requests then.
+#[derive(Debug, Default, Clone)]
+pub struct PluginExplorer {
+    /// The root of the tree (`None` until the explorer was shown).
+    pub root: Option<PathBuf>,
+    /// The path under the cursor.
+    pub selected: Option<PathBuf>,
+    /// Requests of plugins, carried out when the explorer draws next.
+    pub requests: Vec<ExplorerRequest>,
+    /// Texts plugins show at the right of rows, by path.
+    pub decorations: std::collections::HashMap<PathBuf, ExplorerDecoration>,
+}
+
+/// A request of a plugin to the explorer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExplorerRequest {
+    /// Show `path` (expanding the folders above it) and put the cursor on it.
+    Reveal(PathBuf),
+    /// Read the folders again.
+    Refresh,
+}
+
+/// A text a plugin shows at the right of an explorer row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExplorerDecoration {
+    pub plugin: String,
+    pub text: String,
+    /// `"#rrggbb"`.
+    pub fg: Option<String>,
+    /// A theme key (`"diagnostic.error"`), when `fg` is not set.
+    pub style: Option<String>,
+}
+
 /// Runtime explorer state owned by [`crate::Editor`]. The `Option` fields are
 /// runtime overrides; they default to the config values and persist until
 /// helix exits.

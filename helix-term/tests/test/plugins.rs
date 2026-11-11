@@ -703,3 +703,223 @@ async fn plugins_run_commands_and_change_settings_and_buffers() -> anyhow::Resul
     assert_eq!(text, "one\ntwo\nthree\nfour\n");
     Ok(())
 }
+
+/// A plugin's picker has columns and its own items, gets items added while it is open, and
+/// hands the item chosen back with the action; a handle closes it.
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_pickers_show_columns_take_items_and_close() -> anyhow::Result<()> {
+    let init = r#"
+        local function open()
+            return helix.ui.picker{
+                title = "Tasks",
+                columns = { "Name", "Step" },
+                items = {
+                    { columns = { "build", "one" }, data = { id = 7 } },
+                    { columns = { "test", "two" }, data = { id = 8 } },
+                },
+                on_select = function(item, action)
+                    helix.editor.set_register("z", { item.data.id .. "/" .. action })
+                end,
+            }
+        end
+        helix.register_command{ name = "tasks", handler = function()
+            local handle = open()
+            handle:add({ { columns = { "deploy", "three" }, data = { id = 9 } } })
+        end }
+        helix.register_command{ name = "tasks-closed", handler = function()
+            open():close()
+        end }
+    "#;
+    let dir = plugin_dir(&[("tasks", init, None)])?;
+    let config = plugin_config(
+        dir.path(),
+        r#"
+        [[plugins]]
+        name = "tasks"
+        permissions = ["edit", "commands"]
+        "#,
+    )?;
+    let mut app = helpers::AppBuilder::new().with_config(config).build()?;
+
+    send_keys(&mut app, ":tasks<ret>").await?;
+    let open: bool = app.compositor.has_id(helix_term::ui::picker::ID);
+    assert!(open);
+    let rows = app.rendered_rows();
+    let shown = |text: &str| rows.iter().any(|row| row.contains(text));
+    assert!(
+        shown("Tasks") && shown("Name") && shown("Step"),
+        "{rows:#?}"
+    );
+    assert!(
+        shown("build") && shown("test") && shown("deploy"),
+        "{rows:#?}"
+    );
+
+    // the added item is chosen like the others
+    send_keys(&mut app, "deploy<C-v>").await?;
+    let chosen: Vec<String> = register(&app, 'z');
+    assert_eq!(chosen, ["9/vsplit"]);
+    assert!(!app.compositor.has_id(helix_term::ui::picker::ID));
+
+    send_keys(&mut app, ":tasks-closed<ret>").await?;
+    let closed: bool = !app.compositor.has_id(helix_term::ui::picker::ID);
+    assert!(closed);
+    Ok(())
+}
+
+/// A plugin fills the quicklist and shows it in the quickfix panel; a picker can be docked
+/// there too.
+#[tokio::test(flavor = "multi_thread")]
+async fn plugins_fill_and_show_the_quickfix_panel() -> anyhow::Result<()> {
+    let a = helpers::temp_file_with_contents("alpha\nbeta\n")?;
+    let b = helpers::temp_file_with_contents("gamma\n")?;
+    let init = format!(
+        r#"
+        helix.register_command{{ name = "qf", handler = function()
+            helix.quickfix.set({{
+                {{ path = {a:?}, line = 2, text = "beta line" }},
+                {{ path = {b:?}, line = 1, text = "gamma line" }},
+            }}, true)
+            local entries = helix.quickfix.get()
+            helix.editor.set_register("z", {{ #entries .. ":" .. entries[1].line }})
+        end }}
+        helix.register_command{{ name = "docked", handler = function()
+            helix.ui.picker{{ title = "Docked list", dock = true,
+                items = {{ {{ text = "in the panel", path = {a:?}, line = 1 }} }},
+                on_select = function() end }}
+        end }}
+        "#,
+        a = a.path().to_string_lossy(),
+        b = b.path().to_string_lossy(),
+    );
+    let dir = plugin_dir(&[("qf", &init, None)])?;
+    let config = plugin_config(
+        dir.path(),
+        r#"
+        [[plugins]]
+        name = "qf"
+        permissions = ["edit", "commands"]
+        "#,
+    )?;
+    let mut app = helpers::AppBuilder::new().with_config(config).build()?;
+
+    send_keys(&mut app, ":qf<ret>").await?;
+    let read: Vec<String> = register(&app, 'z');
+    assert_eq!(read, ["2:2"]);
+    let (visible, panel): (bool, bool) = (
+        app.editor.quickfix_panel.visible,
+        app.compositor.has_id(helix_term::ui::quickfix::ID),
+    );
+    assert_eq!((visible, panel), (true, true));
+    let rows = app.rendered_rows();
+    assert!(
+        rows.iter().any(|row| row.contains("beta line"))
+            && rows.iter().any(|row| row.contains("gamma line")),
+        "{rows:#?}"
+    );
+
+    // the panel has the keys: close it, then dock a picker in it
+    send_keys(&mut app, "q:docked<ret>").await?;
+    let rows = app.rendered_rows();
+    assert!(
+        rows.iter().any(|row| row.contains("Docked list"))
+            && rows.iter().any(|row| row.contains("in the panel")),
+        "{rows:#?}"
+    );
+    assert!(app.editor.quickfix_panel.visible);
+    Ok(())
+}
+
+/// Plugins see the explorer's root and cursor, hear of its moves and of the files it creates
+/// and renames, ask it to reveal a path, and put text on its rows.
+#[tokio::test(flavor = "multi_thread")]
+async fn plugins_follow_drive_and_decorate_the_explorer() -> anyhow::Result<()> {
+    use helix_term::ui::explorer::{Explorer, EXPLORER_ID};
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().canonicalize()?;
+    std::fs::create_dir(root.join("sub"))?;
+    std::fs::write(root.join("a.txt"), "a\n")?;
+    std::fs::write(root.join("sub/deep.txt"), "d\n")?;
+    let init = format!(
+        r##"
+        local seen = {{}}
+        local function record(entry)
+            seen[#seen + 1] = entry
+            helix.editor.set_register("z", {{ table.concat(seen, "|") }})
+        end
+        local function base(path) return path:match("[^/\\]+$") end
+        helix.on("explorer_select", function(e) record("select:" .. base(e.path)) end)
+        helix.on("file_create", function(e)
+            record("create:" .. base(e.path) .. ":" .. tostring(e.is_dir))
+        end)
+        helix.on("file_rename", function(e)
+            record("rename:" .. base(e.old_path) .. ">" .. base(e.path))
+        end)
+        helix.register_command{{ name = "look", handler = function()
+            record("root:" .. tostring(helix.explorer.get_root() == {root:?})
+                .. ":" .. base(helix.explorer.get_selected()))
+            helix.explorer.decorate({root:?} .. "/a.txt", {{ text = "TODO 3", fg = "#ff0000" }})
+            helix.explorer.reveal({root:?} .. "/sub/deep.txt")
+        end }}
+        "##,
+        root = root.to_string_lossy()
+    );
+    let plugins = plugin_dir(&[("tree", &init, None)])?;
+    let config = plugin_config(
+        plugins.path(),
+        r#"
+        [[plugins]]
+        name = "tree"
+        permissions = ["edit", "commands", "explorer"]
+        "#,
+    )?;
+    let mut app = helpers::AppBuilder::new().with_config(config).build()?;
+    app.editor.explorer_panel.visible = true;
+    app.editor.explorer_panel.focused = true;
+    let explorer = Explorer::new(&root, &app.editor)?;
+    app.compositor.push(Box::new(explorer));
+    if let Some(explorer) = app.compositor.find_id::<Explorer>(EXPLORER_ID) {
+        explorer.wait_for_scan(&app.editor);
+    }
+    let mut seen = 0;
+    let mut since = |app: &Application| -> Vec<String> {
+        let all = register(app, 'z');
+        let new = all[seen.min(all.len())..].to_vec();
+        seen = all.len();
+        new
+    };
+
+    // (the tree: the root, sub/, a.txt; shown, the cursor is on the root)
+    send_keys(&mut app, "j").await?;
+    let root_name = root.file_name().unwrap().to_string_lossy().into_owned();
+    let events: Vec<String> = since(&app);
+    assert_eq!(
+        events,
+        [format!("select:{root_name}"), "select:sub".to_string()]
+    );
+
+    send_keys(&mut app, "<C-l>:look<ret>").await?;
+    let events: Vec<String> = since(&app);
+    assert_eq!(events, ["root:true:sub", "select:deep.txt"]);
+    let rows = app.rendered_rows();
+    assert!(
+        rows.iter()
+            .any(|row| row.contains("a.txt") && row.contains("TODO 3")),
+        "{rows:#?}"
+    );
+
+    // back in the tree: create a file, then rename it
+    send_keys(&mut app, "<C-h>anew.txt<ret>").await?;
+    assert!(root.join("sub/new.txt").exists());
+    send_keys(&mut app, "r<C-u>renamed.txt<ret>").await?;
+    assert!(root.join("sub/renamed.txt").exists());
+    let events: Vec<String> = since(&app)
+        .into_iter()
+        .filter(|e| !e.starts_with("select:"))
+        .collect();
+    assert_eq!(
+        events,
+        ["create:new.txt:false", "rename:new.txt>renamed.txt"]
+    );
+    Ok(())
+}

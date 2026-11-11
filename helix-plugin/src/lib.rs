@@ -32,6 +32,9 @@ pub use types::{
 };
 
 use helix_view::Editor;
+
+/// The columns a plugin picker may have.
+pub const MAX_PICKER_COLUMNS: usize = 8;
 use log::info;
 use parking_lot::RwLock;
 use std::sync::Arc;

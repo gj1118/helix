@@ -505,6 +505,8 @@ impl LuaEngine {
         api::register_ui_api(&lua, &helix)?;
         api::register_window_api(&lua, &helix)?;
         api::register_lsp_api(&lua, &helix)?;
+        api::register_quickfix_api(&lua, &helix)?;
+        api::register_explorer_api(&lua, &helix)?;
         api::register_log_api(&lua, &helix)?;
         helix.set("version", env!("CARGO_PKG_VERSION"))?;
         lua.globals().set("helix", helix)?;

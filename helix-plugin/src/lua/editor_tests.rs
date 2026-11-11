@@ -912,3 +912,207 @@ fn key_bindings_need_the_keymaps_permission() {
         .to_string();
     assert!(error.contains("'keymaps' permission"), "{error}");
 }
+
+/// A UI handler that records the pickers opened and what is asked of them.
+#[derive(Default)]
+struct RecordingUi {
+    pickers: parking_lot::Mutex<Vec<(crate::types::PluginPicker, u64)>>,
+    added: parking_lot::Mutex<Vec<(u64, Vec<crate::types::PluginPickerItem>)>>,
+    closed: parking_lot::Mutex<Vec<u64>>,
+    quickfix: parking_lot::Mutex<Vec<bool>>,
+}
+
+impl UiHandler for RecordingUi {
+    fn prompt(&self, _: &mut Editor, _: String, _: Option<String>, _: String, _: u64) {}
+    fn confirm(&self, _: &mut Editor, _: String, _: String, _: u64) {}
+    fn picker(&self, _: &mut Editor, _: Vec<String>, _: String, _: String, _: u64) {}
+    fn open_picker(
+        &self,
+        _: &mut Editor,
+        picker: crate::types::PluginPicker,
+        _: String,
+        callback_id: u64,
+    ) {
+        self.pickers.lock().push((picker, callback_id));
+    }
+    fn picker_add(&self, picker_id: u64, items: Vec<crate::types::PluginPickerItem>) {
+        self.added.lock().push((picker_id, items));
+    }
+    fn picker_close(&self, picker_id: u64) {
+        self.closed.lock().push(picker_id);
+    }
+    fn quickfix(&self, open: bool) {
+        self.quickfix.lock().push(open);
+    }
+}
+
+#[test]
+fn pickers_take_structured_items_and_hand_them_back() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    let ui = Arc::new(RecordingUi::default());
+    lua(&engine).set_app_data(UiHandlerWrapper(ui.clone()));
+    run(
+        &engine,
+        &mut editor,
+        r#"
+        handle = helix.ui.picker{
+            title = "Tasks",
+            columns = { "Name", "Where" },
+            items = {
+                { columns = { "build", "Makefile" }, path = "Makefile", line = 3, end_line = 5,
+                  data = { id = 7 } },
+                "plain",
+            },
+            on_select = function(item, action)
+                chosen = (type(item) == "table" and item.data.id or item) .. "/" .. action
+            end,
+        }
+        handle:add({ { text = "late", data = { id = 9 } } })
+        handle:close()
+        "#,
+    )
+    .unwrap();
+
+    let (picker, callback_id) = ui.pickers.lock()[0].clone();
+    assert_eq!(picker.title, "Tasks");
+    assert_eq!(picker.columns, ["Name", "Where"]);
+    assert!(picker.preview, "an item has a path");
+    let first = &picker.items[0];
+    let (index, columns, lines): (usize, Vec<String>, Option<(usize, usize)>) =
+        (first.index, first.columns.clone(), first.lines);
+    assert_eq!(
+        (index, columns, lines),
+        (1, vec!["build".into(), "Makefile".into()], Some((2, 4)))
+    );
+    assert_eq!(
+        first.path.as_deref(),
+        Some(std::path::Path::new("Makefile"))
+    );
+    // a string item fills the first column
+    assert_eq!(picker.items[1].columns, ["plain", ""]);
+    let added = ui.added.lock().clone();
+    assert_eq!(added.len(), 1);
+    assert_eq!((added[0].0, added[0].1[0].index), (picker.id, 3));
+    assert_eq!(*ui.closed.lock(), [picker.id]);
+
+    // the choice comes back as the plugin's own item, with the action
+    engine
+        .handle_ui_callback(
+            &mut editor,
+            "p".into(),
+            callback_id,
+            serde_json::json!({ "index": 1, "action": "vsplit" }),
+        )
+        .unwrap();
+    let chosen: String = lua(&engine).globals().get("chosen").unwrap();
+    assert_eq!(chosen, "7/vsplit");
+}
+
+#[test]
+fn pickers_check_their_items() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    let ui = Arc::new(RecordingUi::default());
+    lua(&engine).set_app_data(UiHandlerWrapper(ui.clone()));
+    let error = run(
+        &engine,
+        &mut editor,
+        r#"helix.ui.picker{ items = { true }, on_select = function() end }"#,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("not a boolean"), "{error}");
+    let error = run(
+        &engine,
+        &mut editor,
+        r#"helix.ui.picker{ columns = {1,2,3,4,5,6,7,8,9}, on_select = function() end }"#,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("at most 8 columns"), "{error}");
+    assert!(ui.pickers.lock().is_empty());
+}
+
+#[test]
+fn the_quicklist_is_set_read_and_shown() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    let ui = Arc::new(RecordingUi::default());
+    lua(&engine).set_app_data(UiHandlerWrapper(ui.clone()));
+    let result = result_of(
+        &engine,
+        &mut editor,
+        r#"
+        local scratch = helix.buffer.get_current()
+        helix.quickfix.set({
+            { path = "/tmp/a.txt", line = 3, text = "first" },
+            { buffer = scratch, line = 1, end_line = 2, text = "second" },
+        }, true)
+        helix.quickfix.add({ path = "/tmp/b.txt", text = "third" })
+        local entries = helix.quickfix.get()
+        local count = #entries
+        helix.quickfix.close()
+        local ok, err = pcall(helix.quickfix.add, { text = "nowhere" })
+        helix.quickfix.clear()
+        result = table.concat({
+            count, entries[1].path, entries[1].line, entries[1].text,
+            tostring(entries[2].buffer:id() == scratch:id()), entries[2].end_line,
+            entries[3].line, #helix.quickfix.get(),
+            tostring(err):match("needs a `path` or a `buffer`"),
+        }, "|")
+        "#,
+    );
+    assert_eq!(
+        result,
+        "3|/tmp/a.txt|3|first|true|2|1|0|needs a `path` or a `buffer`"
+    );
+    assert_eq!(*ui.quickfix.lock(), [true, false]);
+}
+
+#[test]
+fn the_explorer_is_asked_and_decorated() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("a.txt");
+    std::fs::write(&file, "a").unwrap();
+    let code = format!(
+        r##"
+        local root = helix.explorer.get_root()
+        helix.explorer.decorate({path:?}, {{ text = "★", fg = "#ff0000" }})
+        helix.explorer.decorate({path:?} .. "-gone", {{ text = "x" }})
+        helix.explorer.decorate({path:?} .. "-gone", nil)
+        helix.explorer.refresh()
+        local ok, err = pcall(helix.explorer.decorate, {path:?}, {{ fg = "red" }})
+        result = tostring(root) .. "|" .. tostring(helix.explorer.is_open()) .. "|"
+            .. tostring(err):match("rrggbb")
+        "##,
+        path = file.to_string_lossy()
+    );
+    let result = result_of(&engine, &mut editor, &code);
+    assert_eq!(result, "nil|false|rrggbb");
+    let decorations = editor.plugin_explorer.decorations.clone();
+    assert_eq!(decorations.len(), 1);
+    let decoration = &decorations[&helix_stdx::path::canonicalize(&file)];
+    let (text, fg, plugin): (&str, Option<&str>, &str) = (
+        &decoration.text,
+        decoration.fg.as_deref(),
+        &decoration.plugin,
+    );
+    assert_eq!((text, fg, plugin), ("★", Some("#ff0000"), "p"));
+    assert_eq!(
+        editor.plugin_explorer.requests,
+        [helix_view::explorer::ExplorerRequest::Refresh]
+    );
+    run(&engine, &mut editor, "helix.explorer.clear_decorations()").unwrap();
+    assert!(editor.plugin_explorer.decorations.is_empty());
+}

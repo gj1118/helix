@@ -341,12 +341,18 @@ permissions = ["edit", "commands"]  # what it may do beyond looking ("read") and
   buffer in them, bind keys to commands or Lua functions (`helix.keymap.set("normal",
   "<space>z", fn)`), run any command of key bindings (`helix.editor.run("goto_definition")`),
   and read and change settings (`get_option`/`set_option`) and the working directory.
+- **Pickers, quickfix, explorer** - pickers with columns, previews and the plugin's own items
+  (`on_select(item, action)`), items added while open, docked in the quickfix panel; the
+  quicklist set, read and shown from Lua; the explorer opened, revealed at a path, read (root,
+  selection) and decorated per row, with events for its cursor and for the files it creates,
+  renames, copies and deletes.
 - **Isolation** - each plugin runs in a Lua state of its own: one cannot change what another
   calls, nor act with another's permissions, nor take over its `:` commands.
-- **Events** - 35 of them: buffers (open, change, rename, save, failed save, close, focus
+- **Events** - 40 of them: buffers (open, change, rename, save, failed save, close, focus
   lost, language), modes, keys, typed characters, every command run, selections, scrolling,
   windows (open, close, focus), the terminal (resize, focus, paste, mouse), idle, settings,
-  theme, working directory, language servers (start, attach, detach, exit, diagnostics), exit.
+  theme, working directory, language servers (start, attach, detach, exit, diagnostics), the
+  explorer (cursor, files created, renamed, copied, deleted), exit.
   Helix does not even queue an event that no plugin listens to.
 
 Plugin code runs in a sandbox (no `io`, no `os.execute`, `require` only from the plugin
