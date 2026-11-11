@@ -4,7 +4,7 @@ use crate::{
     Error, LanguageServerId, Result,
 };
 use anyhow::Context;
-use log::{error, info};
+use log::{debug, error, info};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -324,8 +324,10 @@ impl Transport {
                     for (id, tx) in transport.pending_requests.lock().await.drain() {
                         match tx.send(Err(Error::StreamClosed)).await {
                             Ok(_) => (),
+                            // Nobody waits for the answer anymore (the request was
+                            // given up, or the editor is gone).
                             Err(_) => {
-                                error!("Could not close request on a closed channel (id={:?})", id)
+                                debug!("Could not close request on a closed channel (id={:?})", id)
                             }
                         }
                     }
@@ -337,13 +339,14 @@ impl Transport {
                             method: lsp::notification::Exit::METHOD.to_string(),
                             params: jsonrpc::Params::None,
                         }));
-                    match transport
-                        .process_server_message(&client_tx, notification, &transport.name)
-                        .await
-                    {
-                        Ok(_) => {}
-                        Err(err) => {
-                            error!("err: <- {:?}", err);
+                    // When the editor is gone (it dropped the server, or is closing) there
+                    // is nobody to tell: not an error.
+                    if !client_tx.is_closed() {
+                        if let Err(err) = transport
+                            .process_server_message(&client_tx, notification, &transport.name)
+                            .await
+                        {
+                            debug!("{}: the exit was not delivered: {err:?}", transport.name);
                         }
                     }
                     break;
@@ -359,6 +362,8 @@ impl Transport {
                 .await
             {
                 Ok(_) => {}
+                // The server exited (or closed its stderr): the normal end.
+                Err(Error::StreamClosed) => break,
                 Err(err) => {
                     error!("{} err: <- {err:?}", transport.name);
                     break;

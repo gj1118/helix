@@ -1,6 +1,6 @@
 use crate::{registry::DebugAdapterId, Error, Result};
 use anyhow::Context;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::{Arc, OnceLock};
@@ -306,8 +306,9 @@ impl Transport {
         for (id, tx) in transport.pending_requests.lock().await.drain() {
             match tx.send(Err(Error::StreamClosed)).await {
                 Ok(_) => (),
+                // Nobody waits for the answer anymore.
                 Err(_) => {
-                    error!("Could not close request on a closed channel (id={id})");
+                    debug!("Could not close request on a closed channel (id={id})");
                 }
             }
         }
@@ -341,6 +342,8 @@ impl Transport {
         loop {
             match Self::recv_server_error(&mut server_stderr, &mut recv_buffer).await {
                 Ok(_) => {}
+                // The adapter exited (or closed its stderr): the normal end.
+                Err(Error::StreamClosed) => break,
                 Err(err) => {
                     error!("err: <- {:?}", err);
                     break;

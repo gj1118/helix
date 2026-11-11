@@ -1,6 +1,6 @@
 use std::fs;
 
-use helix_term::{application::Application, config::Config};
+use helix_term::application::Application;
 use helix_view::{doc, editor::BreadcrumbPathOptions};
 
 use super::*;
@@ -19,7 +19,7 @@ fn outer() {
 ",
     )?;
 
-    let mut config = Config::default();
+    let mut config = helpers::test_config();
     config.editor.breadcrumb.enable = true;
     config.editor.breadcrumb.path = BreadcrumbPathOptions::None;
 
@@ -87,7 +87,7 @@ async fn breadcrumb_tree_sitter_symbols_follow_edits() -> anyhow::Result<()> {
     let file = tempfile::NamedTempFile::with_suffix(".rs")?;
     fs::write(file.path(), "fn outer() {\n    let x = 1;\n}\n")?;
 
-    let mut config = Config::default();
+    let mut config = helpers::test_config();
     config.editor.breadcrumb.enable = true;
     config.editor.breadcrumb.path = BreadcrumbPathOptions::None;
 
