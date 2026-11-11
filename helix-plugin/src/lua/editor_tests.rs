@@ -254,6 +254,22 @@ fn ui_callbacks_can_reopen_ui_and_are_released() {
     assert!(engine.ui_callbacks.read().is_empty());
 }
 
+/// The time limit of the tests about it: short, so they don't keep the CPU busy (the other
+/// tests have a long one, see `TEST_EXECUTION_TIMEOUT`).
+const SHORT_TIME_LIMIT: Duration = Duration::from_millis(300);
+
+/// Runs `f` with the time limit set to [`SHORT_TIME_LIMIT`].
+fn with_short_time_limit<R>(f: impl FnOnce() -> R) -> R {
+    struct Restore(Duration);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            TEST_EXECUTION_TIMEOUT.with(|t| t.set(self.0));
+        }
+    }
+    let _restore = Restore(TEST_EXECUTION_TIMEOUT.with(|t| t.replace(SHORT_TIME_LIMIT)));
+    f()
+}
+
 #[test]
 fn runaway_handler_is_aborted() {
     let rt = runtime();
@@ -270,7 +286,8 @@ fn runaway_handler_is_aborted() {
         event_type: EventType::OnInit,
         data: EventData::None,
     };
-    let err = engine.call_event_handlers(&mut editor, &event).unwrap_err();
+    let err =
+        with_short_time_limit(|| engine.call_event_handlers(&mut editor, &event)).unwrap_err();
     assert!(err.to_string().contains("time limit"), "{err}");
     assert!(start.elapsed() < PLUGIN_EXECUTION_TIMEOUT * 3);
     assert!(DEADLINE.with(|d| d.get()).is_none());
@@ -292,7 +309,8 @@ fn assert_aborted(code: &str) {
         event_type: EventType::OnInit,
         data: EventData::None,
     };
-    let err = engine.call_event_handlers(&mut editor, &event).unwrap_err();
+    let err =
+        with_short_time_limit(|| engine.call_event_handlers(&mut editor, &event)).unwrap_err();
     assert!(err.to_string().contains("time limit"), "{code}: {err}");
     assert!(start.elapsed() < PLUGIN_EXECUTION_TIMEOUT * 3, "{code}");
     assert!(DEADLINE.with(|d| d.get()).is_none());

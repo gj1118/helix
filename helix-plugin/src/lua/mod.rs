@@ -121,9 +121,30 @@ where
     let prev = DEADLINE.with(|d| d.get());
     let _restore = DeadlineRestore(prev);
     if prev.is_none() {
-        DEADLINE.with(|d| d.set(Some(Instant::now() + PLUGIN_EXECUTION_TIMEOUT)));
+        DEADLINE.with(|d| d.set(Some(Instant::now() + execution_timeout())));
     }
     f()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The time limit in unit tests. Tests that are not about the limit get a long one: on a
+    /// busy machine (the limit tests spin the CPU) a short chunk can take seconds of wall
+    /// time, and the limit would abort it. The limit tests set it short.
+    pub(crate) static TEST_EXECUTION_TIMEOUT: Cell<Duration> =
+        const { Cell::new(Duration::from_secs(120)) };
+}
+
+/// How long one entry into plugin code may run.
+fn execution_timeout() -> Duration {
+    #[cfg(test)]
+    {
+        TEST_EXECUTION_TIMEOUT.with(|t| t.get())
+    }
+    #[cfg(not(test))]
+    {
+        PLUGIN_EXECUTION_TIMEOUT
+    }
 }
 
 /// The error raised when plugin code runs past its deadline.
