@@ -3,7 +3,7 @@ use crate::job::{Job, Jobs};
 use crate::ui::PromptEvent;
 use helix_core::command_line::Args;
 use helix_plugin::types::{EditorCommandRegistry, UiHandler};
-use helix_plugin::PluginManager;
+use helix_plugin::{Permission, PluginManager};
 use helix_view::Editor;
 use std::sync::Arc;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
@@ -125,6 +125,161 @@ impl EditorCommandRegistry for TermCommandRegistry {
         result?;
         Ok(())
     }
+
+    fn permissions(&self, name: &str, args: &[String]) -> Option<Vec<Permission>> {
+        let cmd = crate::commands::typed::TYPABLE_COMMAND_LIST
+            .iter()
+            .find(|c| c.name == name || c.aliases.contains(&name))?;
+        // A command nobody classified (a new one) is treated like the most powerful kind.
+        let mut needed = typable_permissions(cmd.name)
+            .map(<[Permission]>::to_vec)
+            .unwrap_or_else(|| vec![Permission::Shell]);
+        // Settings that run programs.
+        if matches!(cmd.name, "set-option" | "toggle-option")
+            && args.first().is_some_and(|key| {
+                let key = key.trim_start_matches("editor.");
+                key == "shell" || key.starts_with("clipboard-provider")
+            })
+        {
+            needed.push(Permission::Shell);
+        }
+        Some(needed)
+    }
+}
+
+/// What running a typable command needs (see `EditorCommandRegistry::permissions`). Every
+/// command is listed: a test fails for one that is not.
+fn typable_permissions(name: &str) -> Option<&'static [Permission]> {
+    use Permission::*;
+    Some(match name {
+        // look and show
+        "show-clipboard-provider"
+        | "show-directory"
+        | "character-info"
+        | "blame"
+        | "tree-sitter-scopes"
+        | "tree-sitter-highlight-name"
+        | "tree-sitter-layers"
+        | "tree-sitter-subtree"
+        | "get-option"
+        | "theme"
+        | "echo"
+        | "redraw"
+        | "noop"
+        | "file-history"
+        | "git-history"
+        | "index"
+        | "reload-history"
+        | "notifications-history"
+        | "notifications-clear"
+        | "notifications-dismiss"
+        | "notifications-test" => &[Ui],
+        // change buffers
+        "format"
+        | "indent-style"
+        | "earlier"
+        | "later"
+        | "yank-join"
+        | "clipboard-yank"
+        | "primary-clipboard-yank"
+        | "clipboard-paste-after"
+        | "clipboard-paste-before"
+        | "clipboard-paste-replace"
+        | "primary-clipboard-paste-after"
+        | "primary-clipboard-paste-before"
+        | "primary-clipboard-paste-replace"
+        | "encoding"
+        | "restore-change"
+        | "reload"
+        | "reload-all"
+        | "reset-diff-change"
+        | "clear-register"
+        | "set-register"
+        | "sort"
+        | "reflow"
+        | "snippet-insert"
+        | "read"
+        | "fold"
+        | "unfold"
+        | "yank-diagnostic"
+        | "goto"
+        | "line-ending"
+        | "clipboard-yank-join"
+        | "primary-clipboard-yank-join" => &[Edit],
+        // windows and buffers
+        "quit"
+        | "quit!"
+        | "open"
+        | "buffer-close"
+        | "buffer-close!"
+        | "buffer-close-others"
+        | "buffer-close-others!"
+        | "buffer-close-all"
+        | "buffer-close-all!"
+        | "buffer-next"
+        | "buffer-previous"
+        | "new"
+        | "vsplit"
+        | "vsplit-new"
+        | "hsplit"
+        | "hsplit-new"
+        | "tutor"
+        | "config-open"
+        | "config-open-workspace"
+        | "snippets-open"
+        | "snippets-open-workspace"
+        | "log-open"
+        | "copen"
+        | "cclose"
+        | "quit-all"
+        | "quit-all!"
+        | "cquit"
+        | "cquit!" => &[Windows],
+        // writing files
+        "write" | "write!" | "write-all" | "write-all!" | "update" | "move" | "move!" => &[Files],
+        "exit"
+        | "exit!"
+        | "write-buffer-close"
+        | "write-buffer-close!"
+        | "write-quit"
+        | "write-quit!"
+        | "write-quit-all"
+        | "write-quit-all!" => &[Files, Windows],
+        // settings
+        "change-current-directory"
+        | "set-language"
+        | "set-option"
+        | "toggle-option"
+        | "config-reload"
+        | "reload-all-plugins"
+        | "snippets-reload"
+        | "lsp-restart"
+        | "lsp-stop"
+        | "workspace-untrust"
+        | "workspace-exclude" => &[Config],
+        "explorer-toggle"
+        | "explorer-focus"
+        | "explorer-left"
+        | "explorer-right"
+        | "explorer-float"
+        | "explorer-float-toggle"
+        | "explorer-float-reset"
+        | "explorer-refresh"
+        | "explorer-reveal"
+        | "explorer-width" => &[Explorer],
+        // running programs (trusting a workspace lets its settings run them)
+        "insert-output"
+        | "append-output"
+        | "pipe"
+        | "pipe-to"
+        | "run-shell-command"
+        | "debug-start"
+        | "debug-remote"
+        | "debug-eval"
+        | "lsp-workspace-command"
+        | "workspace-trust" => &[Shell],
+        _ => return None,
+    })
 }
 
 /// The command line for `args` given one argument per element by a plugin: each is quoted
@@ -219,6 +374,46 @@ mod tests {
             .iter()
             .map(|arg| arg.to_string())
             .collect()
+    }
+
+    /// A plugin may only run a command with the permissions it needs: every command must be
+    /// classified (a new one fails here until it is added to `typable_permissions`).
+    #[test]
+    fn every_typable_command_needs_known_permissions() {
+        let unclassified: Vec<&str> = crate::commands::typed::TYPABLE_COMMAND_LIST
+            .iter()
+            .map(|cmd| cmd.name)
+            .filter(|name| super::typable_permissions(name).is_none())
+            .collect();
+        assert_eq!(unclassified, Vec::<&str>::new());
+    }
+
+    #[test]
+    fn commands_and_their_aliases_need_their_permissions() {
+        use helix_plugin::types::EditorCommandRegistry;
+        use helix_plugin::Permission::*;
+        let registry = super::TermCommandRegistry {};
+        let needs = |name: &str, args: &[&str]| {
+            let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+            registry.permissions(name, &args)
+        };
+        assert_eq!(needs("sh", &["ls"]), Some(vec![Shell]));
+        assert_eq!(needs("!", &[]), Some(vec![Shell]));
+        assert_eq!(needs("w", &[]), Some(vec![Files]));
+        assert_eq!(needs("wq", &[]), Some(vec![Files, Windows]));
+        assert_eq!(needs("vs", &[]), Some(vec![Windows]));
+        assert_eq!(needs("set", &["scrolloff", "3"]), Some(vec![Config]));
+        // the settings that run programs need `shell` too
+        assert_eq!(
+            needs("set", &["shell", "[\"sh\", \"-c\"]"]),
+            Some(vec![Config, Shell])
+        );
+        assert_eq!(
+            needs("toggle", &["clipboard-provider"]),
+            Some(vec![Config, Shell])
+        );
+        assert_eq!(needs("workspace-trust", &[]), Some(vec![Shell]));
+        assert_eq!(needs("no-such-command", &[]), None);
     }
 
     #[test]

@@ -19,13 +19,16 @@
 
 pub mod error;
 pub mod lua;
+pub mod permissions;
 pub mod types;
 
 // Re-exports
 pub use error::{PluginError, Result};
 pub use lua::LuaEngine;
+pub use permissions::{Permission, Permissions};
 pub use types::{
-    EventData, EventType, IndividualPluginConfig, Plugin, PluginConfig, PluginEvent, PluginMetadata,
+    EventData, EventType, EventValue, IndividualPluginConfig, Plugin, PluginConfig, PluginEvent,
+    PluginMetadata,
 };
 
 use helix_view::Editor;
@@ -44,7 +47,7 @@ pub struct PluginManager {
 impl PluginManager {
     /// Create a new plugin manager
     pub fn new(config: PluginConfig) -> Result<Self> {
-        let engine = LuaEngine::new()?;
+        let mut engine = LuaEngine::new()?;
         engine.register_api(config.clone())?;
 
         Ok(Self {
@@ -87,9 +90,24 @@ impl PluginManager {
             }
 
             info!("Loading plugin: {}", plugin.metadata.name);
+            let name = plugin.metadata.name.clone();
             // The editor API works while a plugin loads too (e.g. `helix.ui.notify`).
-            if let Err(e) = lua::with_editor_context(editor, || engine.load_plugin(plugin)) {
-                log::error!("Failed to load plugin: {}", e);
+            match lua::with_editor_context(editor, || engine.load_plugin(plugin)) {
+                Ok(missing) if !missing.is_empty() => {
+                    // Asked for in plugin.toml, not granted in config.toml: say so once,
+                    // the calls that need them fail with the same advice.
+                    let message = format!(
+                        "Plugin '{name}' asks for permissions not granted: {missing} \
+                         (see :log-open)"
+                    );
+                    log::warn!(
+                        "{message}; grant them with permissions = [...] in its \
+                         [[plugins.plugins]] entry of config.toml"
+                    );
+                    editor.set_status(message);
+                }
+                Ok(_) => {}
+                Err(e) => log::error!("Failed to load plugin: {}", e),
             }
         }
         drop(engine);

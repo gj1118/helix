@@ -3,3 +3,5 @@ version = "0.1.0"
 description = "Automatically save buffers after a period of inactivity"
 author = "Helix Community"
 entry = "init.lua"
+# What the plugin uses; grant "commands" in its [[plugins.plugins]] entry of config.toml.
+permissions = ["read", "ui", "commands"]

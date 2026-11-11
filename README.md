@@ -326,8 +326,23 @@ enabled = true
 
 [[plugins.plugins]]
 name = "greeter"
-config = { greeting = "hi" }   # read by the plugin with helix.get_config()
+config = { greeting = "hi" }        # read by the plugin with helix.get_config()
+permissions = ["edit", "commands"]  # what it may do beyond looking ("read") and showing ("ui")
 ```
+
+- **Permissions** - a plugin may only read the editor and show things unless its entry grants
+  more: `edit`, `windows`, `files`, `commands`, `config`, `keymaps`, `explorer`, `shell` (or
+  `"all"`). A plugin's `plugin.toml` can list what it needs (it then gets no more); what it asks
+  for and is not granted is reported when it loads, and a refused call says which permission
+  to grant. `helix.editor.execute_command` checks the command too: `:sh` needs `shell`, `:w`
+  needs `files`, `:set shell ...` needs `shell`.
+- **Isolation** - each plugin runs in a Lua state of its own: one cannot change what another
+  calls, nor act with another's permissions, nor take over its `:` commands.
+- **Events** - 35 of them: buffers (open, change, rename, save, failed save, close, focus
+  lost, language), modes, keys, typed characters, every command run, selections, scrolling,
+  windows (open, close, focus), the terminal (resize, focus, paste, mouse), idle, settings,
+  theme, working directory, language servers (start, attach, detach, exit, diagnostics), exit.
+  Helix does not even queue an event that no plugin listens to.
 
 Plugin code runs in a sandbox (no `io`, no `os.execute`, `require` only from the plugin
 directories) with a 2 second limit per call and 512 MiB of memory. `:reload-all-plugins`

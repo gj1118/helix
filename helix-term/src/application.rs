@@ -24,7 +24,6 @@ use crate::{
     args::Args,
     compositor::{Compositor, Event},
     config::Config,
-    events::OnModeSwitch,
     handlers,
     job::{Job, Jobs},
     keymap::Keymaps,
@@ -39,17 +38,8 @@ use std::{
     sync::Arc,
 };
 
-use helix_event::register_hook;
-use helix_plugin::{EventData, EventType, PluginConfig, PluginEvent, PluginManager};
-use helix_view::events::{
-    DiagnosticsDidChange, DocumentDidChange, DocumentDidClose, DocumentDidOpen,
-    LanguageServerInitialized, SelectionDidChange,
-};
-use std::sync::Mutex;
-
-helix_event::runtime_local! {
-    static PENDING_PLUGIN_EVENTS: Mutex<Vec<PluginEvent>> = Mutex::new(Vec::new());
-}
+use crate::plugin_events;
+use helix_plugin::{EventData, EventType, EventValue, PluginConfig, PluginEvent, PluginManager};
 
 /// The window title `title-format` asks for. Shell commands (`%sh{...}`) are not run: the title
 /// is expanded for every frame.
@@ -64,55 +54,6 @@ fn window_title(editor: &Editor) -> Result<String, String> {
     expansion::expand(editor, Token::expand(format.as_str()))
         .map(|title| title.into_owned())
         .map_err(|err| err.to_string())
-}
-
-/// Queues a plugin event, fired before the next frame.
-fn queue_plugin_event(event: PluginEvent) {
-    let mut events = match PENDING_PLUGIN_EVENTS.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    events.push(event);
-}
-
-/// Queues a document event unless one of the same type for the same document is pending
-/// already: a macro or a long command changes a document (or its selections) many thousands
-/// of times between two frames, the plugins hear of it once.
-fn queue_plugin_event_once(
-    event_type: EventType,
-    document_id: helix_view::DocumentId,
-    path: impl FnOnce() -> Option<std::path::PathBuf>,
-) {
-    let mut events = match PENDING_PLUGIN_EVENTS.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    let pending = events.iter().any(|pending| {
-        pending.event_type == event_type
-            && matches!(
-                pending.data,
-                EventData::Buffer { document_id: id, .. } if id == document_id
-            )
-    });
-    if !pending {
-        events.push(PluginEvent {
-            event_type,
-            data: EventData::Buffer {
-                document_id,
-                path: path(),
-            },
-        });
-    }
-}
-
-/// A number for a language server, unique among the running ones (its slot).
-fn language_server_number(id: helix_lsp::LanguageServerId) -> usize {
-    // Displayed as `<slot>v<version>`.
-    id.to_string()
-        .split('v')
-        .next()
-        .and_then(|slot| slot.parse().ok())
-        .unwrap_or_default()
 }
 
 #[cfg_attr(windows, allow(unused_imports))]
@@ -160,7 +101,8 @@ pub struct Application {
     lsp_progress: LspProgressMap,
     plugin_manager: Arc<PluginManager>,
     /// The language servers each document was last seen attached to, for `lsp_attach`.
-    plugin_lsp_attached: HashMap<helix_view::DocumentId, Vec<helix_lsp::LanguageServerId>>,
+    /// Finds the plugin events without a hook of their own (windows, renames, theme...).
+    plugin_watch: plugin_events::Watch,
     /// Why the last window title could not be expanded (logged once, not for every frame).
     title_error: Option<String>,
     ui_receiver: tokio::sync::mpsc::UnboundedReceiver<crate::plugin_registry::UiRequest>,
@@ -446,8 +388,11 @@ impl Application {
             if let Err(e) = plugin_manager.initialize(&mut editor) {
                 log::error!("Failed to initialize plugin manager: {}", e);
             } else {
-                log::warn!("Plugin system initialized");
-                editor.set_status("Plugin system initialized");
+                log::info!("Plugin system initialized");
+                // Not over what a plugin (or a permission warning) said while loading.
+                if editor.get_status().is_none() {
+                    editor.set_status("Plugin system initialized");
+                }
             }
         }
         let plugin_manager = Arc::new(plugin_manager);
@@ -455,7 +400,7 @@ impl Application {
         // Without plugins nothing would ever take the queued events but the next frame, which
         // throws them away: don't queue them (a path and a string per selection change and key).
         if plugin_manager.is_enabled() {
-            Self::register_plugin_hooks();
+            plugin_events::register_hooks();
             editor.pre_save_hook = Some(Self::plugin_pre_save_hook(plugin_manager.clone()));
         }
 
@@ -487,6 +432,9 @@ impl Application {
             log::error!("Failed to fire plugin event: {}", e);
         }
 
+        // What exists at startup is no event: plugins had `ready`.
+        let plugin_watch = plugin_events::Watch::new(&editor);
+
         let app = Self {
             compositor,
             terminal,
@@ -497,96 +445,13 @@ impl Application {
             jobs,
             lsp_progress: LspProgressMap::new(),
             plugin_manager,
-            plugin_lsp_attached: HashMap::new(),
+            plugin_watch,
             title_error: None,
             ui_receiver,
             theme_mode,
         };
 
         Ok(app)
-    }
-
-    /// Queues the editor events plugins subscribe to; they are fired before the next frame.
-    fn register_plugin_hooks() {
-        register_hook!(move |event: &mut DocumentDidOpen<'_>| {
-            if let Ok(mut events) = PENDING_PLUGIN_EVENTS.lock() {
-                events.push(PluginEvent {
-                    event_type: EventType::OnBufferOpen,
-                    data: EventData::Buffer {
-                        document_id: event.doc,
-                        path: Some(event.path.clone()),
-                    },
-                });
-            }
-            helix_event::request_redraw();
-            Ok(())
-        });
-
-        register_hook!(move |event: &mut SelectionDidChange<'_>| {
-            let doc = &event.doc;
-            queue_plugin_event_once(EventType::OnSelectionChange, doc.id(), || {
-                doc.path().map(PathBuf::from)
-            });
-            Ok(())
-        });
-
-        register_hook!(move |event: &mut DocumentDidChange<'_>| {
-            // Previews (of a completion, say) are undone right away.
-            if !event.ghost_transaction {
-                let doc = &event.doc;
-                queue_plugin_event_once(EventType::OnBufferChanged, doc.id(), || {
-                    doc.path().map(PathBuf::from)
-                });
-            }
-            Ok(())
-        });
-
-        register_hook!(move |event: &mut DocumentDidClose<'_>| {
-            queue_plugin_event(PluginEvent {
-                event_type: EventType::OnBufferClose,
-                data: EventData::Buffer {
-                    document_id: event.doc.id(),
-                    path: event.doc.path().map(PathBuf::from),
-                },
-            });
-            helix_event::request_redraw();
-            Ok(())
-        });
-
-        register_hook!(move |_event: &mut LanguageServerInitialized<'_>| {
-            queue_plugin_event(PluginEvent {
-                event_type: EventType::OnLspInitialized,
-                data: EventData::None,
-            });
-            helix_event::request_redraw();
-            Ok(())
-        });
-
-        register_hook!(move |event: &mut DiagnosticsDidChange<'_>| {
-            if let Ok(mut events) = PENDING_PLUGIN_EVENTS.lock() {
-                events.push(PluginEvent {
-                    event_type: EventType::OnLspDiagnostic,
-                    data: EventData::Buffer {
-                        document_id: event.doc,
-                        path: None, // We could look it up but doc_id is usually enough
-                    },
-                });
-            }
-            Ok(())
-        });
-
-        register_hook!(move |event: &mut OnModeSwitch<'_, '_>| {
-            let old_mode = format!("{:?}", event.old_mode);
-            let new_mode = format!("{:?}", event.new_mode);
-            if let Ok(mut events) = PENDING_PLUGIN_EVENTS.lock() {
-                events.push(PluginEvent {
-                    event_type: EventType::OnModeChange,
-                    data: EventData::ModeChange { old_mode, new_mode },
-                });
-            }
-            helix_event::request_redraw();
-            Ok(())
-        });
     }
 
     /// Whether plugins are loaded (never in the integration tests).
@@ -611,55 +476,33 @@ impl Application {
             // They hear of the save with the next frame instead.
             let plugin_code_running = plugin_manager.engine().try_write().is_none();
             if plugin_code_running {
-                queue_plugin_event(event);
+                plugin_events::queue(event);
             } else if let Err(e) = plugin_manager.fire_event(editor, event) {
                 log::error!("Failed to fire plugin event: {}", e);
             }
         })
     }
 
-    /// Queues `lsp_attach` for the language servers that are newly attached to a document.
-    fn queue_lsp_attach_events(&mut self) {
-        let documents = &self.editor.documents;
-        self.plugin_lsp_attached
-            .retain(|id, _| documents.contains_key(id));
-        for doc in self.editor.documents() {
-            let servers: Vec<_> = doc.language_servers().map(|ls| ls.id()).collect();
-            let seen = self.plugin_lsp_attached.entry(doc.id()).or_default();
-            if *seen == servers {
-                continue;
-            }
-            for &server in servers.iter().filter(|server| !seen.contains(server)) {
-                queue_plugin_event(PluginEvent {
-                    event_type: EventType::OnLspAttach,
-                    data: EventData::LspAttach {
-                        document_id: doc.id(),
-                        language_server_id: language_server_number(server),
-                    },
-                });
-            }
-            *seen = servers;
-        }
-    }
-
     fn handle_plugin_events(&mut self) {
         if !self.plugin_manager.is_enabled() {
             return;
         }
-        self.queue_lsp_attach_events();
-
-        let events = {
-            let mut lock = match PENDING_PLUGIN_EVENTS.lock() {
-                Ok(guard) => guard,
-                Err(poisoned) => poisoned.into_inner(),
-            };
-            std::mem::take(&mut *lock)
-        };
-
+        let mut events = plugin_events::take();
+        events.extend(self.plugin_watch.events(&self.editor));
         for event in events {
             if let Err(e) = self.plugin_manager.fire_event(&mut self.editor, event) {
                 log::error!("Failed to fire plugin event: {}", e);
             }
+        }
+    }
+
+    /// Runs the handlers of an event now (not before the next frame).
+    fn fire_plugin_event_now(&mut self, event: PluginEvent) {
+        if !self.plugin_manager.is_enabled() || !event.event_type.is_subscribed() {
+            return;
+        }
+        if let Err(e) = self.plugin_manager.fire_event(&mut self.editor, event) {
+            log::error!("Failed to fire plugin event: {}", e);
         }
     }
 
@@ -1052,6 +895,8 @@ impl Application {
     }
 
     pub async fn handle_idle_timeout(&mut self) {
+        // Like Vim's `CursorHold`: run now, a frame may not follow.
+        self.fire_plugin_event_now(PluginEvent::with_fields(EventType::OnIdle, Vec::new()));
         let mut cx = crate::compositor::Context {
             editor: &mut self.editor,
             jobs: &mut self.jobs,
@@ -1096,6 +941,22 @@ impl Application {
                 // Keep the editor (and the unsaved edits) open when a write fails.
                 self.editor.pending_quit = None;
                 self.editor.set_error(err.to_string());
+                let failed = err.downcast_ref::<helix_view::document::DocumentSaveFailed>();
+                let event = PluginEvent::with_fields(
+                    EventType::OnBufferSaveFailed,
+                    vec![
+                        (
+                            "document_id",
+                            failed.map_or(EventValue::Nil, |f| EventValue::Document(f.doc_id)),
+                        ),
+                        (
+                            "path",
+                            failed.map(|f| f.path.to_string_lossy().into_owned()).into(),
+                        ),
+                        ("error", err.to_string().into()),
+                    ],
+                );
+                self.fire_plugin_event_now(event);
                 return;
             }
         };
@@ -1404,16 +1265,30 @@ impl Application {
             event if event.is_escape() => false,
             event => {
                 let event: helix_view::input::Event = event.into();
-                if let (helix_view::input::Event::Key(key), true) =
-                    (&event, self.plugin_manager.is_enabled())
-                {
-                    if let Ok(mut events) = PENDING_PLUGIN_EVENTS.lock() {
-                        events.push(PluginEvent {
+                if self.plugin_manager.is_enabled() {
+                    match &event {
+                        helix_view::input::Event::Key(key) => plugin_events::queue(PluginEvent {
                             event_type: EventType::OnKeyPress,
                             data: EventData::KeyPress {
                                 key: key.to_string(),
                             },
-                        });
+                        }),
+                        helix_view::input::Event::Mouse(mouse) => {
+                            if let Some(event) = plugin_events::mouse_event(mouse) {
+                                plugin_events::queue(event);
+                            }
+                        }
+                        helix_view::input::Event::Paste(text) => plugin_events::queue_fields(
+                            EventType::OnPaste,
+                            vec![("text", text.as_str().into())],
+                        ),
+                        helix_view::input::Event::FocusGained => {
+                            plugin_events::queue_fields(EventType::OnFocusGained, Vec::new())
+                        }
+                        helix_view::input::Event::FocusLost => {
+                            plugin_events::queue_fields(EventType::OnFocusLost, Vec::new())
+                        }
+                        _ => {}
                     }
                 }
                 if matches!(event, helix_view::input::Event::Mouse(_)) {
@@ -2133,6 +2008,9 @@ impl Application {
         //        want to try to run as much cleanup as we can, regardless of
         //        errors along the way
         let mut errs = Vec::new();
+
+        // Plugins hear of it first: what they save is still written below.
+        self.fire_plugin_event_now(PluginEvent::with_fields(EventType::OnExit, Vec::new()));
 
         if let Err(err) = self
             .jobs

@@ -6,6 +6,7 @@ pickers.
 
 - [Where plugins live](#where-plugins-live)
 - [Configuration](#configuration)
+- [Permissions](#permissions)
 - [Running plugin code](#running-plugin-code)
 - [Sandbox](#sandbox)
 - [Events](#events)
@@ -37,9 +38,11 @@ version = "0.1.0"
 description = "My first Helix plugin"
 author = "Your Name"
 entry = "init.lua"
+permissions = ["read", "ui", "commands"]   # what it needs, see Permissions
 ```
 
-A minimal `init.lua`:
+A minimal `init.lua` (registering a command needs the `commands` permission, granted in
+`config.toml`; see [Permissions](#permissions)):
 
 ```lua
 helix.on("buffer_open", function(event)
@@ -75,6 +78,7 @@ plugin_dirs = ["~/src/helix-plugins"]   # replaces the default directories
 name = "greeter"                        # the plugin's name (plugin.toml or directory)
 enabled = true
 config = { greeting = "hi", nested = { level = 2 } }
+permissions = ["commands"]              # beyond "read" and "ui", see Permissions
 
 [[plugins.plugins]]
 name = "auto-save"
@@ -85,7 +89,7 @@ enabled = false                         # skip this one
 | --- | --- | --- |
 | `enabled` | Load plugins at all | `true` |
 | `plugin_dirs` | Directories to search for plugins. When set, the default directories are not searched. A leading `~` is expanded to the home directory, and a relative path is relative to the Helix config directory (`plugins` is `~/.config/helix/plugins` on Linux) | the default directories |
-| `plugins` | One `[[plugins.plugins]]` entry per plugin to configure: `name`, `enabled` (default `true`) and `config`, a table the plugin reads with `helix.get_config()` | `[]` |
+| `plugins` | One `[[plugins.plugins]]` entry per plugin to configure: `name`, `enabled` (default `true`), `config`, a table the plugin reads with `helix.get_config()`, and `permissions`, what it may do beyond the defaults (see [Permissions](#permissions)) | `[]` |
 
 Plugins without an entry are loaded. The keys are written with underscores (`plugin_dirs`),
 unlike the `[editor]` keys.
@@ -96,6 +100,49 @@ unlike the `[editor]` keys.
 - An invalid `[plugins]` section (`enabled = 3`, say) is a config error, like any other.
 - Plugins are loaded once, at startup. Changes to `[plugins]` take effect after a restart:
   neither `:config-reload` nor `:reload-all-plugins` reads the section again.
+
+## Permissions
+
+A plugin may look at the editor and show things; anything else is granted per plugin, in its
+`[[plugins.plugins]]` entry of `config.toml`:
+
+```toml
+[[plugins.plugins]]
+name = "formatter-on-save"
+permissions = ["edit", "files"]
+```
+
+| Permission | Allows | Default |
+| --- | --- | --- |
+| `read` | Reading buffers, windows, selections, diagnostics, registers and settings; `helix.on` (hearing of events) | granted |
+| `ui` | Messages, prompts, pickers, menus, annotations, panels, the theme | granted |
+| `edit` | Changing buffers: text, selections, cursor, mode, registers, undo/redo | |
+| `windows` | Opening files and windows, splitting, focusing, closing, quitting | |
+| `files` | Writing buffers to disk (`helix.editor.save`, `:write`, `:move`...) | |
+| `commands` | Registering `:` commands, and running Helix's own with `helix.editor.execute_command` | |
+| `config` | Changing settings: `:set`, `:toggle`, `:config-reload`, `:lang`, `:cd`, `:lsp-restart`... | |
+| `keymaps` | Changing key bindings | |
+| `explorer` | Controlling the file explorer | |
+| `shell` | Running programs: `:sh`, `:pipe`, `:insert-output`, debug adapters, `:lsp-workspace-command`, `:workspace-trust`, and the settings that run programs (`:set shell`, `clipboard-provider`) | |
+
+`"all"` grants everything. An unknown name is a config error.
+
+- **What a plugin asks for**: a plugin can list the permissions it needs in its `plugin.toml`
+  (`permissions = ["read", "ui", "edit"]`). It then gets no more than that, whatever is
+  granted; what it asks for and is not granted is reported in the status line (and the log)
+  when it loads. Without the list it gets the defaults and its grants. A plugin may also
+  leave out a default (`["read"]`: no messages).
+- **Refused calls** raise an error that names the permission and how to grant it:
+  `plugin 'x' may not use helix.editor.save: it needs the 'files' permission (grant with
+  permissions = ["files"] ...)`. `helix.permissions()` lists what the calling plugin may do,
+  `helix.has_permission("edit")` checks one.
+- **Commands run by plugins**: `helix.editor.execute_command` needs `commands` and what the
+  command itself needs: `:write` needs `files` too, `:vsplit` `windows`, `:sh` `shell`.
+  `helix.editor.save()`/`save_all()` need only `files`, `quit()` only `windows`.
+- **Isolation**: every plugin has a Lua state of its own. A plugin cannot change what another
+  calls (its `helix` table, `string` functions, globals), act with another's permissions, nor
+  take over another plugin's `:` command. Plugins that want to share code `require` the same
+  module, each loading its own copy.
 
 ## Running plugin code
 
@@ -124,9 +171,10 @@ keys. Keep handlers short, especially for frequent events (`key_press`, `selecti
   cannot be loaded.
 - `setmetatable` refuses metatables with a `__gc` field: finalizers would run outside the
   time limit.
-- Plugins are still trusted code: `os.getenv` and `os.time`/`clock`/`date` are available,
-  and `helix.editor.execute_command` can run any typable command (`:write`, `:sh`, ...).
-  Only install plugins you trust.
+- Each plugin has a Lua state of its own and may only do what it is granted (see
+  [Permissions](#permissions)). Still, `os.getenv` and `os.time`/`clock`/`date` are
+  available, and a plugin granted `shell` can run any program: grant it only to plugins you
+  trust.
 
 ## Events
 
@@ -137,27 +185,50 @@ error. The `event` table has a `type` field (the event name) and, depending on t
 | --- | --- | --- |
 | `init` | | after all plugins are loaded (also after `:reload-all-plugins`) |
 | `ready` | | once at startup, after `buffer_open` of the files given on the command line |
+| `exit` | | when Helix exits, before the last writes: buffers saved now are written |
 | `buffer_open` | `document_id`, `path` | when a file is opened |
 | `buffer_changed` | `document_id`, `path` | when a buffer's text changes; at most once per buffer per frame, however many edits were made (previews, such as a completion being shown, do not count) |
 | `buffer_pre_save` | `document_id`, `path` | before a buffer is written: edits the handler makes are part of the saved file |
 | `buffer_post_save` | `document_id`, `path` | after a buffer was written |
+| `buffer_save_failed` | `document_id`, `path`, `error` | when writing a buffer failed |
 | `buffer_close` | `document_id`, `path` | when a buffer is closed |
+| `buffer_rename` | `document_id`, `path`, `old_path` | when a buffer's path changes (`:write <path>`, `:move`) |
+| `buffer_focus_lost` | `document_id`, `path` | when the focus leaves a buffer (another window, another buffer in the window) |
+| `language_change` | `document_id`, `language`, `old_language` | when a buffer's language changes (`:lang`, a rename); `nil` for none |
 | `selection_change` | `document_id`, `path` | when the selection or cursor moves; at most once per buffer per frame |
 | `mode_change` | `old_mode`, `new_mode` (`"normal"`, `"insert"`, `"select"`) | on mode switches |
 | `key_press` | `key` (e.g. `"a"`, `"C-s"`, `"ret"`) | for every key |
-| `lsp_initialized` | | when a language server has finished initializing |
-| `lsp_attach` | `document_id`, `language_server_id` | when a language server is attached to a buffer, once per server and buffer |
-| `lsp_diagnostic` | `document_id` | when a buffer's diagnostics change |
+| `insert_char` | `char`, `document_id` | for every character typed in insert mode |
+| `command` | `name` (`"move_char_left"`, `"write"`, ...) | after each command run from a key, `:` or a macro |
+| `scroll` | `window_id`, `document_id`, `top_char` | when a window scrolls (once per frame) |
+| `window_open` | `window_id`, `document_id` | when a window opens (`:vsplit`, ...) |
+| `window_close` | `window_id`, `document_id` | when a window closes |
+| `window_focus` | `window_id`, `document_id`, `previous_window_id` | when another window gets the focus |
 | `view_change` | | when the terminal is resized |
+| `focus_gained`, `focus_lost` | | when the terminal gets or loses the focus (terminals with focus reporting) |
+| `paste` | `text` | when text is pasted into the terminal (bracketed paste) |
+| `mouse` | `kind` (`"down"`, `"up"`, `"drag"`, `"scroll_up"`, `"scroll_down"`, `"scroll_left"`, `"scroll_right"`), `button` (`"left"`, `"right"`, `"middle"` or `nil`), `row`, `col`, `modifiers` (`"C-S"`, `""`) | for clicks, drags and the wheel (not plain moves) |
+| `idle` | | after [`idle-timeout`](./editor.md#editor-section) without input, like Vim's `CursorHold`; runs right away |
+| `config_change` | | when the settings change (`:set`, `:config-reload`); once per frame |
+| `theme_change` | `theme`, `old_theme` | when the theme changes |
+| `cwd_change` | `path`, `old_path` | when the working directory changes (`:cd`) |
+| `lsp_initialized` | `language_server_id`, `name` | when a language server has finished initializing |
+| `lsp_attach` | `document_id`, `language_server_id`, `name` | when a language server is attached to a buffer, once per server and buffer |
+| `lsp_detach` | `document_id`, `language_server_id`, `name` | when a language server stops serving a buffer that stays open |
+| `lsp_exit` | `language_server_id`, `name` | when a language server exits |
+| `lsp_diagnostic` | `document_id`, `path` | when a buffer's diagnostics change |
 
 `path` is `nil` for a buffer without a file. `document_id` is the same string `buffer:id()`
-returns; `helix.buffer.get_by_id(id)` turns it into a buffer.
+returns (`helix.buffer.get_by_id(id)` turns it into a buffer), and `window_id` the one
+`window:id()` returns. `language_server_id` is a number.
 
-Except for `ready`, `init`, `view_change` and `buffer_pre_save`, events are queued while the
-editor works and handed to the handlers before the next frame is drawn. `buffer_pre_save`
-runs right before the write; when the save comes from plugin code that is running (a
-command calling `helix.editor.save()`), the handlers hear of it with the next frame instead,
-and their edits are not part of that write.
+Helix does not queue an event no plugin has a handler for. Except for `ready`, `init`,
+`exit`, `idle`, `view_change`, `buffer_save_failed`, `buffer_post_save` and
+`buffer_pre_save`, events are queued while the editor works and handed to the handlers before
+the next frame (a frame queues at most 10 000; a long macro does not turn into as many
+handler calls). `buffer_pre_save` runs right before the write; when the save comes from
+plugin code that is running (a command calling `helix.editor.save()`), the handlers hear of
+it with the next frame instead, and their edits are not part of that write.
 
 ## API reference
 
@@ -169,6 +240,15 @@ Functions that need the editor raise an error when called outside of plugin code
 editor; the `helix.ui` messages, `helix.editor.mode`/`*_mode` and the `helix.editor`
 functions that run commands then do nothing instead.
 
+Each function needs a [permission](#permissions): the `helix.buffer` and `helix.window`
+getters, `helix.lsp`, `helix.on` and the `helix.editor` getters need `read`; `helix.ui`,
+`set_status`, `set_annotations` and `set_panel` need `ui`; changes of buffers (`insert`,
+`delete`, selections, cursor, modes, registers, undo/redo) need `edit`; `open`, `close`,
+`quit` and `window:focus()` need `windows`; `save` and `save_all` need `files`;
+`register_command` needs `commands`, and `execute_command` needs `commands` and what the
+command needs. `helix.log`, `helix.get_config()`, `helix.permissions()` and
+`helix.has_permission()` need none.
+
 ### Commands and configuration
 
 - `helix.register_command{ name = ..., doc = ..., args = ..., handler = function(args) end }`
@@ -178,6 +258,10 @@ functions that run commands then do nothing instead.
 - `helix.get_config()`: the `config` table of the calling plugin's `[[plugins.plugins]]`
   entry (nested tables included), or `nil` when it has none.
 - `helix.version`: the Helix version string.
+- `helix.permissions()`: the permissions of the calling plugin, `{ "read", "ui", ... }`;
+  `helix.has_permission(name)`: whether it has that one (an unknown name is an error).
+- A command name belongs to the plugin that registered it first: another plugin cannot
+  register it again.
 
 ### `helix.buffer`
 
@@ -270,7 +354,8 @@ gets `false`).
 
 ### `helix.window`
 
-- `get_current()`, `list()`: windows; methods `id()`, `get_buffer()`, `focus()`.
+- `get_current()`, `list()`: windows; methods `id()` (the `window_id` of events),
+  `get_buffer()`, `focus()`.
 
 ### `helix.lsp`
 

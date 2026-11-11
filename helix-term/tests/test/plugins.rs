@@ -72,6 +72,7 @@ end)
         [[plugins]]
         name = "probe"
         config = {{ greeting = "hi" }}
+        permissions = ["edit"]
         "#,
         plugins.path()
     ))?);
@@ -131,5 +132,421 @@ end)
         &mut file,
         &LineFeedHandling::Native.apply(&format!("PRE PRE {}abc\n", "x".repeat(21))),
     )?;
+    Ok(())
+}
+
+/// A directory of plugins: `(name, init.lua, plugin.toml)`.
+fn plugin_dir(plugins: &[(&str, &str, Option<&str>)]) -> anyhow::Result<tempfile::TempDir> {
+    let dir = tempfile::tempdir()?;
+    for (name, init, manifest) in plugins {
+        let plugin = dir.path().join(name);
+        std::fs::create_dir(&plugin)?;
+        std::fs::write(plugin.join("init.lua"), init)?;
+        if let Some(manifest) = manifest {
+            std::fs::write(plugin.join("plugin.toml"), manifest)?;
+        }
+    }
+    Ok(dir)
+}
+
+/// The test config with the plugins of `dir` and the `[[plugins.plugins]]` entries
+/// `entries` (TOML).
+fn plugin_config(dir: &std::path::Path, entries: &str) -> anyhow::Result<Config> {
+    let mut config = helpers::test_config();
+    config.editor.notifications.enable = false;
+    config.plugins = Some(toml::from_str(&format!(
+        "plugin_dirs = [{:?}]\n{entries}",
+        dir
+    ))?);
+    Ok(config)
+}
+
+/// What a register holds, split at `|`.
+fn register(app: &Application, name: char) -> Vec<String> {
+    app.editor
+        .registers
+        .read(name, &app.editor)
+        .and_then(|mut values| values.next().map(|value| value.into_owned()))
+        .map(|text| text.split('|').map(String::from).collect())
+        .unwrap_or_default()
+}
+
+/// Tries each call and reports `name=ok` or `name=<the permissions it lacks>`.
+const TRY_ALL: &str = r#"
+local function try(results, name, f)
+    local ok, err = pcall(f)
+    if ok then
+        results[#results + 1] = name .. "=ok"
+    else
+        local missing = tostring(err):match("needs the (.-) permission")
+        results[#results + 1] = name .. "=" .. (missing or tostring(err))
+    end
+end
+local function checks()
+    local results = {}
+    try(results, "read", function() return helix.buffer.get_current():get_text() end)
+    try(results, "insert", function() helix.buffer.get_current():insert(1, 0, "X") end)
+    try(results, "save", function() helix.editor.save() end)
+    try(results, "sh", function() helix.editor.execute_command("sh", { "true" }) end)
+    try(results, "set", function() helix.editor.execute_command("set", { "scrolloff", "2" }) end)
+    try(results, "vsplit", function() helix.editor.execute_command("vsplit") end)
+    try(results, "open", function() helix.editor.open("x.txt") end)
+    try(results, "command", function()
+        helix.register_command{ name = "c" .. #results, handler = function() end }
+    end)
+    return table.concat(results, "|")
+end
+"#;
+
+/// A plugin gets `read` and `ui`, and what its entry grants; every call checks.
+#[tokio::test(flavor = "multi_thread")]
+async fn plugins_may_only_do_what_they_are_granted() -> anyhow::Result<()> {
+    let limited = format!(
+        r#"{TRY_ALL}
+        helix.on("ready", function() helix.ui.set_status(checks()) end)"#
+    );
+    let granted = format!(
+        r#"{TRY_ALL}
+        helix.on("ready", function() helix.editor.set_register("y", {{ checks() }}) end)"#
+    );
+    let dir = plugin_dir(&[("limited", &limited, None), ("granted", &granted, None)])?;
+    let config = plugin_config(
+        dir.path(),
+        r#"
+        [[plugins]]
+        name = "granted"
+        permissions = ["edit", "commands", "windows"]
+        "#,
+    )?;
+    let file = helpers::temp_file_with_contents("abc\n")?;
+    let app = helpers::AppBuilder::new()
+        .with_file(file.path(), None)
+        .with_config(config)
+        .build()?;
+
+    let status: String = app
+        .editor
+        .get_status()
+        .map(|(status, _)| status.to_string())
+        .unwrap_or_default();
+    let limited: Vec<&str> = status.split('|').collect();
+    assert_eq!(
+        limited,
+        [
+            "read=ok",
+            "insert='edit'",
+            "save='files'",
+            "sh='commands' and 'shell'",
+            "set='commands' and 'config'",
+            "vsplit='commands' and 'windows'",
+            "open='windows'",
+            "command='commands'",
+        ]
+    );
+
+    let granted: Vec<String> = register(&app, 'y');
+    assert_eq!(
+        granted,
+        [
+            "read=ok",
+            "insert=ok",
+            "save='files'",
+            "sh='shell'",
+            "set='config'",
+            "vsplit=ok",
+            "open=ok",
+            "command=ok",
+        ]
+    );
+    // the granted plugin's edit happened, the limited plugin's did not
+    let text: String = helix_view::doc!(app.editor).text().to_string();
+    assert_eq!(text.matches('X').count(), 1, "{text:?}");
+    Ok(())
+}
+
+/// A manifest that lists permissions narrows the grants, and what it asks for that is not
+/// granted is reported when the plugin loads.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_manifest_narrows_and_ungranted_requests_are_reported() -> anyhow::Result<()> {
+    let init = r#"
+        helix.on("ready", function()
+            helix.editor.set_register("y", { table.concat(helix.permissions(), ",") })
+        end)
+    "#;
+    let manifest = r#"
+        name = "narrow"
+        version = "1.0.0"
+        permissions = ["read", "edit", "files"]
+    "#;
+    let dir = plugin_dir(&[("narrow", init, Some(manifest))])?;
+    let config = plugin_config(
+        dir.path(),
+        r#"
+        [[plugins]]
+        name = "narrow"
+        permissions = ["edit", "shell"]
+        "#,
+    )?;
+    let app = helpers::AppBuilder::new().with_config(config).build()?;
+
+    // `ui` (a default) and `shell` (granted) are not asked for; `files` is not granted
+    let permissions: Vec<String> = register(&app, 'y');
+    assert_eq!(permissions, ["read,edit"]);
+    let status: Option<String> = app.editor.get_status().map(|(s, _)| s.to_string());
+    assert_eq!(
+        status.as_deref(),
+        Some("Plugin 'narrow' asks for permissions not granted: files (see :log-open)")
+    );
+    Ok(())
+}
+
+/// An unknown permission in `config.toml` is a config error.
+#[test]
+fn unknown_granted_permissions_are_config_errors() {
+    let error = toml::from_str::<helix_plugin::PluginConfig>(
+        r#"
+        [[plugins]]
+        name = "p"
+        permissions = ["edit", "network"]
+        "#,
+    )
+    .err()
+    .map(|e| e.to_string())
+    .unwrap_or_default();
+    assert!(
+        error.contains("unknown plugin permission 'network'"),
+        "{error}"
+    );
+}
+
+/// Sends terminal events (not keys) and runs the event loop until it is idle.
+async fn send_events(app: &mut Application, events: Vec<termina::Event>) -> anyhow::Result<()> {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    for event in events {
+        tx.send(Ok(event))?;
+    }
+    let mut rx = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
+    app.editor.reset_idle_timer();
+    app.event_loop_until_idle(&mut rx).await;
+    Ok(())
+}
+
+/// The events that had no hook for plugins before: each reaches the handlers, with its
+/// fields (and their types).
+#[cfg(not(windows))]
+#[tokio::test(flavor = "multi_thread")]
+async fn plugins_hear_of_every_kind_of_event() -> anyhow::Result<()> {
+    let init = r#"
+        local seen = {}
+        local function record(entry)
+            seen[#seen + 1] = entry
+            helix.editor.set_register("z", { table.concat(seen, "|") })
+        end
+        local function base(path)
+            return path and path:match("[^/\\]+$") or "nil"
+        end
+        helix.on("window_open", function(e)
+            record("window_open:" .. type(e.window_id) .. ":" .. type(e.document_id))
+        end)
+        helix.on("window_close", function(e) record("window_close:" .. type(e.window_id)) end)
+        helix.on("window_focus", function(e)
+            record("window_focus:" .. tostring(e.window_id ~= e.previous_window_id))
+        end)
+        helix.on("insert_char", function(e) record("char:" .. e.char) end)
+        helix.on("command", function(e)
+            if e.name == "insert_mode" or e.name == "normal_mode" then
+                record("command:" .. e.name)
+            end
+        end)
+        helix.on("language_change", function(e)
+            record("language:" .. tostring(e.old_language) .. ">" .. tostring(e.language))
+        end)
+        helix.on("buffer_rename", function(e)
+            record("rename:" .. base(e.old_path) .. ">" .. base(e.path))
+        end)
+        helix.on("buffer_save_failed", function(e)
+            record("save_failed:" .. type(e.document_id) .. ":" .. base(e.path))
+        end)
+        helix.on("config_change", function() record("config_change") end)
+        helix.on("theme_change", function(e) record("theme:" .. e.theme) end)
+        helix.on("scroll", function(e) record("scroll:" .. type(e.top_char)) end)
+        helix.on("paste", function(e) record("paste:" .. e.text) end)
+        helix.on("focus_lost", function() record("focus_lost") end)
+        helix.on("focus_gained", function() record("focus_gained") end)
+        helix.on("mouse", function(e)
+            record("mouse:" .. e.kind .. ":" .. tostring(e.button) .. ":" .. e.row .. ":"
+                .. e.col .. ":" .. e.modifiers)
+        end)
+        helix.on("idle", function() idle_count = (idle_count or 0) + 1 end)
+        helix.on("buffer_focus_lost", function(e) record("focus_lost:" .. base(e.path)) end)
+    "#;
+    let dir = plugin_dir(&[("events", init, None)])?;
+    let mut config = plugin_config(
+        dir.path(),
+        r#"
+        [[plugins]]
+        name = "events"
+        permissions = ["edit"]
+        "#,
+    )?;
+    config.editor.true_color = true;
+    let lines: String = (0..300).map(|n| format!("line {n}\n")).collect();
+    let file = helpers::temp_file_with_contents(&lines)?;
+    let other = helpers::temp_file_with_contents("other\n")?;
+    let renamed = tempfile::tempdir()?;
+    let mut app = helpers::AppBuilder::new()
+        .with_file(file.path(), None)
+        .with_config(config)
+        .build()?;
+    // The events recorded since the last call.
+    let mut seen = 0;
+    let mut since = |app: &Application| -> Vec<String> {
+        let all = register(app, 'z');
+        let new = all[seen.min(all.len())..].to_vec();
+        seen = all.len();
+        new
+    };
+
+    // (the view the split leaves loses the focus: of its buffer too)
+    send_keys(&mut app, ":vsplit<ret>").await?;
+    let name = file
+        .path()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let events: Vec<String> = since(&app);
+    assert_eq!(
+        events,
+        [
+            format!("focus_lost:{name}"),
+            "window_open:string:string".to_string(),
+            "window_focus:true".to_string(),
+        ]
+    );
+
+    send_keys(&mut app, ":q<ret>").await?;
+    let events: Vec<String> = since(&app);
+    assert_eq!(events, ["window_close:string", "window_focus:true"]);
+
+    send_keys(&mut app, "ihi<esc>").await?;
+    let events: Vec<String> = since(&app);
+    assert_eq!(
+        events,
+        [
+            "command:insert_mode",
+            "char:h",
+            "char:i",
+            "command:normal_mode"
+        ]
+    );
+
+    send_keys(&mut app, ":lang rust<ret>").await?;
+    let events: Vec<String> = since(&app);
+    // (a file without a language: nil)
+    assert_eq!(events, ["language:nil>rust"]);
+
+    let new_path = renamed.path().join("renamed.rs");
+    send_keys(&mut app, &format!(":w {}<ret>", new_path.display())).await?;
+    let saved = std::fs::read_to_string(&new_path).unwrap_or_default();
+    assert!(saved.starts_with("hiline 0"), "{saved:?}");
+    let events: Vec<String> = since(&app);
+    assert_eq!(events, [format!("rename:{name}>renamed.rs")]);
+
+    let missing = renamed.path().join("no-such-dir").join("x.rs");
+    send_keys(&mut app, &format!(":w {}<ret>", missing.display())).await?;
+    let events: Vec<String> = since(&app);
+    assert_eq!(events, ["save_failed:string:x.rs"]);
+
+    send_keys(&mut app, ":set scrolloff 2<ret>").await?;
+    let events: Vec<String> = since(&app);
+    assert_eq!(events, ["config_change"]);
+
+    // (the tests have the built-in themes only; true color is on: `default` at start)
+    send_keys(&mut app, ":theme base16_default<ret>").await?;
+    let events: Vec<String> = since(&app);
+    assert_eq!(events, ["theme:base16_default"]);
+
+    send_keys(&mut app, "<C-d>").await?;
+    let events: Vec<String> = since(&app);
+    assert_eq!(events, ["scroll:number"]);
+
+    send_keys(&mut app, &format!(":open {}<ret>", other.path().display())).await?;
+    let events: Vec<String> = since(&app);
+    assert_eq!(events, ["focus_lost:renamed.rs"]);
+
+    use termina::event::{Modifiers as KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    send_events(
+        &mut app,
+        vec![
+            termina::Event::Paste("pasted".to_string()),
+            termina::Event::FocusOut,
+            termina::Event::FocusIn,
+            termina::Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 3,
+                row: 1,
+                modifiers: KeyModifiers::CONTROL,
+            }),
+            termina::Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: 4,
+                row: 1,
+                modifiers: KeyModifiers::NONE,
+            }),
+        ],
+    )
+    .await?;
+    let terminal: Vec<String> = since(&app);
+    assert_eq!(
+        terminal,
+        [
+            "paste:pasted",
+            "focus_lost",
+            "focus_gained",
+            // a move without a button is no event
+            "mouse:down:left:1:3:C",
+        ]
+    );
+    Ok(())
+}
+
+/// `idle` (like Vim's `CursorHold`) and `exit` run right away, not before a frame.
+#[tokio::test(flavor = "multi_thread")]
+async fn idle_and_exit_reach_the_plugins() -> anyhow::Result<()> {
+    let init = r#"
+        local seen = {}
+        local function record(entry)
+            seen[#seen + 1] = entry
+            helix.editor.set_register("z", { table.concat(seen, "|") })
+        end
+        local idle = 0
+        helix.on("idle", function()
+            idle = idle + 1
+            if idle == 1 then record("idle:" .. helix.editor.mode()) end
+        end)
+        helix.on("exit", function() record("exit") end)
+    "#;
+    let dir = plugin_dir(&[("hold", init, None)])?;
+    let config = plugin_config(
+        dir.path(),
+        r#"
+        [[plugins]]
+        name = "hold"
+        permissions = ["edit"]
+        "#,
+    )?;
+    let mut app = helpers::AppBuilder::new().with_config(config).build()?;
+    let before: Vec<String> = register(&app, 'z');
+    assert_eq!(before, Vec::<String>::new());
+
+    send_keys(&mut app, "i").await?;
+    let idle: Vec<String> = register(&app, 'z');
+    assert_eq!(idle, ["idle:insert"]);
+
+    let errors = app.close().await;
+    assert!(errors.is_empty(), "{errors:?}");
+    let exit: Vec<String> = register(&app, 'z');
+    assert_eq!(exit, ["idle:insert", "exit"]);
     Ok(())
 }

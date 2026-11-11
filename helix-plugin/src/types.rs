@@ -1,82 +1,132 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Represents a plugin event type that can be subscribed to
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum EventType {
-    /// Plugin system initialized
-    OnInit,
-    /// Editor ready
-    OnReady,
-    /// Buffer opened
-    OnBufferOpen,
-    /// Buffer is about to be saved
-    OnBufferPreSave,
-    /// Buffer was saved
-    OnBufferPostSave,
-    /// Buffer closed
-    OnBufferClose,
-    /// Buffer content changed
-    OnBufferChanged,
-    /// Editor mode changed
-    OnModeChange,
-    /// Key was pressed
-    OnKeyPress,
-    /// LSP attached to buffer
-    OnLspAttach,
-    /// LSP diagnostics received
-    OnLspDiagnostic,
-    /// LSP server initialized
-    OnLspInitialized,
-    /// Selection changed
-    OnSelectionChange,
-    /// View/window changed
-    OnViewChange,
+/// Defines [`EventType`] with the name of each event in Lua, in one place.
+macro_rules! event_types {
+    ($($(#[$doc:meta])* $variant:ident => $name:literal,)*) => {
+        /// An editor event plugins subscribe to with `helix.on(name, handler)`.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        #[repr(u8)]
+        pub enum EventType {
+            $($(#[$doc])* $variant,)*
+        }
+
+        impl EventType {
+            /// Every event.
+            pub const ALL: &'static [EventType] = &[$(EventType::$variant,)*];
+
+            /// The event name in Lua (`"buffer_open"`).
+            pub fn as_str(&self) -> &'static str {
+                match self {
+                    $(EventType::$variant => $name,)*
+                }
+            }
+        }
+
+        impl std::str::FromStr for EventType {
+            type Err = ();
+
+            fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+                match s {
+                    $($name => Ok(EventType::$variant),)*
+                    _ => Err(()),
+                }
+            }
+        }
+    };
 }
+
+event_types! {
+    /// The plugins were loaded (also after `:reload-all-plugins`).
+    OnInit => "init",
+    /// Helix has started (after `buffer_open` of the files of the command line).
+    OnReady => "ready",
+    /// Helix is about to exit.
+    OnExit => "exit",
+    /// A file was opened.
+    OnBufferOpen => "buffer_open",
+    /// A buffer is about to be written.
+    OnBufferPreSave => "buffer_pre_save",
+    /// A buffer was written.
+    OnBufferPostSave => "buffer_post_save",
+    /// Writing a buffer failed.
+    OnBufferSaveFailed => "buffer_save_failed",
+    /// A buffer was closed.
+    OnBufferClose => "buffer_close",
+    /// The text of a buffer changed.
+    OnBufferChanged => "buffer_changed",
+    /// The path of a buffer changed (`:write <path>`, `:move`).
+    OnBufferRename => "buffer_rename",
+    /// The focus left a buffer.
+    OnBufferFocusLost => "buffer_focus_lost",
+    /// The language of a buffer changed.
+    OnLanguageChange => "language_change",
+    /// The editor mode changed.
+    OnModeChange => "mode_change",
+    /// A key was pressed.
+    OnKeyPress => "key_press",
+    /// A character was typed in insert mode.
+    OnInsertChar => "insert_char",
+    /// A command ran (a key binding, `:` command or macro).
+    OnCommand => "command",
+    /// The selections of a buffer changed.
+    OnSelectionChange => "selection_change",
+    /// A window scrolled.
+    OnScroll => "scroll",
+    /// A window was opened.
+    OnWindowOpen => "window_open",
+    /// A window was closed.
+    OnWindowClose => "window_close",
+    /// Another window got the focus.
+    OnWindowFocus => "window_focus",
+    /// The terminal was resized.
+    OnViewChange => "view_change",
+    /// The terminal got the focus.
+    OnFocusGained => "focus_gained",
+    /// The terminal lost the focus.
+    OnFocusLost => "focus_lost",
+    /// Text was pasted into the terminal (bracketed paste).
+    OnPaste => "paste",
+    /// A mouse button or wheel was used.
+    OnMouse => "mouse",
+    /// Nothing happened for `idle-timeout`.
+    OnIdle => "idle",
+    /// The editor settings changed (`:set`, `:config-reload`).
+    OnConfigChange => "config_change",
+    /// The theme changed.
+    OnThemeChange => "theme_change",
+    /// The working directory changed.
+    OnCwdChange => "cwd_change",
+    /// A language server finished initializing.
+    OnLspInitialized => "lsp_initialized",
+    /// A language server was attached to a buffer.
+    OnLspAttach => "lsp_attach",
+    /// A language server was detached from a buffer.
+    OnLspDetach => "lsp_detach",
+    /// A language server exited.
+    OnLspExit => "lsp_exit",
+    /// The diagnostics of a buffer changed.
+    OnLspDiagnostic => "lsp_diagnostic",
+}
+
+/// How many plugin handlers each event has, over every plugin engine of the process: the
+/// editor does not even queue an event no handler wants (`insert_char`, `command` and
+/// `mouse` come with every key or click).
+static SUBSCRIBERS: [std::sync::atomic::AtomicUsize; 64] =
+    [const { std::sync::atomic::AtomicUsize::new(0) }; 64];
 
 impl EventType {
-    /// Returns the event name as a string for Lua
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::OnInit => "init",
-            Self::OnReady => "ready",
-            Self::OnBufferOpen => "buffer_open",
-            Self::OnBufferPreSave => "buffer_pre_save",
-            Self::OnBufferPostSave => "buffer_post_save",
-            Self::OnBufferClose => "buffer_close",
-            Self::OnBufferChanged => "buffer_changed",
-            Self::OnModeChange => "mode_change",
-            Self::OnKeyPress => "key_press",
-            Self::OnLspAttach => "lsp_attach",
-            Self::OnLspDiagnostic => "lsp_diagnostic",
-            Self::OnLspInitialized => "lsp_initialized",
-            Self::OnSelectionChange => "selection_change",
-            Self::OnViewChange => "view_change",
-        }
+    /// Whether some plugin has a handler for this event.
+    pub fn is_subscribed(self) -> bool {
+        SUBSCRIBERS[self as usize].load(std::sync::atomic::Ordering::Relaxed) > 0
     }
-}
 
-impl std::str::FromStr for EventType {
-    type Err = ();
+    pub(crate) fn subscribe(self) {
+        SUBSCRIBERS[self as usize].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
 
-    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
-        match s {
-            "init" => Ok(Self::OnInit),
-            "ready" => Ok(Self::OnReady),
-            "buffer_open" => Ok(Self::OnBufferOpen),
-            "buffer_pre_save" => Ok(Self::OnBufferPreSave),
-            "buffer_post_save" => Ok(Self::OnBufferPostSave),
-            "buffer_close" => Ok(Self::OnBufferClose),
-            "buffer_changed" => Ok(Self::OnBufferChanged),
-            "mode_change" => Ok(Self::OnModeChange),
-            "key_press" => Ok(Self::OnKeyPress),
-            "lsp_attach" => Ok(Self::OnLspAttach),
-            "lsp_diagnostic" => Ok(Self::OnLspDiagnostic),
-            "lsp_initialized" => Ok(Self::OnLspInitialized),
-            "selection_change" => Ok(Self::OnSelectionChange),
-            "view_change" => Ok(Self::OnViewChange),
-            _ => Err(()),
-        }
+    pub(crate) fn unsubscribe(self, handlers: usize) {
+        SUBSCRIBERS[self as usize].fetch_sub(handlers, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -111,6 +161,73 @@ pub enum EventData {
         document_id: helix_view::DocumentId,
         diagnostic_count: usize,
     },
+    /// Named fields (the table handed to the handlers has these keys).
+    Fields(Vec<(&'static str, EventValue)>),
+}
+
+/// A field of an event.
+#[derive(Debug, Clone, PartialEq)]
+pub enum EventValue {
+    Nil,
+    Bool(bool),
+    Int(i64),
+    Str(String),
+    /// A buffer: its id, as `buffer:id()` returns it.
+    Document(helix_view::DocumentId),
+    /// A window: its id, as `window:id()` returns it.
+    View(helix_view::ViewId),
+}
+
+impl From<&str> for EventValue {
+    fn from(value: &str) -> Self {
+        EventValue::Str(value.to_string())
+    }
+}
+
+impl From<String> for EventValue {
+    fn from(value: String) -> Self {
+        EventValue::Str(value)
+    }
+}
+
+impl From<Option<String>> for EventValue {
+    fn from(value: Option<String>) -> Self {
+        value.map_or(EventValue::Nil, EventValue::Str)
+    }
+}
+
+impl From<bool> for EventValue {
+    fn from(value: bool) -> Self {
+        EventValue::Bool(value)
+    }
+}
+
+impl From<i64> for EventValue {
+    fn from(value: i64) -> Self {
+        EventValue::Int(value)
+    }
+}
+
+impl From<helix_view::DocumentId> for EventValue {
+    fn from(value: helix_view::DocumentId) -> Self {
+        EventValue::Document(value)
+    }
+}
+
+impl From<helix_view::ViewId> for EventValue {
+    fn from(value: helix_view::ViewId) -> Self {
+        EventValue::View(value)
+    }
+}
+
+impl PluginEvent {
+    /// An event with named fields.
+    pub fn with_fields(event_type: EventType, fields: Vec<(&'static str, EventValue)>) -> Self {
+        PluginEvent {
+            event_type,
+            data: EventData::Fields(fields),
+        }
+    }
 }
 
 /// Plugin metadata
@@ -126,6 +243,10 @@ pub struct PluginMetadata {
     pub author: Option<String>,
     /// Plugin entry point (default: init.lua)
     pub entry: Option<String>,
+    /// What the plugin needs (`["edit", "files"]`): it gets no more, whatever is granted.
+    /// Without the list it gets what `config.toml` grants (and the defaults).
+    #[serde(default)]
+    pub permissions: Option<Vec<String>>,
 }
 
 impl Default for PluginMetadata {
@@ -136,6 +257,7 @@ impl Default for PluginMetadata {
             description: None,
             author: None,
             entry: Some("init.lua".to_string()),
+            permissions: None,
         }
     }
 }
@@ -190,6 +312,10 @@ pub struct IndividualPluginConfig {
     /// Plugin-specific configuration
     #[serde(default)]
     pub config: serde_json::Value,
+    /// What the plugin may do beyond the defaults (`read`, `ui`): `["edit", "files"]`,
+    /// `["all"]`.
+    #[serde(default)]
+    pub permissions: crate::permissions::Permissions,
 }
 
 /// Metadata for a registered command
@@ -211,6 +337,15 @@ pub trait EditorCommandRegistry: Send + Sync {
         name: &str,
         args: &[String],
     ) -> std::result::Result<(), anyhow::Error>;
+
+    /// What running the typable command `name` (or an alias) with `args` needs, besides the
+    /// `commands` permission that `helix.editor.execute_command` needs for any command;
+    /// `None` when there is no such command.
+    fn permissions(
+        &self,
+        name: &str,
+        args: &[String],
+    ) -> Option<Vec<crate::permissions::Permission>>;
 }
 
 /// Wrapper for EditorCommandRegistry to store in Lua app data

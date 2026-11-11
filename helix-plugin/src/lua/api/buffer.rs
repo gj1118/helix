@@ -1,4 +1,5 @@
 use crate::error::Result;
+use crate::permissions::{require, Permission};
 use helix_core::Position;
 use helix_view::DocumentId;
 use mlua::prelude::*;
@@ -74,22 +75,26 @@ pub(crate) fn selections_to_lua(lua: &Lua, ranges: &[(usize, usize)]) -> LuaResu
 impl LuaUserData for LuaBuffer {
     fn add_methods<'lua, M: LuaUserDataMethods<Self>>(methods: &mut M) {
         // Get buffer text
-        methods.add_method("get_text", |_lua, this, ()| {
+        methods.add_method("get_text", |lua, this, ()| {
+            require(lua, Permission::Read, "buffer:get_text")?;
             with_doc(this.document_id, |doc| Ok(doc.text().to_string()))
         });
 
         // Get buffer length
-        methods.add_method("len", |_lua, this, ()| {
+        methods.add_method("len", |lua, this, ()| {
+            require(lua, Permission::Read, "buffer:len")?;
             with_doc(this.document_id, |doc| Ok(doc.text().len_chars()))
         });
 
         // Get buffer line count
-        methods.add_method("line_count", |_lua, this, ()| {
+        methods.add_method("line_count", |lua, this, ()| {
+            require(lua, Permission::Read, "buffer:line_count")?;
             with_doc(this.document_id, |doc| Ok(doc.text().len_lines()))
         });
 
         // Get line at index (1-based)
-        methods.add_method("get_line", |_lua, this, line_num: usize| {
+        methods.add_method("get_line", |lua, this, line_num: usize| {
+            require(lua, Permission::Read, "buffer:get_line")?;
             if line_num == 0 {
                 return Err(LuaError::RuntimeError(
                     "Line numbers are 1-based (must be >= 1)".to_string(),
@@ -109,7 +114,8 @@ impl LuaUserData for LuaBuffer {
         });
 
         // Get buffer path
-        methods.add_method("get_path", |_lua, this, ()| {
+        methods.add_method("get_path", |lua, this, ()| {
+            require(lua, Permission::Read, "buffer:get_path")?;
             with_doc(this.document_id, |doc| {
                 Ok(doc.path().map(|p| p.to_string_lossy().to_string()))
             })
@@ -119,12 +125,14 @@ impl LuaUserData for LuaBuffer {
         methods.add_method("id", |_lua, this, ()| Ok(format!("{:?}", this.document_id)));
 
         // Check if buffer is modified
-        methods.add_method("is_modified", |_lua, this, ()| {
+        methods.add_method("is_modified", |lua, this, ()| {
+            require(lua, Permission::Read, "buffer:is_modified")?;
             with_doc(this.document_id, |doc| Ok(doc.is_modified()))
         });
 
         // Get buffer language
-        methods.add_method("get_language", |_lua, this, ()| {
+        methods.add_method("get_language", |lua, this, ()| {
+            require(lua, Permission::Read, "buffer:get_language")?;
             with_doc(this.document_id, |doc| {
                 Ok(doc.language_name().map(|s| s.to_string()))
             })
@@ -133,7 +141,8 @@ impl LuaUserData for LuaBuffer {
         // Insert text at position
         methods.add_method(
             "insert",
-            |_lua, this, (line, col, text): (usize, usize, String)| {
+            |lua, this, (line, col, text): (usize, usize, String)| {
+                require(lua, Permission::Edit, "buffer:insert")?;
                 with_focused_doc(this.document_id, "Modifications", |view, doc| {
                     let text_rope = doc.text();
                     let offset = line_col_to_char(text_rope, line, col);
@@ -150,9 +159,10 @@ impl LuaUserData for LuaBuffer {
         // Delete range
         methods.add_method(
             "delete",
-            |_lua,
+            |lua,
              this,
              (start_line, start_col, end_line, end_col): (usize, usize, usize, usize)| {
+                require(lua, Permission::Edit, "buffer:delete")?;
                 with_focused_doc(this.document_id, "Modifications", |view, doc| {
                     let text_rope = doc.text();
                     let a = line_col_to_char(text_rope, start_line, start_col);
@@ -174,6 +184,7 @@ impl LuaUserData for LuaBuffer {
 
         // Get selections
         methods.add_method("get_selections", |lua, this, ()| {
+            require(lua, Permission::Read, "buffer:get_selections")?;
             let ranges = crate::lua::with_editor(|editor| {
                 if editor.document(this.document_id).is_none() {
                     return Err(LuaError::RuntimeError(format!(
@@ -196,6 +207,7 @@ impl LuaUserData for LuaBuffer {
 
         // Get diagnostics
         methods.add_method("get_diagnostics", |lua, this, ()| {
+            require(lua, Permission::Read, "buffer:get_diagnostics")?;
             let diagnostics: Vec<LuaDiagnostic> = with_doc(this.document_id, |doc| {
                 Ok(doc
                     .diagnostics()
@@ -209,7 +221,8 @@ impl LuaUserData for LuaBuffer {
         // Set annotations
         methods.add_method(
             "set_annotations",
-            |_lua, this, annotations: Vec<LuaPluginAnnotation>| {
+            |lua, this, annotations: Vec<LuaPluginAnnotation>| {
+                require(lua, Permission::Ui, "buffer:set_annotations")?;
                 let mut plugin_annots: Vec<helix_view::document::PluginAnnotation> = annotations
                     .into_iter()
                     .map(|a| helix_view::document::PluginAnnotation {
@@ -236,7 +249,8 @@ impl LuaUserData for LuaBuffer {
         );
 
         // Show a panel next to a line, drawn over the text (`nil` removes it)
-        methods.add_method("set_panel", |_lua, this, panel: Option<LuaTable>| {
+        methods.add_method("set_panel", |lua, this, panel: Option<LuaTable>| {
+            require(lua, Permission::Ui, "buffer:set_panel")?;
             let panel = panel.as_ref().map(panel_from_table).transpose()?;
             with_focused_doc(this.document_id, "Panels", |view, doc| {
                 match panel {
@@ -248,7 +262,8 @@ impl LuaUserData for LuaBuffer {
         });
 
         // Get cursor position (char index)
-        methods.add_method("get_cursor", |_lua, this, ()| {
+        methods.add_method("get_cursor", |lua, this, ()| {
+            require(lua, Permission::Read, "buffer:get_cursor")?;
             crate::lua::with_editor(|editor| {
                 let (view, doc) = crate::lua::focused_ref(editor)?;
                 if doc.id() != this.document_id {
@@ -264,7 +279,8 @@ impl LuaUserData for LuaBuffer {
         });
 
         // Convert char index to line index (0-based)
-        methods.add_method("char_to_line", |_lua, this, char_idx: usize| {
+        methods.add_method("char_to_line", |lua, this, char_idx: usize| {
+            require(lua, Permission::Read, "buffer:char_to_line")?;
             with_doc(this.document_id, |doc| {
                 Ok(doc
                     .text()
@@ -273,7 +289,8 @@ impl LuaUserData for LuaBuffer {
         });
 
         // Convert line index to char index (0-based)
-        methods.add_method("line_to_char", |_lua, this, line_idx: usize| {
+        methods.add_method("line_to_char", |lua, this, line_idx: usize| {
+            require(lua, Permission::Read, "buffer:line_to_char")?;
             with_doc(this.document_id, |doc| {
                 Ok(doc
                     .text()
@@ -282,7 +299,8 @@ impl LuaUserData for LuaBuffer {
         });
 
         // Get visual column for char index
-        methods.add_method("get_visual_column", |_lua, this, char_idx: usize| {
+        methods.add_method("get_visual_column", |lua, this, char_idx: usize| {
+            require(lua, Permission::Read, "buffer:get_visual_column")?;
             with_doc(this.document_id, |doc| {
                 let text = doc.text();
                 let char_idx = char_idx.min(text.len_chars());
@@ -575,7 +593,8 @@ pub fn register_buffer_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     let buffer_module = lua.create_table()?;
 
     // helix.buffer.get_current() - Get current buffer
-    let get_current = lua.create_function(|_lua, ()| {
+    let get_current = lua.create_function(|lua, ()| {
+        require(lua, Permission::Read, "helix.buffer.get_current")?;
         let id = crate::lua::with_editor(|editor| Ok(crate::lua::focused_ref(editor)?.1.id()))?;
         Ok(LuaBuffer::new(id))
     })?;
@@ -583,7 +602,8 @@ pub fn register_buffer_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
 
     // helix.buffer.get_by_id(id) - The buffer with the id given by `buffer:id()` or an
     // event's `document_id`, or nil if there is none
-    let get_by_id = lua.create_function(|_lua, id: String| {
+    let get_by_id = lua.create_function(|lua, id: String| {
+        require(lua, Permission::Read, "helix.buffer.get_by_id")?;
         let id = crate::lua::with_editor(|editor| {
             Ok(editor
                 .documents
@@ -597,6 +617,7 @@ pub fn register_buffer_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
 
     // helix.buffer.list() - List all buffers
     let list = lua.create_function(|lua, ()| {
+        require(lua, Permission::Read, "helix.buffer.list")?;
         let ids: Vec<DocumentId> =
             crate::lua::with_editor(|editor| Ok(editor.documents.keys().copied().collect()))?;
         lua.create_sequence_from(ids.into_iter().map(LuaBuffer::new))
@@ -629,6 +650,10 @@ mod tests {
     #[test]
     fn panels_are_read_with_defaults_and_validated() {
         let lua = Lua::new();
+        lua.set_app_data(crate::permissions::PluginIdentity {
+            name: "test".into(),
+            permissions: crate::permissions::Permissions::all(),
+        });
         let read = |code: &str| {
             let table: LuaTable = lua.load(code).eval().unwrap();
             panel_from_table(&table)
@@ -688,6 +713,10 @@ mod tests {
     #[test]
     fn annotation_offset_saturates_but_rejects_wrong_types() {
         let lua = Lua::new();
+        lua.set_app_data(crate::permissions::PluginIdentity {
+            name: "test".into(),
+            permissions: crate::permissions::Permissions::all(),
+        });
         let offset = |value: &str| -> LuaResult<u16> {
             let table: LuaTable = lua
                 .load(format!(
@@ -727,6 +756,10 @@ mod tests {
     #[test]
     fn test_lua_api_registration() {
         let lua = Lua::new();
+        lua.set_app_data(crate::permissions::PluginIdentity {
+            name: "test".into(),
+            permissions: crate::permissions::Permissions::all(),
+        });
         let helix_table = lua.create_table().unwrap();
 
         let result = register_buffer_api(&lua, &helix_table);

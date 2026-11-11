@@ -124,6 +124,22 @@ pub struct DocumentSavedEvent {
 }
 
 pub type DocumentSavedEventResult = Result<DocumentSavedEvent, anyhow::Error>;
+
+/// The context of the error of a failed save: which document, written to which path.
+/// Displayed like the error itself, so the message shown is unchanged; take it out with
+/// `error.downcast_ref::<DocumentSaveFailed>()`.
+#[derive(Debug, Clone)]
+pub struct DocumentSaveFailed {
+    pub doc_id: DocumentId,
+    pub path: PathBuf,
+    message: String,
+}
+
+impl std::fmt::Display for DocumentSaveFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
 pub type DocumentSavedEventFuture = BoxFuture<'static, DocumentSavedEventResult>;
 
 #[derive(Debug)]
@@ -1381,6 +1397,7 @@ impl Document {
 
         let encoding_with_bom_info = (self.encoding, self.has_bom);
         let last_saved_time = self.last_saved_time;
+        let failed_path = path.clone();
 
         // We encode the file according to the `Document`'s encoding.
         let future = async move {
@@ -1549,7 +1566,17 @@ impl Document {
             Ok(event)
         };
 
-        Ok(future)
+        // A failure says which document and path it is about (`DocumentSaveFailed`).
+        Ok(async move {
+            future.await.map_err(|error| {
+                let failure = DocumentSaveFailed {
+                    doc_id,
+                    path: failed_path,
+                    message: error.to_string(),
+                };
+                error.context(failure)
+            })
+        })
     }
 
     /// Detect the programming language based on the file type.

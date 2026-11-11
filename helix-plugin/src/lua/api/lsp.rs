@@ -1,4 +1,5 @@
 use crate::error::Result;
+use crate::permissions::{require, Permission};
 use mlua::prelude::*;
 
 pub fn register_lsp_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
@@ -6,6 +7,7 @@ pub fn register_lsp_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
 
     // helix.lsp.get_clients() - Get active LSP clients for current buffer
     let get_clients = lua.create_function(|lua, ()| {
+        require(lua, Permission::Read, "helix.lsp.get_clients")?;
         // This is a bit complex as we need to find which clients are attached to the doc
         // For now, let's just list all active clients in the registry
         let infos: Vec<(String, String)> = crate::lua::with_editor(|editor| {

@@ -438,8 +438,11 @@ impl AppBuilder {
 }
 
 pub async fn run_event_loop_until_idle(app: &mut Application) {
-    let (_, rx) = tokio::sync::mpsc::unbounded_channel();
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let mut rx_stream = UnboundedReceiverStream::new(rx);
+    // The loop returns on the idle timer, which it clears when it fires: without arming it
+    // again, a call with no event to handle (after one that returned idle) would wait forever.
+    app.editor.reset_idle_timer();
     app.event_loop_until_idle(&mut rx_stream).await;
 }
 

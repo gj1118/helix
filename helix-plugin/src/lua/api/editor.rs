@@ -1,4 +1,5 @@
 use crate::error::Result;
+use crate::permissions::{require, Permission};
 use helix_view::document::Mode;
 use mlua::prelude::*;
 
@@ -7,7 +8,8 @@ pub fn register_editor_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     let editor_module = lua.create_table()?;
 
     // helix.editor.mode() - Get current editor mode
-    let mode = lua.create_function(|_lua, ()| {
+    let mode = lua.create_function(|lua, ()| {
+        require(lua, Permission::Read, "helix.editor.mode")?;
         let mode = crate::lua::try_with_editor(|editor| Ok(editor.mode()))?;
         let mode = match mode {
             Some(Mode::Insert) => "insert",
@@ -19,7 +21,8 @@ pub fn register_editor_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     editor_module.set("mode", mode)?;
 
     // Mode switching functions
-    let normal_mode = lua.create_function(|_lua, ()| {
+    let normal_mode = lua.create_function(|lua, ()| {
+        require(lua, Permission::Edit, "helix.editor.normal_mode")?;
         crate::lua::try_with_editor(|editor| {
             // Leave insert/select mode like Helix does (restores the cursor, trailing
             // indentation); that needs a focused window.
@@ -34,7 +37,8 @@ pub fn register_editor_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     })?;
     editor_module.set("normal_mode", normal_mode)?;
 
-    let insert_mode = lua.create_function(|_lua, ()| {
+    let insert_mode = lua.create_function(|lua, ()| {
+        require(lua, Permission::Edit, "helix.editor.insert_mode")?;
         crate::lua::try_with_editor(|editor| {
             editor.mode = Mode::Insert;
             Ok(())
@@ -43,7 +47,8 @@ pub fn register_editor_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     })?;
     editor_module.set("insert_mode", insert_mode)?;
 
-    let select_mode = lua.create_function(|_lua, ()| {
+    let select_mode = lua.create_function(|lua, ()| {
+        require(lua, Permission::Edit, "helix.editor.select_mode")?;
         crate::lua::try_with_editor(|editor| {
             editor.mode = Mode::Select;
             Ok(())
@@ -55,63 +60,64 @@ pub fn register_editor_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     // helix.editor.execute_command(cmd, args) - Execute a typed command
     let execute_command =
         lua.create_function(|lua, (cmd, args): (String, Option<Vec<String>>)| {
-            run_typable(lua, &cmd, &args.unwrap_or_default())
+            run_typable(lua, &cmd, &args.unwrap_or_default(), true)
         })?;
     editor_module.set("execute_command", execute_command)?;
 
     // helix.editor.move_cursor(direction, count) - Move the cursors like h/j/k/l
-    let move_cursor =
-        lua.create_function(|_lua, (direction, count): (String, Option<usize>)| {
-            use helix_core::movement::{move_horizontally, move_vertically, Direction, Movement};
-            let (vertical, dir) = match direction.as_str() {
-                "left" => (false, Direction::Backward),
-                "right" => (false, Direction::Forward),
-                "up" => (true, Direction::Backward),
-                "down" => (true, Direction::Forward),
-                _ => {
-                    return Err(LuaError::RuntimeError(format!(
-                        "Invalid direction '{}' (expected left, right, up or down)",
-                        direction
-                    )))
-                }
+    let move_cursor = lua.create_function(|lua, (direction, count): (String, Option<usize>)| {
+        require(lua, Permission::Edit, "helix.editor.move_cursor")?;
+        use helix_core::movement::{move_horizontally, move_vertically, Direction, Movement};
+        let (vertical, dir) = match direction.as_str() {
+            "left" => (false, Direction::Backward),
+            "right" => (false, Direction::Forward),
+            "up" => (true, Direction::Backward),
+            "down" => (true, Direction::Forward),
+            _ => {
+                return Err(LuaError::RuntimeError(format!(
+                    "Invalid direction '{}' (expected left, right, up or down)",
+                    direction
+                )))
+            }
+        };
+        crate::lua::with_editor(|editor| {
+            let behaviour = if editor.mode == Mode::Select {
+                Movement::Extend
+            } else {
+                Movement::Move
             };
-            crate::lua::with_editor(|editor| {
-                let behaviour = if editor.mode == Mode::Select {
-                    Movement::Extend
+            let (view, doc) = crate::lua::focused_mut(editor)?;
+            let text = doc.text().slice(..);
+            // Movements stop at the end of the text anyway.
+            let count = count.unwrap_or(1).min(text.len_chars() + 1);
+            let text_fmt = doc.text_format(view.inner_area(doc).width, None);
+            let mut annotations = view.text_annotations(doc, None);
+            let selection = doc.selection(view.id).clone().transform(|range| {
+                let move_fn = if vertical {
+                    move_vertically
                 } else {
-                    Movement::Move
+                    move_horizontally
                 };
-                let (view, doc) = crate::lua::focused_mut(editor)?;
-                let text = doc.text().slice(..);
-                // Movements stop at the end of the text anyway.
-                let count = count.unwrap_or(1).min(text.len_chars() + 1);
-                let text_fmt = doc.text_format(view.inner_area(doc).width, None);
-                let mut annotations = view.text_annotations(doc, None);
-                let selection = doc.selection(view.id).clone().transform(|range| {
-                    let move_fn = if vertical {
-                        move_vertically
-                    } else {
-                        move_horizontally
-                    };
-                    move_fn(
-                        text,
-                        range,
-                        dir,
-                        count,
-                        behaviour,
-                        &text_fmt,
-                        &mut annotations,
-                    )
-                });
-                drop(annotations);
-                doc.set_selection(view.id, selection);
-                Ok(())
-            })
-        })?;
+                move_fn(
+                    text,
+                    range,
+                    dir,
+                    count,
+                    behaviour,
+                    &text_fmt,
+                    &mut annotations,
+                )
+            });
+            drop(annotations);
+            doc.set_selection(view.id, selection);
+            Ok(())
+        })
+    })?;
     editor_module.set("move_cursor", move_cursor)?;
 
     // helix.editor.get_cursor() - Get cursor position
-    let get_cursor = lua.create_function(|_lua, ()| {
+    let get_cursor = lua.create_function(|lua, ()| {
+        require(lua, Permission::Read, "helix.editor.get_cursor")?;
         crate::lua::with_editor(|editor| {
             let (view, doc) = crate::lua::focused_ref(editor)?;
             let text = doc.text().slice(..);
@@ -124,7 +130,8 @@ pub fn register_editor_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     editor_module.set("get_cursor", get_cursor)?;
 
     // helix.editor.set_cursor(row, col) - Set cursor position
-    let set_cursor = lua.create_function(|_lua, (row, col): (usize, usize)| {
+    let set_cursor = lua.create_function(|lua, (row, col): (usize, usize)| {
+        require(lua, Permission::Edit, "helix.editor.set_cursor")?;
         crate::lua::with_editor(|editor| {
             let (view, doc) = crate::lua::focused_mut(editor)?;
 
@@ -145,6 +152,7 @@ pub fn register_editor_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
 
     // helix.editor.get_config() - Get editor configuration
     let get_config = lua.create_function(|lua, ()| {
+        require(lua, Permission::Read, "helix.editor.get_config")?;
         let config = crate::lua::with_editor(|editor| Ok(editor.config()))?;
         let table = lua.create_table()?;
 
@@ -179,6 +187,7 @@ pub fn register_editor_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
 
     // helix.editor.get_selections() - Get current selections
     let get_selections = lua.create_function(|lua, ()| {
+        require(lua, Permission::Read, "helix.editor.get_selections")?;
         let ranges = crate::lua::with_editor(|editor| {
             let (view, doc) = crate::lua::focused_ref(editor)?;
             Ok(doc
@@ -192,7 +201,8 @@ pub fn register_editor_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     editor_module.set("get_selections", get_selections)?;
 
     // helix.editor.set_selections(selections) - Set current selections
-    let set_selections = lua.create_function(|_lua, selections: Vec<LuaTable>| {
+    let set_selections = lua.create_function(|lua, selections: Vec<LuaTable>| {
+        require(lua, Permission::Edit, "helix.editor.set_selections")?;
         // Read every value before touching the editor: `raw_get` never runs metamethods.
         let mut ranges = Vec::with_capacity(selections.len());
         for s in &selections {
@@ -219,7 +229,8 @@ pub fn register_editor_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     })?;
     editor_module.set("set_selections", set_selections)?;
     // helix.editor.set_status(message, level) - level: "info" (default), "warning", "error"
-    let set_status = lua.create_function(|_lua, (message, level): (String, Option<String>)| {
+    let set_status = lua.create_function(|lua, (message, level): (String, Option<String>)| {
+        require(lua, Permission::Ui, "helix.editor.set_status")?;
         crate::lua::with_editor(|editor| {
             super::ui::show_message(editor, message, level.as_deref());
             Ok(())
@@ -228,7 +239,8 @@ pub fn register_editor_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     editor_module.set("set_status", set_status)?;
 
     // helix.editor.focus() - The focused window
-    let focus = lua.create_function(|_lua, ()| {
+    let focus = lua.create_function(|lua, ()| {
+        require(lua, Permission::Read, "helix.editor.focus")?;
         let view_id = crate::lua::with_editor(|editor| Ok(editor.tree.focus))?;
         Ok(super::window::LuaWindow { view_id })
     })?;
@@ -241,7 +253,7 @@ pub fn register_editor_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
         } else {
             "write"
         };
-        run_typable(lua, cmd, &[])
+        run_typable(lua, cmd, &[], false)
     })?;
     editor_module.set("save", save)?;
 
@@ -252,7 +264,7 @@ pub fn register_editor_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
         } else {
             "write-all"
         };
-        run_typable(lua, cmd, &[])
+        run_typable(lua, cmd, &[], false)
     })?;
     editor_module.set("save_all", save_all)?;
 
@@ -264,12 +276,13 @@ pub fn register_editor_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
         } else {
             "quit"
         };
-        run_typable(lua, cmd, &[])
+        run_typable(lua, cmd, &[], false)
     })?;
     editor_module.set("quit", quit)?;
 
     // helix.editor.open(path, action) - Open a file
-    let open = lua.create_function(|_lua, (path_str, action_str): (String, Option<String>)| {
+    let open = lua.create_function(|lua, (path_str, action_str): (String, Option<String>)| {
+        require(lua, Permission::Windows, "helix.editor.open")?;
         let path = std::path::PathBuf::from(path_str);
 
         let action = match action_str.as_deref() {
@@ -292,7 +305,8 @@ pub fn register_editor_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     editor_module.set("open", open)?;
 
     // helix.editor.close() - Close the focused window
-    let close = lua.create_function(|_lua, _force: Option<bool>| {
+    let close = lua.create_function(|lua, _force: Option<bool>| {
+        require(lua, Permission::Windows, "helix.editor.close")?;
         crate::lua::with_editor(|editor| {
             let view_id = editor.tree.focus;
             if !editor.tree.contains(view_id) {
@@ -312,7 +326,8 @@ pub fn register_editor_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     editor_module.set("close", close)?;
 
     // helix.editor.undo() - Undo last change
-    let undo = lua.create_function(|_lua, ()| {
+    let undo = lua.create_function(|lua, ()| {
+        require(lua, Permission::Edit, "helix.editor.undo")?;
         crate::lua::with_editor(|editor| {
             let (view, doc) = crate::lua::focused_mut(editor)?;
             Ok(doc.undo(view))
@@ -321,7 +336,8 @@ pub fn register_editor_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     editor_module.set("undo", undo)?;
 
     // helix.editor.redo() - Redo last undone change
-    let redo = lua.create_function(|_lua, ()| {
+    let redo = lua.create_function(|lua, ()| {
+        require(lua, Permission::Edit, "helix.editor.redo")?;
         crate::lua::with_editor(|editor| {
             let (view, doc) = crate::lua::focused_mut(editor)?;
             Ok(doc.redo(view))
@@ -330,7 +346,8 @@ pub fn register_editor_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     editor_module.set("redo", redo)?;
 
     // helix.editor.select_all() - Select all text
-    let select_all = lua.create_function(|_lua, ()| {
+    let select_all = lua.create_function(|lua, ()| {
+        require(lua, Permission::Edit, "helix.editor.select_all")?;
         crate::lua::with_editor(|editor| {
             let (view, doc) = crate::lua::focused_mut(editor)?;
             let end = doc.text().len_chars();
@@ -343,6 +360,7 @@ pub fn register_editor_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
 
     // helix.editor.get_register(name) - Get register values
     let get_register = lua.create_function(|lua, name_str: String| {
+        require(lua, Permission::Read, "helix.editor.get_register")?;
         let name = name_str.chars().next().ok_or_else(|| {
             LuaError::RuntimeError("Register name must be a single character".to_string())
         })?;
@@ -360,7 +378,8 @@ pub fn register_editor_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     editor_module.set("get_register", get_register)?;
 
     // helix.editor.set_register(name, values) - Set register values
-    let set_register = lua.create_function(|_lua, (name_str, values): (String, Vec<String>)| {
+    let set_register = lua.create_function(|lua, (name_str, values): (String, Vec<String>)| {
+        require(lua, Permission::Edit, "helix.editor.set_register")?;
         let name = name_str.chars().next().ok_or_else(|| {
             LuaError::RuntimeError("Register name must be a single character".to_string())
         })?;
@@ -377,12 +396,23 @@ pub fn register_editor_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     Ok(())
 }
 
-/// Run the typable command `cmd` (e.g. `"write"`) with `args`, one argument per element.
-/// Does nothing outside of an editor context.
-fn run_typable(lua: &Lua, cmd: &str, args: &[String]) -> LuaResult<()> {
+/// Run the typable command `cmd` (e.g. `"write"`) with `args`, one argument per element,
+/// if the calling plugin has the permissions it needs (and `commands`, for
+/// `execute_command`). Does nothing outside of an editor context.
+fn run_typable(lua: &Lua, cmd: &str, args: &[String], any_command: bool) -> LuaResult<()> {
     let registry = lua
         .app_data_ref::<crate::types::CommandRegistryWrapper>()
         .map(|wrapper| std::sync::Arc::clone(&wrapper.0));
+
+    if let Some(registry) = &registry {
+        let mut needed = registry.permissions(cmd, args).ok_or_else(|| {
+            LuaError::RuntimeError(format!("Command '{cmd}' failed: Command not found: {cmd}"))
+        })?;
+        if any_command {
+            needed.insert(0, Permission::Commands);
+        }
+        crate::permissions::require_all(lua, &needed, &format!(":{cmd}"))?;
+    }
 
     crate::lua::try_with_editor(|editor| {
         let registry = registry.ok_or_else(|| {
@@ -402,6 +432,10 @@ mod tests {
     #[test]
     fn test_editor_api_registration() {
         let lua = Lua::new();
+        lua.set_app_data(crate::permissions::PluginIdentity {
+            name: "test".into(),
+            permissions: crate::permissions::Permissions::all(),
+        });
         let helix_table = lua.create_table().unwrap();
 
         let result = register_editor_api(&lua, &helix_table);
@@ -422,6 +456,10 @@ mod tests {
     #[test]
     fn test_editor_functions_callable() {
         let lua = Lua::new();
+        lua.set_app_data(crate::permissions::PluginIdentity {
+            name: "test".into(),
+            permissions: crate::permissions::Permissions::all(),
+        });
         let helix_table = lua.create_table().unwrap();
         register_editor_api(&lua, &helix_table).unwrap();
 

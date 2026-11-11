@@ -1,4 +1,5 @@
 use crate::error::Result;
+use crate::permissions::{require, Permission};
 use mlua::prelude::*;
 use std::sync::Arc;
 
@@ -7,7 +8,8 @@ pub fn register_ui_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     let ui_module = lua.create_table()?;
 
     // helix.ui.notify(message, level) - level: "info" (default), "warning", "error"
-    let notify = lua.create_function(|_lua, (message, level): (String, Option<String>)| {
+    let notify = lua.create_function(|lua, (message, level): (String, Option<String>)| {
+        require(lua, Permission::Ui, "helix.ui.notify")?;
         crate::lua::try_with_editor(|editor| {
             show_message(editor, message, level.as_deref());
             Ok(())
@@ -17,7 +19,8 @@ pub fn register_ui_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     ui_module.set("notify", notify)?;
 
     // helix.ui.info(message) - Show info message
-    let info = lua.create_function(|_lua, message: String| {
+    let info = lua.create_function(|lua, message: String| {
+        require(lua, Permission::Ui, "helix.ui.info")?;
         crate::lua::try_with_editor(|editor| {
             editor.set_status(message);
             Ok(())
@@ -27,7 +30,8 @@ pub fn register_ui_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     ui_module.set("info", info)?;
 
     // helix.ui.warn(message) - Show warning message
-    let warn = lua.create_function(|_lua, message: String| {
+    let warn = lua.create_function(|lua, message: String| {
+        require(lua, Permission::Ui, "helix.ui.warn")?;
         crate::lua::try_with_editor(|editor| {
             editor.set_warning(message);
             Ok(())
@@ -37,7 +41,8 @@ pub fn register_ui_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     ui_module.set("warn", warn)?;
 
     // helix.ui.error(message) - Show error message
-    let error = lua.create_function(|_lua, message: String| {
+    let error = lua.create_function(|lua, message: String| {
+        require(lua, Permission::Ui, "helix.ui.error")?;
         crate::lua::try_with_editor(|editor| {
             editor.set_error(message);
             Ok(())
@@ -49,6 +54,7 @@ pub fn register_ui_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     // helix.ui.prompt(message, default, callback) - Show input prompt
     let prompt = lua.create_function(
         |lua, (message, default, callback): (String, Option<String>, LuaFunction)| {
+            require(lua, Permission::Ui, "helix.ui.prompt")?;
             open_ui(lua, callback, move |handler, editor, plugin_name, id| {
                 handler.prompt(editor, message, default, plugin_name, id)
             })
@@ -58,6 +64,7 @@ pub fn register_ui_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
 
     // helix.ui.confirm(message, callback) - Show confirmation dialog
     let confirm = lua.create_function(|lua, (message, callback): (String, LuaFunction)| {
+        require(lua, Permission::Ui, "helix.ui.confirm")?;
         open_ui(lua, callback, move |handler, editor, plugin_name, id| {
             handler.confirm(editor, message, plugin_name, id)
         })
@@ -66,6 +73,7 @@ pub fn register_ui_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
 
     // helix.ui.picker(options) - Show picker/menu
     let picker = lua.create_function(|lua, options: LuaTable| {
+        require(lua, Permission::Ui, "helix.ui.picker")?;
         // Extract picker options before touching the editor (`get` may run metamethods)
         let items: Vec<String> = options
             .get::<Option<Vec<String>>>("items")?
@@ -85,6 +93,7 @@ pub fn register_ui_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
 
     // helix.ui.menu(items, callback) - Pick one of `items` (a picker without a prompt)
     let menu = lua.create_function(|lua, (items, callback): (Vec<String>, LuaFunction)| {
+        require(lua, Permission::Ui, "helix.ui.menu")?;
         open_ui(lua, callback, move |handler, editor, plugin_name, id| {
             handler.picker(editor, items, "Select:".to_string(), plugin_name, id)
         })
@@ -92,7 +101,8 @@ pub fn register_ui_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     ui_module.set("menu", menu)?;
 
     // helix.ui.set_status(message) - Set status line message
-    let set_status = lua.create_function(|_lua, message: String| {
+    let set_status = lua.create_function(|lua, message: String| {
+        require(lua, Permission::Ui, "helix.ui.set_status")?;
         crate::lua::with_editor(|editor| {
             editor.set_status(message);
             Ok(())
@@ -101,13 +111,15 @@ pub fn register_ui_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     ui_module.set("set_status", set_status)?;
 
     // helix.ui.get_theme() - Get current theme name
-    let get_theme = lua.create_function(|_lua, ()| {
+    let get_theme = lua.create_function(|lua, ()| {
+        require(lua, Permission::Ui, "helix.ui.get_theme")?;
         crate::lua::with_editor(|editor| Ok(editor.theme.name().to_string()))
     })?;
     ui_module.set("get_theme", get_theme)?;
 
     // helix.ui.set_theme(name) - Set theme
-    let set_theme = lua.create_function(|_lua, name: String| {
+    let set_theme = lua.create_function(|lua, name: String| {
+        require(lua, Permission::Ui, "helix.ui.set_theme")?;
         crate::lua::with_editor(|editor| match editor.theme_loader.load(&name) {
             Ok(theme) => editor.set_theme(theme).map_err(|e| {
                 LuaError::RuntimeError(format!("Failed to set theme {}: {}", name, e))
@@ -121,9 +133,10 @@ pub fn register_ui_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     ui_module.set("set_theme", set_theme)?;
 
     // helix.ui.get_terminal_size() - Get terminal dimensions
-    let get_terminal_size = lua.create_function(|_lua, ()| {
+    let get_terminal_size = lua.create_function(|lua, ()| {
+        require(lua, Permission::Ui, "helix.ui.get_terminal_size")?;
         let area = crate::lua::with_editor(|editor| Ok(editor.tree.area()))?;
-        let size = _lua.create_table()?;
+        let size = lua.create_table()?;
         size.set("width", area.width)?;
         size.set("height", area.height)?;
         Ok(size)
@@ -131,7 +144,8 @@ pub fn register_ui_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     ui_module.set("get_terminal_size", get_terminal_size)?;
 
     // helix.ui.redraw() - Force redraw
-    let redraw = lua.create_function(|_lua, ()| {
+    let redraw = lua.create_function(|lua, ()| {
+        require(lua, Permission::Ui, "helix.ui.redraw")?;
         crate::lua::with_editor(|editor| {
             editor.needs_redraw = true;
             Ok(())
@@ -207,6 +221,10 @@ mod tests {
     #[test]
     fn test_ui_api_registration() {
         let lua = Lua::new();
+        lua.set_app_data(crate::permissions::PluginIdentity {
+            name: "test".into(),
+            permissions: crate::permissions::Permissions::all(),
+        });
         let helix_table = lua.create_table().unwrap();
 
         let result = register_ui_api(&lua, &helix_table);
@@ -226,6 +244,10 @@ mod tests {
     #[test]
     fn test_ui_notification_functions() {
         let lua = Lua::new();
+        lua.set_app_data(crate::permissions::PluginIdentity {
+            name: "test".into(),
+            permissions: crate::permissions::Permissions::all(),
+        });
         let helix_table = lua.create_table().unwrap();
         register_ui_api(&lua, &helix_table).unwrap();
 
@@ -243,6 +265,10 @@ mod tests {
     #[test]
     fn test_ui_picker() {
         let lua = Lua::new();
+        lua.set_app_data(crate::permissions::PluginIdentity {
+            name: "test".into(),
+            permissions: crate::permissions::Permissions::all(),
+        });
         let helix_table = lua.create_table().unwrap();
         register_ui_api(&lua, &helix_table).unwrap();
 

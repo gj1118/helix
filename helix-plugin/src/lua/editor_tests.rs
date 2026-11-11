@@ -52,16 +52,28 @@ fn test_editor() -> Editor {
     editor
 }
 
+/// An engine with the state of a plugin `p` that may do everything.
 fn engine() -> LuaEngine {
-    let engine = LuaEngine::new().unwrap();
+    let mut engine = LuaEngine::new().unwrap();
     engine
-        .register_api(crate::types::PluginConfig::default())
+        .add_state("p", crate::permissions::Permissions::all())
         .unwrap();
     engine
 }
 
+/// The state of the plugin `p`.
+fn lua(engine: &LuaEngine) -> &Lua {
+    engine.state("p").unwrap()
+}
+
+/// Runs `code` as code of `p`, with the editor.
 fn run(engine: &LuaEngine, editor: &mut Editor, code: &str) -> LuaResult<()> {
-    with_editor_context(editor, || engine.lua.load(code).exec())
+    engine.run_as("p", editor, code)
+}
+
+/// Runs `code` as code of `p`, without the editor (like a plugin being loaded).
+fn load(engine: &LuaEngine, code: impl AsRef<str>) -> LuaResult<()> {
+    with_plugin(&Arc::from("p"), || lua(engine).load(code.as_ref()).exec())
 }
 
 #[test]
@@ -168,10 +180,9 @@ fn handlers_can_register_handlers_and_commands() {
     let _rt = rt.enter();
     let mut editor = test_editor();
     let engine = engine();
-    engine
-        .lua
-        .load(
-            r#"
+    load(
+        &engine,
+        r#"
             count = 0
             helix.on("init", function()
                 count = count + 1
@@ -181,9 +192,8 @@ fn handlers_can_register_handlers_and_commands() {
                 helix.register_command({ name = "b", handler = function() count = count + 10 end })
             end })
             "#,
-        )
-        .exec()
-        .unwrap();
+    )
+    .unwrap();
     let event = PluginEvent {
         event_type: EventType::OnInit,
         data: EventData::None,
@@ -191,7 +201,7 @@ fn handlers_can_register_handlers_and_commands() {
     engine.call_event_handlers(&mut editor, &event).unwrap();
     engine.execute_command(&mut editor, "a", vec![]).unwrap();
     engine.execute_command(&mut editor, "b", vec![]).unwrap();
-    let count: i64 = engine.lua.globals().get("count").unwrap();
+    let count: i64 = lua(&engine).globals().get("count").unwrap();
     assert_eq!(count, 11);
 }
 
@@ -208,7 +218,7 @@ fn ui_callbacks_can_reopen_ui_and_are_released() {
     let _rt = rt.enter();
     let mut editor = test_editor();
     let engine = engine();
-    engine.lua.set_app_data(UiHandlerWrapper(Arc::new(NoopUi)));
+    lua(&engine).set_app_data(UiHandlerWrapper(Arc::new(NoopUi)));
     with_plugin(&Arc::from("p"), || {
         run(
             &engine,
@@ -230,7 +240,7 @@ fn ui_callbacks_can_reopen_ui_and_are_released() {
     engine
         .handle_ui_callback(&mut editor, "p".into(), id, serde_json::json!("x"))
         .unwrap();
-    let answer: String = engine.lua.globals().get("answer").unwrap();
+    let answer: String = lua(&engine).globals().get("answer").unwrap();
     assert_eq!(answer, "x");
     // the second prompt is pending; aborting it releases it
     let second = *engine
@@ -250,11 +260,11 @@ fn runaway_handler_is_aborted() {
     let _rt = rt.enter();
     let mut editor = test_editor();
     let engine = engine();
-    engine
-        .lua
-        .load(r#"helix.on("init", function() while true do end end)"#)
-        .exec()
-        .unwrap();
+    load(
+        &engine,
+        r#"helix.on("init", function() while true do end end)"#,
+    )
+    .unwrap();
     let start = Instant::now();
     let event = PluginEvent {
         event_type: EventType::OnInit,
@@ -272,11 +282,11 @@ fn assert_aborted(code: &str) {
     let _rt = rt.enter();
     let mut editor = test_editor();
     let engine = engine();
-    engine
-        .lua
-        .load(format!(r#"helix.on("init", function() {code} end)"#))
-        .exec()
-        .unwrap();
+    load(
+        &engine,
+        format!(r#"helix.on("init", function() {code} end)"#),
+    )
+    .unwrap();
     let start = Instant::now();
     let event = PluginEvent {
         event_type: EventType::OnInit,
@@ -322,8 +332,7 @@ fn timeout_cannot_be_caught_with_coroutine_resume() {
 #[test]
 fn errors_are_still_caught_before_the_deadline() {
     let engine = engine();
-    let caught: (bool, bool, bool) = engine
-        .lua
+    let caught: (bool, bool, bool) = lua(&engine)
         .load(
             r#"
             local a = pcall(error, "boom")
@@ -335,8 +344,7 @@ fn errors_are_still_caught_before_the_deadline() {
         .eval()
         .unwrap();
     assert_eq!(caught, (true, true, true));
-    let value: i64 = engine
-        .lua
+    let value: i64 = lua(&engine)
         .load("local ok, v = pcall(function() return 42 end) return v")
         .eval()
         .unwrap();
@@ -403,9 +411,7 @@ fn timeout_cannot_be_caught_by_load_or_close() {
 #[test]
 fn table_functions_keep_their_semantics() {
     let engine = engine();
-    let result: String = engine
-        .lua
-        .load(
+    let result: String = lua(&engine).load(
             r#"
             local t = {}
             for i = 1, 10000 do t[i] = i end
@@ -430,10 +436,9 @@ fn table_functions_keep_their_semantics() {
 #[test]
 fn sandbox_holes_are_closed() {
     let engine = engine();
-    engine
-        .lua
-        .load(
-            r#"
+    load(
+        &engine,
+        r#"
             -- io is not loaded at all (it used to stay reachable through require)
             assert(io == nil and package.loaded.io == nil)
             assert(not pcall(require, "io"))
@@ -456,16 +461,14 @@ fn sandbox_holes_are_closed() {
             print("from a plugin", 1, 2.5, nil, {})
             warn("@on") warn("a ", "warning")
             "#,
-        )
-        .exec()
-        .unwrap();
+    )
+    .unwrap();
 }
 
 #[test]
 fn memory_is_limited() {
     let engine = engine();
-    let ok: bool = engine
-        .lua
+    let ok: bool = lua(&engine)
         .load(
             r#"
             local ok, err = pcall(string.rep, "x", 1 << 30)
@@ -485,24 +488,22 @@ fn failing_handler_does_not_stop_the_others() {
     let _rt = rt.enter();
     let mut editor = test_editor();
     let engine = engine();
-    engine
-        .lua
-        .load(
-            r#"
+    load(
+        &engine,
+        r#"
             ran = 0
             helix.on("init", function() error("first fails") end)
             helix.on("init", function() ran = ran + 1 end)
             "#,
-        )
-        .exec()
-        .unwrap();
+    )
+    .unwrap();
     let event = PluginEvent {
         event_type: EventType::OnInit,
         data: EventData::None,
     };
     let err = engine.call_event_handlers(&mut editor, &event).unwrap_err();
     assert!(err.to_string().contains("first fails"), "{err}");
-    let ran: i64 = engine.lua.globals().get("ran").unwrap();
+    let ran: i64 = lua(&engine).globals().get("ran").unwrap();
     assert_eq!(ran, 1);
 }
 
@@ -620,16 +621,15 @@ fn plugins_load_with_modules_config_and_editor_access() {
             name: "my-plugin".into(),
             enabled: true,
             config: serde_json::json!({ "greeting": "hi ", "nested": { "list": [1, 2] } }),
+            permissions: [crate::permissions::Permission::Commands]
+                .into_iter()
+                .collect(),
         }],
     };
     let manager = crate::PluginManager::new(config).unwrap();
-    manager
-        .engine()
-        .read()
-        .lua()
-        .set_app_data(UiHandlerWrapper(Arc::new(NoopUi)));
+    manager.engine().write().set_ui_handler(Arc::new(NoopUi));
     manager.initialize(&mut editor).unwrap();
-    assert_eq!(manager.engine().read().plugins().len(), 1);
+    assert_eq!(manager.engine().read().plugins().count(), 1);
     assert_eq!(
         editor.get_status().map(|(s, _)| s.to_string()),
         Some("loaded util".to_string())
@@ -677,6 +677,6 @@ fn set_cursor_stays_on_its_line_and_mode_names_match() {
         },
     };
     engine.call_event_handlers(&mut editor, &event).unwrap();
-    let seen: String = engine.lua.globals().get("seen").unwrap();
+    let seen: String = lua(&engine).globals().get("seen").unwrap();
     assert_eq!(seen, "normal>insert");
 }

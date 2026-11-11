@@ -3466,6 +3466,8 @@ impl Editor {
 
                 let (view, doc) = current!(self);
                 let view_id = view.id;
+                // The document that loses the focus (the window shows `id` next).
+                let left = doc.id;
 
                 // Append any outstanding changes to history in the old document.
                 doc.append_changes_to_history(view);
@@ -3497,10 +3499,14 @@ impl Editor {
 
                 self.replace_document_in_view(view_id, id);
 
-                dispatch(DocumentFocusLost {
-                    editor: self,
-                    doc: id,
-                });
+                // The document left, not the one shown now (a removed scratch buffer is
+                // closed, not left).
+                if left != id && !remove_empty_scratch {
+                    dispatch(DocumentFocusLost {
+                        editor: self,
+                        doc: left,
+                    });
+                }
                 return;
             }
             Action::Load => {
