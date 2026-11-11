@@ -74,9 +74,8 @@ that needs one to show anything (the global search).
 | `o`, `Alt-Enter` | Visit the entry, keeping the focus in the panel |
 | `Ctrl-s`, `Ctrl-v` | Visit the entry in a horizontal or vertical split |
 | `/` | Type the query (filter the list); `Esc` or `Enter` gives the keys back to the list |
-| `Esc`, `Ctrl-w k` (or `Ctrl-w w`, `Ctrl-w p`) | Give the focus to the code; the panel stays |
+| `Esc`, `Ctrl-l`, `Ctrl-w k` (or `Ctrl-w w`, `Ctrl-w p`) | Give the focus to the code; the panel stays |
 | `Ctrl-h` | Give the focus to the explorer (opening it if hidden) |
-| `Ctrl-l` | Give the focus to the code |
 | `Ctrl-w h` / `Ctrl-w l` | Give the focus to the explorer, when it is pinned on that side |
 | `Space Q` | Hide the panel (the space menu works from the panel) |
 | `Ctrl-q` | Copy the matched entries to the quicklist |
@@ -86,11 +85,34 @@ that needs one to show anything (the global search).
 
 `Space Q` (`quickfix`, `:quickfix`) shows the panel with the focus (the last list it showed,
 or the quicklist) and hides it when it is open, like `Space x` for the explorer; each only
-toggles its own panel. From the code, `Ctrl-w j` in the bottom view gives the focus to the
-panel (so does the `quickfix_focus` command, which can be bound to a key or run from the
-command palette; it shows the quicklist when the panel is closed, like `:copen`), and
-`]q` / `[q` visit
-the next and previous entry of the panel (while it is shown; `]l` and `[l` keep walking the
-quicklist in the file). A click in the panel focuses it and selects the entry clicked; a click
-in the code gives the focus back. `:copen` focuses the panel, or shows again the last list it
-showed, or else shows the quicklist, whether `enable` is on or not; `:cclose` closes it.
+toggles its own panel. `]q` / `[q` visit the next and previous entry of the panel from the
+code (while it is shown; `]l` and `[l` keep walking the quicklist in the file). `:copen`
+focuses the panel, or shows again the last list it showed, or else shows the quicklist,
+whether `enable` is on or not; `:cclose` closes it.
+
+### Moving between the code and the panel
+
+**From the code to the panel:**
+
+- `Ctrl-w j` from the bottom view (with splits stacked, press it until you reach the bottom one).
+- `Space Q` (`:quickfix`) when the panel is hidden: it opens with the focus. When the panel is
+  open, `Space Q` hides it instead, so use `Ctrl-w j` then.
+- `:copen` focuses the panel, opening it if needed.
+- A click in the panel focuses it and selects the entry clicked.
+
+**From the panel back to the code:**
+
+- `Esc`, `Ctrl-l` or `Ctrl-w k` (also `Ctrl-w w`, `Ctrl-w p`): the focus goes to the code and
+  the panel stays open. While typing a filter (after `/`), the first `Esc` leaves the filter
+  and the second one goes to the code.
+- `Enter` visits the selected entry and gives the focus to the code.
+- `q` (or `Ctrl-c`) closes the panel.
+- A click in the code gives the focus back.
+
+For one key that always goes to the panel (opening it if needed, never hiding it), bind
+`quickfix_focus`:
+
+```toml
+[keys.normal]
+"C-j" = "quickfix_focus"   # any free key; C-j is move_lines_down by default
+```

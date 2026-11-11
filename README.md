@@ -404,15 +404,44 @@ height = 12     # rows, border included
 preview = true  # preview the selected location over the code while the panel is focused
 ```
 
-The panel sits under the views (nothing is covered) and stays open while you visit its
-entries: `j`/`k` move, `Enter` jumps and gives the focus to the code, `Esc` (or `Ctrl-w k`)
-gives the focus to the code without jumping, `Ctrl-w j` (from the bottom view) focuses the
-panel again, `]q`/`[q` visit the next and previous entry from the code, `/` filters, and `q`
-closes it. `<space>Q` / `:quickfix` shows it with the focus (the last list it showed, or the
-quicklist) and hides it, like `<space>x` for the explorer; each key only toggles its own
-panel. `:copen` shows it again, `:cclose` closes it. From the panel, `C-h` goes to the
-explorer and `C-l` to the code; `Ctrl-w h` (or `l`) reaches the explorer pinned on that side. The floating explorer and the pickers that choose one thing (files, buffers,
-commands, ...) are unchanged. See the book's Quicklist page (`book/src/quicklist.md`).
+The panel sits under the views, beside a pinned explorer (nothing is covered), and stays
+open while you visit its entries: `j`/`k` move, `Enter` jumps, `]q`/`[q` visit the next and
+previous entry from the code, `/` filters, and `q` closes it. `<space>Q` / `:quickfix` shows
+it with the focus (the last list it showed, or the quicklist) and hides it, like `<space>x`
+for the explorer; each key only toggles its own panel. `:copen` shows it again, `:cclose`
+closes it. The floating explorer and the pickers that choose one thing (files, buffers,
+commands, ...) are unchanged.
+
+### Moving between the code and the panel
+
+**From the code to the panel:**
+
+- `Ctrl-w j` from the bottom view (with splits stacked, press it until you reach the bottom one).
+- `Space Q` (`:quickfix`) when the panel is hidden: it opens with the focus. When the panel is
+  open, `Space Q` hides it instead, so use `Ctrl-w j` then.
+- `:copen` focuses the panel, opening it if needed.
+- A click in the panel focuses it and selects the entry clicked.
+
+**From the panel back to the code:**
+
+- `Esc`, `C-l` or `Ctrl-w k` (also `Ctrl-w w`, `Ctrl-w p`): the focus goes to the code and
+  the panel stays open. While typing a filter (after `/`), the first `Esc` leaves the filter
+  and the second one goes to the code.
+- `Enter` visits the selected entry and gives the focus to the code.
+- `q` (or `Ctrl-c`) closes the panel.
+- A click in the code gives the focus back.
+
+For one key that always goes to the panel (opening it if needed, never hiding it), bind
+`quickfix_focus`:
+
+```toml
+[keys.normal]
+"C-j" = "quickfix_focus"   # any free key; C-j is move_lines_down by default
+```
+
+From the panel, `C-h` goes to the explorer (opening it if hidden), and `Ctrl-w h` /
+`Ctrl-w l` reach the explorer pinned on that side. See the book's
+Quicklist page (`book/src/quicklist.md`) for all the keys of the panel.
 
 ## EditorConfig
 
