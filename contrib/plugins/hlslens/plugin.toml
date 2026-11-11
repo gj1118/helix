@@ -1,0 +1,8 @@
+name = "hlslens"
+version = "0.1.0"
+description = "Search lenses: the index of each match and the number of matches, like nvim-hlslens"
+author = "Gagan Janjua"
+entry = "init.lua"
+# Reads buffers and draws highlights and annotations; registers the :hlslens-* commands
+# (grant "commands" in its [[plugins.plugins]] entry of config.toml to have them).
+permissions = ["read", "ui", "commands"]

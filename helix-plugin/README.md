@@ -287,14 +287,32 @@ Buffer methods (they raise an error once the buffer is closed):
 - `save(force)`: writes the buffer (`files`); `close(force)`: closes it (`force`: even with
   unsaved changes) (`windows`); `set_language(name)`: like `:lang` (`"text"` for none)
   (`config`).
-- `set_annotations(list)` (focused buffer only): replaces the annotations drawn in the
-  focused window for this buffer (they are shared by all plugins). Each annotation has
+- `set_annotations(list)` (focused buffer only): replaces the calling plugin's annotations
+  drawn in the focused window for this buffer; the other plugins' stay. Each annotation has
   `char_idx` (anchor; it picks the line), `text`, and optionally `fg`/`bg` (`"#rrggbb"`),
   `style` (a theme key), `offset` (columns, 0-65535), `is_line` (a virtual line below the
   anchor's line instead of text after the end of the line), `virt_line_idx` (virtual lines
   with the same index share a row) and `dropped_text` (shown instead of `text` when inline
   annotations do not fit and move to a line below). A field of the wrong type is an error.
   Annotations move with the text when it is edited. `set_annotations({})` clears them.
+- `clear_annotations()`: removes the calling plugin's annotations of this buffer in every
+  window (any buffer, focused or not) (`ui`).
+- `find_all(pattern, options)`: the matches of the regex `pattern` in the buffer, like
+  Helix's search finds them (multi-line; smart case per `search.smart-case`, unless
+  `options.case_insensitive` is `true` or `false`): `{ { from = ..., to = ... }, ... }`
+  (char indices, `to` exclusive), at most `options.max` (default 10 000). An invalid pattern
+  is an error.
+
+  ```lua
+  local buffer = helix.buffer.get_current()
+  buffer:set_text("one two\nTwo\n") -- needs `edit`
+  local matches = buffer:find_all("two")
+  assert(type(matches) == "table" and #matches == 2)
+  assert(math.type(matches[1].from) == "integer" and matches[1].from == 4)
+  assert(matches[1].to == 7 and matches[2].from == 8)
+  local exact = buffer:find_all("Two") -- an uppercase letter: the case matters
+  assert(#exact == 1 and exact[1].from == 8)
+  ```
 - `set_panel(panel)` (focused buffer only): shows a panel in the focused window, after the
   end of a line, drawn over the text: unlike annotations it takes no rows, so the lines
   below never move and the view does not scroll for it. `set_panel(nil)` removes it; a
@@ -335,6 +353,7 @@ Buffer methods (they raise an error once the buffer is closed):
 - `get_config()`: some editor settings (`scrolloff`, `mouse`, `cursorline`, ...).
 - `get_register(name)`, `set_register(name, values)`: register contents as a table of
   strings.
+- `last_search()`: the pattern of the last search (`/`, `n`, `*`, ...), or `nil`.
 - `set_status(message, level)`: like `helix.ui.notify`.
 - `run(name, count)`: runs a command of key bindings (`"move_line_down"`,
   `"goto_definition"`, `"file_picker"`; see the command palette), `count` times, like
@@ -570,8 +589,10 @@ end }
 
 ## Example plugins
 
-`contrib/plugins/` has an `auto-save` skeleton and `inline-diagnostic`, which shows the
-diagnostics of the cursor line in a panel, like tiny-inline-diagnostic.nvim.
+`contrib/plugins/` has an `auto-save` skeleton, `inline-diagnostic`, which shows the
+diagnostics of the cursor line in a panel, like tiny-inline-diagnostic.nvim, and `hlslens`,
+search lenses like nvim-hlslens (`[3/12]` at the end of the lines of the matches; see the
+book's Plugins chapter for its settings).
 
 ## Development
 

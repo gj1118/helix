@@ -31,6 +31,7 @@ mod test {
     mod editorconfig;
     mod explorer;
     mod history;
+    mod hlslens;
     mod image_preview;
     mod inline_completion;
     mod lsp_data;

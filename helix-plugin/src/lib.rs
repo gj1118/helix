@@ -137,6 +137,8 @@ impl PluginManager {
         for doc in editor.documents.values_mut() {
             doc.plugin_signs.clear();
             doc.plugin_highlights.clear();
+            doc.plugin_annotations.clear();
+            doc.plugin_panels.clear();
         }
         if !editor.plugin_theme_overrides.is_empty() {
             editor.plugin_theme_overrides.clear();

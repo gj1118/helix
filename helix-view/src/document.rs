@@ -183,6 +183,8 @@ pub enum DocumentOpenError {
 
 #[derive(Debug, Clone)]
 pub struct PluginAnnotation {
+    /// The plugin that drew it: `set_annotations` replaces only the caller's.
+    pub plugin: String,
     pub char_idx: usize,
     pub text: String,
     pub style: Option<String>,

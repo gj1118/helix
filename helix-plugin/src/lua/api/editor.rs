@@ -371,6 +371,19 @@ pub fn register_editor_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     })?;
     editor_module.set("get_register", get_register)?;
 
+    // helix.editor.last_search() - The pattern of the last search (`/`, `n`, `*`), or nil
+    let last_search = lua.create_function(|lua, ()| {
+        require(lua, Permission::Read, "helix.editor.last_search")?;
+        crate::lua::with_editor(|editor| {
+            let register = editor.registers.last_search_register;
+            Ok(editor
+                .registers
+                .first(register, editor)
+                .map(|value| value.to_string()))
+        })
+    })?;
+    editor_module.set("last_search", last_search)?;
+
     // helix.editor.set_register(name, values) - Set register values
     let set_register = lua.create_function(|lua, (name_str, values): (String, Vec<String>)| {
         require(lua, Permission::Edit, "helix.editor.set_register")?;

@@ -1702,3 +1702,147 @@ fn the_background_examples_of_the_book_work() {
         assert!(branch.is_none_or(|b| !b.is_empty() && !b.ends_with('\n')));
     }
 }
+
+/// Each plugin's annotations are its own: `set_annotations` replaces only the caller's, and
+/// `clear_annotations` removes them in every window of the buffer.
+#[test]
+fn annotations_belong_to_their_plugin() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let mut engine = engine();
+    engine
+        .add_state("q", crate::permissions::Permissions::all())
+        .unwrap();
+    run(
+        &engine,
+        &mut editor,
+        r#"
+        local b = helix.buffer.get_current()
+        b:set_text("aaa\nbbb\n")
+        b:set_annotations({ { char_idx = 4, text = "p1" }, { char_idx = 0, text = "p0" } })
+        "#,
+    )
+    .unwrap();
+    engine
+        .run_as(
+            "q",
+            &mut editor,
+            r#"helix.buffer.get_current():set_annotations({ { char_idx = 1, text = "q" } })"#,
+        )
+        .unwrap();
+    let texts = |editor: &Editor| -> Vec<(String, usize, String)> {
+        let (view, doc) = helix_view::current_ref!(editor);
+        doc.plugin_annotations
+            .get(&view.id)
+            .map(|annots| {
+                annots
+                    .iter()
+                    .map(|a| (a.plugin.clone(), a.char_idx, a.text.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let owned = |plugin: &str, char_idx: usize, text: &str| {
+        (plugin.to_string(), char_idx, text.to_string())
+    };
+    // both plugins', sorted by position
+    assert_eq!(
+        texts(&editor),
+        [owned("p", 0, "p0"), owned("q", 1, "q"), owned("p", 4, "p1")]
+    );
+    // `p` replaces its own
+    run(
+        &engine,
+        &mut editor,
+        r#"helix.buffer.get_current():set_annotations({ { char_idx = 5, text = "p2" } })"#,
+    )
+    .unwrap();
+    assert_eq!(texts(&editor), [owned("q", 1, "q"), owned("p", 5, "p2")]);
+    // `q` clears its own
+    engine
+        .run_as(
+            "q",
+            &mut editor,
+            r#"helix.buffer.get_current():clear_annotations()"#,
+        )
+        .unwrap();
+    assert_eq!(texts(&editor), [owned("p", 5, "p2")]);
+    run(
+        &engine,
+        &mut editor,
+        r#"helix.buffer.get_current():set_annotations({})"#,
+    )
+    .unwrap();
+    let (view, doc) = helix_view::current_ref!(editor);
+    assert!(!doc.plugin_annotations.contains_key(&view.id));
+}
+
+/// `find_all` finds a regex like Helix's search: char indices (`to` exclusive), smart case,
+/// `case_insensitive`, `max`; an invalid pattern is an error. `last_search` is the pattern of
+/// the last search, or nil.
+#[test]
+fn find_all_finds_like_the_search() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    run(
+        &engine,
+        &mut editor,
+        r#"
+        local b = helix.buffer.get_current()
+        b:set_text("héllo Hello\nhello\n")
+
+        -- smart case: no uppercase letter, any case
+        local found = b:find_all("h.llo")
+        assert(type(found) == "table" and #found == 3, #found)
+        assert(math.type(found[1].from) == "integer" and found[1].from == 0, found[1].from)
+        -- char indices: "héllo" is 5 chars (6 bytes)
+        assert(found[1].to == 5, found[1].to)
+        assert(found[2].from == 6 and found[2].to == 11)
+        assert(found[3].from == 12 and found[3].to == 17)
+
+        -- an uppercase letter: the case matters
+        found = b:find_all("H.llo")
+        assert(#found == 1 and found[1].from == 6, #found)
+        -- unless asked otherwise
+        found = b:find_all("H.llo", { case_insensitive = true })
+        assert(#found == 3, #found)
+        found = b:find_all("h.llo", { case_insensitive = false })
+        assert(#found == 2, #found)
+
+        -- at most `max`
+        found = b:find_all("l", { max = 2 })
+        assert(#found == 2 and found[2].from == 3, #found)
+        -- multi-line, like the search
+        found = b:find_all("^hello$")
+        assert(#found == 1 and found[1].from == 12, #found)
+        found = b:find_all("nothing")
+        assert(type(found) == "table" and #found == 0)
+
+        local ok, err = pcall(b.find_all, b, "(unclosed")
+        assert(not ok and tostring(err):find("Invalid pattern"), tostring(err))
+
+        assert(helix.editor.last_search() == nil)
+        helix.editor.set_register("/", { "wor.d" })
+        local last = helix.editor.last_search()
+        assert(type(last) == "string" and last == "wor.d", last)
+        "#,
+    )
+    .unwrap();
+}
+
+/// The `find_all` example of the book runs, with its assertions.
+#[test]
+fn the_find_all_example_of_the_book_works() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    let example =
+        book_example("local buffer = helix.buffer.get_current()\n  buffer:set_text(\"one two");
+    run(&engine, &mut editor, example).unwrap();
+    let doc = helix_view::doc!(editor);
+    assert_eq!(doc.text().to_string(), "one two\nTwo\n");
+}

@@ -482,6 +482,7 @@ async fn diagnostics_are_shown_in_the_corner_when_inline_and_end_of_line_are_off
                     doc.plugin_annotations.insert(
                         view.id,
                         vec![PluginAnnotation {
+                            plugin: "test".into(),
                             char_idx: 0,
                             text: "PANEL".to_string(),
                             style: None,

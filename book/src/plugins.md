@@ -62,8 +62,11 @@ Run `:hello` (or bind it to a key like any typable command; it is also listed in
 palette). `:reload-all-plugins` loads every plugin again without restarting Helix: handlers,
 commands and pending callbacks of the old ones are dropped first.
 
-The repository has two examples in `contrib/plugins/`: an `auto-save` skeleton and
-`inline-diagnostic`, which shows the diagnostics of the cursor line in a panel (`set_panel`).
+The repository has three examples in `contrib/plugins/`: an `auto-save` skeleton,
+`inline-diagnostic`, which shows the diagnostics of the cursor line in a panel (`set_panel`),
+and `hlslens`, a port of [nvim-hlslens](https://github.com/kevinhwang91/nvim-hlslens) (see
+[Search lenses](#search-lenses-hlslens)). Copy a directory to `~/.config/helix/plugins/` to
+use it.
 
 ## Configuration
 
@@ -315,14 +318,32 @@ Buffer methods (they raise an error once the buffer is closed):
 - `save(force)`: writes the buffer (`files`); `close(force)`: closes it (`force`: even with
   unsaved changes) (`windows`); `set_language(name)`: like `:lang` (`"text"` for none)
   (`config`).
-- `set_annotations(list)` (focused buffer only): replaces the annotations drawn in the
-  focused window for this buffer (they are shared by all plugins). Each annotation has
+- `set_annotations(list)` (focused buffer only): replaces the calling plugin's annotations
+  drawn in the focused window for this buffer; the other plugins' stay. Each annotation has
   `char_idx` (anchor; it picks the line), `text`, and optionally `fg`/`bg` (`"#rrggbb"`),
   `style` (a theme key), `offset` (columns, 0-65535), `is_line` (a virtual line below the
   anchor's line instead of text after the end of the line), `virt_line_idx` (virtual lines
   with the same index share a row) and `dropped_text` (shown instead of `text` when inline
   annotations do not fit and move to a line below). A field of the wrong type is an error.
   Annotations move with the text when it is edited. `set_annotations({})` clears them.
+- `clear_annotations()`: removes the calling plugin's annotations of this buffer in every
+  window (any buffer, focused or not) (`ui`).
+- `find_all(pattern, options)`: the matches of the regex `pattern` in the buffer, like
+  Helix's search finds them (multi-line; smart case per `search.smart-case`, unless
+  `options.case_insensitive` is `true` or `false`): `{ { from = ..., to = ... }, ... }`
+  (char indices, `to` exclusive), at most `options.max` (default 10 000). An invalid pattern
+  is an error.
+
+  ```lua
+  local buffer = helix.buffer.get_current()
+  buffer:set_text("one two\nTwo\n") -- needs `edit`
+  local matches = buffer:find_all("two")
+  assert(type(matches) == "table" and #matches == 2)
+  assert(math.type(matches[1].from) == "integer" and matches[1].from == 4)
+  assert(matches[1].to == 7 and matches[2].from == 8)
+  local exact = buffer:find_all("Two") -- an uppercase letter: the case matters
+  assert(#exact == 1 and exact[1].from == 8)
+  ```
 - `set_panel(panel)` (focused buffer only): shows a panel in the focused window, after the
   end of a line, drawn over the text: unlike annotations it takes no rows, so the lines
   below never move and the view does not scroll for it. `set_panel(nil)` removes it; a
@@ -363,6 +384,7 @@ Buffer methods (they raise an error once the buffer is closed):
 - `get_config()`: some editor settings (`scrolloff`, `mouse`, `cursorline`, ...).
 - `get_register(name)`, `set_register(name, values)`: register contents as a table of
   strings.
+- `last_search()`: the pattern of the last search (`/`, `n`, `*`, ...), or `nil`.
 - `set_status(message, level)`: like `helix.ui.notify`.
 - `run(name, count)`: runs a command of key bindings (`"move_line_down"`,
   `"goto_definition"`, `"file_picker"`; see the command palette), `count` times, like
@@ -595,3 +617,33 @@ end }
 
 - `info(msg)`, `warn(msg)`, `error(msg)`, `debug(msg)`, `trace(msg)`: write to the Helix log
   (`:log-open`; start Helix with `hx -v` for debug messages).
+
+## Search lenses (`hlslens`)
+
+`contrib/plugins/hlslens` shows, after a search (`/`, `?`, `n`, `N`, `*`, ...), a lens at the
+end of the line of each match in view: `[3/12]` for the nearest match (its index and the
+number of matches) and `[5]` for the others, with the matches highlighted. The lenses follow
+the cursor, scrolling and edits until `:hlslens-stop` (like Vim's `:nohlsearch`) or the next
+search. Its commands need the `commands` permission:
+
+```toml
+[[plugins.plugins]]
+name = "hlslens"
+permissions = ["commands"]   # :hlslens-stop, -start, -toggle, -enable, -disable
+config = { calm_down = true, near_lens = "[{index}/{total}]", lens = "[{arrow}{index}]" }
+```
+
+| Setting | Description | Default |
+| --- | --- | --- |
+| `auto_enable` | Lenses after every search; `false`: only after `:hlslens-enable` | `true` |
+| `calm_down` | Remove them once the cursor leaves the matches, or on an edit | `false` |
+| `nearest_only` | A lens on the nearest match only | `false` |
+| `near_lens`, `lens` | The text of the nearest match's lens and of the others': `{index}`, `{total}`, and `{arrow}` (`▲` above the nearest match, `▼` below) | `"[{index}/{total}]"`, `"[{index}]"` |
+| `near_lens_style`, `lens_style` | Their theme keys | `"ui.cursor.match"`, `"ui.virtual"` |
+| `near_match_style`, `match_style` | The theme keys of the nearest match and the others (`""`: not highlighted) | `"ui.cursor.match"`, `"ui.highlight"` |
+| `padding` | Columns between the end of the line and the lens, beyond the one Helix leaves | `0` |
+| `max_matches` | Matches counted at most (the total then reads `10000+`) | `10000` |
+
+A line with several matches has one lens: the nearest match's, or its first match's. Helix
+does not tell plugins what is typed in the search prompt, so the lenses show once the search
+is done (not while typing it).

@@ -216,6 +216,7 @@ mod tests {
 
     fn annot(char_idx: usize) -> PluginAnnotation {
         PluginAnnotation {
+            plugin: String::new(),
             char_idx,
             text: char_idx.to_string(),
             style: None,
@@ -261,6 +262,7 @@ mod tests {
         assert_eq!(annotation_text_format(80, 79, 4).unwrap().viewport_width, 1);
 
         let line = |idx: Option<u16>| PluginAnnotation {
+            plugin: String::new(),
             is_line: true,
             virt_line_idx: idx,
             ..annot(0)

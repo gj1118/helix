@@ -537,9 +537,11 @@ impl LuaUserData for LuaBuffer {
             "set_annotations",
             |lua, this, annotations: Vec<LuaPluginAnnotation>| {
                 require(lua, Permission::Ui, "buffer:set_annotations")?;
-                let mut plugin_annots: Vec<helix_view::document::PluginAnnotation> = annotations
+                let plugin = crate::lua::current_plugin_name().to_string();
+                let mine: Vec<helix_view::document::PluginAnnotation> = annotations
                     .into_iter()
                     .map(|a| helix_view::document::PluginAnnotation {
+                        plugin: plugin.clone(),
                         char_idx: a.char_idx,
                         text: a.text,
                         style: a.style,
@@ -551,14 +553,75 @@ impl LuaUserData for LuaBuffer {
                         dropped_text: a.dropped_text,
                     })
                     .collect();
-                // The renderers binary-search annotations by char_idx; the sort is stable
-                // so annotations at the same position keep the plugin's order.
-                plugin_annots.sort_by_key(|a| a.char_idx);
 
                 with_focused_doc(this.document_id, "Annotations", |view, doc| {
-                    doc.plugin_annotations.insert(view.id, plugin_annots);
+                    // Only the caller's annotations are replaced: the other plugins' stay.
+                    let annots = doc.plugin_annotations.entry(view.id).or_default();
+                    annots.retain(|a| a.plugin != plugin);
+                    annots.extend(mine);
+                    // The renderers binary-search annotations by char_idx; the sort is
+                    // stable so annotations at the same position keep their order.
+                    annots.sort_by_key(|a| a.char_idx);
+                    if annots.is_empty() {
+                        doc.plugin_annotations.remove(&view.id);
+                    }
                     Ok(())
                 })
+            },
+        );
+
+        // Remove the caller's annotations of this buffer, in every window (any buffer)
+        methods.add_method("clear_annotations", |lua, this, ()| {
+            require(lua, Permission::Ui, "buffer:clear_annotations")?;
+            let plugin = crate::lua::current_plugin_name().to_string();
+            crate::lua::with_editor(|editor| {
+                let doc = editor.document_mut(this.document_id).ok_or_else(|| {
+                    LuaError::RuntimeError(format!(
+                        "Buffer {:?} no longer exists",
+                        this.document_id
+                    ))
+                })?;
+                doc.plugin_annotations.retain(|_, annots| {
+                    annots.retain(|a| a.plugin != plugin);
+                    !annots.is_empty()
+                });
+                Ok(())
+            })
+        });
+
+        // The matches of a regex in the buffer, like Helix's search finds them
+        methods.add_method(
+            "find_all",
+            |lua, this, (pattern, options): (String, Option<LuaTable>)| {
+                require(lua, Permission::Read, "buffer:find_all")?;
+                let max: usize = match &options {
+                    Some(options) => options.get::<Option<usize>>("max")?,
+                    None => None,
+                }
+                .unwrap_or(FIND_ALL_DEFAULT_MAX)
+                .min(FIND_ALL_MAX);
+                let case_insensitive: Option<bool> = match &options {
+                    Some(options) => options.get("case_insensitive")?,
+                    None => None,
+                };
+                let matches = crate::lua::with_editor(|editor| {
+                    let smart_case = editor.config().search.smart_case;
+                    let doc = editor.document(this.document_id).ok_or_else(|| {
+                        LuaError::RuntimeError(format!(
+                            "Buffer {:?} no longer exists",
+                            this.document_id
+                        ))
+                    })?;
+                    find_all(doc, &pattern, case_insensitive, smart_case, max)
+                })?;
+                let list = lua.create_table_with_capacity(matches.len(), 0)?;
+                for (from, to) in matches {
+                    let item = lua.create_table_with_capacity(0, 2)?;
+                    item.set("from", from)?;
+                    item.set("to", to)?;
+                    list.push(item)?;
+                }
+                Ok(list)
             },
         );
 
@@ -642,6 +705,46 @@ impl LuaUserData for LuaBuffer {
             Ok(format!("{:?}", this.document_id))
         });
     }
+}
+
+/// How many matches `find_all` returns without a `max`, and at most.
+const FIND_ALL_DEFAULT_MAX: usize = 10_000;
+const FIND_ALL_MAX: usize = 1_000_000;
+
+/// The matches of `pattern` in `doc` as `(from, to)` char indices (`to` exclusive), at most
+/// `max`: the regex is built like Helix's search builds it (multi-line, the buffer's line
+/// ending), case-insensitive as asked, or with smart case (no uppercase letter in the
+/// pattern) when `smart_case` is on. An invalid pattern is an error.
+fn find_all(
+    doc: &helix_view::Document,
+    pattern: &str,
+    case_insensitive: Option<bool>,
+    smart_case: bool,
+    max: usize,
+) -> LuaResult<Vec<(usize, usize)>> {
+    use helix_stdx::rope::{self, RopeSliceExt};
+    let case_insensitive =
+        case_insensitive.unwrap_or_else(|| smart_case && !pattern.chars().any(char::is_uppercase));
+    let regex = rope::RegexBuilder::new()
+        .syntax(
+            rope::Config::new()
+                .case_insensitive(case_insensitive)
+                .multi_line(true)
+                .crlf(doc.line_ending == helix_core::LineEnding::Crlf),
+        )
+        .build(pattern)
+        .map_err(|err| LuaError::RuntimeError(format!("Invalid pattern {pattern:?}: {err}")))?;
+    let text = doc.text().slice(..);
+    Ok(regex
+        .find_iter(text.regex_input())
+        .take(max)
+        .map(|found| {
+            (
+                text.byte_to_char(found.start()),
+                text.byte_to_char(found.end()),
+            )
+        })
+        .collect())
 }
 
 /// Lua wrapper for a plugin annotation
