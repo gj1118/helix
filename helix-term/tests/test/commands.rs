@@ -1423,3 +1423,31 @@ async fn dot_repeats_alt_r_on_the_new_selections() -> anyhow::Result<()> {
     )
     .await
 }
+
+/// Two `:set` in a row both apply: each built on the settings in use, which the first had not
+/// changed yet, so the second undid it.
+#[tokio::test(flavor = "multi_thread")]
+async fn settings_changed_in_a_row_all_apply() -> anyhow::Result<()> {
+    let mut app = helpers::AppBuilder::new().build()?;
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    #[cfg(windows)]
+    use crossterm::event::{Event, KeyEvent};
+    #[cfg(not(windows))]
+    use termina::event::{Event, KeyEvent};
+    let keys = ":set text-width 50<ret>:toggle cursorline<ret>:set scrolloff.vertical 2<ret>";
+    for key in helix_view::input::parse_macro(keys)? {
+        tx.send(Ok(Event::Key(KeyEvent::from(key))))?;
+    }
+    let mut rx = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
+    app.event_loop_until_idle(&mut rx).await;
+
+    let config = app.editor.config();
+    let (width, cursorline, scrolloff): (usize, bool, usize) = (
+        config.text_width,
+        config.cursorline,
+        config.scrolloff.vertical,
+    );
+    assert_eq!((width, cursorline, scrolloff), (50, true, 2));
+    assert!(app.editor.pending_config.is_none());
+    Ok(())
+}

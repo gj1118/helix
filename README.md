@@ -336,6 +336,11 @@ permissions = ["edit", "commands"]  # what it may do beyond looking ("read") and
   for and is not granted is reported when it loads, and a refused call says which permission
   to grant. `helix.editor.execute_command` checks the command too: `:sh` needs `shell`, `:w`
   needs `files`, `:set shell ...` needs `shell`.
+- **Control** - plugins edit any open buffer (shown or not) and create scratch ones, read and
+  set selections with their primary, split, scroll, focus and close windows and show any
+  buffer in them, bind keys to commands or Lua functions (`helix.keymap.set("normal",
+  "<space>z", fn)`), run any command of key bindings (`helix.editor.run("goto_definition")`),
+  and read and change settings (`get_option`/`set_option`) and the working directory.
 - **Isolation** - each plugin runs in a Lua state of its own: one cannot change what another
   calls, nor act with another's permissions, nor take over its `:` commands.
 - **Events** - 35 of them: buffers (open, change, rename, save, failed save, close, focus

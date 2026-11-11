@@ -237,6 +237,30 @@ impl KeyTrie {
         self.node_mut().unwrap().merge(node);
     }
 
+    /// Binds `keys` to `leaf`, making the nodes on the way (a command in the way is replaced
+    /// by a node). `self` must be a node.
+    pub fn bind(&mut self, keys: &[KeyEvent], leaf: KeyTrie) {
+        let Some((last, path)) = keys.split_last() else {
+            return;
+        };
+        let mut trie = self;
+        for key in path {
+            let node = trie.node_mut().expect("keys are bound in a node");
+            let entry = node
+                .map
+                .entry(*key)
+                .or_insert_with(|| KeyTrie::Node(KeyTrieNode::new("", IndexMap::new())));
+            if !matches!(entry, KeyTrie::Node(_)) {
+                *entry = KeyTrie::Node(KeyTrieNode::new("", IndexMap::new()));
+            }
+            trie = entry;
+        }
+        trie.node_mut()
+            .expect("keys are bound in a node")
+            .map
+            .insert(*last, leaf);
+    }
+
     /// Descend a trie following the given path of keys
     pub fn search(&self, keys: &[KeyEvent]) -> Option<&KeyTrie> {
         let mut trie = self;

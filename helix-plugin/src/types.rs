@@ -327,6 +327,10 @@ pub struct CommandMetadata {
     pub doc: String,
     /// Arguments description (optional)
     pub args: Option<String>,
+    /// A command made for a key binding to a Lua function (`helix.keymap.set`): not listed
+    /// in the command palette.
+    #[serde(default)]
+    pub hidden: bool,
 }
 
 /// Interface for executing builtin editor commands from plugins
@@ -346,6 +350,26 @@ pub trait EditorCommandRegistry: Send + Sync {
         name: &str,
         args: &[String],
     ) -> Option<Vec<crate::permissions::Permission>>;
+
+    /// Runs the command of key bindings `name` (`"move_line_down"`) `count` times.
+    fn run_static(
+        &self,
+        editor: &mut helix_view::Editor,
+        name: &str,
+        count: usize,
+    ) -> std::result::Result<(), anyhow::Error>;
+
+    /// What running the command of key bindings `name` needs, besides `commands`; `None` when
+    /// there is no such command.
+    fn static_permissions(&self, name: &str) -> Option<Vec<crate::permissions::Permission>>;
+
+    /// What binding a key to `command` (as in `[keys]`: `"move_line_down"`, `":write"`,
+    /// `"@ihello<esc>"`) needs: the permissions the command needs when the key is pressed.
+    /// An error for a command that does not exist.
+    fn binding_permissions(
+        &self,
+        command: &str,
+    ) -> std::result::Result<Vec<crate::permissions::Permission>, String>;
 }
 
 /// Wrapper for EditorCommandRegistry to store in Lua app data

@@ -185,48 +185,42 @@ pub fn register_editor_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     })?;
     editor_module.set("get_config", get_config)?;
 
-    // helix.editor.get_selections() - Get current selections
+    // helix.editor.get_selections() - The selections of the focused window, and the index
+    // of the primary one (1-based)
     let get_selections = lua.create_function(|lua, ()| {
         require(lua, Permission::Read, "helix.editor.get_selections")?;
-        let ranges = crate::lua::with_editor(|editor| {
+        let (ranges, primary) = crate::lua::with_editor(|editor| {
             let (view, doc) = crate::lua::focused_ref(editor)?;
-            Ok(doc
-                .selection(view.id)
-                .iter()
-                .map(|range| (range.anchor, range.head))
-                .collect::<Vec<_>>())
+            let selection = doc.selection(view.id);
+            Ok((
+                selection
+                    .iter()
+                    .map(|range| (range.anchor, range.head))
+                    .collect::<Vec<_>>(),
+                selection.primary_index() + 1,
+            ))
         })?;
-        super::buffer::selections_to_lua(lua, &ranges)
+        Ok((super::buffer::selections_to_lua(lua, &ranges)?, primary))
     })?;
     editor_module.set("get_selections", get_selections)?;
 
     // helix.editor.set_selections(selections) - Set current selections
-    let set_selections = lua.create_function(|lua, selections: Vec<LuaTable>| {
-        require(lua, Permission::Edit, "helix.editor.set_selections")?;
-        // Read every value before touching the editor: `raw_get` never runs metamethods.
-        let mut ranges = Vec::with_capacity(selections.len());
-        for s in &selections {
-            let anchor: usize = s.raw_get("anchor")?;
-            let head: usize = s.raw_get("head")?;
-            ranges.push((anchor, head));
-        }
-        drop(selections);
-        if ranges.is_empty() {
-            return Ok(());
-        }
-
-        crate::lua::with_editor(|editor| {
-            let (view, doc) = crate::lua::focused_mut(editor)?;
-            let len = doc.text().len_chars();
-            let ranges: Vec<helix_core::Range> = ranges
-                .into_iter()
-                .map(|(anchor, head)| helix_core::Range::new(anchor.min(len), head.min(len)))
-                .collect();
-            let selection = helix_core::Selection::new(ranges.into(), 0);
-            doc.set_selection(view.id, selection);
-            Ok(())
-        })
-    })?;
+    // (`primary`: the 1-based index of the primary selection, default 1)
+    let set_selections =
+        lua.create_function(|lua, (selections, primary): (LuaTable, Option<usize>)| {
+            require(lua, Permission::Edit, "helix.editor.set_selections")?;
+            let ranges = read_ranges(&selections)?;
+            drop(selections);
+            if ranges.is_empty() {
+                return Ok(());
+            }
+            crate::lua::with_editor(|editor| {
+                let (view, doc) = crate::lua::focused_mut(editor)?;
+                let selection = selection_from(doc, &ranges, primary)?;
+                doc.set_selection(view.id, selection);
+                Ok(())
+            })
+        })?;
     editor_module.set("set_selections", set_selections)?;
     // helix.editor.set_status(message, level) - level: "info" (default), "warning", "error"
     let set_status = lua.create_function(|lua, (message, level): (String, Option<String>)| {
@@ -391,9 +385,124 @@ pub fn register_editor_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     })?;
     editor_module.set("set_register", set_register)?;
 
+    // helix.editor.run(name, count) - Run a command of a key binding ("move_line_down",
+    // "goto_definition", "file_picker", ...), `count` times (like typing the count first)
+    let run = lua.create_function(|lua, (name, count): (String, Option<usize>)| {
+        let registry = lua
+            .app_data_ref::<crate::types::CommandRegistryWrapper>()
+            .map(|wrapper| std::sync::Arc::clone(&wrapper.0));
+        let Some(registry) = registry else {
+            return Err(LuaError::RuntimeError(
+                "Builtin command registry not available".to_string(),
+            ));
+        };
+        let mut needed = registry.static_permissions(&name).ok_or_else(|| {
+            LuaError::RuntimeError(format!("No command '{name}' (see :command-palette)"))
+        })?;
+        needed.insert(0, Permission::Commands);
+        crate::permissions::require_all(lua, &needed, &format!("the command {name}"))?;
+        crate::lua::with_editor(|editor| {
+            registry
+                .run_static(editor, &name, count.unwrap_or(1).max(1))
+                .map_err(|e| LuaError::RuntimeError(format!("Command '{name}' failed: {e}")))
+        })
+    })?;
+    editor_module.set("run", run)?;
+
+    // helix.editor.get_option(key) - A setting of `[editor]` ("scrolloff",
+    // "soft-wrap.enable", "lsp"...) as a Lua value; nil when there is none
+    let get_option = lua.create_function(|lua, key: String| {
+        require(lua, Permission::Read, "helix.editor.get_option")?;
+        let value = crate::lua::with_editor(|editor| {
+            let config = serde_json::to_value(&*editor.config())
+                .map_err(|e| LuaError::RuntimeError(format!("{e}")))?;
+            Ok(key
+                .split('.')
+                .try_fold(&config, |value, key| value.get(key))
+                .cloned())
+        })?;
+        match value {
+            Some(value) => lua.to_value_with(
+                &value,
+                LuaSerializeOptions::new()
+                    .serialize_none_to_null(false)
+                    .serialize_unit_to_null(false)
+                    .set_array_metatable(false),
+            ),
+            None => Ok(LuaValue::Nil),
+        }
+    })?;
+    editor_module.set("get_option", get_option)?;
+
+    // helix.editor.set_option(key, value) - Like `:set key value` (`value` a string as typed,
+    // or a Lua value turned into TOML: true, 4, "x", {1, 2})
+    let set_option = lua.create_function(|lua, (key, value): (String, LuaValue)| {
+        let value = match value {
+            LuaValue::String(s) => s.to_str()?.to_string(),
+            other => {
+                let json: serde_json::Value = lua.from_value(other)?;
+                json.to_string()
+            }
+        };
+        run_typable(lua, "set-option", &[key, value], false)
+    })?;
+    editor_module.set("set_option", set_option)?;
+
+    // helix.editor.get_cwd() / set_cwd(path) - The working directory (`:cd`)
+    let get_cwd = lua.create_function(|lua, ()| {
+        require(lua, Permission::Read, "helix.editor.get_cwd")?;
+        Ok(helix_stdx::env::current_working_dir()
+            .to_string_lossy()
+            .into_owned())
+    })?;
+    editor_module.set("get_cwd", get_cwd)?;
+    let set_cwd = lua.create_function(|lua, path: String| {
+        run_typable(lua, "change-current-directory", &[path], false)
+    })?;
+    editor_module.set("set_cwd", set_cwd)?;
+
     helix_table.set("editor", editor_module)?;
 
     Ok(())
+}
+
+/// The `{anchor, head}` tables of a list, read without running metamethods (`raw_get`) and
+/// before the editor is borrowed.
+pub(crate) fn read_ranges(list: &LuaTable) -> LuaResult<Vec<(usize, usize)>> {
+    let mut ranges = Vec::new();
+    for i in 1..=list.raw_len() {
+        let range: LuaTable = list.raw_get(i)?;
+        let anchor: usize = range.raw_get("anchor")?;
+        let head: usize = range.raw_get("head")?;
+        ranges.push((anchor, head));
+    }
+    Ok(ranges)
+}
+
+/// A selection of `ranges` (clamped to the text) with the 1-based `primary` (default 1).
+pub(crate) fn selection_from(
+    doc: &helix_view::Document,
+    ranges: &[(usize, usize)],
+    primary: Option<usize>,
+) -> LuaResult<helix_core::Selection> {
+    if ranges.is_empty() {
+        return Err(LuaError::RuntimeError(
+            "A selection needs at least one range".to_string(),
+        ));
+    }
+    let primary = primary.unwrap_or(1);
+    if primary == 0 || primary > ranges.len() {
+        return Err(LuaError::RuntimeError(format!(
+            "Primary selection {primary} out of range (1 to {})",
+            ranges.len()
+        )));
+    }
+    let len = doc.text().len_chars();
+    let ranges: Vec<helix_core::Range> = ranges
+        .iter()
+        .map(|&(anchor, head)| helix_core::Range::new(anchor.min(len), head.min(len)))
+        .collect();
+    Ok(helix_core::Selection::new(ranges.into(), primary - 1))
 }
 
 /// Run the typable command `cmd` (e.g. `"write"`) with `args`, one argument per element,

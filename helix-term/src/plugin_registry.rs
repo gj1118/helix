@@ -145,6 +145,177 @@ impl EditorCommandRegistry for TermCommandRegistry {
         }
         Some(needed)
     }
+
+    fn run_static(
+        &self,
+        editor: &mut Editor,
+        name: &str,
+        count: usize,
+    ) -> std::result::Result<(), anyhow::Error> {
+        let command = crate::commands::MappableCommand::STATIC_COMMAND_LIST
+            .iter()
+            .find(|command| command.name() == name)
+            .ok_or_else(|| anyhow::anyhow!("No command '{name}'"))?;
+        let mut jobs = Jobs::new();
+        let mut cx = crate::commands::Context {
+            register: None,
+            count: std::num::NonZeroUsize::new(count),
+            editor,
+            callback: Vec::new(),
+            on_next_key_callback: None,
+            jobs: &mut jobs,
+            plugin_manager: None,
+        };
+        command.execute(&mut cx);
+        // What the command asks of the compositor (a picker, a prompt) runs after the
+        // plugin code; a command that waits for the next key (`f`, `r`...) cannot be run.
+        let waits_for_key = cx.on_next_key_callback.is_some();
+        for callback in std::mem::take(&mut cx.callback) {
+            crate::compositor::defer(callback);
+        }
+        for future in std::mem::take(&mut jobs.wait_futures) {
+            jobs.add(Job {
+                future,
+                wait: false,
+            });
+        }
+        if waits_for_key {
+            anyhow::bail!("'{name}' waits for a key: bind it to a key instead");
+        }
+        Ok(())
+    }
+
+    fn static_permissions(&self, name: &str) -> Option<Vec<Permission>> {
+        crate::commands::MappableCommand::STATIC_COMMAND_LIST
+            .iter()
+            .any(|command| command.name() == name)
+            .then(|| static_permissions(name).to_vec())
+    }
+
+    fn binding_permissions(&self, command: &str) -> std::result::Result<Vec<Permission>, String> {
+        if let Some(line) = command.strip_prefix(':') {
+            let mut words = line.split_whitespace();
+            let name = words.next().unwrap_or("");
+            let args: Vec<String> = words.map(String::from).collect();
+            return self
+                .permissions(name, &args)
+                .ok_or_else(|| format!("No command ':{name}'"));
+        }
+        if let Some(keys) = command.strip_prefix('@') {
+            // A macro replays keys, which can do anything.
+            helix_view::input::parse_macro(keys)
+                .map_err(|e| format!("Invalid macro '{command}': {e}"))?;
+            return Ok(Permission::ALL.to_vec());
+        }
+        self.static_permissions(command)
+            .ok_or_else(|| format!("No command '{command}'"))
+    }
+}
+
+/// What running a command of key bindings needs. Most change the buffer or the selections
+/// (`edit`): the others are listed. A test fails when commands are added or removed, until
+/// this is checked again.
+fn static_permissions(name: &str) -> &'static [Permission] {
+    use Permission::*;
+    match name {
+        "no_op" => &[],
+        // running programs or debuggees; replaying a macro (any keys)
+        "shell_pipe"
+        | "shell_pipe_to"
+        | "shell_insert_output"
+        | "shell_append_output"
+        | "shell_keep_pipe"
+        | "replay_macro"
+        | "code_lens" => &[Shell],
+        name if name.starts_with("dap_") => &[Shell],
+        // edits other files, may create, rename or delete them
+        "rename_symbol" => &[Edit, Files],
+        // windows, and other buffers or files in them
+        "hsplit"
+        | "hsplit_new"
+        | "vsplit"
+        | "vsplit_new"
+        | "wclose"
+        | "wonly"
+        | "jump_view_right"
+        | "jump_view_left"
+        | "jump_view_up"
+        | "jump_view_down"
+        | "swap_view_right"
+        | "swap_view_left"
+        | "swap_view_up"
+        | "swap_view_down"
+        | "transpose_view"
+        | "rotate_view"
+        | "rotate_view_reverse"
+        | "toggle_focus_window"
+        | "grow_buffer_width"
+        | "shrink_buffer_width"
+        | "grow_buffer_height"
+        | "shrink_buffer_height"
+        | "goto_file"
+        | "goto_file_hsplit"
+        | "goto_file_vsplit"
+        | "goto_last_accessed_file"
+        | "goto_last_modified_file"
+        | "goto_next_buffer"
+        | "goto_previous_buffer"
+        | "goto_definition"
+        | "goto_declaration"
+        | "goto_type_definition"
+        | "goto_implementation"
+        | "goto_reference"
+        | "jump_forward"
+        | "jump_backward"
+        | "quicklist_next"
+        | "quicklist_prev"
+        | "quicklist_next_in_file"
+        | "quicklist_prev_in_file"
+        | "suspend" => &[Windows],
+        // pickers, prompts and popups: what happens next is chosen by the user
+        "command_mode"
+        | "command_palette"
+        | "file_picker"
+        | "recent_picker"
+        | "file_picker_in_current_buffer_directory"
+        | "file_picker_in_current_directory"
+        | "file_explorer"
+        | "file_explorer_in_current_buffer_directory"
+        | "file_explorer_in_current_directory"
+        | "code_action"
+        | "code_action_picker"
+        | "code_lens_picker"
+        | "buffer_picker"
+        | "jumplist_picker"
+        | "symbol_picker"
+        | "syntax_symbol_picker"
+        | "lsp_or_syntax_symbol_picker"
+        | "changed_file_picker"
+        | "git_stash_picker"
+        | "git_file_history"
+        | "git_history"
+        | "workspace_symbol_picker"
+        | "syntax_workspace_symbol_picker"
+        | "lsp_or_syntax_workspace_symbol_picker"
+        | "diagnostics_picker"
+        | "workspace_diagnostics_picker"
+        | "todos_picker"
+        | "workspace_todos_picker"
+        | "last_picker"
+        | "global_search"
+        | "local_search_grep"
+        | "local_search_fuzzy"
+        | "signature_help"
+        | "hover"
+        | "goto_hover"
+        | "snippet_picker"
+        | "quicklist_picker"
+        | "blame_line"
+        | "blame_details"
+        | "completion" => &[Ui],
+        name if name.starts_with("explorer_") => &[Explorer],
+        _ => &[Edit],
+    }
 }
 
 /// What running a typable command needs (see `EditorCommandRegistry::permissions`). Every
@@ -360,6 +531,7 @@ pub fn get_ui_handler() -> (Arc<dyn UiHandler>, UnboundedReceiver<UiRequest>) {
 mod tests {
     use super::command_line;
     use helix_core::command_line::{Args, Signature};
+    use helix_plugin::Permission;
 
     fn parse(args: &[&str], raw_after: Option<u8>) -> Vec<String> {
         let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
@@ -386,6 +558,47 @@ mod tests {
             .filter(|name| super::typable_permissions(name).is_none())
             .collect();
         assert_eq!(unclassified, Vec::<&str>::new());
+    }
+
+    /// The classification of the commands of key bindings is checked again when commands
+    /// come or go: update the count once `static_permissions` lists what they need.
+    #[test]
+    fn static_commands_are_classified() {
+        let count = crate::commands::MappableCommand::STATIC_COMMAND_LIST.len();
+        assert_eq!(
+            count, 391,
+            "commands were added or removed: check `static_permissions` for them"
+        );
+        use helix_plugin::types::EditorCommandRegistry;
+        use helix_plugin::Permission::*;
+        let registry = super::TermCommandRegistry {};
+        let needs = |name: &str| registry.static_permissions(name);
+        assert_eq!(needs("move_line_down"), Some(vec![Edit]));
+        assert_eq!(needs("shell_pipe"), Some(vec![Shell]));
+        assert_eq!(needs("dap_launch"), Some(vec![Shell]));
+        assert_eq!(needs("vsplit"), Some(vec![Windows]));
+        assert_eq!(needs("file_picker"), Some(vec![Ui]));
+        assert_eq!(needs("explorer_toggle"), Some(vec![Explorer]));
+        assert_eq!(needs("rename_symbol"), Some(vec![Edit, Files]));
+        assert_eq!(needs("no_such_command"), None);
+    }
+
+    #[test]
+    fn key_bindings_need_what_their_command_needs() {
+        use helix_plugin::types::EditorCommandRegistry;
+        use helix_plugin::Permission::*;
+        let registry = super::TermCommandRegistry {};
+        let needs = |command: &str| registry.binding_permissions(command);
+        assert_eq!(needs("move_line_down"), Ok(vec![Edit]));
+        assert_eq!(needs(":write"), Ok(vec![Files]));
+        assert_eq!(needs(":sh rm -rf x"), Ok(vec![Shell]));
+        assert_eq!(needs(":set shell [\"x\"]"), Ok(vec![Config, Shell]));
+        assert_eq!(needs("@ihi<esc>"), Ok(Permission::ALL.to_vec()));
+        assert_eq!(needs("no_op"), Ok(vec![]));
+        let unknown: Result<Vec<Permission>, String> = needs("nope");
+        assert_eq!(unknown, Err("No command 'nope'".to_string()));
+        let unknown_typable: Result<Vec<Permission>, String> = needs(":nope");
+        assert_eq!(unknown_typable, Err("No command ':nope'".to_string()));
     }
 
     #[test]

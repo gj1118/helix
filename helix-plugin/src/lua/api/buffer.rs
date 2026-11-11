@@ -48,6 +48,53 @@ where
     })
 }
 
+/// Run `f` with the document `id` and a view to apply its changes with: any open buffer can
+/// be edited, not only the focused one (like a workspace edit does). A change of a buffer
+/// that is not focused is committed to its history at once.
+pub(crate) fn with_doc_mut<F, R>(id: DocumentId, f: F) -> LuaResult<R>
+where
+    F: FnOnce(&mut helix_view::View, &mut helix_view::Document) -> LuaResult<R>,
+{
+    crate::lua::with_editor(|editor| {
+        if editor.document(id).is_none() {
+            return Err(LuaError::RuntimeError(format!(
+                "Buffer {:?} no longer exists",
+                id
+            )));
+        }
+        // `get_synced_view_id` needs a focused window.
+        crate::lua::focused_ref(editor)?;
+        let focused = editor.tree.focus;
+        let view_id = editor.get_synced_view_id(id);
+        let view = editor.tree.get_mut(view_id);
+        let doc = editor.documents.get_mut(&id).expect("checked above");
+        let result = f(view, doc)?;
+        if view_id != focused || view.doc != id {
+            doc.append_changes_to_history(view);
+        }
+        Ok(result)
+    })
+}
+
+/// Applies the change of the chars `from..to` to `text` (`None`: a deletion).
+fn change(
+    view: &mut helix_view::View,
+    doc: &mut helix_view::Document,
+    from: usize,
+    to: usize,
+    text: Option<&str>,
+) {
+    let rope = doc.text();
+    let to = to.min(rope.len_chars());
+    let from = from.min(to);
+    if from == to && text.is_none_or(str::is_empty) {
+        return;
+    }
+    let transaction =
+        helix_core::Transaction::change(rope, std::iter::once((from, to, text.map(Into::into))));
+    doc.apply(&transaction, view.id);
+}
+
 /// Clamp a 1-based line and 0-based column to a char offset inside `text`. A column past
 /// the end of the line is the end of that line (before its line ending), not a position
 /// on the next line.
@@ -138,49 +185,204 @@ impl LuaUserData for LuaBuffer {
             })
         });
 
-        // Insert text at position
+        // Insert text at position (any open buffer)
         methods.add_method(
             "insert",
             |lua, this, (line, col, text): (usize, usize, String)| {
                 require(lua, Permission::Edit, "buffer:insert")?;
-                with_focused_doc(this.document_id, "Modifications", |view, doc| {
-                    let text_rope = doc.text();
-                    let offset = line_col_to_char(text_rope, line, col);
-                    let transaction = helix_core::Transaction::change(
-                        text_rope,
-                        std::iter::once((offset, offset, Some(text.into()))),
-                    );
-                    doc.apply(&transaction, view.id);
+                with_doc_mut(this.document_id, |view, doc| {
+                    let offset = line_col_to_char(doc.text(), line, col);
+                    change(view, doc, offset, offset, Some(&text));
                     Ok(())
                 })
             },
         );
 
-        // Delete range
+        // Delete range (any open buffer; a reversed range is accepted)
         methods.add_method(
             "delete",
             |lua,
              this,
              (start_line, start_col, end_line, end_col): (usize, usize, usize, usize)| {
                 require(lua, Permission::Edit, "buffer:delete")?;
-                with_focused_doc(this.document_id, "Modifications", |view, doc| {
-                    let text_rope = doc.text();
-                    let a = line_col_to_char(text_rope, start_line, start_col);
-                    let b = line_col_to_char(text_rope, end_line, end_col);
-                    // A change must have from <= to; accept reversed ranges.
-                    let (from, to) = (a.min(b), a.max(b).min(text_rope.len_chars()));
-                    if from == to {
-                        return Ok(());
-                    }
-                    let transaction = helix_core::Transaction::change(
-                        text_rope,
-                        std::iter::once((from, to, None)),
-                    );
-                    doc.apply(&transaction, view.id);
+                with_doc_mut(this.document_id, |view, doc| {
+                    let a = line_col_to_char(doc.text(), start_line, start_col);
+                    let b = line_col_to_char(doc.text(), end_line, end_col);
+                    change(view, doc, a.min(b), a.max(b), None);
                     Ok(())
                 })
             },
         );
+
+        // Replace a range with text (any open buffer)
+        methods.add_method(
+            "replace",
+            |lua,
+             this,
+             (start_line, start_col, end_line, end_col, text): (
+                usize,
+                usize,
+                usize,
+                usize,
+                String,
+            )| {
+                require(lua, Permission::Edit, "buffer:replace")?;
+                with_doc_mut(this.document_id, |view, doc| {
+                    let a = line_col_to_char(doc.text(), start_line, start_col);
+                    let b = line_col_to_char(doc.text(), end_line, end_col);
+                    change(view, doc, a.min(b), a.max(b), Some(&text));
+                    Ok(())
+                })
+            },
+        );
+
+        // Replace the whole text (one change: one undo step)
+        methods.add_method("set_text", |lua, this, text: String| {
+            require(lua, Permission::Edit, "buffer:set_text")?;
+            with_doc_mut(this.document_id, |view, doc| {
+                let len = doc.text().len_chars();
+                change(view, doc, 0, len, Some(&text));
+                Ok(())
+            })
+        });
+
+        // The lines `first..=last` (1-based, inclusive, clamped), without line endings; the
+        // empty line after a final line ending is not one (unless asked for with `last`)
+        methods.add_method(
+            "get_lines",
+            |lua, this, (first, last): (usize, Option<usize>)| {
+                require(lua, Permission::Read, "buffer:get_lines")?;
+                let lines: Vec<String> = with_doc(this.document_id, |doc| {
+                    let text = doc.text().slice(..);
+                    let count = text.len_lines();
+                    let ends_with_newline = count > 1 && text.line(count - 1).len_chars() == 0;
+                    let default_last = if ends_with_newline { count - 1 } else { count };
+                    let first = first.max(1);
+                    let last = last.unwrap_or(default_last).min(count);
+                    Ok((first..=last)
+                        .map(|line| {
+                            let line = text.line(line - 1).to_string();
+                            line.trim_end_matches(['\n', '\r']).to_string()
+                        })
+                        .collect())
+                })?;
+                lua.create_sequence_from(lines)
+            },
+        );
+
+        // The text of a range (positions like `delete`)
+        methods.add_method(
+            "get_range",
+            |lua,
+             this,
+             (start_line, start_col, end_line, end_col): (usize, usize, usize, usize)| {
+                require(lua, Permission::Read, "buffer:get_range")?;
+                with_doc(this.document_id, |doc| {
+                    let a = line_col_to_char(doc.text(), start_line, start_col);
+                    let b = line_col_to_char(doc.text(), end_line, end_col);
+                    Ok(doc.text().slice(a.min(b)..a.max(b)).to_string())
+                })
+            },
+        );
+
+        // Write the buffer (`force`: like `:write!`)
+        methods.add_method("save", |lua, this, force: Option<bool>| {
+            require(lua, Permission::Files, "buffer:save")?;
+            crate::lua::with_editor(|editor| {
+                editor
+                    .save::<std::path::PathBuf>(this.document_id, None, force.unwrap_or(false))
+                    .map_err(|e| LuaError::RuntimeError(format!("Failed to save: {e}")))
+            })
+        });
+
+        // Close the buffer (`force`: even with unsaved changes)
+        methods.add_method("close", |lua, this, force: Option<bool>| {
+            require(lua, Permission::Windows, "buffer:close")?;
+            crate::lua::with_editor(|editor| {
+                editor
+                    .close_document(this.document_id, force.unwrap_or(false))
+                    .map_err(|e| {
+                        use helix_view::editor::CloseError;
+                        LuaError::RuntimeError(match e {
+                            CloseError::DoesNotExist => "Failed to close: no such buffer".into(),
+                            CloseError::BufferModified(name) => format!(
+                                "Failed to close: {name} has unsaved changes (use close(true))"
+                            ),
+                            CloseError::SaveError(e) => format!("Failed to close: {e}"),
+                        })
+                    })
+            })
+        });
+
+        // Set the language (`"text"` for none), like `:lang`
+        methods.add_method("set_language", |lua, this, name: String| {
+            require(lua, Permission::Config, "buffer:set_language")?;
+            crate::lua::with_editor(|editor| {
+                let loader = editor.syn_loader.load();
+                let doc = editor.documents.get_mut(&this.document_id).ok_or_else(|| {
+                    LuaError::RuntimeError(format!(
+                        "Buffer {:?} no longer exists",
+                        this.document_id
+                    ))
+                })?;
+                if name == "text" {
+                    doc.set_language(None, &loader);
+                } else {
+                    doc.set_language_by_language_id(&name, &loader)
+                        .map_err(|e| LuaError::RuntimeError(format!("{e}")))?;
+                }
+                doc.detect_indent_and_line_ending();
+                drop(loader);
+                editor.refresh_language_servers(this.document_id);
+                let doc = editor
+                    .documents
+                    .get_mut(&this.document_id)
+                    .expect("checked above");
+                let diagnostics = helix_view::Editor::doc_diagnostics(
+                    &editor.language_servers,
+                    &editor.diagnostics,
+                    doc,
+                );
+                doc.replace_diagnostics(diagnostics, &[], None);
+                Ok(())
+            })
+        });
+
+        // Information about the text: indent, line ending, encoding...
+        methods.add_method("get_info", |lua, this, ()| {
+            require(lua, Permission::Read, "buffer:get_info")?;
+            let (indent, width, tab_width, line_ending, encoding, readonly, text_width) =
+                with_doc(this.document_id, |doc| {
+                    let (indent, width) = match doc.indent_style {
+                        helix_core::indent::IndentStyle::Tabs => ("tabs", doc.tab_width()),
+                        helix_core::indent::IndentStyle::Spaces(n) => ("spaces", n as usize),
+                    };
+                    let line_ending = match doc.line_ending {
+                        helix_core::LineEnding::Crlf => "crlf",
+                        helix_core::LineEnding::LF => "lf",
+                        #[allow(unreachable_patterns)]
+                        _ => "other",
+                    };
+                    Ok((
+                        indent,
+                        width,
+                        doc.tab_width(),
+                        line_ending,
+                        doc.encoding().name(),
+                        doc.readonly,
+                        doc.text_width(),
+                    ))
+                })?;
+            let info = lua.create_table()?;
+            info.set("indent_style", indent)?;
+            info.set("indent_width", width)?;
+            info.set("tab_width", tab_width)?;
+            info.set("line_ending", line_ending)?;
+            info.set("encoding", encoding)?;
+            info.set("readonly", readonly)?;
+            info.set("text_width", text_width)?;
+            Ok(info)
+        });
 
         // Get selections
         methods.add_method("get_selections", |lua, this, ()| {
@@ -623,6 +825,36 @@ pub fn register_buffer_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
         lua.create_sequence_from(ids.into_iter().map(LuaBuffer::new))
     })?;
     buffer_module.set("list", list)?;
+
+    // helix.buffer.create(text, language) - A new scratch buffer with `text`, loaded but not
+    // shown (show it with window:set_buffer or helix.window.split)
+    let create =
+        lua.create_function(|lua, (text, language): (Option<String>, Option<String>)| {
+            require(lua, Permission::Edit, "helix.buffer.create")?;
+            let id = crate::lua::with_editor(|editor| {
+                // A new buffer is set up for the focused window.
+                crate::lua::focused_ref(editor)?;
+                Ok(editor.new_file(helix_view::editor::Action::Load))
+            })?;
+            if let Some(text) = text {
+                // (a new buffer holds a line ending)
+                with_doc_mut(id, |view, doc| {
+                    let len = doc.text().len_chars();
+                    change(view, doc, 0, len, Some(&text));
+                    Ok(())
+                })?;
+            }
+            if let Some(language) = language {
+                crate::lua::with_editor(|editor| {
+                    let loader = editor.syn_loader.load();
+                    let doc = editor.documents.get_mut(&id).expect("just created");
+                    doc.set_language_by_language_id(&language, &loader)
+                        .map_err(|e| LuaError::RuntimeError(format!("{e}")))
+                })?;
+            }
+            Ok(LuaBuffer::new(id))
+        })?;
+    buffer_module.set("create", create)?;
 
     // helix.buffer.annotation(table) - Create a new annotation
     let annotation =

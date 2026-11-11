@@ -243,6 +243,20 @@ impl Compositor {
         consumed
     }
 
+    /// Runs the callbacks deferred outside of an event (plugin code run before a frame
+    /// opening a picker, say), and those they defer.
+    pub fn run_deferred(&mut self, cx: &mut Context) {
+        loop {
+            let deferred = take_deferred();
+            if deferred.is_empty() {
+                break;
+            }
+            for callback in deferred {
+                callback(self, cx)
+            }
+        }
+    }
+
     pub fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
         // The terminal cursor goes where the top-most layer with a cursor puts it. When that
         // is a layer above the editor (a prompt, the command line popup, a picker, ...) the
@@ -286,6 +300,13 @@ impl Compositor {
             }
         }
         (None, CursorKind::Hidden)
+    }
+
+    /// Whether a layer with the id `id` is open (a picker: `ui::picker::ID`).
+    pub fn has_id(&self, id: &str) -> bool {
+        self.layers
+            .iter()
+            .any(|component| component.id() == Some(id))
     }
 
     pub fn has_component(&self, type_name: &str) -> bool {

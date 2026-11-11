@@ -498,6 +498,7 @@ impl LuaEngine {
         let helix = lua.create_table()?;
         self.register_event_api(&lua, &helix)?;
         self.register_command_api(&lua, &helix)?;
+        self.register_keymap_api(&lua, &helix)?;
         register_config_api(&lua, &helix)?;
         api::register_buffer_api(&lua, &helix)?;
         api::register_editor_api(&lua, &helix)?;
@@ -641,6 +642,7 @@ impl LuaEngine {
                 name: name.clone(),
                 doc,
                 args,
+                hidden: false,
             };
             commands.insert(name, (meta, plugin, callback_ref));
             Ok(())
@@ -648,6 +650,171 @@ impl LuaEngine {
 
         helix.set("register_command", reg_fn)?;
 
+        Ok(())
+    }
+
+    /// Register `helix.keymap`
+    fn register_keymap_api(&self, lua: &Lua, helix: &LuaTable) -> Result<()> {
+        use crate::permissions::{require, require_all, Permission};
+        let keymap = lua.create_table()?;
+        let commands = Arc::clone(&self.commands);
+        let next_id = Arc::clone(&self.next_ui_callback_id);
+
+        // helix.keymap.set(modes, keys, action, opts) - Bind `keys` ("<space>z", "gx",
+        // "C-s") in `modes` ("normal", "insert", "select", or a list) to `action`: a command
+        // as in `[keys]` ("move_line_down", ":write", "@ihi<esc>", "no_op" to unbind) or a
+        // Lua function. `opts.desc`: what the key help shows.
+        let set = lua.create_function(
+            move |lua,
+                  (modes, keys, action, opts): (LuaValue, String, LuaValue, Option<LuaTable>)| {
+                require(lua, Permission::Keymaps, "helix.keymap.set")?;
+                let modes = parse_modes(&modes)?;
+                let keys = parse_keys(&keys)?;
+                let description: Option<String> = match &opts {
+                    Some(opts) => opts.get("desc")?,
+                    None => None,
+                };
+                let plugin = current_plugin_name();
+                let command = match action {
+                    LuaValue::Function(function) => {
+                        // A hidden command of the plugin runs the function: with the
+                        // plugin's permissions, so binding it needs no more.
+                        let id = next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let name = format!("plugin-key-{plugin}-{id}");
+                        let doc = description
+                            .clone()
+                            .unwrap_or_else(|| format!("{plugin}: key binding"));
+                        let key = Arc::new(lua.create_registry_value(function)?);
+                        commands.write().insert(
+                            name.clone(),
+                            (
+                                crate::types::CommandMetadata {
+                                    name: name.clone(),
+                                    doc,
+                                    args: None,
+                                    hidden: true,
+                                },
+                                Arc::clone(&plugin),
+                                key,
+                            ),
+                        );
+                        format!(":{name}")
+                    }
+                    LuaValue::String(command) => {
+                        let command = command.to_str()?.trim().to_string();
+                        // The key runs the command with the user's rights: the plugin must
+                        // have what the command needs. A plugin command of its own is fine.
+                        let own = command
+                            .strip_prefix(':')
+                            .map(|line| line.split_whitespace().next().unwrap_or(""))
+                            .and_then(|name| {
+                                commands
+                                    .read()
+                                    .get(name)
+                                    .map(|(_, owner, _)| **owner == *plugin)
+                            });
+                        match own {
+                            Some(true) => {}
+                            Some(false) => {
+                                return Err(LuaError::RuntimeError(format!(
+                                    "'{command}' is a command of another plugin"
+                                )))
+                            }
+                            None => {
+                                let registry = lua
+                                    .app_data_ref::<crate::types::CommandRegistryWrapper>()
+                                    .map(|wrapper| Arc::clone(&wrapper.0))
+                                    .ok_or_else(|| {
+                                        LuaError::RuntimeError(
+                                            "Builtin command registry not available".into(),
+                                        )
+                                    })?;
+                                let needed = registry
+                                    .binding_permissions(&command)
+                                    .map_err(LuaError::RuntimeError)?;
+                                require_all(
+                                    lua,
+                                    &needed,
+                                    &format!("a key binding to '{command}'"),
+                                )?;
+                            }
+                        }
+                        command
+                    }
+                    other => {
+                        return Err(LuaError::RuntimeError(format!(
+                            "A key binding needs a command name or a function (got a value of type {})",
+                            other.type_name()
+                        )))
+                    }
+                };
+                with_editor(|editor| {
+                    for mode in modes {
+                        editor
+                            .plugin_keymaps
+                            .set(helix_view::editor::PluginBinding {
+                                plugin: plugin.to_string(),
+                                mode,
+                                keys: keys.clone(),
+                                command: command.clone(),
+                                description: description.clone(),
+                            });
+                    }
+                    Ok(())
+                })
+            },
+        )?;
+        keymap.set("set", set)?;
+
+        // helix.keymap.del(modes, keys) - Remove a binding this plugin set (the configured
+        // one comes back); whether there was one
+        let del = lua.create_function(|lua, (modes, keys): (LuaValue, String)| {
+            require(lua, Permission::Keymaps, "helix.keymap.del")?;
+            let modes = parse_modes(&modes)?;
+            let keys = parse_keys(&keys)?;
+            let plugin = current_plugin_name();
+            with_editor(|editor| {
+                let mut removed = false;
+                for mode in modes {
+                    removed |= editor.plugin_keymaps.remove(&plugin, mode, &keys);
+                }
+                Ok(removed)
+            })
+        })?;
+        keymap.set("del", del)?;
+
+        // helix.keymap.list() - The bindings of all plugins:
+        // { {plugin, mode, keys, command, desc}, ... }
+        let list = lua.create_function(|lua, ()| {
+            require(lua, Permission::Read, "helix.keymap.list")?;
+            let bindings = with_editor(|editor| Ok(editor.plugin_keymaps.bindings.clone()))?;
+            let list = lua.create_table()?;
+            for binding in bindings {
+                let entry = lua.create_table()?;
+                entry.set("plugin", binding.plugin)?;
+                entry.set("mode", mode_name(binding.mode))?;
+                let keys: String = binding
+                    .keys
+                    .iter()
+                    .map(|key| {
+                        let key = key.to_string();
+                        if key.chars().count() == 1 {
+                            key
+                        } else {
+                            format!("<{key}>")
+                        }
+                    })
+                    .collect();
+                entry.set("keys", keys)?;
+                entry.set("command", binding.command)?;
+                entry.set("desc", binding.description)?;
+                list.push(entry)?;
+            }
+            Ok(list)
+        })?;
+        keymap.set("list", list)?;
+
+        helix.set("keymap", keymap)?;
         Ok(())
     }
 
@@ -693,11 +860,12 @@ impl LuaEngine {
         })
     }
 
-    /// Get all registered commands metadata
+    /// Get all registered commands metadata (but the hidden ones of key bindings)
     pub fn get_commands(&self) -> Vec<crate::types::CommandMetadata> {
         self.commands
             .read()
             .values()
+            .filter(|(meta, _, _)| !meta.hidden)
             .map(|(meta, _, _)| meta.clone())
             .collect()
     }
@@ -901,6 +1069,63 @@ impl LuaEngine {
 impl Drop for LuaEngine {
     fn drop(&mut self) {
         self.clear_handlers();
+    }
+}
+
+/// The modes of `helix.keymap`: a name or a list of names.
+fn parse_modes(value: &LuaValue) -> LuaResult<Vec<helix_view::document::Mode>> {
+    use helix_view::document::Mode;
+    let parse = |name: &str| match name {
+        "normal" | "n" => Ok(Mode::Normal),
+        "insert" | "i" => Ok(Mode::Insert),
+        "select" | "s" | "v" => Ok(Mode::Select),
+        _ => Err(LuaError::RuntimeError(format!(
+            "Invalid mode '{name}' (expected normal, insert or select)"
+        ))),
+    };
+    match value {
+        LuaValue::String(name) => Ok(vec![parse(&name.to_str()?)?]),
+        LuaValue::Table(names) => {
+            let mut modes = Vec::new();
+            for i in 1..=names.raw_len() {
+                let name: String = names.raw_get(i)?;
+                modes.push(parse(&name)?);
+            }
+            if modes.is_empty() {
+                return Err(LuaError::RuntimeError("No mode given".into()));
+            }
+            Ok(modes)
+        }
+        other => Err(LuaError::RuntimeError(format!(
+            "Invalid modes: a name or a list of names, not a {}",
+            other.type_name()
+        ))),
+    }
+}
+
+fn mode_name(mode: helix_view::document::Mode) -> &'static str {
+    use helix_view::document::Mode;
+    match mode {
+        Mode::Normal => "normal",
+        Mode::Insert => "insert",
+        Mode::Select => "select",
+    }
+}
+
+/// The keys of `helix.keymap`: like a macro, `"<space>z"`, `"gx"`, `"<C-s>"`; a single
+/// named key may leave out the brackets (`"C-s"`, `"space"`).
+fn parse_keys(keys: &str) -> LuaResult<Vec<helix_view::input::KeyEvent>> {
+    let single = keys.parse::<helix_view::input::KeyEvent>();
+    let parsed = match single {
+        Ok(key) if keys.chars().count() > 1 && !keys.contains('<') => Ok(vec![key]),
+        _ => helix_view::input::parse_macro(keys),
+    };
+    match parsed {
+        Ok(keys) if !keys.is_empty() => Ok(keys),
+        Ok(_) => Err(LuaError::RuntimeError("No keys given".into())),
+        Err(e) => Err(LuaError::RuntimeError(format!(
+            "Invalid keys '{keys}': {e}"
+        ))),
     }
 }
 

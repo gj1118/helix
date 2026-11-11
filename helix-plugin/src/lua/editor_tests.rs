@@ -680,3 +680,235 @@ fn set_cursor_stays_on_its_line_and_mode_names_match() {
     let seen: String = lua(&engine).globals().get("seen").unwrap();
     assert_eq!(seen, "normal>insert");
 }
+
+/// Runs `code` and returns the global `result` (a string).
+fn result_of(engine: &LuaEngine, editor: &mut Editor, code: &str) -> String {
+    run(engine, editor, code).unwrap();
+    lua(engine).globals().get("result").unwrap()
+}
+
+#[test]
+fn any_open_buffer_can_be_edited_and_read() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    let result = result_of(
+        &engine,
+        &mut editor,
+        r#"
+        local focused = helix.buffer.get_current()
+        focused:set_text("one\ntwo\nthree\n")
+        -- a buffer in no window
+        local other = helix.buffer.create("alpha\nbeta\n")
+        other:insert(2, 0, ">")
+        other:replace(1, 0, 1, 5, "ALPHA")
+        local lines = other:get_lines(1)
+        focused:delete(2, 0, 3, 0)
+        result = table.concat({
+            table.concat(lines, ","), #lines,
+            focused:get_range(1, 0, 2, 5), type(other:id()),
+            tostring(helix.buffer.get_current():id() == focused:id()),
+        }, "|")
+        "#,
+    );
+    // (the empty line after the final line ending is not one)
+    assert_eq!(result, "ALPHA,>beta|2|one\nthree|string|true");
+    let texts: Vec<String> = editor.documents().map(|d| d.text().to_string()).collect();
+    assert!(texts.contains(&"one\nthree\n".to_string()), "{texts:?}");
+    assert!(texts.contains(&"ALPHA\n>beta\n".to_string()), "{texts:?}");
+}
+
+#[test]
+fn buffer_info_and_language() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    let result = result_of(
+        &engine,
+        &mut editor,
+        r#"
+        local b = helix.buffer.get_current()
+        local before = tostring(b:get_language())
+        b:set_language("rust")
+        local info = b:get_info()
+        result = table.concat({
+            before, b:get_language(), info.line_ending, info.encoding,
+            type(info.indent_width), tostring(info.readonly), type(info.text_width),
+        }, "|")
+        "#,
+    );
+    let line_ending = if cfg!(windows) { "crlf" } else { "lf" };
+    assert_eq!(
+        result,
+        format!("nil|rust|{line_ending}|UTF-8|number|false|number")
+    );
+}
+
+#[test]
+fn windows_split_move_their_cursor_scroll_and_close() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    let result = result_of(
+        &engine,
+        &mut editor,
+        r#"
+        local b = helix.buffer.get_current()
+        local lines = {}
+        for i = 1, 100 do lines[i] = "line " .. i end
+        b:set_text(table.concat(lines, "\n"))
+        local first = helix.window.get_current()
+        local second = helix.window.split("horizontal")
+        local found = helix.window.get_by_id(second:id())
+        second:set_cursor(10, 3)
+        local cursor = second:get_cursor()
+        second:set_selections({ {anchor = 0, head = 2}, {anchor = 5, head = 7} }, 2)
+        local ranges, primary = second:get_selections()
+        second:scroll_to(40)
+        local area = second:get_area()
+        local out = {
+            #helix.window.list(), tostring(found:id() == second:id()),
+            tostring(second:is_focused()), tostring(first:is_focused()),
+            cursor.row .. ":" .. cursor.col, #ranges .. "/" .. primary,
+            second:get_top_line(), type(area.width),
+        }
+        second:close()
+        out[#out + 1] = #helix.window.list()
+        out[#out + 1] = tostring(second:is_valid())
+        local ok, err = pcall(function() first:close() end)
+        out[#out + 1] = tostring(err):match("last window") or tostring(err)
+        result = table.concat(out, "|")
+        "#,
+    );
+    assert_eq!(
+        result,
+        "2|true|true|false|10:3|2/2|40|number|1|false|last window"
+    );
+}
+
+#[test]
+fn window_set_buffer_shows_another_buffer_and_keeps_the_focus() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    let result = result_of(
+        &engine,
+        &mut editor,
+        r#"
+        local scratch = helix.buffer.create("scratch text")
+        local left = helix.window.get_current()
+        local right = helix.window.split("vertical")
+        left:focus()
+        right:set_buffer(scratch)
+        result = table.concat({
+            right:get_buffer():get_text(), tostring(left:is_focused()),
+        }, "|")
+        "#,
+    );
+    assert_eq!(result, "scratch text|true");
+}
+
+#[test]
+fn selections_keep_their_primary_and_check_it() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    let result = result_of(
+        &engine,
+        &mut editor,
+        r#"
+        helix.buffer.get_current():set_text("abcdef")
+        helix.editor.set_selections({ {anchor = 0, head = 1}, {anchor = 3, head = 4} }, 2)
+        local ranges, primary = helix.editor.get_selections()
+        local ok, err = pcall(helix.editor.set_selections, { {anchor = 0, head = 1} }, 3)
+        result = #ranges .. "|" .. primary .. "|" .. tostring(err):match("out of range")
+        "#,
+    );
+    assert_eq!(result, "2|2|out of range");
+}
+
+#[test]
+fn options_are_read_as_lua_values() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    let result = result_of(
+        &engine,
+        &mut editor,
+        r#"
+        local width = helix.editor.get_option("text-width")
+        local wrap = helix.editor.get_option("soft-wrap.enable")
+        local scrolloff = helix.editor.get_option("scrolloff")
+        local missing = helix.editor.get_option("no.such.option")
+        result = table.concat({
+            type(width), width, type(wrap), type(scrolloff), tostring(missing),
+            type(helix.editor.get_cwd()),
+        }, "|")
+        "#,
+    );
+    // (`scrolloff` is a section of its own here: a table)
+    assert_eq!(result, "number|80|boolean|table|nil|string");
+}
+
+#[test]
+fn key_bindings_are_stored_for_the_application() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    let result = result_of(
+        &engine,
+        &mut editor,
+        r#"
+        helix.keymap.set({ "normal", "select" }, "<space>z", function() end, { desc = "zap" })
+        helix.keymap.set("insert", "C-s", function() end)
+        local bindings = helix.keymap.list()
+        local removed = helix.keymap.del("select", "<space>z")
+        local again = helix.keymap.del("select", "<space>z")
+        local ok, err = pcall(helix.keymap.set, "visual-block", "x", function() end)
+        local ok2, err2 = pcall(helix.keymap.set, "normal", "x", 42)
+        result = table.concat({
+            #bindings, bindings[1].mode, bindings[1].keys, bindings[1].desc,
+            tostring(bindings[1].command:match("^:plugin%-key%-p%-") ~= nil),
+            bindings[3].keys, tostring(removed), tostring(again),
+            tostring(err):match("Invalid mode") or tostring(err),
+            tostring(err2):match("of type integer") or tostring(err2),
+            #helix.keymap.list(),
+        }, "|")
+        "#,
+    );
+    assert_eq!(
+        result,
+        "3|normal|<space>z|zap|true|<C-s>|true|false|Invalid mode|of type integer|2"
+    );
+    let version: u64 = editor.plugin_keymaps.version;
+    assert_eq!(version, 4, "set (2 modes), set, del");
+    // the functions' commands are hidden from the command palette
+    assert!(engine.get_commands().is_empty());
+}
+
+#[test]
+fn key_bindings_need_the_keymaps_permission() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let mut engine = LuaEngine::new().unwrap();
+    engine
+        .add_state("p", crate::permissions::Permissions::DEFAULT)
+        .unwrap();
+    let error = engine
+        .run_as(
+            "p",
+            &mut editor,
+            r#"helix.keymap.set("normal", "x", function() end)"#,
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("'keymaps' permission"), "{error}");
+}

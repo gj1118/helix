@@ -103,6 +103,10 @@ pub struct Application {
     /// The language servers each document was last seen attached to, for `lsp_attach`.
     /// Finds the plugin events without a hook of their own (windows, renames, theme...).
     plugin_watch: plugin_events::Watch,
+    /// The configured keys, under the plugins' bindings (`helix.keymap`).
+    base_keys: HashMap<helix_view::document::Mode, crate::keymap::KeyTrie>,
+    /// The version of the plugins' bindings merged into the keys (`None`: merge again).
+    applied_keymaps: Option<u64>,
     /// Why the last window title could not be expanded (logged once, not for every frame).
     title_error: Option<String>,
     ui_receiver: tokio::sync::mpsc::UnboundedReceiver<crate::plugin_registry::UiRequest>,
@@ -434,8 +438,9 @@ impl Application {
 
         // What exists at startup is no event: plugins had `ready`.
         let plugin_watch = plugin_events::Watch::new(&editor);
+        let base_keys = config.load().keys.clone();
 
-        let app = Self {
+        let mut app = Self {
             compositor,
             terminal,
             pointer_shape: helix_view::editor::PointerShape::Default,
@@ -446,12 +451,56 @@ impl Application {
             lsp_progress: LspProgressMap::new(),
             plugin_manager,
             plugin_watch,
+            base_keys,
+            applied_keymaps: Some(0),
             title_error: None,
             ui_receiver,
             theme_mode,
         };
+        // Bindings plugins set while loading.
+        app.apply_plugin_keymaps();
 
         Ok(app)
+    }
+
+    /// Merges the plugins' key bindings over the configured keys when they changed: the
+    /// keymap reads the keys of the config.
+    fn apply_plugin_keymaps(&mut self) {
+        let version = self.editor.plugin_keymaps.version;
+        if self.applied_keymaps == Some(version) {
+            return;
+        }
+        let mut keys = self.base_keys.clone();
+        for binding in &self.editor.plugin_keymaps.bindings {
+            let command = match binding.command.parse::<crate::commands::MappableCommand>() {
+                Ok(crate::commands::MappableCommand::Typable { name, args, doc }) => {
+                    crate::commands::MappableCommand::Typable {
+                        name,
+                        args,
+                        doc: binding.description.clone().unwrap_or(doc),
+                    }
+                }
+                Ok(command) => command,
+                Err(err) => {
+                    log::error!(
+                        "Plugin '{}': cannot bind {:?}: {err}",
+                        binding.plugin,
+                        binding.command
+                    );
+                    continue;
+                }
+            };
+            if let Some(trie) = keys.get_mut(&binding.mode) {
+                trie.bind(
+                    &binding.keys,
+                    crate::keymap::KeyTrie::MappableCommand(command),
+                );
+            }
+        }
+        let mut config = (**self.config.load()).clone();
+        config.keys = keys;
+        self.config.store(Arc::new(config));
+        self.applied_keymaps = Some(version);
     }
 
     /// Whether plugins are loaded (never in the integration tests).
@@ -508,6 +557,7 @@ impl Application {
 
     async fn render(&mut self) {
         self.handle_plugin_events();
+        self.apply_plugin_keymaps();
 
         if self.compositor.full_redraw {
             self.terminal.clear().expect("Cannot clear the terminal");
@@ -520,6 +570,8 @@ impl Application {
             scroll: None,
             plugin_manager: Some(self.plugin_manager.clone()),
         };
+        // What plugin code run before this frame asked of the compositor (a picker...).
+        self.compositor.run_deferred(&mut cx);
 
         helix_event::start_frame();
         cx.editor.needs_redraw = false;
@@ -694,6 +746,10 @@ impl Application {
                     old_config: &app_config.editor,
                     editor: &mut self.editor,
                 });
+                // Applied: what follows builds on it (unless a newer change is on its way).
+                if self.editor.pending_config.as_deref() == Some(&*editor_config) {
+                    self.editor.pending_config = None;
+                }
                 app_config.editor = *editor_config;
                 if let Err(err) = self.terminal.reconfigure((&app_config.editor).into()) {
                     self.editor.set_error(err.to_string());
@@ -762,8 +818,12 @@ impl Application {
             }
 
             self.terminal.reconfigure((&default_config.editor).into())?;
+            // The plugins' bindings go over the keys read again.
+            self.base_keys = default_config.keys.clone();
+            self.applied_keymaps = None;
             // Store new config
             self.config.store(Arc::new(default_config));
+            self.apply_plugin_keymaps();
             // Re-read the .editorconfig files, applying what changed (once the new config, with
             // its `editor-config`, and the languages, whose indent is the fallback, are in).
             self.refresh_editor_configs();

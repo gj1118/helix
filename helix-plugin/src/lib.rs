@@ -126,6 +126,8 @@ impl PluginManager {
 
     /// Reload all plugins
     pub fn reload_plugins(&self, editor: &mut Editor) -> Result<()> {
+        // Their bindings go with them (a function binding's command is gone).
+        editor.plugin_keymaps.clear();
         // Reset engine state
         {
             let mut engine = self.engine.write();

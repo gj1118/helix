@@ -550,3 +550,156 @@ async fn idle_and_exit_reach_the_plugins() -> anyhow::Result<()> {
     assert_eq!(exit, ["idle:insert", "exit"]);
     Ok(())
 }
+
+/// Plugins bind keys to commands and Lua functions; a binding needs what its command needs,
+/// and removing it brings the configured one back.
+#[tokio::test(flavor = "multi_thread")]
+async fn plugins_bind_keys() -> anyhow::Result<()> {
+    let init = r#"
+        local function try(f)
+            local ok, err = pcall(f)
+            return ok and "ok" or (tostring(err):match("needs the (.-) permission")
+                or tostring(err):match("No command '[^']*'") or tostring(err))
+        end
+        helix.keymap.set("normal", "<space>z", function()
+            helix.editor.set_register("z", { "zapped " .. helix.editor.mode() })
+        end, { desc = "zap" })
+        -- `X` moves the cursor down (the default `X` selects the line)
+        helix.keymap.set("normal", "X", "move_line_down")
+        helix.on("ready", function()
+            helix.editor.set_register("y", {
+                try(function() helix.keymap.set("normal", "Q", ":sh echo hi") end) .. "," ..
+                try(function() helix.keymap.set("normal", "Q", "@ihi") end) .. "," ..
+                try(function() helix.keymap.set("normal", "Q", "nope") end) .. "," ..
+                try(function() helix.keymap.set("normal", "Q", ":write") end)
+            })
+        end)
+        helix.register_command{ name = "restore-x", handler = function()
+            helix.keymap.del("normal", "X")
+        end }
+    "#;
+    let dir = plugin_dir(&[("keys", init, None)])?;
+    let config = plugin_config(
+        dir.path(),
+        r#"
+        [[plugins]]
+        name = "keys"
+        permissions = ["edit", "keymaps", "commands"]
+        "#,
+    )?;
+    let file = helpers::temp_file_with_contents("one\ntwo\nthree\n")?;
+    let mut app = helpers::AppBuilder::new()
+        .with_file(file.path(), None)
+        .with_config(config)
+        .build()?;
+
+    // `:sh` needs `shell`, a macro all of them (it has edit, commands and keymaps), `:write`
+    // `files`; unknown commands fail
+    let refused: Vec<String> = register(&app, 'y');
+    assert_eq!(
+        refused,
+        [concat!(
+            "'shell',",
+            "'windows' and 'files' and 'config' and 'explorer' and 'shell',",
+            "No command 'nope',",
+            "'files'"
+        )]
+    );
+
+    send_keys(&mut app, "<space>z").await?;
+    let zapped: Vec<String> = register(&app, 'z');
+    assert_eq!(zapped, ["zapped normal"]);
+
+    send_keys(&mut app, "X").await?;
+    let cursor_line = |app: &Application| {
+        let (view, doc) = helix_view::current_ref!(app.editor);
+        let text = doc.text().slice(..);
+        text.char_to_line(doc.selection(view.id).primary().cursor(text))
+    };
+    let moved: usize = cursor_line(&app);
+    assert_eq!(moved, 1);
+
+    // removed: `X` selects the line again
+    send_keys(&mut app, ":restore-x<ret>X").await?;
+    let (view, doc) = helix_view::current_ref!(app.editor);
+    let selected: String = doc
+        .selection(view.id)
+        .primary()
+        .fragment(doc.text().slice(..))
+        .into_owned();
+    assert_eq!(selected, "two\n");
+    Ok(())
+}
+
+/// `helix.editor.run` runs the commands of key bindings, pickers included; settings, the
+/// working directory and buffers that are not focused can be changed.
+#[tokio::test(flavor = "multi_thread")]
+async fn plugins_run_commands_and_change_settings_and_buffers() -> anyhow::Result<()> {
+    let init = r#"
+        helix.register_command{ name = "probe", handler = function()
+            helix.editor.run("goto_line_end")
+            helix.editor.run("move_line_down", 2)
+            local ok, err = pcall(helix.editor.run, "find_next_char")
+            local ok2, err2 = pcall(helix.editor.run, "nope")
+            helix.editor.set_option("text-width", 60)
+            helix.editor.set_option("auto-pairs", false)
+            helix.editor.run("file_picker")
+            helix.editor.set_register("z", {
+                tostring(err):match("waits for a key") .. "," .. tostring(err2):match("No command 'nope'")
+            })
+        end }
+        helix.register_command{ name = "other-buffers", handler = function(args)
+            local other = helix.editor.open(args[1])
+            other:insert(1, 0, "edited ")
+            other:save()
+            helix.editor.set_register("y", { tostring(other:is_modified()) })
+        end }
+    "#;
+    let dir = plugin_dir(&[("runner", init, None)])?;
+    let config = plugin_config(
+        dir.path(),
+        r#"
+        [[plugins]]
+        name = "runner"
+        permissions = ["edit", "commands", "config", "files", "windows", "ui"]
+        "#,
+    )?;
+    let file = helpers::temp_file_with_contents("one\ntwo\nthree\nfour\n")?;
+    let other = helpers::temp_file_with_contents("other\n")?;
+    let mut app = helpers::AppBuilder::new()
+        .with_file(file.path(), None)
+        .with_config(config)
+        .build()?;
+
+    send_keys(&mut app, ":probe<ret>").await?;
+    let errors: Vec<String> = register(&app, 'z');
+    assert_eq!(errors, ["waits for a key,No command 'nope'"]);
+    let (view, doc) = helix_view::current_ref!(app.editor);
+    let text = doc.text().slice(..);
+    let cursor = doc.selection(view.id).primary().cursor(text);
+    let (line, col): (usize, usize) = (
+        text.char_to_line(cursor),
+        cursor - text.line_to_char(text.char_to_line(cursor)),
+    );
+    assert_eq!((line, col), (2, 2));
+    let width: usize = app.editor.config().text_width;
+    assert_eq!(width, 60);
+    let auto_pairs: bool = app.editor.auto_pairs.is_some();
+    assert!(!auto_pairs);
+    // the picker the command opened is on screen
+    let picker_open: bool = app.compositor.has_id(helix_term::ui::picker::ID);
+    assert!(picker_open);
+
+    send_keys(&mut app, "<esc>").await?;
+    send_keys(
+        &mut app,
+        &format!(":other-buffers {}<ret>", other.path().display()),
+    )
+    .await?;
+    let saved = std::fs::read_to_string(other.path())?;
+    assert_eq!(saved, LineFeedHandling::Native.apply("edited other\n"));
+    // the edit was in the background: the focused buffer is unchanged
+    let text: String = helix_view::doc!(app.editor).text().to_string();
+    assert_eq!(text, "one\ntwo\nthree\nfour\n");
+    Ok(())
+}

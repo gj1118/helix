@@ -2599,6 +2599,11 @@ pub struct Editor {
     /// `buffer_pre_save` handlers with it). It may edit the document: what it leaves is
     /// written.
     pub pre_save_hook: Option<PreSaveHook>,
+    /// Key bindings set by plugins (`helix.keymap`), over the configured keys.
+    pub plugin_keymaps: PluginKeymaps,
+    /// The newest settings sent to the application (`:set`) and not applied yet: the next
+    /// change builds on them, or two changes in a row would lose the first.
+    pub pending_config: Option<Box<Config>>,
     /// Whether the terminal can draw the secondary cursors itself (kitty's multiple cursors
     /// protocol), detected when the terminal is set up.
     pub kitty_multi_cursor_support: bool,
@@ -2658,6 +2663,58 @@ impl Action {
     /// Whether to align the view to the cursor after executing this action
     pub fn align_view(&self, view: &View, new_doc: DocumentId) -> bool {
         !matches!((self, view.doc == new_doc), (Action::Load, false))
+    }
+}
+
+/// Key bindings set by plugins. The application merges them over the configured keys each
+/// time `version` changes (and again after `:config-reload`).
+#[derive(Debug, Default, Clone)]
+pub struct PluginKeymaps {
+    /// Changes with every change of `bindings`.
+    pub version: u64,
+    pub bindings: Vec<PluginBinding>,
+}
+
+/// A key binding of a plugin.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PluginBinding {
+    /// The plugin that set it.
+    pub plugin: String,
+    pub mode: Mode,
+    pub keys: Vec<KeyEvent>,
+    /// As in `[keys]`: `"move_line_down"`, `":write"`, `"@ihi<esc>"`; `"no_op"` unbinds.
+    pub command: String,
+    /// What the key help shows for it (`None`: the command's own).
+    pub description: Option<String>,
+}
+
+impl PluginKeymaps {
+    /// Binds (replacing the binding of the same keys in the same mode, whoever set it).
+    pub fn set(&mut self, binding: PluginBinding) {
+        self.bindings
+            .retain(|b| !(b.mode == binding.mode && b.keys == binding.keys));
+        self.bindings.push(binding);
+        self.version += 1;
+    }
+
+    /// Removes the binding `plugin` set for `keys` in `mode`; whether there was one.
+    pub fn remove(&mut self, plugin: &str, mode: Mode, keys: &[KeyEvent]) -> bool {
+        let before = self.bindings.len();
+        self.bindings
+            .retain(|b| !(b.plugin == plugin && b.mode == mode && b.keys == keys));
+        let removed = self.bindings.len() != before;
+        if removed {
+            self.version += 1;
+        }
+        removed
+    }
+
+    /// Removes every binding (the plugins are reloaded).
+    pub fn clear(&mut self) {
+        if !self.bindings.is_empty() {
+            self.bindings.clear();
+            self.version += 1;
+        }
     }
 }
 
@@ -2746,6 +2803,8 @@ impl Editor {
             workspace_trust,
             old_file_locs,
             pre_save_hook: None,
+            plugin_keymaps: PluginKeymaps::default(),
+            pending_config: None,
             kitty_multi_cursor_support: false,
         }
     }
@@ -2803,6 +2862,24 @@ impl Editor {
 
     /// Call if the config has changed to let the editor update all
     /// relevant members.
+    /// The settings a change of settings (`:set`) builds on: the newest ones sent and not
+    /// applied yet, or the current ones.
+    pub fn config_to_change(&self) -> Config {
+        match &self.pending_config {
+            Some(pending) => (**pending).clone(),
+            None => (*self.config()).clone(),
+        }
+    }
+
+    /// Sends changed settings to the application (which applies them with the next event).
+    pub fn send_config(&mut self, config: Config) -> anyhow::Result<()> {
+        self.pending_config = Some(Box::new(config.clone()));
+        self.config_events
+            .0
+            .send(ConfigEvent::Update(Box::new(config)))?;
+        Ok(())
+    }
+
     pub fn refresh_config(&mut self, old_config: &Config) {
         let config = self.config();
         self.auto_pairs = (&config.auto_pairs).into();
