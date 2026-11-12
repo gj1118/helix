@@ -6,6 +6,7 @@ pub mod annotations;
 pub mod clipboard;
 pub mod component_keys;
 pub mod custom_commands;
+pub mod diff_connector;
 pub mod diff_view;
 pub mod document;
 pub mod editor;

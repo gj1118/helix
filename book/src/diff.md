@@ -173,6 +173,7 @@ Helix's `C` (copy the selection to the next line) in diff views only.
 [editor.diff]
 ignore-whitespace = false  # lines that differ only in whitespace are not changes
 connector-width = 9        # columns of the connector
+connector-graphics = "auto" # "auto", "kitty" or "cells": how the connector is drawn
 align-on-jump = true       # `]c`/`[c` scroll the other side to the same change
 scroll-sync = true         # scrolling one side scrolls the other; false: each on its own
 open-changed-files-in-diff = true # files opened from `Space g` show their diff; false: a buffer
@@ -182,6 +183,14 @@ staged = "▣"
 unstaged = "□"
 partial = "◩"
 ```
+
+On terminals that show images with the kitty graphics protocol (kitty, Ghostty; the
+detection of `[editor.image-preview] protocol`, never inside tmux or zellij), the connector
+is drawn as an image: smooth, anti-aliased curves from each change on the left to the same
+change on the right, over the terminal's own background, the stage marks on top. Elsewhere,
+and with a theme whose diff colors are terminal palette names (`green`) rather than RGB, it
+is drawn with cells. `connector-graphics = "kitty"` uses the image whatever the detection
+says, `"cells"` never.
 
 The colors come from the theme: `ui.diff.add`, `ui.diff.delete`, `ui.diff.change` and
 `ui.diff.change.emphasis` (backgrounds). A theme without them gets backgrounds mixed from its

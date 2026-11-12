@@ -3578,6 +3578,8 @@ impl Editor {
             view.gutters = config.gutters.clone();
             view.ensure_cursor_in_view(doc, config.scrolloff)
         }
+        // the right sides of the diffs keep their connector in front of the new gutters
+        self.diff_gutters_changed(&config.gutters);
     }
 
     fn replace_document_in_view(&mut self, current_view: ViewId, doc_id: DocumentId) {

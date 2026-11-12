@@ -823,6 +823,7 @@ Side-by-side diffs (`:diff`, `:diff-git`, `hx --diff`): see [Diffs](./diff.md).
 | --- | --- | --- |
 | `ignore-whitespace` | Lines that differ only in whitespace are not changes | `false` |
 | `connector-width` | Columns of the connector between the two sides | `9` |
+| `connector-graphics` | How the connector is drawn: `auto` (an image with the kitty graphics protocol where the terminal has it, cells elsewhere), `kitty` (always the image), `cells` | `"auto"` |
 | `align-on-jump` | `]c` / `[c` scroll the other side to the same change | `true` |
 | `open-changed-files-in-diff` | Opening a file from the changed files list (`Space g`, as a picker or in the quickfix panel) shows its diff against git, and the other changed files after it with `]f` / `[f`; `false`: the file opens as a plain buffer | `true` |
 | `merge-keys` | The keys of the merge conflict resolver, by action (see [Diffs](./diff.md#resolving-merge-conflicts)) | `]c`, `[c`, `>>`, `<<`, `gb`, `]s`, `q` |

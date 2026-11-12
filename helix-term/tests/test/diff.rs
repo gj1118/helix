@@ -1482,3 +1482,79 @@ async fn a_review_goes_through_conflicts() -> anyhow::Result<()> {
     assert_eq!(app.editor.tree.views().count(), 2);
     Ok(())
 }
+
+/// The images sent to the terminal at `(x, y)` (kitty graphics protocol): their bytes.
+fn images_at(app: &Application, x: u16, y: u16) -> Vec<String> {
+    app.raw_output()
+        .iter()
+        .filter(|(at_x, at_y, _)| (*at_x, *at_y) == (x, y))
+        .map(|(_, _, bytes)| String::from_utf8_lossy(bytes).into_owned())
+        .collect()
+}
+
+/// With the kitty graphics protocol, the connector is an image over its (blank) cells, sent
+/// again only when it changes; with `cells`, no image.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_connector_is_an_image_with_kitty_graphics() -> anyhow::Result<()> {
+    use helix_view::diff_view::ConnectorGraphics;
+    let mut config = helpers::test_config();
+    config.editor.diff.connector_graphics = ConnectorGraphics::Kitty;
+    config.editor.notifications.enable = false;
+    let (mut app, _old, _new) = app_with_long_diff(config).await?;
+    // a theme with RGB colors: named terminal colors can't be in an image (cells then)
+    let theme: helix_view::Theme = toml::from_str(
+        r##""ui.background" = { bg = "#101010" }
+"ui.selection" = { bg = "#303030" }
+"diff.plus" = "#40c040"
+"diff.minus" = "#c04040"
+"diff.delta" = "#4080c0""##,
+    )?;
+    app.editor.set_theme(theme)?;
+    send_keys(&mut app, "<esc>").await?;
+    let session = app.editor.diff_sessions.first().cloned().expect("a diff");
+    let view = app.editor.tree.get(session.right_view);
+    let doc = app.editor.document(session.right_doc).unwrap();
+    let (x, y) = (view.area.x, view.inner_area(doc).y);
+
+    // the connector kept in front of the gutters (a theme set resets them)
+    {
+        let view = app.editor.tree.get(session.right_view);
+        assert_eq!(view.gutters.layout[0], GutterType::DiffConnector);
+    }
+    let sent: Vec<String> = images_at(&app, x, y);
+    let image = sent.last().expect("an image sent");
+    assert!(image.starts_with("\x1b_Ga=T,f=100,"), "{image:?}");
+    assert!(image.contains("i=4810600,c=9,"), "{image:?}");
+    // the cells under it are blank
+    for column in 0..9 {
+        assert_eq!(app.rendered_cell(x + column, y).symbol.as_str(), " ");
+    }
+
+    // a frame where the connector doesn't change: nothing sent again
+    let count = app.raw_output().len();
+    send_keys(&mut app, "l").await?;
+    assert_eq!(app.raw_output().len(), count);
+
+    // scrolled to the added lines: the image replaced (the old one deleted first)
+    send_keys(&mut app, "60gg").await?;
+    let sent: Vec<String> = images_at(&app, x, y);
+    assert!(sent.len() >= 3, "{} sent", sent.len());
+    let (deleted, shown) = (&sent[sent.len() - 2], &sent[sent.len() - 1]);
+    assert_eq!(deleted, "\x1b_Ga=d,d=I,i=4810600,q=2\x1b\\");
+    assert!(shown.starts_with("\x1b_Ga=T,"), "{shown:?}");
+
+    // a theme with named colors: cells, the image taken away
+    let named: helix_view::Theme =
+        toml::from_str("\"diff.plus\" = \"green\"\n\"ui.selection\" = { bg = \"gray\" }")?;
+    app.editor.set_theme(named)?;
+    send_keys(&mut app, "<esc>").await?;
+    let last = images_at(&app, x, y).pop().unwrap_or_default();
+    assert_eq!(last, "\x1b_Ga=d,d=I,i=4810600,q=2\x1b\\");
+
+    // cells: no image, the bands in the cells
+    let mut config = helpers::test_config();
+    config.editor.diff.connector_graphics = ConnectorGraphics::Cells;
+    let (app, _old, _new) = app_with_long_diff(config).await?;
+    assert!(app.raw_output().is_empty());
+    Ok(())
+}

@@ -28,6 +28,9 @@ pub struct DiffConfig {
     pub ignore_whitespace: bool,
     /// Columns of the connector between the two sides.
     pub connector_width: u16,
+    /// How the connector is drawn: an image (smooth curves) on terminals with the kitty
+    /// graphics protocol, cells otherwise.
+    pub connector_graphics: ConnectorGraphics,
     /// Jumping to a change (`]c`, `[c`) scrolls the other side to the same change.
     pub align_on_jump: bool,
     /// Scrolling one side scrolls the other with it, to the same place: the line matching the
@@ -55,6 +58,7 @@ impl Default for DiffConfig {
         Self {
             ignore_whitespace: false,
             connector_width: 9,
+            connector_graphics: ConnectorGraphics::Auto,
             align_on_jump: true,
             scroll_sync: true,
             open_changed_files_in_diff: true,
@@ -63,6 +67,20 @@ impl Default for DiffConfig {
             merge_keys: default_merge_keys(),
         }
     }
+}
+
+/// `[editor.diff] connector-graphics`
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConnectorGraphics {
+    /// An image where the terminal shows images with the kitty graphics protocol (the
+    /// detection of `[editor.image-preview] protocol`), cells elsewhere.
+    #[default]
+    Auto,
+    /// Always an image (kitty graphics protocol).
+    Kitty,
+    /// Always cells.
+    Cells,
 }
 
 /// `[editor.diff.stage-markers]`
@@ -552,6 +570,18 @@ impl Editor {
         for index in ended.into_iter().rev() {
             let session = self.diff_sessions.remove(index);
             self.end_diff_session(session);
+        }
+    }
+
+    /// The configured gutters are now `gutters` (the configuration reloaded, a theme set): the
+    /// right views of the diffs get them, the connector in front, and get them back when the
+    /// diff ends.
+    pub(crate) fn diff_gutters_changed(&mut self, gutters: &GutterConfig) {
+        for session in &mut self.diff_sessions {
+            session.right_gutters = gutters.clone();
+            if self.tree.contains(session.right_view) {
+                self.tree.get_mut(session.right_view).gutters = with_connector(gutters);
+            }
         }
     }
 

@@ -6,10 +6,13 @@ use std::sync::Arc;
 
 use helix_core::diff_hunks::{hunk_at, line_count, DiffHunk, Side};
 use helix_core::doc_formatter::FormattedGrapheme;
-use helix_view::diff_view::{shown_hunks, DiffSession, DiffStyles, Stage};
+use helix_view::diff_connector::{connector_image, connector_png, Band, MAX_CELL};
+use helix_view::diff_view::{shown_hunks, ConnectorGraphics, DiffSession, DiffStyles, Stage};
+use helix_view::graphics::Color;
 use helix_view::graphics::{Rect, Style};
+use helix_view::image_preview::{kitty, Encoded, Placement, Protocol};
 use helix_view::{Document, Editor, View};
-use tui::buffer::Buffer as Surface;
+use tui::buffer::{Buffer as Surface, Overlay};
 
 use crate::ui::document::{LinePos, TextRenderer};
 use crate::ui::text_decorations::Decoration;
@@ -162,12 +165,16 @@ impl<'a> SideRows<'a> {
 /// for each change, a band from its lines on the left to its lines on the right, in the color
 /// of the change; a thin line where one side has no lines.
 pub fn render_connectors(editor: &Editor, surface: &mut Surface) {
-    for session in &editor.diff_sessions {
-        render_connector(editor, session, surface);
+    for (index, session) in editor.diff_sessions.iter().enumerate() {
+        render_connector(editor, index, session, surface);
     }
 }
 
-fn render_connector(editor: &Editor, session: &DiffSession, surface: &mut Surface) {
+/// The id of the connector image of the diff `index` in the terminal's memory (kitty
+/// graphics protocol): its own, apart from the previews' one.
+const KITTY_CONNECTOR_ID: u32 = 4_810_600;
+
+fn render_connector(editor: &Editor, index: usize, session: &DiffSession, surface: &mut Surface) {
     let (Some(left_view), Some(right_view)) = (
         editor.tree.try_get(session.left_view),
         editor.tree.try_get(session.right_view),
@@ -227,7 +234,9 @@ fn render_connector(editor: &Editor, session: &DiffSession, surface: &mut Surfac
         .get("ui.text")
         .fg
         .or_else(|| editor.theme.get("ui.linenr.selected").fg);
-    for (index, hunk) in session.hunks.iter().enumerate() {
+    // the bands of the changes in view (or crossing it)
+    let mut bands = Vec::new();
+    for (hunk_index, hunk) in session.hunks.iter().enumerate() {
         let left_top = left.row(hunk.left.start) + shift;
         let left_bottom = left.row(hunk.left.end) + shift;
         let right_top = right.row(hunk.right.start);
@@ -237,15 +246,48 @@ fn render_connector(editor: &Editor, session: &DiffSession, surface: &mut Surfac
             continue;
         }
         let style = styles.lines(hunk.kind(), Side::Right);
-        draw_band(
-            surface,
-            area,
-            style,
+        bands.push((
+            hunk_index,
             (left_top, left_bottom),
             (right_top, right_bottom),
-        );
-        // the stage mark at the right edge, on the change's first row
-        let mark = markers.as_ref().and_then(|marks| marks[index].as_deref());
+            style,
+        ));
+    }
+    let image_bands: Option<Vec<Band>> = use_graphics(editor)
+        .then(|| {
+            bands
+                .iter()
+                .map(|(_, left, right, style)| match style.bg {
+                    Some(Color::Rgb(r, g, b)) => Some(Band {
+                        left: *left,
+                        right: *right,
+                        color: [r, g, b],
+                    }),
+                    // a color the image can't have: cells
+                    _ => None,
+                })
+                .collect()
+        })
+        .flatten();
+    match image_bands {
+        Some(image_bands) => draw_image(
+            editor,
+            KITTY_CONNECTOR_ID + index as u32,
+            area,
+            &image_bands,
+            surface,
+        ),
+        None => {
+            for (_, left, right, style) in &bands {
+                draw_band(surface, area, *style, *left, *right);
+            }
+        }
+    }
+    // the stage marks at the right edge, on each change's first row (over the image too)
+    for (hunk_index, _, (right_top, _), _) in &bands {
+        let mark = markers
+            .as_ref()
+            .and_then(|marks| marks[*hunk_index].as_deref());
         if let Some(mark) = mark.filter(|mark| !mark.is_empty()) {
             let row = right_top.floor();
             if (0.0..height).contains(&row) {
@@ -258,6 +300,89 @@ fn render_connector(editor: &Editor, session: &DiffSession, surface: &mut Surfac
             }
         }
     }
+}
+
+/// Whether the connector is drawn as an image (`[editor.diff] connector-graphics`).
+fn use_graphics(editor: &Editor) -> bool {
+    let config = editor.config();
+    match config.diff.connector_graphics {
+        ConnectorGraphics::Cells => false,
+        ConnectorGraphics::Kitty => true,
+        ConnectorGraphics::Auto => {
+            config
+                .image_preview
+                .protocol
+                .resolve(|name| std::env::var(name).ok())
+                == Protocol::Kitty
+        }
+    }
+}
+
+thread_local! {
+    /// The last image of each connector (by its id in the terminal): its key, and what was
+    /// sent for it, sent again unchanged without drawing and encoding it again.
+    static IMAGES: std::cell::RefCell<std::collections::HashMap<u32, (u64, Encoded)>> =
+        Default::default();
+}
+
+/// The connector over `area` as an image (`bands` drawn smooth and anti-aliased), shown with
+/// the kitty graphics protocol as image `id`; its cells blank under it. An image like the one
+/// shown is not sent again (see the overlays of [`Surface`]).
+fn draw_image(editor: &Editor, id: u32, area: Rect, bands: &[Band], surface: &mut Surface) {
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            surface[(x, y)].set_symbol(" ");
+        }
+    }
+    // the image's resolution: the terminal scales it to the cells, so the cell size (when the
+    // terminal tells it) only up to a point, past which the image is only bigger to send
+    let cell = editor.cell_size.map_or(MAX_CELL, |(width, height)| {
+        (width.clamp(1, MAX_CELL.0), height.clamp(1, MAX_CELL.1))
+    });
+    let key = {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        (area.width, area.height, cell).hash(&mut hasher);
+        // to a 64th of a row: what the image can show
+        let at = |row: f32| (row * 64.0).round() as i64;
+        for band in bands {
+            (
+                at(band.left.0),
+                at(band.left.1),
+                at(band.right.0),
+                at(band.right.1),
+                band.color,
+            )
+                .hash(&mut hasher);
+        }
+        hasher.finish()
+    };
+    let encoded = IMAGES.with(|images| {
+        let mut images = images.borrow_mut();
+        match images.get(&id) {
+            Some((shown, encoded)) if *shown == key => encoded.clone(),
+            _ => {
+                let image = connector_image(area.width, area.height, cell, bands);
+                let placement = Placement {
+                    cols: area.width,
+                    rows: area.height,
+                    x: 0,
+                    y: 0,
+                    width_px: image.width(),
+                    height_px: image.height(),
+                };
+                let encoded = kitty(&connector_png(&image), &placement, id);
+                images.insert(id, (key, encoded.clone()));
+                encoded
+            }
+        }
+    });
+    surface.add_overlay(Overlay {
+        area,
+        key,
+        payload: Arc::from(encoded.payload.as_slice()),
+        cleanup: encoded.cleanup.as_deref().map(Arc::from),
+    });
 }
 
 /// A band across `area`, from the rows `left` (top, bottom) at its left edge to `right` at its
