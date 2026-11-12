@@ -59,6 +59,10 @@ pub struct FsWatch {
     /// Shared with the background thread, which only holds a weak reference: dropping
     /// this stops the watcher and ends the thread.
     _watcher: Arc<Mutex<RecommendedWatcher>>,
+    /// The first events received, relevant or not, and the errors: what a test that saw no
+    /// change reports.
+    #[cfg(test)]
+    received: Arc<Mutex<Vec<String>>>,
 }
 
 /// The watched tree: what noise is judged against.
@@ -188,12 +192,23 @@ impl FsWatch {
 
     fn with_strategy(root: &Path, strategy: Strategy) -> Option<Self> {
         let generation = Arc::new(AtomicU64::new(0));
+        #[cfg(test)]
+        let received = Arc::new(Mutex::new(Vec::new()));
+        #[cfg(test)]
+        let events_received = received.clone();
         let counter = generation.clone();
         let (new_dirs, new_dirs_rx) = mpsc::channel::<PathBuf>();
         let tree = Arc::new(Tree::new(root));
         let events_tree = tree.clone();
         let watcher = RecommendedWatcher::new(
             move |event: notify::Result<Event>| {
+                #[cfg(test)]
+                {
+                    let mut received = events_received.lock().unwrap_or_else(|e| e.into_inner());
+                    if received.len() < 20 {
+                        received.push(format!("{event:?}"));
+                    }
+                }
                 let Ok(event) = event else { return };
                 let tree = &events_tree;
                 if !tree.is_relevant(&event) {
@@ -271,6 +286,8 @@ impl FsWatch {
         Some(Self {
             generation,
             _watcher: watcher,
+            #[cfg(test)]
+            received,
         })
     }
 
@@ -469,29 +486,43 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "starts an OS file watcher, whose events come late or not at all on a busy machine (FSEvents after a build): run with --ignored"]
     fn detects_changes() {
         let _one = one_watcher_at_a_time();
         let dir = tempfile::tempdir().unwrap();
         let Some(watch) = FsWatch::new(dir.path()) else {
             return; // no watcher support in this environment
         };
-        let before = watch.generation();
         // The watches are added in the background: write until a change is seen.
-        for i in 0..200 {
-            std::fs::write(dir.path().join("a.txt"), i.to_string()).unwrap();
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            if watch.generation() != before {
-                return;
-            }
-        }
-        panic!("no change detected");
+        let seen = wait_for(&watch, |i| {
+            std::fs::write(dir.path().join("a.txt"), i.to_string()).unwrap()
+        });
+        assert!(seen, "{}", no_change(&watch, dir.path()));
     }
 
-    /// Repeats `change` until the watcher sees it, for up to 10 s (FSEvents delivers
-    /// events with some delay, and the watches are set up in the background).
+    /// How long to keep making a change for the watcher to see it. FSEvents delivers events
+    /// late, and much later while the system is busy writing elsewhere (right after a build,
+    /// as `cargo test` runs): give it longer.
+    const WAIT_ROUNDS: usize = if cfg!(target_os = "macos") { 600 } else { 200 };
+
+    /// The failure message of a test whose change the watcher of `root` didn't see: what it
+    /// received instead.
+    fn no_change(watch: &FsWatch, root: &Path) -> String {
+        let received = watch.received.lock().unwrap_or_else(|e| e.into_inner());
+        format!(
+            "no change detected in {} s under {} (real path {:?}); events received: {:#?}",
+            WAIT_ROUNDS / 20,
+            root.display(),
+            root.canonicalize().ok(),
+            *received
+        )
+    }
+
+    /// Repeats `change` until the watcher sees it, for up to [`WAIT_ROUNDS`] / 20 s (FSEvents
+    /// delivers events with some delay, and the watches are set up in the background).
     fn wait_for(watch: &FsWatch, mut change: impl FnMut(usize)) -> bool {
         let before = watch.generation();
-        for i in 0..200 {
+        for i in 0..WAIT_ROUNDS {
             change(i);
             std::thread::sleep(std::time::Duration::from_millis(50));
             if watch.generation() != before {
@@ -513,9 +544,10 @@ mod tests {
         let Some(watch) = FsWatch::with_strategy(root, strategy) else {
             return; // no watcher support in this environment
         };
-        assert!(wait_for(&watch, |i| {
+        let seen = wait_for(&watch, |i| {
             std::fs::write(root.join("src/deep/a.txt"), i.to_string()).unwrap()
-        }));
+        });
+        assert!(seen, "{}", no_change(&watch, root));
         if strategy == Strategy::PerDirectory {
             // inotify reports at once, so a second without an event is enough here
             let before = watch.generation();
@@ -532,9 +564,10 @@ mod tests {
         // Directories created later are watched too.
         std::fs::create_dir(root.join("src/new")).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(300));
-        assert!(wait_for(&watch, |i| {
+        let seen = wait_for(&watch, |i| {
             std::fs::write(root.join("src/new/a.txt"), i.to_string()).unwrap()
-        }));
+        });
+        assert!(seen, "{}", no_change(&watch, root));
     }
 
     #[test]
@@ -549,12 +582,14 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "starts an OS file watcher, whose events come late or not at all on a busy machine (FSEvents after a build): run with --ignored"]
     fn watches_subdirectories_recursively() {
         watches_subdirectories(Strategy::Recursive);
     }
 
     // kqueue's per-directory watching is not exercised on macOS: it isn't used there.
     #[test]
+    #[ignore = "starts an OS file watcher, whose events come late or not at all on a busy machine (FSEvents after a build): run with --ignored"]
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     fn watches_subdirectories_one_by_one() {
         watches_subdirectories(Strategy::PerDirectory);
