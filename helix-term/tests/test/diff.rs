@@ -1311,12 +1311,15 @@ async fn a_review_commits_what_it_staged() -> anyhow::Result<()> {
 }
 
 /// A repository in the middle of a merge with a conflict in `f.rs` (you changed `b` to `B2` and
-/// `d` to `D`, they changed `b` to `B1`), and a new file `z.rs`.
-fn repo_with_a_conflict() -> anyhow::Result<tempfile::TempDir> {
+/// `d` to `D`, they changed `b` to `B1`), and a new file `z.rs`. The conflict markers in the
+/// `style` of `merge.conflictStyle` (`merge`, `diff3`, `zdiff3`), whatever the global config of
+/// git says.
+fn repo_with_a_conflict(style: &str) -> anyhow::Result<tempfile::TempDir> {
     let repo = tempfile::tempdir()?;
     let root = repo.path();
     git(root, &["init", "-q"])?;
     committable(&repo)?;
+    git(root, &["config", "merge.conflictStyle", style])?;
     std::fs::write(root.join("f.rs"), "a\nb\nc\nd\n")?;
     git(root, &["add", "."])?;
     git(root, &["commit", "-qm", "first"])?;
@@ -1354,7 +1357,19 @@ fn unmerged(root: &std::path::Path, relative: &str) -> bool {
 /// side, the other or both; saved without conflicts, the file is resolved.
 #[tokio::test(flavor = "multi_thread")]
 async fn conflicts_are_resolved_in_three_windows() -> anyhow::Result<()> {
-    let repo = repo_with_a_conflict()?;
+    resolve_conflicts("merge").await
+}
+
+/// The same with the merge base in the markers too (`|||||||`), as `merge.conflictStyle =
+/// zdiff3` (or `diff3`) writes them. (A test of its own: one app a test, the jobs of a second
+/// one would go to the first's.)
+#[tokio::test(flavor = "multi_thread")]
+async fn conflicts_with_their_base_are_resolved() -> anyhow::Result<()> {
+    resolve_conflicts("zdiff3").await
+}
+
+async fn resolve_conflicts(style: &str) -> anyhow::Result<()> {
+    let repo = repo_with_a_conflict(style)?;
     let root = repo.path();
     assert!(unmerged(root, "f.rs"));
     let mut config = helpers::test_config();
@@ -1364,7 +1379,14 @@ async fn conflicts_are_resolved_in_three_windows() -> anyhow::Result<()> {
         .with_config(config)
         .build()?;
     app.resize_terminal(120, 16).await;
-    let merged = "a\n<<<<<<< HEAD\nB2\n=======\nB1\n>>>>>>> other\nc\nD\n";
+    // what git wrote: the base too in the `zdiff3` style
+    let merged = std::fs::read_to_string(root.join("f.rs"))?;
+    assert!(merged.starts_with("a\n<<<<<<< HEAD\nB2\n"), "{merged:?}");
+    assert!(
+        merged.ends_with("=======\nB1\n>>>>>>> other\nc\nD\n"),
+        "{merged:?}"
+    );
+    assert_eq!(merged.contains("\n|||||||"), style != "merge", "{merged:?}");
     let result = |app: &Application| -> String {
         let merge = app.editor.merge.as_ref().expect("a merge");
         app.editor
@@ -1376,7 +1398,7 @@ async fn conflicts_are_resolved_in_three_windows() -> anyhow::Result<()> {
 
     send_keys(&mut app, ":diff-merge<ret>").await?;
     let opened = until(&mut app, |app| app.editor.merge.is_some()).await;
-    assert!(opened, "{:?}", app.editor.get_status());
+    assert!(opened, "{style}: {:?}", app.editor.get_status());
     let merge = app.editor.merge.clone().unwrap();
     assert_eq!(app.editor.tree.views().count(), 3);
     assert_eq!(app.editor.tree.focus, merge.result_view);
@@ -1450,7 +1472,7 @@ async fn conflicts_are_resolved_in_three_windows() -> anyhow::Result<()> {
 /// opens in the merge resolver, and `]f` goes on to the next file.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_review_goes_through_conflicts() -> anyhow::Result<()> {
-    let repo = repo_with_a_conflict()?;
+    let repo = repo_with_a_conflict("merge")?;
     let root = repo.path();
     let mut config = helpers::test_config();
     config.editor.notifications.enable = false;
