@@ -351,10 +351,13 @@ fn diff_git_command(
     }
     let rev = args.first().map(|rev| rev.to_string());
     cx.jobs.callback(async move {
-        let old = crate::commands::diff::git_version(&path, rev.as_deref()).await?;
+        let (old, git) = crate::commands::diff::git_version(&path, rev.as_deref()).await?;
         let call: job::Callback = job::Callback::Editor(Box::new(move |editor: &mut Editor| {
             if editor.document(right).is_some() {
                 editor.open_diff(old, right);
+                if let Some(git) = git {
+                    editor.set_diff_git(editor.tree.focus, git);
+                }
             }
         }));
         Ok(call)

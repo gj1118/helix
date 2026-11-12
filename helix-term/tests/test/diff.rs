@@ -862,8 +862,8 @@ fn repo_with_changes() -> anyhow::Result<tempfile::TempDir> {
     Ok(repo)
 }
 
-/// `:diff-review`: the changed files one after the other, `]f` / `[f`; each against what
-/// shows its changes (`HEAD` for staged ones, the index otherwise; nothing for a new file).
+/// `:diff-review`: the changed files one after the other, `]f` / `[f`; each against `HEAD`
+/// (nothing for a new file).
 #[tokio::test(flavor = "multi_thread")]
 async fn changed_files_are_reviewed_one_after_the_other() -> anyhow::Result<()> {
     let repo = repo_with_changes()?;
@@ -893,17 +893,18 @@ async fn changed_files_are_reviewed_one_after_the_other() -> anyhow::Result<()> 
     );
     let review = app.editor.diff_review.clone().expect("a review");
     let bases: Vec<Option<String>> = review.files.iter().map(|file| file.base.clone()).collect();
-    assert_eq!(bases, [Some("HEAD".to_string()), None, None]);
+    // every file against `HEAD`: staged and not staged changes all show (marked)
+    assert_eq!(bases, vec![Some("HEAD".to_string()); 3]);
 
     send_keys(&mut app, "]f").await?;
-    wait_for_diff(&mut app, "index:b.rs").await;
+    wait_for_diff(&mut app, "HEAD:b.rs").await;
     assert_eq!(shown(&app), "b.rs");
     // one diff at a time, in the same windows
     assert_eq!(app.editor.diff_sessions.len(), 1);
     assert_eq!(app.editor.tree.views().count(), 2);
     // from the left side too
     send_keys(&mut app, "<C-w>h]f").await?;
-    wait_for_diff(&mut app, "index:c.rs").await;
+    wait_for_diff(&mut app, "HEAD:c.rs").await;
     let session = app.editor.diff_sessions.first().unwrap();
     assert_eq!(session.hunks[0].kind(), HunkKind::Added);
     send_keys(&mut app, "]f").await?;
@@ -982,5 +983,165 @@ async fn a_review_since_a_revision() -> anyhow::Result<()> {
     .await;
     assert!(said, "{:?}", app.editor.get_status());
     assert!(app.editor.diff_sessions.is_empty());
+    Ok(())
+}
+
+/// What the index has of `relative` (empty when not there).
+fn index_of(root: &std::path::Path, relative: &str) -> String {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["show", &format!(":{relative}")])
+        .output()
+        .expect("git");
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// The stage marks shown at the right edge of the connector, by row of the text area.
+fn stage_marks(app: &Application) -> Vec<(u16, String)> {
+    let session = app.editor.diff_sessions.first().expect("a diff");
+    let view = app.editor.tree.get(session.right_view);
+    let doc = app.editor.document(session.right_doc).unwrap();
+    let inner = view.inner_area(doc);
+    let x = view.area.x + 9 - 1;
+    (inner.y..inner.bottom())
+        .filter_map(|y| {
+            let symbol = app.rendered_cell(x, y).symbol;
+            ["▣", "□", "◩"]
+                .contains(&symbol.as_str())
+                .then(|| (y - inner.y, symbol.to_string()))
+        })
+        .collect()
+}
+
+/// `-` in a review (against `HEAD`): stages the change under the cursor, or unstages it; the
+/// marks say which changes are staged, not staged, partly staged.
+#[tokio::test(flavor = "multi_thread")]
+async fn changes_are_staged_and_unstaged() -> anyhow::Result<()> {
+    let repo = tempfile::tempdir()?;
+    let root = repo.path();
+    git(root, &["init", "-q"])?;
+    let head = "a\nb\nc\nd\ne\nf\ng\nh\n";
+    std::fs::write(root.join("f.rs"), head)?;
+    git(root, &["add", "."])?;
+    git(root, &["commit", "-qm", "first"])?;
+    std::fs::write(root.join("f.rs"), "a\nB\nc\nd\ne\nf\nG\nh\n")?;
+
+    // no notification popups over the connector
+    let mut config = helpers::test_config();
+    config.editor.notifications.enable = false;
+    let mut app = helpers::AppBuilder::new()
+        .with_file(root.join("f.rs"), None)
+        .with_config(config)
+        .build()?;
+    app.resize_terminal(100, 14).await;
+    send_keys(&mut app, ":diff-review<ret>").await?;
+    wait_for_diff(&mut app, "HEAD:f.rs").await;
+    let marks: Vec<(u16, String)> = stage_marks(&app);
+    assert_eq!(marks, [(1, "□".to_string()), (6, "□".to_string())]);
+
+    // the first change staged: the index has it, not the second
+    send_keys(&mut app, "gg]c-").await?;
+    let staged = until(&mut app, |_| index_of(root, "f.rs") != head).await;
+    assert!(staged, "nothing staged");
+    assert_eq!(index_of(root, "f.rs"), "a\nB\nc\nd\ne\nf\ng\nh\n");
+    until(&mut app, |app| {
+        stage_marks(app).first().is_some_and(|(_, m)| m == "▣")
+    })
+    .await;
+    assert_eq!(
+        stage_marks(&app),
+        [(1, "▣".to_string()), (6, "□".to_string())]
+    );
+
+    // and unstaged again
+    send_keys(&mut app, "-").await?;
+    let unstaged = until(&mut app, |_| index_of(root, "f.rs") == head).await;
+    assert!(unstaged, "{:?}", index_of(root, "f.rs"));
+
+    // staged, then changed again in the buffer: partly staged; `-` stages it whole
+    send_keys(&mut app, "-").await?;
+    until(&mut app, |_| index_of(root, "f.rs") != head).await;
+    send_keys(&mut app, "AB<esc>").await?;
+    until(&mut app, |app| {
+        stage_marks(app).first().is_some_and(|(_, m)| m == "◩")
+    })
+    .await;
+    assert_eq!(stage_marks(&app)[0], (1, "◩".to_string()));
+    send_keys(&mut app, "-").await?;
+    let whole = until(&mut app, |_| index_of(root, "f.rs").contains("BB")).await;
+    assert!(whole, "{:?}", index_of(root, "f.rs"));
+    assert_eq!(index_of(root, "f.rs"), "a\nBB\nc\nd\ne\nf\ng\nh\n");
+    Ok(())
+}
+
+/// A new file is put in the index whole by staging its change, and taken out by unstaging it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_file_is_staged_and_unstaged() -> anyhow::Result<()> {
+    let repo = repo_with_changes()?;
+    let root = repo.path();
+    let mut app = helpers::AppBuilder::new()
+        .with_file(root.join("c.rs"), None)
+        .build()?;
+    app.resize_terminal(100, 14).await;
+    send_keys(&mut app, ":diff-git HEAD<ret>").await?;
+    wait_for_diff(&mut app, "HEAD:c.rs").await;
+    let tracked = |root: &std::path::Path| -> bool {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["ls-files", "--", "c.rs"])
+            .output()
+            .expect("git");
+        !out.stdout.is_empty()
+    };
+    assert!(!tracked(root));
+    send_keys(&mut app, "gg-").await?;
+    let added = until(&mut app, |_| tracked(root)).await;
+    assert!(added, "not staged");
+    assert_eq!(index_of(root, "c.rs"), "fn new() {}\n");
+    send_keys(&mut app, "-").await?;
+    let removed = until(&mut app, |_| !tracked(root)).await;
+    assert!(removed, "still in the index");
+    Ok(())
+}
+
+/// `:diff-git` (against the index): a change staged leaves the diff, the left side (the
+/// index) taking it. Against another revision, nothing can be staged.
+#[tokio::test(flavor = "multi_thread")]
+async fn staging_against_the_index_and_elsewhere() -> anyhow::Result<()> {
+    let repo = repo_with_changes()?;
+    let root = repo.path();
+    let mut app = helpers::AppBuilder::new()
+        .with_file(root.join("b.rs"), None)
+        .build()?;
+    app.resize_terminal(100, 14).await;
+    send_keys(&mut app, ":diff-git<ret>").await?;
+    wait_for_diff(&mut app, "index:b.rs").await;
+    assert_eq!(app.editor.diff_sessions[0].hunks.len(), 1);
+    send_keys(&mut app, "gg]c-").await?;
+    let gone = until(&mut app, |app| app.editor.diff_sessions[0].hunks.is_empty()).await;
+    assert!(gone, "{:?}", app.editor.get_status());
+    assert_eq!(index_of(root, "b.rs"), "// b.rs\nfn changed() {}\n");
+    let left: String = {
+        let session = &app.editor.diff_sessions[0];
+        app.editor
+            .document(session.left_doc)
+            .unwrap()
+            .text()
+            .to_string()
+    };
+    assert_eq!(left, "// b.rs\nfn changed() {}\n");
+
+    // against another revision: said so
+    git(root, &["commit", "-qm", "second"])?;
+    send_keys(&mut app, "q:diff-git HEAD~1<ret>").await?;
+    wait_for_diff(&mut app, "HEAD~1:b.rs").await;
+    send_keys(&mut app, "gg]c-").await?;
+    let (status, _) = app.editor.get_status().unwrap();
+    assert!(
+        status.starts_with("Staging needs a diff against git"),
+        "{status}"
+    );
     Ok(())
 }

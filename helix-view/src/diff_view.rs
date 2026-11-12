@@ -38,6 +38,9 @@ pub struct DiffConfig {
     /// panel) shows its diff against git, and the other changed files after it with `]f`;
     /// off, the file opens as a plain buffer.
     pub open_changed_files_in_diff: bool,
+    /// The marks of the staged, not staged and partly staged changes, in front of the right
+    /// side of a diff against git.
+    pub stage_markers: StageMarkers,
     /// The keys of the diff views, by action (see [`ACTIONS`]); the actions not set keep
     /// their default keys, and an empty string turns an action's keys off.
     #[serde(deserialize_with = "deserialize_keys")]
@@ -52,13 +55,33 @@ impl Default for DiffConfig {
             align_on_jump: true,
             scroll_sync: true,
             open_changed_files_in_diff: true,
+            stage_markers: StageMarkers::default(),
             keys: default_keys(),
         }
     }
 }
 
+/// `[editor.diff.stage-markers]`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct StageMarkers {
+    pub staged: String,
+    pub unstaged: String,
+    pub partial: String,
+}
+
+impl Default for StageMarkers {
+    fn default() -> Self {
+        Self {
+            staged: "▣".to_string(),
+            unstaged: "□".to_string(),
+            partial: "◩".to_string(),
+        }
+    }
+}
+
 /// The actions of the diff views, with their default keys.
-pub const ACTIONS: [(&str, &str); 9] = [
+pub const ACTIONS: [(&str, &str); 10] = [
     ("next-change", "]c"),
     ("previous-change", "[c"),
     ("next-file", "]f"),
@@ -67,6 +90,7 @@ pub const ACTIONS: [(&str, &str); 9] = [
     ("align-top", "[d"),
     ("align-bottom", "]d"),
     ("apply-left-to-right", "<gt><gt>"),
+    ("stage", "-"),
     ("close", "q"),
 ];
 
@@ -135,6 +159,8 @@ pub struct DiffSession {
     /// The hunks only followed edits since the diff was last worked out (see
     /// [`Editor::refresh_diff_sessions`]).
     stale: bool,
+    /// For a diff of a file against git (`HEAD` or the index): what staging needs.
+    pub git: Option<GitFile>,
     /// The gutters of the right view before the connector was added to them.
     right_gutters: GutterConfig,
     /// Where the left and right views were scrolled to when they were last in step (see
@@ -166,6 +192,7 @@ impl DiffSession {
             versions: None,
             right_text: helix_core::Rope::new(),
             stale: false,
+            git: None,
             right_gutters,
             scrolled: None,
         }
@@ -194,6 +221,11 @@ impl DiffSession {
             Side::Left => self.left_doc,
             Side::Right => self.right_doc,
         }
+    }
+
+    /// The path of the right side's document, if it has one.
+    pub fn right_doc_path<'a>(&self, editor: &'a Editor) -> Option<&'a std::path::Path> {
+        editor.document(self.right_doc)?.path()
     }
 
     /// The gutters the right view had before the session.
@@ -226,6 +258,121 @@ pub fn shown_hunks(
     // up to the first one starting below the window
     let end = hunks.partition_point(|hunk| hunk.lines(side).start <= bottom);
     start..end.max(start)
+}
+
+/// A file compared with its version in git (`HEAD` or the index), for staging its changes: its
+/// versions in `HEAD` and in the index, and how much of each change shown is staged.
+#[derive(Debug, Clone)]
+pub struct GitFile {
+    /// The repository.
+    pub root: std::path::PathBuf,
+    /// The file's path in the repository, `/`-separated.
+    pub relative: String,
+    /// The file in `HEAD`, `None` when it isn't there (a new file).
+    pub head: Option<helix_core::Rope>,
+    /// The file in the index, `None` when it isn't there.
+    pub index: Option<helix_core::Rope>,
+    /// Whether the left side is `HEAD` (else the index: then only what isn't staged shows).
+    pub left_is_head: bool,
+    /// The changes not staged: from the index to the document (the right side).
+    unstaged: Arc<[DiffHunk]>,
+    /// The changes staged: from `HEAD` to the index.
+    staged: Arc<[DiffHunk]>,
+    /// How much of each hunk of the diff is staged, by hunk.
+    stages: Vec<Stage>,
+}
+
+/// How much of a change shown is staged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stage {
+    Unstaged,
+    Staged,
+    Partial,
+}
+
+impl GitFile {
+    pub fn new(
+        root: std::path::PathBuf,
+        relative: String,
+        head: Option<helix_core::Rope>,
+        index: Option<helix_core::Rope>,
+        left_is_head: bool,
+    ) -> Self {
+        let mut file = Self {
+            root,
+            relative,
+            head,
+            index,
+            left_is_head,
+            unstaged: Arc::from([]),
+            staged: Arc::from([]),
+            stages: Vec::new(),
+        };
+        file.set_index(file.index.clone());
+        file
+    }
+
+    /// `text`, or an empty text.
+    pub fn text(text: &Option<helix_core::Rope>) -> helix_core::RopeSlice<'_> {
+        match text {
+            Some(text) => text.slice(..),
+            None => helix_core::RopeSlice::from(""),
+        }
+    }
+
+    /// The index after staging or unstaging is `index` (`None`: the file is out of it): the
+    /// staged changes worked out again.
+    pub fn set_index(&mut self, index: Option<helix_core::Rope>) {
+        self.index = index;
+        self.staged = diff_hunks(
+            Self::text(&self.head),
+            Self::text(&self.index),
+            DiffOptions::default(),
+        )
+        .into();
+    }
+
+    /// The changes not staged, and how much of each hunk of the diff (from the left side to
+    /// `right`, the document) is staged, worked out again.
+    fn update(&mut self, hunks: &[DiffHunk], right: helix_core::RopeSlice) {
+        self.unstaged = diff_hunks(Self::text(&self.index), right, DiffOptions::default()).into();
+        let stages = hunks
+            .iter()
+            .map(|hunk| {
+                if !self.left_is_head {
+                    return Stage::Unstaged;
+                }
+                let staged = self.staged_of(hunk).next().is_some();
+                let unstaged = self.unstaged_of(hunk).next().is_some();
+                match (staged, unstaged) {
+                    (true, false) => Stage::Staged,
+                    (true, true) => Stage::Partial,
+                    _ => Stage::Unstaged,
+                }
+            })
+            .collect();
+        self.stages = stages;
+    }
+
+    /// How much of hunk `index` of the diff is staged.
+    pub fn stage(&self, index: usize) -> Option<Stage> {
+        self.stages.get(index).copied()
+    }
+
+    /// The staged changes (`HEAD` to index) that are part of `hunk` (of the diff, its left side
+    /// `HEAD`).
+    pub fn staged_of<'a>(&'a self, hunk: &'a DiffHunk) -> impl Iterator<Item = &'a DiffHunk> {
+        self.staged
+            .iter()
+            .filter(move |staged| helix_core::diff_hunks::ranges_touch(&staged.left, &hunk.left))
+    }
+
+    /// The changes not staged (index to document) that are part of `hunk` (of the diff).
+    pub fn unstaged_of<'a>(&'a self, hunk: &'a DiffHunk) -> impl Iterator<Item = &'a DiffHunk> {
+        self.unstaged.iter().filter(move |unstaged| {
+            helix_core::diff_hunks::ranges_touch(&unstaged.right, &hunk.right)
+        })
+    }
 }
 
 /// Changed files reviewed one after the other in the diff of a view (`]f`, `[f`): from the
@@ -336,6 +483,48 @@ impl Editor {
         }
     }
 
+    /// Makes the diff whose right view is `right_view` a diff against git (see [`GitFile`]):
+    /// its changes can be staged.
+    pub fn set_diff_git(&mut self, right_view: ViewId, git: GitFile) {
+        if let Some(index) = self
+            .diff_sessions
+            .iter()
+            .position(|session| session.right_view == right_view)
+        {
+            self.diff_sessions[index].git = Some(git);
+            self.recompute_diff(index);
+        }
+    }
+
+    /// The index of the file of the diff whose right view is `right_view` became `index`
+    /// (`None`: the file is out of it), after staging or unstaging: the staged changes follow,
+    /// and the left side when it shows the index.
+    pub fn diff_index_changed(&mut self, right_view: ViewId, index: Option<helix_core::Rope>) {
+        let Some(at) = self
+            .diff_sessions
+            .iter()
+            .position(|session| session.right_view == right_view)
+        else {
+            return;
+        };
+        let session = &mut self.diff_sessions[at];
+        let Some(git) = &mut session.git else {
+            return;
+        };
+        git.set_index(index.clone());
+        if !git.left_is_head {
+            if let Some(left) = self.documents.get_mut(&session.left_doc) {
+                // the lock lifted for this one change
+                let locked = left.locked.take();
+                let new = index.unwrap_or_default();
+                let change = helix_core::diff::compare_ropes(left.text(), &new);
+                left.apply(&change, session.left_view);
+                left.locked = locked;
+            }
+        }
+        self.recompute_diff(at);
+    }
+
     /// Works out again the diffs whose hunks only followed edits (see
     /// [`Editor::refresh_diff_sessions`]); whether there were any.
     pub fn recompute_stale_diffs(&mut self) -> bool {
@@ -367,6 +556,9 @@ impl Editor {
         };
         session.hunks =
             diff_hunks(left_text.slice(..), right.text().slice(..), session.options).into();
+        if let Some(git) = &mut session.git {
+            git.update(&session.hunks, right.text().slice(..));
+        }
         session.words = vec![None; session.hunks.len()];
         session.versions = Some((left_version, right.version()));
         session.right_text = right.text().clone();
@@ -990,6 +1182,14 @@ mod tests {
             .contains("unknown action \"jump\""));
         let wrong = toml::from_str::<DiffConfig>("[keys]\nclose = \"<nope>\"");
         assert!(wrong.unwrap_err().to_string().contains("invalid keys"));
+        // the stage marks: those set replaced, the others kept
+        let marks: DiffConfig = toml::from_str("[stage-markers]\nstaged = \"S\"").expect("loads");
+        let expected = StageMarkers {
+            staged: "S".to_string(),
+            ..StageMarkers::default()
+        };
+        assert_eq!(marks.stage_markers, expected);
+        assert_eq!(marks.stage_markers.unstaged, "□");
         // an action that is no more still loads, and is ignored
         let old: DiffConfig =
             toml::from_str("[keys]\napply-right-to-left = \"<lt><lt>\"").expect("loads");

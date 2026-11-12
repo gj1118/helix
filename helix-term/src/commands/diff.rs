@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context as _};
 use helix_core::diff_hunks::{hunk_at, line_count, DiffHunk, Side};
 use helix_core::{Tendril, Transaction};
-use helix_view::diff_view::{DiffConfig, OldVersion, ReviewFile, ReviewQueue};
+use helix_view::diff_view::{DiffConfig, GitFile, OldVersion, ReviewFile, ReviewQueue, Stage};
 use helix_view::input::KeyEvent;
 use helix_view::{DocumentId, Editor, ViewId};
 
@@ -61,9 +61,8 @@ pub fn diff_buffers(
     Ok(())
 }
 
-/// The version of `path` in git: in the index (`rev` `None`) or at `rev`; empty when the file
-/// is not there (a new file). With the title of its buffer.
-pub async fn git_version(path: &Path, rev: Option<&str>) -> anyhow::Result<OldVersion> {
+/// The repository of `path`, and the path of the file in it (`/`-separated).
+async fn repo_path(path: &Path) -> anyhow::Result<(PathBuf, String)> {
     let dir = path
         .parent()
         .ok_or_else(|| anyhow!("{} has no folder", path.display()))?;
@@ -74,42 +73,100 @@ pub async fn git_version(path: &Path, rev: Option<&str>) -> anyhow::Result<OldVe
         std::fs::canonicalize(path).unwrap_or_else(|_| helix_stdx::path::canonicalize(path))
     };
     let root = real(&root);
-    let relative = real(path)
-        .strip_prefix(&root)
-        .map(Path::to_path_buf)
-        .map_err(|_| {
-            anyhow!(
-                "{} is not in the repository {}",
-                path.display(),
-                root.display()
-            )
-        })?;
+    // a deleted file has no real path: its folder's then
+    let file = match (std::fs::canonicalize(path), path.parent(), path.file_name()) {
+        (Ok(file), _, _) => file,
+        (Err(_), Some(parent), Some(name)) => real(parent).join(name),
+        _ => real(path),
+    };
+    let relative = file.strip_prefix(&root).map_err(|_| {
+        anyhow!(
+            "{} is not in the repository {}",
+            path.display(),
+            root.display()
+        )
+    })?;
     let relative = relative
         .components()
         .map(|part| part.as_os_str().to_string_lossy())
         .collect::<Vec<_>>()
         .join("/");
+    Ok((root, relative))
+}
+
+/// The file `relative` of the repository `root` at `rev` (`None`: in the index); `None` when
+/// it isn't there (or there is no commit yet).
+async fn show_file(
+    root: &Path,
+    relative: &str,
+    rev: Option<&str>,
+) -> anyhow::Result<Option<String>> {
     let spec = format!("{}:{relative}", rev.unwrap_or(""));
+    match git(root, &[OsString::from("show"), OsString::from(&spec)]).await {
+        Ok(out) => Ok(Some(String::from_utf8_lossy(&out).into_owned())),
+        Err(err) => {
+            let message = err.to_string();
+            let missing = [
+                "does not exist",
+                "exists on disk, but not in",
+                "invalid object name",
+            ];
+            if missing.iter().any(|missing| message.contains(missing)) {
+                Ok(None)
+            } else {
+                Err(err)
+            }
+        }
+    }
+}
+
+/// The version of `path` in git: in the index (`rev` `None`) or at `rev`; empty when the file
+/// is not there (a new file). With the title of its buffer. Against the index or `HEAD`, also
+/// what staging its changes needs (see [`GitFile`]): `None` for a file git can't stage from
+/// here (another revision, a merge conflict).
+pub async fn git_version(
+    path: &Path,
+    rev: Option<&str>,
+) -> anyhow::Result<(OldVersion, Option<GitFile>)> {
+    let (root, relative) = repo_path(path).await?;
     let label = match rev {
         Some(rev) => format!("{rev}:{relative}"),
         None => format!("index:{relative}"),
     };
-    let text = match git(&root, &[OsString::from("show"), OsString::from(&spec)]).await {
-        Ok(out) => String::from_utf8_lossy(&out).into_owned(),
-        // not in that version: everything is new
-        Err(err)
-            if err.to_string().contains("does not exist")
-                || err.to_string().contains("exists on disk, but not in") =>
-        {
-            String::new()
+    let text = show_file(&root, &relative, rev).await?;
+    let git = match rev {
+        None => {
+            let head = show_file(&root, &relative, Some("HEAD"))
+                .await
+                .ok()
+                .flatten();
+            Some(GitFile::new(
+                root.clone(),
+                relative.clone(),
+                head.map(Into::into),
+                text.clone().map(Into::into),
+                false,
+            ))
         }
-        Err(err) => return Err(err),
+        Some("HEAD") => match show_file(&root, &relative, None).await {
+            Ok(index) => Some(GitFile::new(
+                root.clone(),
+                relative.clone(),
+                text.clone().map(Into::into),
+                index.map(Into::into),
+                true,
+            )),
+            // a merge conflict: not at stage 0 in the index
+            Err(_) => None,
+        },
+        Some(_) => None,
     };
-    Ok(OldVersion {
-        text: text.into(),
+    let old = OldVersion {
+        text: text.unwrap_or_default().into(),
         title: label,
         syntax_path: Some(PathBuf::from(&relative)),
-    })
+    };
+    Ok((old, git))
 }
 
 // --- reviews of changed files ----------------------------------------------
@@ -125,7 +182,7 @@ pub async fn review_files(dir: &Path, rev: Option<&str>) -> anyhow::Result<Vec<R
             .await?
             .into_iter()
             .map(|change| ReviewFile {
-                base: change.unstaged.is_none().then(|| "HEAD".to_string()),
+                base: Some("HEAD".to_string()),
                 path: change.path,
             })
             .collect(),
@@ -200,9 +257,9 @@ pub async fn review_file(
         .get(index)
         .cloned()
         .ok_or_else(|| anyhow!("no changed file {index}"))?;
-    let old = git_version(&file.path, file.base.as_deref()).await?;
+    let (old, git) = git_version(&file.path, file.base.as_deref()).await?;
     Ok(crate::job::Callback::Editor(Box::new(
-        move |editor: &mut Editor| show_review_file(editor, files, index, old, action),
+        move |editor: &mut Editor| show_review_file(editor, files, index, old, git, action),
     )))
 }
 
@@ -213,6 +270,7 @@ fn show_review_file(
     files: Vec<ReviewFile>,
     index: usize,
     old: OldVersion,
+    git: Option<GitFile>,
     action: helix_view::editor::Action,
 ) {
     use helix_view::editor::Action;
@@ -235,6 +293,9 @@ fn show_review_file(
         }
     };
     editor.open_diff(old, right);
+    if let Some(git) = git {
+        editor.set_diff_git(editor.tree.focus, git);
+    }
     let count = files.len();
     editor.diff_review = Some(ReviewQueue {
         files,
@@ -509,6 +570,156 @@ pub fn diff_apply_left_to_right(cx: &mut Context) {
     apply_change(cx)
 }
 
+/// The hunk under the cursor of `view` (on `side`): the one with the cursor's line, or the
+/// addition or removal right at it.
+fn hunk_under_cursor(
+    editor: &Editor,
+    view: ViewId,
+    side: Side,
+    hunks: &[DiffHunk],
+) -> Option<usize> {
+    let (line, _) = cursor_line_and_row(editor, view);
+    let (index, inside) = hunk_at(hunks, line, side);
+    if inside {
+        return Some(index);
+    }
+    hunks
+        .get(index)
+        .filter(|hunk| hunk.lines(side).is_empty() && hunk.lines(side).start == line)
+        .map(|_| index)
+}
+
+/// Stages the change under the cursor of a diff against git, or unstages it when it is
+/// staged (a partly staged one is staged whole): the index takes the change's lines of the
+/// document (as shown, saved or not), or back those of `HEAD`.
+pub fn diff_stage(cx: &mut Context) {
+    let Some((view, side, hunks)) = focused_diff(cx.editor) else {
+        return not_in_a_diff(cx);
+    };
+    let session = cx.editor.diff_session(view).cloned().expect("in a diff");
+    let Some(git) = session.git.clone() else {
+        cx.editor.set_error(
+            "Staging needs a diff against git: a review (Space g, :diff-review) or :diff-git",
+        );
+        return;
+    };
+    if !git_allowed(cx.editor, &git.root) {
+        return;
+    }
+    let Some(index) = hunk_under_cursor(cx.editor, view, side, &hunks) else {
+        cx.editor.set_status("No change under the cursor");
+        return;
+    };
+    let hunk = &hunks[index];
+    let document = cx.editor.documents[&session.right_doc].text().clone();
+    let staging = git.stage(index) != Some(Stage::Staged);
+    let new_index = if staging {
+        // the index takes the document's lines of this change
+        helix_core::diff_hunks::splice_hunks(
+            GitFile::text(&git.index),
+            document.slice(..),
+            git.unstaged_of(hunk)
+                .map(|unstaged| (unstaged.left.clone(), unstaged.right.clone())),
+        )
+    } else {
+        // the index takes back `HEAD`'s lines of this change
+        helix_core::diff_hunks::splice_hunks(
+            GitFile::text(&git.index),
+            GitFile::text(&git.head),
+            git.staged_of(hunk)
+                .map(|staged| (staged.right.clone(), staged.left.clone())),
+        )
+    };
+    // the file goes out of the index: a new file unstaged whole, a deleted one staged
+    let gone = new_index.is_empty()
+        && if staging {
+            session
+                .right_doc_path(cx.editor)
+                .is_some_and(|path| !path.exists())
+        } else {
+            git.head.is_none()
+        };
+    let right_view = session.right_view;
+    let (root, relative) = (git.root.clone(), git.relative.clone());
+    let done = if staging { "Staged" } else { "Unstaged" };
+    cx.jobs.callback(async move {
+        write_index(&root, &relative, &new_index, gone).await?;
+        let new_index = (!gone).then(|| helix_core::Rope::from(new_index));
+        let call: crate::job::Callback =
+            crate::job::Callback::Editor(Box::new(move |editor: &mut Editor| {
+                editor.diff_index_changed(right_view, new_index);
+                editor.set_status(format!("{done} the change"));
+            }));
+        Ok(call)
+    });
+}
+
+/// The index entry of `relative` (in the repository `root`) set to `content`: a new blob, the
+/// file's mode kept (`100644` for a file new to the index); or the entry removed when `gone`.
+async fn write_index(root: &Path, relative: &str, content: &str, gone: bool) -> anyhow::Result<()> {
+    if gone {
+        git(
+            root,
+            &[
+                "update-index".into(),
+                "--force-remove".into(),
+                "--".into(),
+                relative.into(),
+            ],
+        )
+        .await?;
+        return Ok(());
+    }
+    let staged = git(
+        root,
+        &["ls-files".into(), "-s".into(), "--".into(), relative.into()],
+    )
+    .await?;
+    let staged = String::from_utf8_lossy(&staged);
+    let mode = staged
+        .split_whitespace()
+        .next()
+        .filter(|mode| mode.len() == 6)
+        .map_or_else(|| file_mode(&root.join(relative)), str::to_string);
+    // as `git add` would write it: through the file's filters (line endings...)
+    let blob = super::git::git_with_input(
+        root,
+        &[
+            "hash-object".into(),
+            "-w".into(),
+            "--stdin".into(),
+            format!("--path={relative}").into(),
+        ],
+        content.as_bytes(),
+    )
+    .await?;
+    let blob = String::from_utf8_lossy(&blob).trim().to_string();
+    git(
+        root,
+        &[
+            "update-index".into(),
+            "--add".into(),
+            "--cacheinfo".into(),
+            format!("{mode},{blob},{relative}").into(),
+        ],
+    )
+    .await?;
+    Ok(())
+}
+
+/// The git mode of a file new to the index: executable or not.
+fn file_mode(path: &Path) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if std::fs::metadata(path).is_ok_and(|meta| meta.permissions().mode() & 0o111 != 0) {
+            return "100755".to_string();
+        }
+    }
+    let _ = path;
+    "100644".to_string()
+}
+
 pub fn diff_close(cx: &mut Context) {
     let view = cx.editor.tree.focus;
     if !cx.editor.close_diff(view) {
@@ -551,6 +762,7 @@ fn action(name: &str) -> Option<fn(&mut Context)> {
         "align-top" => diff_align_top,
         "align-bottom" => diff_align_bottom,
         "apply-left-to-right" => diff_apply_left_to_right,
+        "stage" => diff_stage,
         "close" => diff_close,
         _ => return None,
     })

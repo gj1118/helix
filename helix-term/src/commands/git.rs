@@ -184,6 +184,44 @@ pub(crate) async fn git(dir: &Path, args: &[OsString]) -> anyhow::Result<Vec<u8>
     Ok(output.stdout)
 }
 
+/// `git` in `dir` with `args`, `input` on its standard input: its output.
+pub(crate) async fn git_with_input(
+    dir: &Path,
+    args: &[OsString],
+    input: &[u8],
+) -> anyhow::Result<Vec<u8>> {
+    use tokio::io::AsyncWriteExt;
+    let mut child = tokio::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["-c", "core.quotepath=off"])
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context("failed to run git (is it on PATH?)")?;
+    let mut stdin = child.stdin.take().context("git's input")?;
+    let input = input.to_vec();
+    // written while the output is read: a big input would fill the pipe otherwise
+    let writer = tokio::spawn(async move {
+        let _ = stdin.write_all(&input).await;
+    });
+    let output = child.wait_with_output().await?;
+    let _ = writer.await;
+    if !output.status.success() {
+        bail!(
+            "git {}: {}",
+            args.first()
+                .map(|a| a.to_string_lossy())
+                .unwrap_or_default(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(output.stdout)
+}
+
 pub(super) fn args<const N: usize>(args: [&str; N]) -> Vec<OsString> {
     args.iter().map(OsString::from).collect()
 }

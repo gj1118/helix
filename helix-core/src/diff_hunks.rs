@@ -399,6 +399,58 @@ pub fn shift_hunks(
         .collect()
 }
 
+/// Whether two line ranges share lines, or touch where one of them is empty (the place of an
+/// addition or a removal): the hunks of two diffs of the same text that are about the same
+/// change.
+pub fn ranges_touch(a: &Range<usize>, b: &Range<usize>) -> bool {
+    match (a.is_empty(), b.is_empty()) {
+        (false, false) => a.start < b.end && b.start < a.end,
+        (true, false) => b.start <= a.start && a.start <= b.end,
+        (false, true) => a.start <= b.start && b.start <= a.end,
+        (true, true) => a.start == b.start,
+    }
+}
+
+/// `base` with the lines of some hunks of a diff between `base` and `other` taken from
+/// `other`: for each `(base lines, other lines)` (in order, not overlapping), the base lines
+/// replaced with the other lines. How a change is staged (the index taking lines of the
+/// working copy) or unstaged (taking back lines of `HEAD`).
+pub fn splice_hunks(
+    base: RopeSlice,
+    other: RopeSlice,
+    hunks: impl IntoIterator<Item = (Range<usize>, Range<usize>)>,
+) -> String {
+    let chars = |text: RopeSlice, lines: Range<usize>| -> Range<usize> {
+        let at = |line: usize| {
+            if line >= text.len_lines() {
+                text.len_chars()
+            } else {
+                text.line_to_char(line)
+            }
+        };
+        at(lines.start)..at(lines.end)
+    };
+    let mut out = String::with_capacity(base.len_bytes());
+    let mut done = 0;
+    for (base_lines, other_lines) in hunks {
+        let replaced = chars(base, base_lines);
+        out.extend(base.slice(done..replaced.start).chunks());
+        let taken = other.slice(chars(other, other_lines));
+        // lines put after the last one of a text without a final line ending need one
+        let needs_ending = taken.len_chars() > 0
+            && replaced.start == base.len_chars()
+            && !out.is_empty()
+            && !out.ends_with('\n');
+        if needs_ending {
+            out.push('\n');
+        }
+        out.extend(taken.chunks());
+        done = replaced.end;
+    }
+    out.extend(base.slice(done..).chunks());
+    out
+}
+
 /// The index of the hunk with `line` on `side`, or of the first one after it, and whether
 /// `line` is in it.
 pub fn hunk_at(hunks: &[DiffHunk], line: usize, side: Side) -> (usize, bool) {
@@ -596,6 +648,44 @@ mod tests {
         let shifted: Vec<DiffHunk> =
             shift_hunks(&found, right.slice(..), empty.slice(..), &changes);
         assert!(shifted.iter().all(|hunk| hunk.right == (0..0)));
+    }
+
+    #[test]
+    fn ranges_touch_when_about_the_same_lines() {
+        let touch: bool = ranges_touch(&(1..3), &(2..5));
+        assert!(touch);
+        assert!(!ranges_touch(&(1..3), &(3..5)));
+        // an empty range: the place between lines, which touches the lines on either side
+        assert!(ranges_touch(&(3..3), &(1..3)));
+        assert!(ranges_touch(&(3..3), &(3..4)));
+        assert!(!ranges_touch(&(5..5), &(1..3)));
+        assert!(ranges_touch(&(2..2), &(2..2)));
+        assert!(!ranges_touch(&(2..2), &(3..3)));
+    }
+
+    #[test]
+    fn hunks_are_spliced_from_the_other_text() {
+        let base = Rope::from("a\nb\nc\nd\n");
+        let other = Rope::from("a\nB\nc\nd\nE\n");
+        // the changed `b` only
+        let spliced: String = splice_hunks(base.slice(..), other.slice(..), [(1..2, 1..2)]);
+        assert_eq!(spliced, "a\nB\nc\nd\n");
+        // the added `E` only, at the end
+        let spliced: String = splice_hunks(base.slice(..), other.slice(..), [(4..4, 4..5)]);
+        assert_eq!(spliced, "a\nb\nc\nd\nE\n");
+        // both, and a removal
+        let other = Rope::from("a\nB\nd\nE\n");
+        let spliced: String = splice_hunks(
+            base.slice(..),
+            other.slice(..),
+            [(1..3, 1..2), (4..4, 3..4)],
+        );
+        assert_eq!(spliced, other.to_string());
+        // lines added after a last line without a line ending
+        let base = Rope::from("a\nb");
+        let other = Rope::from("a\nb\nc\n");
+        let spliced: String = splice_hunks(base.slice(..), other.slice(..), [(2..2, 2..3)]);
+        assert_eq!(spliced, "a\nb\nc\n");
     }
 
     /// Past [`HISTOGRAM_MAX_LINES`] the diff is Myers': the same hunks for a simple change.

@@ -50,10 +50,27 @@ the status line says which (`File 2 of 7: src/main.rs`).
 | `:diff-review <revision>` | The files changed since a revision (and the new ones): `:diff-review main` |
 
 The changed files list shows in the quickfix panel when `[editor.quickfix] enable` is on, and
-as a picker otherwise. A file is compared with what shows its changes: the index when it has
-changes not staged yet (what `git diff` shows), `HEAD` when its changes are all staged, and
-nothing for a new file. The review covers the working directory, as the changed files list
-does, or the repository of the current file when that file is elsewhere.
+as a picker otherwise. Each file is compared with `HEAD` (a new file with nothing), so its
+staged and not staged changes all show, each marked (see [Staging](#staging)). With
+`:diff-review <revision>` the files are compared with that revision. The review covers the
+working directory, as the changed files list does, or the repository of the current file when
+that file is elsewhere.
+
+## Staging
+
+In a diff against `HEAD` (a review, or `:diff-git HEAD`), a mark in front of each change says
+whether it is staged: `▣` staged, `□` not staged, `◩` partly staged (staged, then changed
+again). `-` stages the change under the cursor, or unstages it when it is staged; a partly
+staged change is staged whole. What is staged is the change as the right side shows it, saved
+or not: the index takes those lines, as `git add -p` would put them (through the file's
+filters, line endings and the like). Staging a new file puts it in the index; unstaging all of
+it takes it out again.
+
+In a diff against the index (`:diff-git`), only what isn't staged shows: `-` stages the change
+under the cursor, which then leaves the diff. Against another revision (`:diff-review main`,
+`:diff-git HEAD~2`) nothing can be staged.
+
+Staging runs git, which needs a trusted workspace (see `:workspace-trust`).
 
 With `open-changed-files-in-diff = false` (see [Settings](#settings)), opening a file from the
 changed files list opens it as a plain buffer; `:diff-review` still reviews.
@@ -68,6 +85,7 @@ In the windows of a diff, these keys come first (normal mode):
 | --- | --- |
 | `]c`, `[c` | The next / previous change (with a count: `3]c`). The other side scrolls to the same change, at the same height |
 | `]f`, `[f` | In a review of changed files: the next / previous file (see [Reviewing changed files](#reviewing-changed-files)) |
+| `-` | Stage the change under the cursor, or unstage it (see [Staging](#staging)) |
 | `]s` | Line the other side up with the cursor's line (for when `scroll-sync` is off) |
 | `[d`, `]d` | Both sides to their first / last line |
 | `>>` | Revert the change under the cursor: the right side gets the left side's lines, from either side (undo with `u`, as any edit) |
@@ -86,11 +104,11 @@ apply-left-to-right = "" # no key
 ```
 
 The actions are `next-change`, `previous-change`, `next-file`, `previous-file`, `snap`,
-`align-top`, `align-bottom`, `apply-left-to-right` and `close` (`>` and `<` are written `<gt>`
-and `<lt>`). They are also commands, which can be bound to keys anywhere like any other:
-`diff_next_change`, `diff_previous_change`, `diff_next_file`, `diff_previous_file`,
-`diff_snap`, `diff_align_top`, `diff_align_bottom`, `diff_apply_left_to_right` and
-`diff_close`.
+`align-top`, `align-bottom`, `apply-left-to-right`, `stage` and `close` (`>` and `<` are
+written `<gt>` and `<lt>`). They are also commands, which can be bound to keys anywhere like
+any other: `diff_next_change`, `diff_previous_change`, `diff_next_file`,
+`diff_previous_file`, `diff_snap`, `diff_align_top`, `diff_align_bottom`,
+`diff_apply_left_to_right`, `diff_stage` and `diff_close`.
 
 ## Settings
 
@@ -101,6 +119,11 @@ connector-width = 9        # columns of the connector
 align-on-jump = true       # `]c`/`[c` scroll the other side to the same change
 scroll-sync = true         # scrolling one side scrolls the other; false: each on its own
 open-changed-files-in-diff = true # files opened from `Space g` show their diff; false: a buffer
+
+[editor.diff.stage-markers] # the marks of staged, not staged and partly staged changes
+staged = "▣"
+unstaged = "□"
+partial = "◩"
 ```
 
 The colors come from the theme: `ui.diff.add`, `ui.diff.delete`, `ui.diff.change` and

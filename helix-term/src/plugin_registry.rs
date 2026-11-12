@@ -580,6 +580,7 @@ fn static_permissions(name: &str) -> &'static [Permission] {
         name if name.starts_with("explorer_") => &[Explorer],
         // moving in a diff (applying a change from a side to the other edits)
         "diff_next_file" | "diff_previous_file" => &[Files, Windows],
+        "diff_stage" => &[Files],
         "diff_next_change"
         | "diff_previous_change"
         | "diff_snap"
@@ -834,7 +835,7 @@ mod tests {
     fn static_commands_are_classified() {
         let count = crate::commands::MappableCommand::STATIC_COMMAND_LIST.len();
         assert_eq!(
-            count, 399,
+            count, 400,
             "commands were added or removed: check `static_permissions` for them"
         );
         use helix_plugin::types::EditorCommandRegistry;

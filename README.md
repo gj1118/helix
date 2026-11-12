@@ -419,6 +419,9 @@ the changed words inside them are emphasized.
   the quickfix panel) shows its diff, and `]f` / `[f` go to the next / previous changed file in
   the same windows; `:diff-review [<revision>]` starts the same review. `[editor.diff]
   open-changed-files-in-diff = false` opens the files as plain buffers instead.
+- Staging: in a review the files are compared with `HEAD`, each change marked `▣` staged, `□`
+  not staged or `◩` partly staged (`[editor.diff.stage-markers]`); `-` stages the change under
+  the cursor, or unstages it.
 - In a diff: the two sides scroll together. `]c` / `[c` next / previous change (the other side
   follows), `]s` lines the other side up with the cursor, `[d` / `]d` both sides to the top / bottom, `>>` reverts the
   change under the cursor (the right side gets the old lines), `q` closes it. The old version

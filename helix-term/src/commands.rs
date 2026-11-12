@@ -11,7 +11,7 @@ pub(crate) mod syntax;
 pub(crate) mod todos;
 pub(crate) use diff::{
     diff_align_bottom, diff_align_top, diff_apply_left_to_right, diff_close, diff_next_change,
-    diff_next_file, diff_previous_change, diff_previous_file, diff_snap,
+    diff_next_file, diff_previous_change, diff_previous_file, diff_snap, diff_stage,
 };
 pub(crate) mod typed;
 
@@ -464,6 +464,7 @@ impl MappableCommand {
         file_explorer_in_current_buffer_directory, "Open file explorer at current buffer's directory",
         file_explorer_in_current_directory, "Open file explorer at current working directory",
         diff_next_change, "Go to the next change of a side-by-side diff (the other side follows)",
+        diff_stage, "Stage the change under the cursor of a side-by-side diff against git, or unstage it",
         diff_next_file, "Show the next changed file of a review in its side-by-side diff",
         diff_previous_file, "Show the previous changed file of a review in its side-by-side diff",
         diff_previous_change, "Go to the previous change of a side-by-side diff (the other side follows)",

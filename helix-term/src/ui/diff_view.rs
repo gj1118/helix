@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use helix_core::diff_hunks::{hunk_at, line_count, DiffHunk, Side};
 use helix_core::doc_formatter::FormattedGrapheme;
-use helix_view::diff_view::{shown_hunks, DiffSession, DiffStyles};
+use helix_view::diff_view::{shown_hunks, DiffSession, DiffStyles, Stage};
 use helix_view::graphics::{Rect, Style};
 use helix_view::{Document, Editor, View};
 use tui::buffer::Buffer as Surface;
@@ -203,7 +203,31 @@ fn render_connector(editor: &Editor, session: &DiffSession, surface: &mut Surfac
         SideRows::new(left_view, left_doc),
         SideRows::new(right_view, right_doc),
     );
-    for hunk in session.hunks.iter() {
+    // the stage of each change, against `HEAD`
+    let markers = session
+        .git
+        .as_ref()
+        .filter(|git| git.left_is_head)
+        .map(|git| {
+            let config = editor.config();
+            let marks = &config.diff.stage_markers;
+            let mark = |stage: Stage| -> String {
+                match stage {
+                    Stage::Staged => marks.staged.clone(),
+                    Stage::Unstaged => marks.unstaged.clone(),
+                    Stage::Partial => marks.partial.clone(),
+                }
+            };
+            (0..session.hunks.len())
+                .map(|index| git.stage(index).map(mark))
+                .collect::<Vec<_>>()
+        });
+    let marker_fg = editor
+        .theme
+        .get("ui.text")
+        .fg
+        .or_else(|| editor.theme.get("ui.linenr.selected").fg);
+    for (index, hunk) in session.hunks.iter().enumerate() {
         let left_top = left.row(hunk.left.start) + shift;
         let left_bottom = left.row(hunk.left.end) + shift;
         let right_top = right.row(hunk.right.start);
@@ -220,6 +244,19 @@ fn render_connector(editor: &Editor, session: &DiffSession, surface: &mut Surfac
             (left_top, left_bottom),
             (right_top, right_bottom),
         );
+        // the stage mark at the right edge, on the change's first row
+        let mark = markers.as_ref().and_then(|marks| marks[index].as_deref());
+        if let Some(mark) = mark.filter(|mark| !mark.is_empty()) {
+            let row = right_top.floor();
+            if (0.0..height).contains(&row) {
+                let (x, y) = (area.right() - 1, area.y + row as u16);
+                let cell = &mut surface[(x, y)];
+                cell.set_symbol(mark);
+                if let Some(fg) = marker_fg {
+                    cell.set_fg(fg);
+                }
+            }
+        }
     }
 }
 
