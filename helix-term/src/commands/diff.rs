@@ -33,7 +33,7 @@ pub fn diff_files(editor: &mut Editor, old: &Path, new: &Path) -> anyhow::Result
         .map_err(|err| anyhow!("cannot open {}: {err}", new.display()))?;
     editor.open_diff(
         OldVersion {
-            text,
+            text: text.into(),
             title: format!("{} (old)", old.display()),
             syntax_path: Some(old.to_path_buf()),
         },
@@ -52,7 +52,8 @@ pub fn diff_buffers(
         .document(left)
         .ok_or_else(|| anyhow!("no such buffer"))?;
     let old = OldVersion {
-        text: doc.text().to_string(),
+        // the buffer's rope, shared
+        text: doc.text().clone(),
         title: format!("{} (snapshot)", doc.display_name()),
         syntax_path: doc.path().map(Path::to_path_buf),
     };
@@ -105,7 +106,7 @@ pub async fn git_version(path: &Path, rev: Option<&str>) -> anyhow::Result<OldVe
         Err(err) => return Err(err),
     };
     Ok(OldVersion {
-        text,
+        text: text.into(),
         title: label,
         syntax_path: Some(PathBuf::from(&relative)),
     })
@@ -114,7 +115,7 @@ pub async fn git_version(path: &Path, rev: Option<&str>) -> anyhow::Result<OldVe
 // --- actions ---------------------------------------------------------------
 
 /// The diff of the focused view: `(the focused side, its hunks)`.
-fn focused_diff(editor: &Editor) -> Option<(ViewId, Side, Vec<DiffHunk>)> {
+fn focused_diff(editor: &Editor) -> Option<(ViewId, Side, std::sync::Arc<[DiffHunk]>)> {
     let view = editor.tree.focus;
     let session = editor.diff_session(view)?;
     Some((view, session.side_of(view)?, session.hunks.clone()))

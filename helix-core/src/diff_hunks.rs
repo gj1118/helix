@@ -9,7 +9,7 @@
 
 use std::ops::Range;
 
-use imara_diff::{Algorithm, Diff, InternedInput};
+use imara_diff::{Algorithm, Diff, IndentHeuristic, IndentLevel, InternedInput, Interner};
 use ropey::RopeSlice;
 
 /// How two texts are compared.
@@ -38,11 +38,24 @@ pub struct DiffHunk {
     pub left: Range<usize>,
     /// The lines of the right side (empty for a removal: where they would be).
     pub right: Range<usize>,
-    /// The changed words of a changed hunk on the left side, as char ranges of the whole
-    /// text (empty for additions and removals, and for very large hunks).
-    pub left_words: Vec<Range<usize>>,
-    /// The same on the right side.
-    pub right_words: Vec<Range<usize>>,
+}
+
+/// The words that changed inside a changed hunk (see [`hunk_words`]), as char ranges of the
+/// whole text of each side, in order.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HunkWords {
+    pub left: Vec<Range<usize>>,
+    pub right: Vec<Range<usize>>,
+}
+
+impl HunkWords {
+    /// The changed words of `side`.
+    pub fn side(&self, side: Side) -> &[Range<usize>] {
+        match side {
+            Side::Left => &self.left,
+            Side::Right => &self.right,
+        }
+    }
 }
 
 impl DiffHunk {
@@ -63,14 +76,6 @@ impl DiffHunk {
             Side::Right => self.right.clone(),
         }
     }
-
-    /// The changed words of `side`.
-    pub fn words(&self, side: Side) -> &[Range<usize>] {
-        match side {
-            Side::Left => &self.left_words,
-            Side::Right => &self.right_words,
-        }
-    }
 }
 
 /// One side of a comparison.
@@ -89,60 +94,126 @@ impl Side {
     }
 }
 
+/// The longest texts (in lines) diffed with the histogram algorithm; longer ones use Myers.
+const HISTOGRAM_MAX_LINES: usize = 5_000;
+
 /// Hunks with more lines than this on a side get no word emphasis (it costs, and shows
 /// little).
 const MAX_WORD_DIFF_LINES: usize = 200;
+/// Nor hunks with more characters than this on a side: a few long lines (a minified file)
+/// would be hundreds of thousands of words, which take the word diff seconds or more.
+const MAX_WORD_DIFF_CHARS: usize = 16_000;
 
-/// The hunks that turn `left` into `right`, in order.
+/// The hunks that turn `left` into `right`, in order: lines only (the changed words of a hunk
+/// are [`hunk_words`], for the hunks that are shown).
 pub fn diff_hunks(left: RopeSlice, right: RopeSlice, options: DiffOptions) -> Vec<DiffHunk> {
-    let key = |line: RopeSlice| -> String {
-        let line = line.to_string();
-        let line = line.trim_end_matches(['\n', '\r']);
-        if options.ignore_whitespace {
-            line.chars().filter(|c| !c.is_whitespace()).collect()
-        } else {
-            line.to_string()
-        }
+    // each text copied once, its lines compared as slices of the copy (hashing the lines of
+    // the rope in place is slower, and a copy per line allocates for each)
+    let (left_text, right_text) = (String::from(left), String::from(right));
+    let (left_lines, right_lines) = (line_strs(left, &left_text), line_strs(right, &right_text));
+    let diff = if options.ignore_whitespace {
+        let key = |line: &&str| -> String { line.chars().filter(|c| !c.is_whitespace()).collect() };
+        let input = interned(left_lines.iter().map(key), right_lines.iter().map(key));
+        line_diff(&input, |line: &String| line.bytes().collect::<Vec<_>>())
+    } else {
+        let input = interned(left_lines.into_iter(), right_lines.into_iter());
+        line_diff(&input, |line: &&str| line.bytes().collect::<Vec<_>>())
     };
-    let mut input: InternedInput<String> = InternedInput::default();
-    input.update_before(lines(left).map(key));
-    input.update_after(lines(right).map(key));
-    let mut diff = Diff::compute(Algorithm::Histogram, &input);
-    diff.postprocess_lines(&input);
-
     diff.hunks()
-        .map(|hunk| {
-            let left_lines = hunk.before.start as usize..hunk.before.end as usize;
-            let right_lines = hunk.after.start as usize..hunk.after.end as usize;
-            let (left_words, right_words) = if !left_lines.is_empty()
-                && !right_lines.is_empty()
-                && left_lines.len() <= MAX_WORD_DIFF_LINES
-                && right_lines.len() <= MAX_WORD_DIFF_LINES
-            {
-                changed_words(
-                    left,
-                    left_lines.clone(),
-                    right,
-                    right_lines.clone(),
-                    options,
-                )
-            } else {
-                (Vec::new(), Vec::new())
-            };
-            DiffHunk {
-                left: left_lines,
-                right: right_lines,
-                left_words,
-                right_words,
-            }
+        .map(|hunk| DiffHunk {
+            left: hunk.before.start as usize..hunk.before.end as usize,
+            right: hunk.after.start as usize..hunk.after.end as usize,
         })
         .collect()
 }
 
-/// The lines of `text`, without the empty line after a final line ending.
-fn lines(text: RopeSlice) -> impl Iterator<Item = RopeSlice> {
+/// `before` and `after` interned.
+fn interned<T: std::hash::Hash + Eq>(
+    before: impl Iterator<Item = T>,
+    after: impl Iterator<Item = T>,
+) -> InternedInput<T> {
+    let mut input = InternedInput {
+        before: Vec::new(),
+        after: Vec::new(),
+        interner: Interner::new(0),
+    };
+    input.update_before(before);
+    input.update_after(after);
+    input
+}
+
+/// The diff of the lines of `input`, the hunks slid to indentation boundaries; `indent` is
+/// the start of a line, for its indentation.
+fn line_diff<T: std::hash::Hash + Eq>(
+    input: &InternedInput<T>,
+    indent: impl Fn(&T) -> Vec<u8>,
+) -> Diff {
+    // Histogram reads better on code (it doesn't line up on `}` and blank lines) but slows
+    // down on big files with many changes (50 ms for 50,000 lines), where Myers (git's
+    // default) stays around a millisecond
+    let algorithm = if input.before.len().max(input.after.len()) <= HISTOGRAM_MAX_LINES {
+        Algorithm::Histogram
+    } else {
+        Algorithm::Myers
+    };
+    let mut diff = Diff::compute(algorithm, input);
+    diff.postprocess_with_heuristic(
+        input,
+        IndentHeuristic::new(|token| {
+            IndentLevel::for_ascii_line(indent(&input.interner[token]), 8)
+        }),
+    );
+    diff
+}
+
+/// The lines of `text` (not the empty one after a final line ending: see [`line_count`])
+/// without their line endings, as slices of `copy`, the
+/// whole of `text`.
+fn line_strs<'a>(text: RopeSlice<'a>, copy: &'a str) -> Vec<&'a str> {
     let count = line_count(text);
-    text.lines().take(count)
+    let trim = |line: &'a str| line.trim_end_matches(['\n', '\r']);
+    // the rope's lines end at `\n` (Helix builds ropey without its other line breaks): split
+    // the copy, which is much faster than asking the rope where each line starts
+    let lines: Vec<&str> = copy.split_inclusive('\n').map(trim).collect();
+    if lines.len() == count {
+        return lines;
+    }
+    (0..count)
+        .map(|line| trim(&copy[text.line_to_byte(line)..text.line_to_byte(line + 1)]))
+        .collect()
+}
+
+/// The words that changed between the two sides of `hunk` (of `left` and `right`): none for
+/// additions and removals, nor for hunks too big to be worth it (see [`MAX_WORD_DIFF_LINES`]
+/// and [`MAX_WORD_DIFF_CHARS`]).
+pub fn hunk_words(
+    left: RopeSlice,
+    right: RopeSlice,
+    hunk: &DiffHunk,
+    options: DiffOptions,
+) -> HunkWords {
+    let small = |text: RopeSlice, lines: &Range<usize>| {
+        !lines.is_empty()
+            && lines.len() <= MAX_WORD_DIFF_LINES
+            && lines.end <= text.len_lines()
+            && line_chars(text, lines.clone()).len() <= MAX_WORD_DIFF_CHARS
+    };
+    if !small(left, &hunk.left) || !small(right, &hunk.right) {
+        return HunkWords::default();
+    }
+    let (left, right) = changed_words(left, hunk.left.clone(), right, hunk.right.clone(), options);
+    HunkWords { left, right }
+}
+
+/// The chars of `lines` of `text`.
+fn line_chars(text: RopeSlice, lines: Range<usize>) -> Range<usize> {
+    let start = text.line_to_char(lines.start);
+    let end = if lines.end >= text.len_lines() {
+        text.len_chars()
+    } else {
+        text.line_to_char(lines.end)
+    };
+    start..end
 }
 
 /// How many lines `text` has, not counting the empty one after a final line ending (an
@@ -162,12 +233,7 @@ pub fn line_count(text: RopeSlice) -> usize {
 /// A word of a line: a run of letters, digits and `_`, a run of whitespace, or one other
 /// character; as a char range of the whole text.
 fn words(text: RopeSlice, lines: Range<usize>) -> Vec<Range<usize>> {
-    let start = text.line_to_char(lines.start);
-    let end = if lines.end >= text.len_lines() {
-        text.len_chars()
-    } else {
-        text.line_to_char(lines.end)
-    };
+    let Range { start, end } = line_chars(text, lines);
     #[derive(PartialEq)]
     enum Class {
         Word,
@@ -374,11 +440,58 @@ mod tests {
                 .map(|r| s.chars().skip(r.start).take(r.len()).collect())
                 .collect()
         };
-        assert_eq!(text(left, &found[0].left_words), ["price"]);
-        assert_eq!(text(right, &found[0].right_words), ["cost", " + tax"]);
+        let words = |left: &str, right: &str, hunk: &DiffHunk| -> HunkWords {
+            hunk_words(
+                Rope::from(left).slice(..),
+                Rope::from(right).slice(..),
+                hunk,
+                DiffOptions::default(),
+            )
+        };
+        let found_words: HunkWords = words(left, right, &found[0]);
+        assert_eq!(text(left, &found_words.left), ["price"]);
+        assert_eq!(text(right, &found_words.right), ["cost", " + tax"]);
+        assert_eq!(found_words.side(Side::Left), &found_words.left[..]);
         // added and removed lines have no word emphasis
-        let found = hunks("a\n", "a\nb\n", DiffOptions::default());
-        assert!(found[0].left_words.is_empty() && found[0].right_words.is_empty());
+        let added = hunks("a\n", "a\nb\n", DiffOptions::default());
+        let none: HunkWords = words("a\n", "a\nb\n", &added[0]);
+        assert_eq!(none, HunkWords::default());
+    }
+
+    /// Hunks too big for a word diff (many lines, or a few very long ones: a minified file)
+    /// get none, at once.
+    #[test]
+    fn big_hunks_get_no_word_emphasis() {
+        let line = |prefix: &str| -> String {
+            (0..100_000)
+                .map(|i| format!("{prefix}{i}=b+c;"))
+                .collect::<String>()
+                + "\n"
+        };
+        let (left, right) = (Rope::from(line("a")), Rope::from(line("q")));
+        let found = diff_hunks(left.slice(..), right.slice(..), DiffOptions::default());
+        assert_eq!(lines_of(&found), [(0..1, 0..1, HunkKind::Changed)]);
+        let started = std::time::Instant::now();
+        let words: HunkWords = hunk_words(
+            left.slice(..),
+            right.slice(..),
+            &found[0],
+            DiffOptions::default(),
+        );
+        assert_eq!(words, HunkWords::default());
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+
+        let many = |c: &str| -> String { (0..300).map(|i| format!("{c}{i}\n")).collect() };
+        let (left, right) = (Rope::from(many("x")), Rope::from(many("y")));
+        let found = diff_hunks(left.slice(..), right.slice(..), DiffOptions::default());
+        assert_eq!(lines_of(&found), [(0..300, 0..300, HunkKind::Changed)]);
+        let words: HunkWords = hunk_words(
+            left.slice(..),
+            right.slice(..),
+            &found[0],
+            DiffOptions::default(),
+        );
+        assert_eq!(words, HunkWords::default());
     }
 
     #[test]
@@ -399,6 +512,28 @@ mod tests {
         assert_eq!(hunk_at(&found, 3, Side::Left), (1, true));
         assert_eq!(hunk_at(&found, 4, Side::Right), (2, true));
         assert_eq!(hunk_at(&found, 4, Side::Left), (2, false));
+    }
+
+    /// Past [`HISTOGRAM_MAX_LINES`] the diff is Myers': the same hunks for a simple change.
+    #[test]
+    fn big_texts_get_the_same_hunks() {
+        let text = |changed: usize| -> String {
+            (0..6_000)
+                .map(|i| match i {
+                    _ if i == changed => format!("line {i} changed\n"),
+                    _ => format!("line {i}\n"),
+                })
+                .collect()
+        };
+        let (left, right) = (text(usize::MAX), text(4_321));
+        let found: Vec<DiffHunk> = hunks(&left, &right, DiffOptions::default());
+        assert_eq!(
+            lines_of(&found),
+            [(4_321..4_322, 4_321..4_322, HunkKind::Changed)]
+        );
+        let removed = left.replace("line 100\n", "");
+        let found: Vec<DiffHunk> = hunks(&left, &removed, DiffOptions::default());
+        assert_eq!(lines_of(&found), [(100..101, 100..100, HunkKind::Removed)]);
     }
 
     #[test]

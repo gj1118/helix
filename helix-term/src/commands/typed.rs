@@ -287,7 +287,7 @@ fn diff_command(
                 .with_context(|| format!("cannot read {}", old.display()))?;
             cx.editor.open_diff(
                 helix_view::diff_view::OldVersion {
-                    text,
+                    text: text.into(),
                     title: format!("{} (old)", old.display()),
                     syntax_path: Some(old.clone()),
                 },

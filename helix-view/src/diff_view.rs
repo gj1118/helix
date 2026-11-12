@@ -6,7 +6,12 @@
 
 use std::collections::HashMap;
 
-use helix_core::diff_hunks::{diff_hunks, DiffHunk, DiffOptions, HunkKind, Side};
+use std::ops::Range;
+use std::sync::Arc;
+
+use helix_core::diff_hunks::{
+    diff_hunks, hunk_at, hunk_words, DiffHunk, DiffOptions, HunkKind, HunkWords, Side,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -103,8 +108,12 @@ pub struct DiffSession {
     pub left_doc: DocumentId,
     pub right_doc: DocumentId,
     pub options: DiffOptions,
-    /// The changes between the two documents (as they are now: see `refresh`).
-    pub hunks: Vec<DiffHunk>,
+    /// The changes between the two documents (as they are now: see `refresh`). Shared with
+    /// what draws them each frame, not copied.
+    pub hunks: Arc<[DiffHunk]>,
+    /// The changed words of the hunks, worked out for those shown (see
+    /// [`Editor::prepare_diff_words`]): by hunk, `None` until then.
+    words: Vec<Option<HunkWords>>,
     /// The versions of the documents the hunks are of.
     versions: Option<(i32, i32)>,
     /// The gutters of the right view before the connector was added to them.
@@ -133,7 +142,8 @@ impl DiffSession {
             left_doc,
             right_doc,
             options,
-            hunks: Vec::new(),
+            hunks: Arc::from([]),
+            words: Vec::new(),
             versions: None,
             right_gutters,
             scrolled: None,
@@ -169,6 +179,32 @@ impl DiffSession {
     pub fn right_gutters(&self) -> &GutterConfig {
         &self.right_gutters
     }
+
+    /// The changed words of hunk `index` on `side`, if worked out (see
+    /// [`Editor::prepare_diff_words`]).
+    pub fn words(&self, index: usize, side: Side) -> &[Range<usize>] {
+        self.words
+            .get(index)
+            .and_then(Option::as_ref)
+            .map_or(&[], |words| words.side(side))
+    }
+}
+
+/// The hunks with lines in the window of `view` (showing `doc`, the `side` of a diff), as a
+/// range of indices: a few more, if anything (it counts lines, not rows of wrapped ones).
+pub fn shown_hunks(
+    hunks: &[DiffHunk],
+    view: &crate::View,
+    doc: &crate::Document,
+    side: Side,
+) -> Range<usize> {
+    let text = doc.text().slice(..);
+    let top = text.char_to_line(doc.view_offset(view.id).anchor.min(text.len_chars()));
+    let bottom = top + view.inner_height(doc);
+    let (start, _) = hunk_at(hunks, top, side);
+    // up to the first one starting below the window
+    let end = hunks.partition_point(|hunk| hunk.lines(side).start <= bottom);
+    start..end.max(start)
 }
 
 /// The right view's gutters with the connector in front.
@@ -219,7 +255,9 @@ impl Editor {
                     left.text().slice(..),
                     right.text().slice(..),
                     session.options,
-                );
+                )
+                .into();
+                session.words = vec![None; session.hunks.len()];
                 session.versions = Some(versions);
             }
         }
@@ -275,7 +313,9 @@ impl Editor {
 /// The old version of a diff (the left side): its text, the title of its buffer, and a file
 /// name for its syntax highlighting.
 pub struct OldVersion {
-    pub text: String,
+    /// Its text: a rope, so that a snapshot of a buffer shares the buffer's (until either
+    /// changes) instead of copying it.
+    pub text: helix_core::Rope,
     pub title: String,
     pub syntax_path: Option<std::path::PathBuf>,
 }
@@ -292,7 +332,7 @@ impl Editor {
         let right_view = self.tree.focus;
 
         let mut doc = Document::from(
-            helix_core::Rope::from(old.text),
+            old.text,
             None,
             std::sync::Arc::clone(&self.config),
             std::sync::Arc::clone(&self.syn_loader),
@@ -444,6 +484,38 @@ impl Editor {
             let session = session.clone();
             self.follow_diff_scroll(&session, leader);
             self.diff_sessions[index].scrolled = self.diff_scrolls(&self.diff_sessions[index]);
+        }
+    }
+
+    /// Works out the changed words of the hunks shown in the views of each diff, those not
+    /// done yet since the documents last changed: only what is on screen is word-diffed.
+    pub fn prepare_diff_words(&mut self) {
+        for session in &mut self.diff_sessions {
+            let (Some(left), Some(right)) = (
+                self.documents.get(&session.left_doc),
+                self.documents.get(&session.right_doc),
+            ) else {
+                continue;
+            };
+            for side in [Side::Left, Side::Right] {
+                let (Some(view), doc) = (
+                    self.tree.try_get(session.view(side)),
+                    if side == Side::Left { left } else { right },
+                ) else {
+                    continue;
+                };
+                for index in shown_hunks(&session.hunks, view, doc, side) {
+                    let hunk = &session.hunks[index];
+                    if session.words[index].is_none() && hunk.kind() == HunkKind::Changed {
+                        session.words[index] = Some(hunk_words(
+                            left.text().slice(..),
+                            right.text().slice(..),
+                            hunk,
+                            session.options,
+                        ));
+                    }
+                }
+            }
         }
     }
 

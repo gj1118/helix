@@ -2,10 +2,11 @@
 //! lines and words of each side, and the connector between the sides.
 
 use std::ops::Range;
+use std::sync::Arc;
 
 use helix_core::diff_hunks::{hunk_at, line_count, DiffHunk, Side};
 use helix_core::doc_formatter::FormattedGrapheme;
-use helix_view::diff_view::{DiffSession, DiffStyles};
+use helix_view::diff_view::{shown_hunks, DiffSession, DiffStyles};
 use helix_view::graphics::{Rect, Style};
 use helix_view::{Document, Editor, View};
 use tui::buffer::Buffer as Surface;
@@ -16,9 +17,10 @@ use crate::ui::text_decorations::Decoration;
 /// The backgrounds of the changed lines of one side, and of the changed words in them.
 pub struct DiffDecoration {
     side: Side,
-    hunks: Vec<DiffHunk>,
+    /// The diff's hunks (shared with the session, not copied each frame).
+    hunks: Arc<[DiffHunk]>,
     styles: DiffStyles,
-    /// The changed words of this side, in order.
+    /// The changed words of this side in the hunks shown, in order.
     words: Vec<Range<usize>>,
     /// The word the next graphemes are checked against.
     next_word: usize,
@@ -33,14 +35,12 @@ impl DiffDecoration {
         if session.doc(side) != doc.id() {
             return None;
         }
-        let words = session
-            .hunks
-            .iter()
-            .flat_map(|hunk| hunk.words(side).iter().cloned())
+        let words = shown_hunks(&session.hunks, view, doc, side)
+            .flat_map(|index| session.words(index, side).iter().cloned())
             .collect();
         Some(Self {
             side,
-            hunks: session.hunks.clone(),
+            hunks: Arc::clone(&session.hunks),
             styles: DiffStyles::new(&editor.theme),
             words,
             next_word: 0,
@@ -203,7 +203,7 @@ fn render_connector(editor: &Editor, session: &DiffSession, surface: &mut Surfac
         SideRows::new(left_view, left_doc),
         SideRows::new(right_view, right_doc),
     );
-    for hunk in &session.hunks {
+    for hunk in session.hunks.iter() {
         let left_top = left.row(hunk.left.start) + shift;
         let left_bottom = left.row(hunk.left.end) + shift;
         let right_top = right.row(hunk.right.start);

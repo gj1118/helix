@@ -9,7 +9,9 @@ the connector bends instead, from a change's lines on the left to its lines on t
 The two sides scroll together: scroll one (with keys, the mouse wheel, a jump) and the other
 follows, the line matching the cursor's line level with it (`scroll-sync`).
 Changed lines have a colored background (added, removed, changed), and inside a changed line
-the words that changed are emphasized.
+the words that changed are emphasized (not in very big changes: more than 200 lines, or more
+than 16,000 characters on a side, such as a minified file, where it would cost a lot and show
+little).
 
 The left side is a read-only snapshot of the old version, with syntax highlighting. The
 right side is the document itself, editable as usual: completion, diagnostics, undo and

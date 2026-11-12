@@ -691,3 +691,78 @@ async fn the_mouse_wheel_scrolls_both_sides() -> anyhow::Result<()> {
     row_of_both(&app, 135);
     Ok(())
 }
+
+/// The changed words are worked out for the changes shown: one far down the file gets its
+/// emphasis once it is in view.
+#[tokio::test(flavor = "multi_thread")]
+async fn changes_far_down_get_their_words_emphasized() -> anyhow::Result<()> {
+    let old: String = (0..400)
+        .map(|i| format!("let value_{i} = price;\n"))
+        .collect();
+    let new = old.replace("let value_350 = price;", "let value_350 = cost;");
+    let old_file = helpers::temp_file_with_contents(old)?;
+    let new_file = helpers::temp_file_with_contents(new)?;
+    let mut app = helpers::AppBuilder::new()
+        .with_file(new_file.path(), None)
+        .with_config(helpers::test_config())
+        .build()?;
+    app.resize_terminal(100, 14).await;
+    send_keys(
+        &mut app,
+        &format!(":diff {}<ret>", old_file.path().display()),
+    )
+    .await?;
+    let session = app.editor.diff_sessions.first().cloned().expect("a diff");
+    // not shown yet: not worked out
+    let none: &[std::ops::Range<usize>] = session.words(0, helix_core::diff_hunks::Side::Right);
+    assert!(none.is_empty());
+
+    send_keys(&mut app, "]c").await?;
+    assert_eq!(cursor(&app), ("right", 350));
+    let session = app.editor.diff_sessions.first().cloned().expect("a diff");
+    let words: Vec<std::ops::Range<usize>> = session
+        .words(0, helix_core::diff_hunks::Side::Right)
+        .to_vec();
+    assert_eq!(words.len(), 1);
+    let styles = DiffStyles::new(&app.editor.theme);
+    let row = (0..12u16)
+        .find(|row| app.rendered_rows()[*row as usize].contains("value_350 = cost"))
+        .expect("the change in view");
+    let cost = column(&app, row, "cost");
+    assert_eq!(
+        app.rendered_cell(cost, row).bg,
+        styles.change_emphasis.bg.unwrap()
+    );
+    let price = column(&app, row, "price");
+    assert_eq!(
+        app.rendered_cell(price, row).bg,
+        styles.change_emphasis.bg.unwrap()
+    );
+    Ok(())
+}
+
+/// `:diff-buffers` snapshots a buffer without copying it: the snapshot shares its rope.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_buffer_snapshot_shares_the_text() -> anyhow::Result<()> {
+    let old = helpers::temp_file_with_contents("one\ntwo\n")?;
+    let new = helpers::temp_file_with_contents("one\nthree\n")?;
+    let mut app = helpers::AppBuilder::new()
+        .with_file(old.path(), None)
+        .with_config(helpers::test_config())
+        .build()?;
+    let old_doc = helix_view::doc!(app.editor).id();
+    send_keys(&mut app, &format!(":open {}<ret>", new.path().display())).await?;
+    send_keys(
+        &mut app,
+        &format!(":diff-buffers {}<ret>", old.path().display()),
+    )
+    .await?;
+    let session = app.editor.diff_sessions.first().cloned().expect("a diff");
+    let snapshot = app.editor.document(session.left_doc).unwrap().text();
+    let buffer = app.editor.document(old_doc).unwrap().text();
+    let shared: bool = snapshot.is_instance(buffer);
+    assert!(shared);
+    assert_eq!(snapshot.to_string(), "one\ntwo\n");
+    send_keys(&mut app, ":q!<ret>").await?;
+    Ok(())
+}
