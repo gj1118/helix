@@ -381,6 +381,10 @@ These scopes are used for theming the editor interface:
 | `ui.selection.primary`            |                                                                                                |
 | `ui.highlight`                    | Highlighted lines in the picker preview                                                        |
 | `ui.highlight.frameline`          | Line at which debugging execution is paused at                                                 |
+| `ui.diff.add`                     | Background of added lines in a [side-by-side diff](./diff.md) (default: `diff.plus` mixed into the background) |
+| `ui.diff.delete`                  | Background of removed lines in a side-by-side diff (default: from `diff.minus`)               |
+| `ui.diff.change`                  | Background of changed lines in a side-by-side diff (default: from `diff.delta`)               |
+| `ui.diff.change.emphasis`         | Background of the changed words of changed lines in a side-by-side diff (default: from `diff.delta`, stronger) |
 | `ui.cursorline.primary`           | The line of the primary cursor ([if cursorline is enabled][editor-section])                    |
 | `ui.cursorline.secondary`         | The lines of any other cursors ([if cursorline is enabled][editor-section])                    |
 | `ui.cursorcolumn.primary`         | The column of the primary cursor ([if cursorcolumn is enabled][editor-section])                |

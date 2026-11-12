@@ -9,6 +9,7 @@ pub mod completion;
 pub mod config;
 pub mod diagnostic;
 pub mod diff;
+pub mod diff_hunks;
 pub mod doc_formatter;
 pub mod editor_config;
 pub mod fuzzy;

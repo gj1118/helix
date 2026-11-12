@@ -62,6 +62,8 @@ pub struct EditorView {
     pub keymaps: Keymaps,
     on_next_key: Option<(OnKeyCallback, OnKeyCallbackKind)>,
     pseudo_pending: Vec<KeyEvent>,
+    /// Keys of a diff view held back: they start the keys of a diff action (`]c`, `>>`...).
+    diff_pending: Vec<KeyEvent>,
     pub(crate) last_insert: (commands::MappableCommand, Vec<InsertEvent>),
     pub(crate) completion: Option<Completion>,
     /// The view and document the completion was opened in: its preview and savepoint belong
@@ -159,6 +161,7 @@ impl EditorView {
             keymaps,
             on_next_key: None,
             pseudo_pending: Vec::new(),
+            diff_pending: Vec::new(),
             last_insert: (commands::MappableCommand::normal_mode, Vec::new()),
             completion: None,
             completion_origin: None,
@@ -330,6 +333,11 @@ impl EditorView {
 
         if !(is_focused && self.terminal_focused) {
             surface.set_style(area, theme.get("ui.background.inactive"))
+        }
+
+        // A side of a diff: its changed lines and words (under the cursor line).
+        if let Some(diff) = crate::ui::diff_view::DiffDecoration::new(editor, doc, view) {
+            decorations.add_decoration(diff);
         }
 
         if is_focused && config.cursorline {
@@ -2057,6 +2065,38 @@ impl EditorView {
         }
     }
 
+    /// Keys of normal mode, through the keys of the diff views first (`[editor.diff.keys]`)
+    /// in a view of a diff: the keys of an action run it; the start of the keys of one waits
+    /// for the next key; other keys (the held back ones with them) go to the keymap, so `]f`
+    /// or `>` still work there.
+    fn command_mode_in_diffs(&mut self, mode: Mode, cxt: &mut commands::Context, event: KeyEvent) {
+        let in_diff = mode == Mode::Normal
+            && self.keymaps.pending().is_empty()
+            && cxt.editor.diff_session(cxt.editor.tree.focus).is_some();
+        if !in_diff && self.diff_pending.is_empty() {
+            return self.command_mode(mode, cxt, event);
+        }
+        self.diff_pending.push(event);
+        let config = cxt.editor.config();
+        match commands::diff::match_keys(&config.diff, &self.diff_pending) {
+            commands::diff::KeyMatch::Action(action) => {
+                self.diff_pending.clear();
+                drop(config);
+                // the count typed before the keys (`3]c`), as the keymap's commands get it
+                cxt.count = cxt.editor.count;
+                action(cxt);
+                cxt.editor.count = None;
+            }
+            commands::diff::KeyMatch::Prefix => {}
+            commands::diff::KeyMatch::None => {
+                drop(config);
+                for key in std::mem::take(&mut self.diff_pending) {
+                    self.command_mode(mode, cxt, key);
+                }
+            }
+        }
+    }
+
     fn command_mode(&mut self, mode: Mode, cxt: &mut commands::Context, event: KeyEvent) {
         match (event, cxt.editor.count) {
             // If the count is already started and the input is a number, always continue the count.
@@ -2691,7 +2731,7 @@ impl Component for EditorView {
                                 self.last_insert.1.push(InsertEvent::Key(key));
                             }
                         }
-                        mode => self.command_mode(mode, &mut cx, key),
+                        mode => self.command_mode_in_diffs(mode, &mut cx, key),
                     }
                 }
 
@@ -2797,12 +2837,15 @@ impl Component for EditorView {
             self.render_bufferline(cx.editor, bufferline_area, surface);
         }
 
+        // The diffs as the documents are now (or ended, when a view of one went).
+        cx.editor.refresh_diff_sessions();
         for (view, is_focused) in cx.editor.tree.views() {
             let doc = cx.editor.document(view.doc).unwrap();
             // The views' frame: a view ending short of it has a neighbour (and a divider) on
             // its right, not a pinned explorer panel.
             self.render_view(cx.editor, doc, view, editor_area, surface, is_focused);
         }
+        crate::ui::diff_view::render_connectors(cx.editor, surface);
         self.terminal_secondary_cursors = self.secondary_cursor_cells(cx.editor, surface);
 
         // The info box of pending keys (`cx.editor.autoinfo`) is drawn by the compositor, over

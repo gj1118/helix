@@ -28,6 +28,7 @@ mod test {
     mod component_keys;
     mod custom_commands;
     mod dap;
+    mod diff;
     mod editorconfig;
     mod explorer;
     mod history;

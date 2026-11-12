@@ -15,6 +15,8 @@ pub struct Args {
     pub build_grammars: bool,
     pub strict: bool,
     pub split: Option<Layout>,
+    /// `--diff`: the two files are an old and a new version, shown side by side.
+    pub diff: bool,
     pub verbosity: u64,
     pub log_file: Option<PathBuf>,
     pub config_file: Option<PathBuf>,
@@ -54,6 +56,7 @@ impl Args {
                 "--help" => args.display_help = true,
                 "--strict" => args.strict = true,
                 "--tutor" => args.load_tutor = true,
+                "--diff" => args.diff = true,
                 "--vsplit" => match args.split {
                     Some(_) => anyhow::bail!("can only set a split once of a specific type"),
                     None => args.split = Some(Layout::Vertical),

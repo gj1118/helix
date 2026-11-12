@@ -1,6 +1,7 @@
 mod cmdline_popup;
 mod completion;
 mod confirm_box;
+pub mod diff_view;
 mod document;
 pub(crate) mod editor;
 pub mod explorer;

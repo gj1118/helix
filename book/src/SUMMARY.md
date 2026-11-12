@@ -13,6 +13,7 @@
   - [Pickers](./pickers.md)
   - [Jumplist](./jumplist.md)
   - [Quicklist](./quicklist.md)
+  - [Diffs](./diff.md)
   - [Keymap](./keymap.md)
   - [Command line](./command-line.md)
   - [Custom commands](./custom-commands.md)

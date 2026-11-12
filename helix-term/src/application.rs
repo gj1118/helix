@@ -252,7 +252,13 @@ impl Application {
             );
         }
 
-        if args.load_tutor {
+        if args.diff {
+            let files: Vec<PathBuf> = args.files.keys().cloned().collect();
+            let [old, new] = files.as_slice() else {
+                anyhow::bail!("--diff takes two files: the old version and the new one");
+            };
+            crate::commands::diff::diff_files(&mut editor, old, new)?;
+        } else if args.load_tutor {
             let path = helix_loader::runtime_file(Path::new("tutor"));
             editor.open(&path, Action::VerticalSplit)?;
             // Unset path to prevent accidentally saving to the original tutor file.

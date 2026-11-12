@@ -114,6 +114,14 @@
 | `file_explorer` | Open file explorer in workspace root | normal: `` <space>e ``, select: `` <space>e `` |
 | `file_explorer_in_current_buffer_directory` | Open file explorer at current buffer's directory | normal: `` <space>. ``, select: `` <space>. `` |
 | `file_explorer_in_current_directory` | Open file explorer at current working directory |  |
+| `diff_next_change` | Go to the next change of a side-by-side diff (the other side follows) |  |
+| `diff_previous_change` | Go to the previous change of a side-by-side diff (the other side follows) |  |
+| `diff_snap` | Line the other side of a diff up with the cursor's line |  |
+| `diff_align_top` | Both sides of a diff to their first line |  |
+| `diff_align_bottom` | Both sides of a diff to their last line |  |
+| `diff_apply_left_to_right` | Replace the change under the cursor on the right side of a diff with the left side's lines |  |
+| `diff_apply_right_to_left` | Replace the change under the cursor on the left side of a diff with the right side's lines |  |
+| `diff_close` | Close the side-by-side diff (the right side's buffer stays) |  |
 | `explorer` | Show the explorer on the side set by [editor.explorer] side (left, right or floating), or hide it when it is open | normal: `` <space>x ``, select: `` <space>x `` |
 | `explorer_focus` | Focus the explorer file tree panel (opening it if hidden) | normal: `` <C-h> ``, select: `` <C-h> `` |
 | `explorer_blur` | Move keyboard focus from the explorer file tree to the buffer area | normal: `` <C-l> ``, select: `` <C-l> `` |

@@ -266,6 +266,113 @@ fn buffer_close_by_ids_impl(
     Ok(())
 }
 
+// --- side-by-side diffs ---------------------------------------------------------
+
+fn diff_command(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let expand =
+        |arg: &str| helix_stdx::path::canonicalize(helix_stdx::path::expand_tilde(Path::new(arg)));
+    let old = expand(&args[0]);
+    match args.get(1) {
+        Some(new) => crate::commands::diff::diff_files(cx.editor, &old, &expand(new)),
+        None => {
+            let right = view!(cx.editor).doc;
+            let text = std::fs::read_to_string(&old)
+                .with_context(|| format!("cannot read {}", old.display()))?;
+            cx.editor.open_diff(
+                helix_view::diff_view::OldVersion {
+                    text,
+                    title: format!("{} (old)", old.display()),
+                    syntax_path: Some(old.clone()),
+                },
+                right,
+            );
+            Ok(())
+        }
+    }
+}
+
+/// The buffer named (or with the path) `arg`.
+fn buffer_named(editor: &Editor, arg: &str) -> anyhow::Result<DocumentId> {
+    let path = Path::new(arg);
+    editor
+        .documents()
+        .find(|doc| {
+            doc.path().is_some_and(|p| p == path)
+                || doc.relative_path().is_some_and(|p| p == path)
+                || doc.display_name() == arg
+        })
+        .map(|doc| doc.id())
+        .ok_or_else(|| anyhow!("no buffer {arg:?}"))
+}
+
+fn diff_buffers_command(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let left = buffer_named(cx.editor, &args[0])?;
+    let right = match args.get(1) {
+        Some(arg) => buffer_named(cx.editor, arg)?,
+        None => view!(cx.editor).doc,
+    };
+    if left == right {
+        bail!("a buffer against itself has no differences");
+    }
+    crate::commands::diff::diff_buffers(cx.editor, left, right)
+}
+
+fn diff_git_command(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let doc = doc!(cx.editor);
+    let right = doc.id();
+    let path = doc
+        .path()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| anyhow!("the buffer has no file to compare with git"))?;
+    let rev = args.first().map(|rev| rev.to_string());
+    cx.jobs.callback(async move {
+        let old = crate::commands::diff::git_version(&path, rev.as_deref()).await?;
+        let call: job::Callback = job::Callback::Editor(Box::new(move |editor: &mut Editor| {
+            if editor.document(right).is_some() {
+                editor.open_diff(old, right);
+            }
+        }));
+        Ok(call)
+    });
+    Ok(())
+}
+
+fn diff_close_command(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let view = view!(cx.editor).id;
+    if !cx.editor.close_diff(view) {
+        bail!("not in a diff");
+    }
+    Ok(())
+}
+
 fn buffer_gather_paths_impl(editor: &mut Editor, args: Args) -> Vec<DocumentId> {
     // No arguments implies current document
     if args.is_empty() {
@@ -5263,6 +5370,38 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
             positionals: (0, Some(0)),
             ..Signature::DEFAULT
         },
+    },
+    TypableCommand {
+        name: "diff",
+        aliases: &[],
+        doc: "Show a side-by-side diff of two files: `:diff <old> <new>`, or `:diff <old>` against the current buffer. The old version is a read-only snapshot on the left, the new one an editable buffer on the right",
+        fun: diff_command,
+        completer: CommandCompleter::all(completers::filename),
+        signature: Signature { positionals: (1, Some(2)), ..Signature::DEFAULT },
+    },
+    TypableCommand {
+        name: "diff-buffers",
+        aliases: &[],
+        doc: "Show a side-by-side diff of two buffers: `:diff-buffers <old> [<new>]` (by name or path; the new one defaults to the current buffer). The old one is shown as a snapshot taken now",
+        fun: diff_buffers_command,
+        completer: CommandCompleter::all(completers::buffer),
+        signature: Signature { positionals: (1, Some(2)), ..Signature::DEFAULT },
+    },
+    TypableCommand {
+        name: "diff-git",
+        aliases: &[],
+        doc: "Show a side-by-side diff of the current file and its version in git: the index by default (what `git diff` shows), or a revision (`:diff-git HEAD`, `:diff-git main`)",
+        fun: diff_git_command,
+        completer: CommandCompleter::none(),
+        signature: Signature { positionals: (0, Some(1)), ..Signature::DEFAULT },
+    },
+    TypableCommand {
+        name: "diff-close",
+        aliases: &[],
+        doc: "Close the side-by-side diff of the current window (the right side's buffer stays)",
+        fun: diff_close_command,
+        completer: CommandCompleter::none(),
+        signature: Signature { positionals: (0, Some(0)), ..Signature::DEFAULT },
     },
     TypableCommand {
         name: "explorer",

@@ -37,6 +37,8 @@ impl GutterType {
             GutterType::Spacer => padding(editor, doc, view, theme, is_focused),
             GutterType::Diff => diff(editor, doc, view, theme, is_focused),
             GutterType::CodeActionHint => code_action_hint(editor, doc, view, theme, is_focused),
+            // blank: the diff view draws the connector over it
+            GutterType::DiffConnector => Box::new(|_, _, _, _| None),
         }
     }
 
@@ -47,6 +49,7 @@ impl GutterType {
             GutterType::Spacer => 1,
             GutterType::Diff => 1,
             GutterType::CodeActionHint => 1,
+            GutterType::DiffConnector => doc.config.load().diff.connector_width as usize,
         }
     }
 }

@@ -397,6 +397,12 @@ impl AppBuilder {
         self
     }
 
+    /// Changes the command line arguments (`hx --diff`, ...).
+    pub fn with_args(mut self, change: impl FnOnce(&mut Args)) -> Self {
+        change(&mut self.args);
+        self
+    }
+
     pub fn build(self) -> anyhow::Result<Application> {
         if let Some(path) = &self.args.working_directory {
             bail!("Changing the working directory to {path:?} is not yet supported for integration tests");

@@ -403,6 +403,38 @@ directories) with a 2 second limit per call and 512 MiB of memory. `:reload-all-
 reloads them. See the book's Plugins chapter (`book/src/plugins.md`) for the events and the
 API, and [helix-plugin/README.md](helix-plugin/README.md).
 
+## Side-by-side Diffs
+
+The changes between two versions of a file, side by side: the old version on the left (a
+read-only snapshot, with syntax highlighting), the file on the right (editable as usual, the
+diff following every edit), and a connector between them that links each change on the left to
+the same change on the right. Each side keeps its own lines: nothing is inserted to line them
+up, the connector bends instead. Changed lines have a background (added, removed, changed) and
+the changed words inside them are emphasized.
+
+- `:diff <old> [<new>]` (two files, or a file and the current buffer), `:diff-buffers <old>
+  [<new>]`, `:diff-git` (the current file against the git index: what `git diff` shows) and
+  `:diff-git <revision>` (`HEAD`, `main`, ...), and `hx --diff <old> <new>`.
+- In a diff: `]c` / `[c` next / previous change (the other side follows), `]s` lines the other
+  side up with the cursor, `[d` / `]d` both sides to the top / bottom, `>>` / `<<` apply the
+  change under the cursor from left to right / right to left, `q` closes it. Other keys work as
+  usual (`]f`, `>` with a motion...). The keys are set in `[editor.diff.keys]`, and the actions
+  are commands too (`diff_next_change`, ...).
+- `[editor.diff]`: `ignore-whitespace`, `connector-width`, `align-on-jump`. Colors: the theme's
+  `ui.diff.add`, `ui.diff.delete`, `ui.diff.change`, `ui.diff.change.emphasis`, or mixed from its
+  `diff.plus`, `diff.minus` and `diff.delta`.
+
+As git's diff tool (each changed file in turn, `:q` for the next):
+
+```sh
+git config --global difftool.helix.cmd 'hx --diff "$LOCAL" "$REMOTE"'
+git config --global diff.tool helix
+git config --global difftool.prompt false
+git difftool            # also --staged, main, HEAD~1 HEAD...
+```
+
+See the book's Diffs page (`book/src/diff.md`).
+
 ## Quickfix Panel
 
 Lists of locations can open in a panel at the bottom of the editor, like Neovim's quickfix

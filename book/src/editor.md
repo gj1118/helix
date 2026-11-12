@@ -16,6 +16,7 @@
 - [`[editor.quickfix]` Section](#editorquickfix-section)
 - [`[editor.notifications]` Section](#editornotifications-section)
 - [`[editor.inline-blame]` Section](#editorinline-blame-section)
+- [`[editor.diff]` Section](#editordiff-section)
 - [`[editor.gradient-borders]` Section](#editorgradient-borders-section)
 - [`[editor.buffer-picker]` Section](#editorbuffer-picker-section)
 - [`[editor.auto-pairs]` Section](#editorauto-pairs-section)
@@ -813,6 +814,17 @@ notification's background; with the styles drawn through the middle of their cel
 double, thick, dashed, dotted, `"quadrant-inside"`) they keep what is behind the
 notification. With the style `"none"` no border is drawn, but its space is kept. See [Notification and cmdline popup
 styling](./themes.md#notification-and-cmdline-popup-styling).
+
+### `[editor.diff]` Section
+
+Side-by-side diffs (`:diff`, `:diff-git`, `hx --diff`): see [Diffs](./diff.md).
+
+| Key | Description | Default |
+| --- | --- | --- |
+| `ignore-whitespace` | Lines that differ only in whitespace are not changes | `false` |
+| `connector-width` | Columns of the connector between the two sides | `9` |
+| `align-on-jump` | `]c` / `[c` scroll the other side to the same change | `true` |
+| `keys` | The keys of the diff views, by action (see [Diffs](./diff.md#keys)) | `]c`, `[c`, `]s`, `[d`, `]d`, `>>`, `<<`, `q` |
 
 ### `[editor.inline-blame]` Section
 

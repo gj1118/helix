@@ -605,6 +605,8 @@ pub struct Config {
     /// Inline blame allows showing the latest commit that affected the line the cursor is on as virtual text
     #[serde(default)]
     pub inline_blame: InlineBlameConfig,
+    /// Side-by-side diffs (`:diff`, `:diff-git`, `hx --diff`)
+    pub diff: crate::diff_view::DiffConfig,
     /// Whether to render rainbow colors for matching brackets. Defaults to `false`.
     pub rainbow_brackets: bool,
     /// Whether to enable Kitty Keyboard Protocol
@@ -1714,6 +1716,9 @@ pub enum GutterType {
     Diff,
     /// Indicator for when code actions are available
     CodeActionHint,
+    /// The connector of a side-by-side diff, in front of the right side (added by the diff
+    /// view, not configured)
+    DiffConnector,
 }
 
 impl std::str::FromStr for GutterType {
@@ -2197,6 +2202,7 @@ impl Default for Config {
             end_of_line_diagnostics: DiagnosticFilter::Enable(Severity::Hint),
             clipboard_provider: ClipboardProvider::default(),
             inline_blame: InlineBlameConfig::default(),
+            diff: crate::diff_view::DiffConfig::default(),
             editor_config: true,
             max_panel_width: 50,
             max_panel_height: 50,
@@ -2568,6 +2574,8 @@ pub struct Editor {
     pub explorer_panel: crate::explorer::ExplorerState,
     /// What plugins see of the explorer and ask of it.
     pub plugin_explorer: crate::explorer::PluginExplorer,
+    /// The side-by-side diffs shown (see [`crate::diff_view`]).
+    pub diff_sessions: Vec<crate::diff_view::DiffSession>,
     /// Explorer internal clipboard for cut/copy-paste entries.
     pub explorer_clipboard: Option<ExplorerClipboard>,
 
@@ -2824,6 +2832,7 @@ impl Editor {
             keymap_pending: Vec::new(),
             explorer_panel: crate::explorer::ExplorerState::default(),
             plugin_explorer: crate::explorer::PluginExplorer::default(),
+            diff_sessions: Vec::new(),
             explorer_clipboard: None,
             config,
             auto_pairs,
@@ -3911,6 +3920,17 @@ impl Editor {
 
         self.tree.remove(id);
         self._refresh();
+
+        // A window of a diff closed: the diff ends now (its other window too when it is the
+        // old version's), so that closing the last real window quits (`hx --diff`, `:q`).
+        if let Some(index) = self
+            .diff_sessions
+            .iter()
+            .position(|session| session.side_of(id).is_some())
+        {
+            let session = self.diff_sessions.remove(index);
+            self.end_diff_session(session);
+        }
     }
 
     pub fn close_document(&mut self, doc_id: DocumentId, force: bool) -> Result<(), CloseError> {
