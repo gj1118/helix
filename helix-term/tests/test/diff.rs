@@ -356,6 +356,43 @@ async fn hx_diff_opens_a_diff_of_two_files() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Runs the editor until `done` holds (true), or ten seconds pass (false): for background jobs
+/// (`git show` of `:diff-git`), slower on some machines than an idle editor.
+async fn until(app: &mut Application, mut done: impl FnMut(&Application) -> bool) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    // the stream stays open (`_keys`): an ended one stops the event loop
+    let (_keys, rx) = tokio::sync::mpsc::unbounded_channel();
+    let mut rx = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
+    while std::time::Instant::now() < deadline {
+        if done(app) {
+            return true;
+        }
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            app.event_loop_until_idle(&mut rx),
+        )
+        .await;
+    }
+    done(app)
+}
+
+/// The title of the old version shown, if a diff is.
+fn left_title(app: &Application) -> Option<String> {
+    let session = app.editor.diff_sessions.first()?;
+    app.editor.document(session.left_doc)?.title.clone()
+}
+
+/// Waits for the diff of `:diff-git` titled `title`; fails with the status line otherwise.
+async fn wait_for_diff(app: &mut Application, title: &str) {
+    let shown = until(app, |app| left_title(app).as_deref() == Some(title)).await;
+    assert!(
+        shown,
+        "no diff {title:?} (shown: {:?}); status: {:?}",
+        left_title(app),
+        app.editor.get_status()
+    );
+}
+
 fn git(dir: &std::path::Path, args: &[&str]) -> anyhow::Result<()> {
     let status = std::process::Command::new("git")
         .arg("-C")
@@ -397,6 +434,7 @@ async fn diff_git_compares_with_the_index_or_a_revision() -> anyhow::Result<()> 
         (doc.text().to_string(), doc.title.clone().unwrap())
     };
     send_keys(&mut app, ":diff-git<ret>").await?;
+    wait_for_diff(&mut app, "index:main.rs").await;
     assert_eq!(
         left(&app),
         ("one\ntwo staged\n".to_string(), "index:main.rs".to_string())
@@ -404,6 +442,7 @@ async fn diff_git_compares_with_the_index_or_a_revision() -> anyhow::Result<()> 
     assert_eq!(app.editor.diff_sessions[0].hunks.len(), 1);
     // another diff in the same window replaces it
     send_keys(&mut app, ":diff-git HEAD<ret>").await?;
+    wait_for_diff(&mut app, "HEAD:main.rs").await;
     assert_eq!(app.editor.diff_sessions.len(), 1);
     assert_eq!(
         left(&app),
@@ -419,6 +458,7 @@ async fn diff_git_compares_with_the_index_or_a_revision() -> anyhow::Result<()> 
         &format!("q:o {}<ret>:diff-git<ret>", added.display()),
     )
     .await?;
+    wait_for_diff(&mut app, "index:new.rs").await;
     assert_eq!(left(&app), (String::new(), "index:new.rs".to_string()));
     let session = &app.editor.diff_sessions[0];
     assert_eq!(session.hunks[0].kind(), HunkKind::Added);
@@ -444,5 +484,33 @@ async fn quitting_the_right_side_of_hx_diff_quits() -> anyhow::Result<()> {
         })
         .build()?;
     helpers::test_key_sequence(&mut app, Some(":q<ret>"), None, true).await?;
+    Ok(())
+}
+
+/// `:diff-git` on a file opened through a symlinked folder (as on macOS, where temporary
+/// folders are under `/var`, a link to `/private/var`, and git names the repository by its
+/// real path).
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn diff_git_works_through_symlinks() -> anyhow::Result<()> {
+    let repo = tempfile::tempdir()?;
+    let root = repo.path();
+    git(root, &["init", "-q"])?;
+    std::fs::write(root.join("main.rs"), "one\n")?;
+    git(root, &["add", "main.rs"])?;
+    git(root, &["commit", "-qm", "first"])?;
+    std::fs::write(root.join("main.rs"), "one\ntwo\n")?;
+    let links = tempfile::tempdir()?;
+    let link = links.path().join("project");
+    std::os::unix::fs::symlink(root, &link)?;
+
+    let mut app = helpers::AppBuilder::new()
+        .with_file(link.join("main.rs"), None)
+        .build()?;
+    send_keys(&mut app, ":diff-git<ret>").await?;
+    wait_for_diff(&mut app, "index:main.rs").await;
+    let session = &app.editor.diff_sessions[0];
+    let left = app.editor.document(session.left_doc).unwrap();
+    assert_eq!(left.text().to_string(), "one\n");
     Ok(())
 }

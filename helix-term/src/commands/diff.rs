@@ -67,8 +67,13 @@ pub async fn git_version(path: &Path, rev: Option<&str>) -> anyhow::Result<OldVe
         .parent()
         .ok_or_else(|| anyhow!("{} has no folder", path.display()))?;
     let root = repo_root(dir).await?;
-    let root = helix_stdx::path::canonicalize(&root);
-    let relative = helix_stdx::path::canonicalize(path)
+    // git names the repository by its real path: the file's path too, its links resolved
+    // (on macOS, temporary folders are under `/var`, a link to `/private/var`)
+    let real = |path: &Path| {
+        std::fs::canonicalize(path).unwrap_or_else(|_| helix_stdx::path::canonicalize(path))
+    };
+    let root = real(&root);
+    let relative = real(path)
         .strip_prefix(&root)
         .map(Path::to_path_buf)
         .map_err(|_| {
