@@ -6,10 +6,10 @@ use helix_core::unicode::width::UnicodeWidthChar;
 use helix_core::Position;
 use helix_core::RopeSlice;
 use helix_view::annotations::plugins::{
-    annotation_text, annotation_text_format, inline_annotations, inline_annotations_drop,
-    inline_start_col, pinned_annotations, plugin_annotations_on_line, virtual_line_rows,
+    annotation_text, annotation_text_format, eol_layout, inline_annotations,
+    inline_annotations_drop, inline_start_col, plugin_annotations_on_line, virtual_line_rows,
 };
-use helix_view::document::{AnnotationAlign, PluginAnnotation};
+use helix_view::document::PluginAnnotation;
 use helix_view::{Document, Theme, ViewId};
 
 /// Draws the annotations plugins set with `buffer:set_annotations`. The rows they take are
@@ -134,6 +134,8 @@ impl Decoration for PluginDecoration<'_> {
         // or all together on the first virtual line when they do not fit ("dropped").
         let dropped = inline_annotations_drop(line_annots, virt_off.col, width);
         let mut rows = 0usize;
+        // The columns the inline annotations take after the end of the line, for the
+        // decorations drawn after them.
         let mut inline_col_used = 0usize;
         for annot in inline_annotations(line_annots) {
             let start_col = inline_start_col(annot, dropped, virt_off.col);
@@ -175,29 +177,11 @@ impl Decoration for PluginDecoration<'_> {
         // room in the window (`eol_or_right`), else against the right edge of the window
         // (over the text if the line reaches it), each next one to the left of the last.
         let view_start = renderer.offset.col;
-        let mut eol_next = if dropped {
-            virt_off.col
-        } else {
-            virt_off.col.saturating_add(inline_col_used)
-        };
-        let mut right_next = view_start.saturating_add(width as usize);
-        for annot in pinned_annotations(line_annots) {
-            let text_width: usize = annot.text.chars().filter_map(|c| c.width()).sum();
-            if text_width == 0 {
-                continue;
-            }
-            let eol_start = eol_next.saturating_add(annot.offset as usize);
-            let start = if annot.align == AnnotationAlign::EolOrRight
-                && eol_start >= view_start
-                && eol_start.saturating_add(text_width) <= right_next
-            {
-                eol_next = eol_start.saturating_add(text_width);
-                eol_start
-            } else {
-                let start = right_next.saturating_sub(text_width).max(view_start);
-                right_next = start.saturating_sub(1);
-                start
-            };
+        let layout = eol_layout(line_annots, virt_off.col, width, view_start);
+        // The decorations drawn after these (Helix's end-of-line diagnostics) go after the
+        // ones put after the end of the line.
+        inline_col_used = inline_col_used.max(layout.eol_end.saturating_sub(virt_off.col));
+        for (annot, start) in layout.placed {
             let draw_col = start - view_start;
             let available = (width as usize).saturating_sub(draw_col);
             let text = cut_to_width(&annot.text, available);

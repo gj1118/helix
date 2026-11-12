@@ -1236,7 +1236,7 @@ end-of-line-diagnostics = "disable"
 cursor-line = "disable"
 ```
 
-The corner is not used in a view where a plugin draws annotations (such as the `inline-diagnostic` plugin in `contrib/plugins`, which shows its own panel), so diagnostics are not shown twice.
+The corner is not used in a view where a plugin shows a panel (such as the `inline-diagnostic` plugin in `contrib/plugins`, which shows the diagnostics in its own), so diagnostics are not shown twice. A plugin's annotations (search lenses, hints) leave it alone.
 
 ### `[editor.word-completion]` Section
 

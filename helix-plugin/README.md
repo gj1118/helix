@@ -325,7 +325,8 @@ Buffer methods (they raise an error once the buffer is closed):
   end of a line, drawn over the text: unlike annotations it takes no rows, so the lines
   below never move and the view does not scroll for it. `set_panel(nil)` removes it; a
   window has one panel (shared by all plugins). Helix lays it out again on every frame, so
-  it follows edits of the line, resizes and scrolling:
+  it follows edits of the line, resizes and scrolling. It starts after what plugins put
+  after the end of the line on its row (annotations), never over it:
   - Beside the line, after an arrow, when at least `min_width` columns are left for the
     text; otherwise in a box under the line, from its first column. Long texts wrap; the
     rows after the first are drawn over the lines below, and the panel is cut off at the
@@ -598,7 +599,8 @@ end }
 ## Example plugins
 
 `contrib/plugins/` has an `auto-save` skeleton, `inline-diagnostic`, which shows the
-diagnostics of the cursor line in a panel, like tiny-inline-diagnostic.nvim, and `hlslens`,
+diagnostics of the cursor line in a panel, like tiny-inline-diagnostic.nvim (and, with
+`other_lines`, those of the other lines in view after their end), and `hlslens`,
 search lenses like nvim-hlslens (`[3/12]` at the end of the lines of the matches; see the
 book's Plugins chapter for its settings).
 

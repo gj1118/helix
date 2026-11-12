@@ -516,18 +516,13 @@ impl EditorView {
 
         // With neither inline diagnostics on the cursor line nor end-of-line diagnostics, the
         // diagnostics under the cursor are shown in the top right corner of the view, as
-        // upstream does. Not while a plugin draws annotations in this view (the
-        // inline-diagnostic plugin turns the others off to draw its own panel): they would be
-        // shown twice.
+        // upstream does. Not while a plugin shows a panel in this view (the
+        // inline-diagnostic plugin turns the others off to draw its own): they would be shown
+        // twice. Annotations don't count: they are lenses, hints, blame... as often as not.
         use helix_view::annotations::diagnostics::DiagnosticFilter;
-        let plugin_annotations = doc
-            .plugin_annotations
-            .get(&view.id)
-            .is_some_and(|annotations| !annotations.is_empty())
-            || doc.plugin_panels.contains_key(&view.id);
         if config.inline_diagnostics.cursor_line == DiagnosticFilter::Disable
             && config.end_of_line_diagnostics == DiagnosticFilter::Disable
-            && !plugin_annotations
+            && !doc.plugin_panels.contains_key(&view.id)
         {
             Self::render_diagnostics(doc, view, inner, surface, theme);
         }
@@ -573,9 +568,22 @@ impl EditorView {
         let line = text.char_to_line(panel.char_idx);
         let line_end = helix_core::line_ending::line_end_char_index(&text, line);
         // The last row of the line (soft wrap), and where its text ends.
-        let Some(end) = view.screen_coords_at_pos(doc, text, line_end) else {
+        let Some(mut end) = view.screen_coords_at_pos(doc, text, line_end) else {
             return;
         };
+        // After what plugins draw after the end of the line on its row (search lenses...),
+        // laid out as they are drawn: the panel must not cover them.
+        if let Some(annots) = doc.plugin_annotations.get(&view.id) {
+            use helix_view::annotations::plugins::{eol_layout, plugin_annotations_on_line};
+            let line_annots = plugin_annotations_on_line(annots, text, line);
+            let scrolled = doc.view_offset(view.id).horizontal_offset;
+            // the column after the line's end, where they start (as the renderer has it)
+            let after_end = end.col + scrolled + 1;
+            let eol_end = eol_layout(line_annots, after_end, inner.width, scrolled).eol_end;
+            if eol_end > after_end {
+                end.col = eol_end - 1 - scrolled;
+            }
+        }
 
         let hex = |color: &Option<String>| {
             color

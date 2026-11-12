@@ -65,8 +65,8 @@ commands and pending callbacks of the old ones are dropped first.
 The repository has three examples in `contrib/plugins/`: an `auto-save` skeleton,
 `inline-diagnostic`, which shows the diagnostics of the cursor line in a panel (`set_panel`),
 and `hlslens`, a port of [nvim-hlslens](https://github.com/kevinhwang91/nvim-hlslens) (see
-[Search lenses](#search-lenses-hlslens)). Copy a directory to `~/.config/helix/plugins/` to
-use it.
+[Search lenses](#search-lenses-hlslens) and [Inline diagnostics](#inline-diagnostics-inline-diagnostic)).
+Copy a directory to `~/.config/helix/plugins/` to use it.
 
 ## Configuration
 
@@ -356,7 +356,8 @@ Buffer methods (they raise an error once the buffer is closed):
   end of a line, drawn over the text: unlike annotations it takes no rows, so the lines
   below never move and the view does not scroll for it. `set_panel(nil)` removes it; a
   window has one panel (shared by all plugins). Helix lays it out again on every frame, so
-  it follows edits of the line, resizes and scrolling:
+  it follows edits of the line, resizes and scrolling. It starts after what plugins put
+  after the end of the line on its row (annotations), never over it:
   - Beside the line, after an arrow, when at least `min_width` columns are left for the
     text; otherwise in a box under the line, from its first column. Long texts wrap; the
     rows after the first are drawn over the lines below, and the panel is cut off at the
@@ -659,3 +660,37 @@ config = { calm_down = true, near_lens = "[{index}/{total}]", lens = "[{arrow}{i
 The lenses follow the search as it is typed (from the `prompt_change` event), and a lens
 whose line is longer than the window stays in view at its right edge (an annotation with
 `align = "eol_or_right"`).
+
+## Inline diagnostics (`inline-diagnostic`)
+
+`contrib/plugins/inline-diagnostic` shows the diagnostics of the cursor line in a panel
+after the end of the line, like
+[tiny-inline-diagnostic.nvim](https://github.com/rachartier/tiny-inline-diagnostic.nvim):
+the most severe first, with a colored bullet each, long messages wrapped, drawn over the
+text so that no line moves. Turn off Helix's own end-of-line diagnostics so they are not
+shown twice:
+
+```toml
+[editor]
+end-of-line-diagnostics = "disable"
+
+[[plugins.plugins]]
+name = "inline-diagnostic"
+config = { other_lines = true }
+```
+
+| Setting | Description | Default |
+| --- | --- | --- |
+| `panel_bg`, `panel_fg` | The panel's colors | `"#cba6f7"`, `"#1e1e2e"` |
+| `error_color`, `warning_color`, `info_color`, `hint_color` | The bullets' colors, by severity (and of the other lines' messages) | `"#ff6b6b"`, `"#ffd93d"`, `"#6bcb77"`, `"#4d96ff"` |
+| `arrow`, `arrow_dropped` | The arrow from the line to the panel beside it, and to the panel under it | `"←"`, `"╰"` |
+| `bullet`, `left_cap`, `right_cap` | The bullet, and the caps around each row | `"●"`, and the powerline rounded caps U+E0B6 and U+E0B4 |
+| `max_lines` | Diagnostics shown before `+N more` | `4` |
+| `min_width` | Fewer columns than this left beside the line put the panel under it | `30` |
+| `show_in_insert` | Show the panel in insert mode too | `false` |
+| `show_in_prompt` | Show the panel while a prompt is open too (a search moves the cursor from match to match as it is typed) | `false` |
+| `other_lines` | The other lines in view show their most severe diagnostic after their end, in one line in the color of its severity, with `(+N)` for the others (tiny-inline-diagnostic's `multilines`) | `false` |
+| `other_lines_width` | Columns of such a message, at most (cut with `…`) | `60` |
+| `other_lines_align` | Where they go (see `set_annotations`): `"eol_or_right"` (after the end of the line, or at the window's right edge on a line too long for it), `"right"` or `"eol"` | `"eol_or_right"` |
+
+The panel starts after the lenses of `hlslens` on the cursor line, rather than covering them.

@@ -3,7 +3,11 @@
 -- after the end of the line, drawn over the text (it never moves the lines below or
 -- scrolls the view). Long messages wrap, and further diagnostics follow, over the lines
 -- below; with too few columns left beside the line, the panel goes under it. Hidden in
--- insert mode by default.
+-- insert mode and while a prompt is open (a search, the command line) by default.
+--
+-- With `other_lines`, the other lines in view show their most severe diagnostic after
+-- their end too, in one line (tiny-inline-diagnostic's `multilines`); on a line too long
+-- for the window it goes against the window's right edge instead of out of view.
 
 local config = {
   -- Panel colors
@@ -38,6 +42,20 @@ local config = {
 
   -- Show the panel in insert mode too (tiny-inline-diagnostic's `enable_on_insert`)
   show_in_insert = false,
+
+  -- Show the panel while a prompt is open too (a search moves the cursor as it is typed)
+  show_in_prompt = false,
+
+  -- The other lines in view: their most severe diagnostic after their end, in the color of
+  -- its severity (tiny-inline-diagnostic's `multilines`)
+  other_lines = false,
+
+  -- Columns of a message on another line, at most (it is cut with "…")
+  other_lines_width = 60,
+
+  -- Where it goes: "eol_or_right" (after the end of the line, or at the window's right edge
+  -- when the line is too long), "right" (always at the right edge) or "eol"
+  other_lines_align = "eol_or_right",
 }
 
 -- Load user config
@@ -69,6 +87,56 @@ local function get_bullet_color(severity)
   return config.info_color
 end
 
+local in_prompt = false     -- a prompt is open
+local annotated = nil       -- the buffer whose other lines have diagnostics drawn
+
+-- The first line of `message`, cut to `width` columns.
+local function one_line(message, width)
+  local line = message:match("^[^\n]*") or ""
+  if utf8.len(line) and utf8.len(line) > width then
+    line = line:sub(1, utf8.offset(line, width)  - 1) .. "…"
+  end
+  return line
+end
+
+-- The most severe diagnostic of each line in view but the cursor's, after its end.
+local function update_other_lines(buffer, by_line, cursor_line)
+  if annotated and annotated ~= buffer:id() then
+    local previous = helix.buffer.get_by_id(annotated)
+    if previous then
+      previous:clear_annotations()
+    end
+    annotated = nil
+  end
+  if not config.other_lines then
+    return
+  end
+  local window = helix.window.get_current()
+  if not window then
+    return
+  end
+  local top = window:get_top_line()
+  local bottom = top + window:get_area().height
+  local annotations = {}
+  for line, diags in pairs(by_line) do
+    if line ~= cursor_line and line >= top and line < bottom then
+      local diag = diags[1]
+      local text = config.bullet .. " " .. one_line(diag.message, config.other_lines_width)
+      if #diags > 1 then
+        text = text .. " (+" .. (#diags - 1) .. ")"
+      end
+      annotations[#annotations + 1] = {
+        char_idx = buffer:line_to_char(line),
+        text = text,
+        fg = get_bullet_color(diag.severity),
+        align = config.other_lines_align,
+      }
+    end
+  end
+  buffer:set_annotations(annotations)
+  annotated = buffer:id()
+end
+
 local function update_diagnostics()
   local buffer = helix.buffer.get_current()
   if not buffer then return end
@@ -76,25 +144,27 @@ local function update_diagnostics()
   local cursor = buffer:get_cursor()
   local current_line_idx = buffer:char_to_line(cursor)
 
-  -- Collect diagnostics on current line
-  local line_diags = {}
+  -- The diagnostics by line, most severe first
+  local by_line = {}
   for _, diag in ipairs(buffer:get_diagnostics()) do
-    if diag.line == current_line_idx then
-      table.insert(line_diags, diag)
-    end
+    by_line[diag.line] = by_line[diag.line] or {}
+    table.insert(by_line[diag.line], diag)
+  end
+  for _, diags in pairs(by_line) do
+    table.sort(diags, function(a, b)
+      local prio_a = severity_priority[a.severity] or 99
+      local prio_b = severity_priority[b.severity] or 99
+      return prio_a < prio_b
+    end)
   end
 
-  if #line_diags == 0 then
+  update_other_lines(buffer, by_line, current_line_idx)
+
+  local line_diags = by_line[current_line_idx] or {}
+  if #line_diags == 0 or (in_prompt and not config.show_in_prompt) then
     buffer:set_panel(nil)
     return
   end
-
-  -- Most severe first
-  table.sort(line_diags, function(a, b)
-    local prio_a = severity_priority[a.severity] or 99
-    local prio_b = severity_priority[b.severity] or 99
-    return prio_a < prio_b
-  end)
 
   local items = {}
   for i = 1, math.min(#line_diags, config.max_lines) do
@@ -138,5 +208,28 @@ end)
 
 -- The panel stays where it was put: follow edits (`dd`, say) until the new diagnostics come.
 helix.on("buffer_changed", function(event)
+  update_diagnostics()
+end)
+
+-- The other lines in view change with scrolling and the focused window.
+helix.on("scroll", function(event)
+  if config.other_lines then
+    update_diagnostics()
+  end
+end)
+
+helix.on("window_focus", function(event)
+  update_diagnostics()
+end)
+
+-- No panel while a prompt is open (unless `show_in_prompt`): a search moves the cursor
+-- from match to match as it is typed.
+helix.on("prompt_open", function(event)
+  in_prompt = true
+  update_diagnostics()
+end)
+
+helix.on("prompt_close", function(event)
+  in_prompt = false
   update_diagnostics()
 end)

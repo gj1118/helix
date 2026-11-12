@@ -96,6 +96,72 @@ pub fn inline_start_col(annot: &PluginAnnotation, dropped: bool, line_end_col: u
     }
 }
 
+/// Where the inline annotations of a line end up on its row: `placed` has the start column of
+/// each pinned one (`"right"`, `"eol_or_right"`), `eol_end` the column just after the last
+/// one drawn after the end of the line (`line_end_col` when there is none). Columns are
+/// absolute (the horizontal scroll included); `view_start` is the first one in view and
+/// `width` the window's width. The renderer draws by this, and a plugin's panel starts at
+/// `eol_end`, after them.
+pub struct EolLayout<'a> {
+    pub dropped: bool,
+    pub placed: Vec<(&'a PluginAnnotation, usize)>,
+    pub eol_end: usize,
+}
+
+pub fn eol_layout(
+    line_annots: &[PluginAnnotation],
+    line_end_col: usize,
+    width: u16,
+    view_start: usize,
+) -> EolLayout<'_> {
+    use helix_core::unicode::width::UnicodeWidthChar;
+    let dropped = inline_annotations_drop(line_annots, line_end_col, width);
+    // `eol` annotations each start at their offset after the end of the line.
+    let inline_used = if dropped {
+        0
+    } else {
+        inline_annotations(line_annots)
+            .filter(|annot| {
+                annotation_text_format(width, inline_start_col(annot, false, line_end_col), 4)
+                    .is_some()
+            })
+            .map(|annot| {
+                (annot.offset as usize)
+                    .saturating_add(annot.text.chars().count())
+                    .saturating_add(2)
+            })
+            .max()
+            .unwrap_or(0)
+    };
+    let mut eol_next = line_end_col.saturating_add(inline_used);
+    let mut right_next = view_start.saturating_add(width as usize);
+    let mut placed = Vec::new();
+    for annot in pinned_annotations(line_annots) {
+        let text_width: usize = annot.text.chars().filter_map(|c| c.width()).sum();
+        if text_width == 0 {
+            continue;
+        }
+        let eol_start = eol_next.saturating_add(annot.offset as usize);
+        let start = if annot.align == AnnotationAlign::EolOrRight
+            && eol_start >= view_start
+            && eol_start.saturating_add(text_width) <= right_next
+        {
+            eol_next = eol_start.saturating_add(text_width);
+            eol_start
+        } else {
+            let start = right_next.saturating_sub(text_width).max(view_start);
+            right_next = start.saturating_sub(1);
+            start
+        };
+        placed.push((annot, start));
+    }
+    EolLayout {
+        dropped,
+        placed,
+        eol_end: eol_next,
+    }
+}
+
 /// How annotation text starting at `start_col` wraps in a view `width` columns wide, or
 /// `None` if it starts beyond the right edge (it is then neither drawn nor given rows).
 pub fn annotation_text_format(

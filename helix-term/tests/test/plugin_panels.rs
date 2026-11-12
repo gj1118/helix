@@ -410,3 +410,279 @@ async fn the_inline_diagnostic_plugin_shows_a_panel_for_the_cursor_line() -> any
     send_keys(&mut app, ":q!<ret>").await?;
     Ok(())
 }
+
+/// A diagnostic of `code()`: four characters from column 5 of `line`.
+fn code_diagnostic(
+    line: usize,
+    severity: helix_core::diagnostic::Severity,
+    message: &str,
+) -> helix_core::diagnostic::Diagnostic {
+    use helix_core::diagnostic::{Diagnostic, DiagnosticProvider, LanguageServerId, Range};
+    let start = (LINE_LEN + 1) * line + 5;
+    Diagnostic {
+        range: Range {
+            start,
+            end: start + 4,
+        },
+        ends_at_word: false,
+        starts_at_word: false,
+        zero_width: false,
+        line,
+        message: message.to_string(),
+        severity: Some(severity),
+        code: None,
+        provider: DiagnosticProvider::Lsp {
+            server_id: LanguageServerId::default(),
+            identifier: None,
+        },
+        tags: Vec::new(),
+        source: None,
+        data: None,
+    }
+}
+
+/// An app on 80x12 with `code()` and the `inline-diagnostic` plugin of `contrib/plugins`
+/// (`entry` is its `[[plugins]]` entry, if any), and plugins of `extra` (name, `init.lua`).
+async fn inline_diagnostic_app(
+    entry: &str,
+    extra: &[(&str, &str)],
+) -> anyhow::Result<(Application, tempfile::TempDir, tempfile::NamedTempFile)> {
+    let plugins = tempfile::tempdir()?;
+    let source = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../contrib/plugins/inline-diagnostic"
+    );
+    let dir = plugins.path().join("inline-diagnostic");
+    std::fs::create_dir(&dir)?;
+    for name in ["init.lua", "plugin.toml"] {
+        std::fs::copy(format!("{source}/{name}"), dir.join(name))?;
+    }
+    for (name, init) in extra {
+        let dir = plugins.path().join(name);
+        std::fs::create_dir(&dir)?;
+        std::fs::write(dir.join("init.lua"), init)?;
+    }
+    let mut config = config();
+    // as the plugin's users have it: its panel instead of Helix's own end-of-line diagnostics
+    config.editor.end_of_line_diagnostics =
+        helix_view::annotations::diagnostics::DiagnosticFilter::Disable;
+    config.plugins = Some(toml::from_str(&format!(
+        "plugin_dirs = [{:?}]\n{entry}",
+        plugins.path()
+    ))?);
+    let file = helpers::temp_file_with_contents(code())?;
+    let mut app = helpers::AppBuilder::new()
+        .with_file(file.path(), None)
+        .with_config(config)
+        .build()?;
+    assert!(app.plugins_enabled());
+    app.resize_terminal(80, 12).await;
+    Ok((app, plugins, file))
+}
+
+/// `other_lines`: the other lines in view show their most severe diagnostic after their end,
+/// in its severity's color, the cursor line keeps the panel; they follow the cursor.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_inline_diagnostic_plugin_shows_the_other_lines() -> anyhow::Result<()> {
+    use helix_core::diagnostic::Severity;
+    let (mut app, _plugins, _file) = inline_diagnostic_app(
+        "[[plugins]]\nname = \"inline-diagnostic\"\nconfig = { other_lines = true, other_lines_width = 12 }\n",
+        &[],
+    )
+    .await?;
+    {
+        let doc = helix_view::doc_mut!(app.editor);
+        doc.replace_diagnostics(
+            [
+                code_diagnostic(1, Severity::Warning, "WARNTHING"),
+                code_diagnostic(1, Severity::Error, "BADTHING happened\nsecond line"),
+                code_diagnostic(3, Severity::Hint, "HINTY"),
+            ],
+            &[],
+            None,
+        );
+    }
+    let annotations = |app: &Application| -> Vec<(usize, String, Option<String>)> {
+        let (view, doc) = helix_view::current_ref!(app.editor);
+        let text = doc.text().slice(..);
+        doc.plugin_annotations
+            .get(&view.id)
+            .map(|annots| {
+                annots
+                    .iter()
+                    .map(|a| (text.char_to_line(a.char_idx), a.text.clone(), a.fg.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    // the cursor on line 0 (no diagnostic): both lines annotated, the message cut to 12
+    send_keys(&mut app, "l").await?;
+    assert_eq!(
+        annotations(&app),
+        [
+            (
+                1,
+                "● BADTHING ha… (+1)".to_string(),
+                Some("#ff6b6b".to_string())
+            ),
+            (3, "● HINTY".to_string(), Some("#4d96ff".to_string())),
+        ]
+    );
+    let rows = app.rendered_rows();
+    assert!(
+        rows[1].contains("with stuff ● BADTHING ha… (+1)"),
+        "{rows:#?}"
+    );
+    // onto line 1: its diagnostics go to the panel
+    send_keys(&mut app, "j").await?;
+    assert_eq!(
+        annotations(&app),
+        [(3, "● HINTY".to_string(), Some("#4d96ff".to_string()))]
+    );
+    let (view, doc) = helix_view::current_ref!(app.editor);
+    assert!(doc.plugin_panels.contains_key(&view.id));
+    send_keys(&mut app, ":q!<ret>").await?;
+    Ok(())
+}
+
+/// The panel is hidden while a prompt is open (a search moves the cursor as it is typed),
+/// and starts after what another plugin drew after the end of the line (a search lens), not
+/// over it. Annotations alone do not hide Helix's diagnostics in the corner of the view.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_inline_diagnostic_panel_makes_room_and_waits_for_prompts() -> anyhow::Result<()> {
+    use helix_core::diagnostic::Severity;
+    let lens = r#"
+        helix.on("selection_change", function()
+            local buffer = helix.buffer.get_current()
+            local line = buffer:char_to_line(buffer:get_cursor())
+            buffer:set_annotations({
+                { char_idx = buffer:line_to_char(line), text = "[LENS]", align = "eol_or_right" },
+            })
+        end)
+    "#;
+    let (mut app, _plugins, _file) = inline_diagnostic_app("", &[("lens", lens)]).await?;
+    {
+        let doc = helix_view::doc_mut!(app.editor);
+        doc.replace_diagnostics([code_diagnostic(1, Severity::Error, "BADTHING")], &[], None);
+    }
+    send_keys(&mut app, "j").await?;
+    let rows = app.rendered_rows();
+    // the code, the lens, then the panel
+    assert!(rows[1].contains("with stuff [LENS]"), "{rows:#?}");
+    let lens_at = rows[1].find("[LENS]").unwrap();
+    let panel_at = rows[1].find("BADTHING").expect("the panel");
+    assert!(panel_at > lens_at + "[LENS]".len(), "{rows:#?}");
+
+    // a prompt: no panel until it closes
+    send_keys(&mut app, ":").await?;
+    let shown = |app: &Application| {
+        app.rendered_rows()
+            .iter()
+            .any(|row| row.contains("BADTHING"))
+    };
+    assert!(!shown(&app));
+    send_keys(&mut app, "<esc>").await?;
+    assert!(shown(&app));
+    send_keys(&mut app, "/stuff").await?;
+    assert!(!shown(&app));
+    send_keys(&mut app, "<esc>").await?;
+    assert!(shown(&app));
+    send_keys(&mut app, ":q!<ret>").await?;
+    Ok(())
+}
+
+/// With neither inline nor end-of-line diagnostics, Helix shows the cursor's diagnostics in
+/// the corner of the view: a plugin's annotations (a search lens) don't hide them, a plugin's
+/// panel does (it shows them itself).
+#[tokio::test(flavor = "multi_thread")]
+async fn annotations_do_not_hide_the_corner_diagnostics() -> anyhow::Result<()> {
+    use helix_core::diagnostic::Severity;
+    use helix_view::annotations::diagnostics::DiagnosticFilter;
+    let file = helpers::temp_file_with_contents(code())?;
+    let mut config = config();
+    config.editor.inline_diagnostics.cursor_line = DiagnosticFilter::Disable;
+    config.editor.end_of_line_diagnostics = DiagnosticFilter::Disable;
+    let mut app = helpers::AppBuilder::new()
+        .with_file(file.path(), None)
+        .with_config(config)
+        .build()?;
+    app.resize_terminal(80, 12).await;
+    {
+        let (view, doc) = helix_view::current!(app.editor);
+        doc.replace_diagnostics([code_diagnostic(0, Severity::Error, "CORNERED")], &[], None);
+        doc.plugin_annotations.insert(
+            view.id,
+            vec![helix_view::document::PluginAnnotation {
+                plugin: "lens".into(),
+                char_idx: 0,
+                text: "[1/1]".into(),
+                fg: None,
+                bg: None,
+                style: None,
+                offset: 0,
+                is_line: false,
+                virt_line_idx: None,
+                dropped_text: None,
+                align: Default::default(),
+            }],
+        );
+    }
+    // onto the diagnostic (columns 5 to 8)
+    send_keys(&mut app, "5l").await?;
+    let in_corner = |app: &Application| {
+        app.rendered_rows()
+            .iter()
+            .any(|row| row.contains("CORNERED"))
+    };
+    assert!(in_corner(&app), "{:#?}", app.rendered_rows());
+    set_panel(&mut app, Some(panel(0)));
+    send_keys(&mut app, "l").await?;
+    let rows = app.rendered_rows();
+    assert!(
+        !rows.iter().any(|row| row.contains("CORNERED")),
+        "{rows:#?}"
+    );
+    Ok(())
+}
+
+/// Helix's own end-of-line diagnostics and a plugin's annotation put after the end of the
+/// line (`eol_or_right`) are both shown, one after the other, not over each other.
+#[tokio::test(flavor = "multi_thread")]
+async fn end_of_line_diagnostics_follow_pinned_annotations() -> anyhow::Result<()> {
+    use helix_core::diagnostic::Severity;
+    let file = helpers::temp_file_with_contents(code())?;
+    let mut app = helpers::AppBuilder::new()
+        .with_file(file.path(), None)
+        .with_config(config())
+        .build()?;
+    app.resize_terminal(80, 12).await;
+    {
+        let (view, doc) = helix_view::current!(app.editor);
+        doc.replace_diagnostics([code_diagnostic(1, Severity::Error, "EOLDIAG")], &[], None);
+        doc.plugin_annotations.insert(
+            view.id,
+            vec![helix_view::document::PluginAnnotation {
+                plugin: "lens".into(),
+                char_idx: LINE_LEN + 1,
+                text: "[LENS]".into(),
+                fg: None,
+                bg: None,
+                style: None,
+                offset: 0,
+                is_line: false,
+                virt_line_idx: None,
+                dropped_text: None,
+                align: helix_view::document::AnnotationAlign::EolOrRight,
+            }],
+        );
+    }
+    send_keys(&mut app, "l").await?;
+    let rows = app.rendered_rows();
+    let lens = rows[1].find("[LENS]").expect("the lens");
+    let diag = rows[1].find("EOLDIAG").expect("the diagnostic");
+    assert!(
+        diag >= lens + "[LENS]".len() || lens >= diag + "EOLDIAG".len(),
+        "{rows:#?}"
+    );
+    Ok(())
+}
