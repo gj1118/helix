@@ -1145,3 +1145,167 @@ async fn staging_against_the_index_and_elsewhere() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+/// `git log -1 --format=<format>` of `root`.
+fn last_commit(root: &std::path::Path, format: &str) -> String {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["log", "-1", &format!("--format={format}")])
+        .output()
+        .expect("git");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// A repository whose own config has what `git commit` needs (an identity, no signing).
+fn committable(repo: &tempfile::TempDir) -> anyhow::Result<()> {
+    let root = repo.path();
+    git(root, &["config", "user.name", "t"])?;
+    git(root, &["config", "user.email", "t@t"])?;
+    git(root, &["config", "commit.gpgsign", "false"])?;
+    git(root, &["config", "core.hooksPath", "/dev/null"])?;
+    Ok(())
+}
+
+/// The commit message being written, if one is.
+fn commit_message(app: &Application) -> Option<String> {
+    let commit = app.editor.commit_message.as_ref()?;
+    Some(app.editor.document(commit.doc)?.text().to_string())
+}
+
+/// `:diff-commit`: the message to write, the staged files listed; `:w` commits it.
+#[tokio::test(flavor = "multi_thread")]
+async fn staged_changes_are_committed() -> anyhow::Result<()> {
+    let repo = repo_with_changes()?;
+    committable(&repo)?;
+    let root = repo.path();
+    let mut config = helpers::test_config();
+    config.editor.notifications.enable = false;
+    let mut app = helpers::AppBuilder::new()
+        .with_file(root.join("b.rs"), None)
+        .with_config(config)
+        .build()?;
+    app.resize_terminal(100, 20).await;
+
+    send_keys(&mut app, ":diff-commit<ret>").await?;
+    let opened = until(&mut app, |app| commit_message(app).is_some()).await;
+    assert!(opened, "{:?}", app.editor.get_status());
+    let message: String = commit_message(&app).unwrap();
+    assert!(message.contains("# Changes to be committed:"), "{message}");
+    assert!(message.contains("#\tmodified:   a.rs"), "{message}");
+    assert!(!message.contains("b.rs"), "{message}");
+    // the message has the focus, in a split below
+    assert_eq!(app.editor.tree.views().count(), 2);
+    let focused = helix_view::doc!(app.editor).id();
+    assert_eq!(
+        Some(focused),
+        app.editor.commit_message.as_ref().map(|c| c.doc)
+    );
+
+    // an empty message: nothing committed
+    send_keys(&mut app, ":w<ret>").await?;
+    let refused = until(&mut app, |app| {
+        app.editor
+            .get_status()
+            .is_some_and(|(status, _)| status.starts_with("Not committed"))
+    })
+    .await;
+    assert!(refused, "{:?}", app.editor.get_status());
+    assert_eq!(last_commit(root, "%s"), "first");
+
+    send_keys(&mut app, "ggiAdd staged()<esc>:w<ret>").await?;
+    let committed = until(&mut app, |_| last_commit(root, "%s") == "Add staged()").await;
+    assert!(committed, "{:?}", app.editor.get_status());
+    until(&mut app, |app| app.editor.commit_message.is_none()).await;
+    let (status, _) = app.editor.get_status().unwrap();
+    assert!(
+        status.starts_with("Committed ") && status.ends_with("Add staged()"),
+        "{status}"
+    );
+    // the message is closed
+    assert_eq!(app.editor.tree.views().count(), 1);
+
+    // nothing staged now: said so, no message
+    send_keys(&mut app, ":diff-commit<ret>").await?;
+    let said = until(&mut app, |app| {
+        app.editor
+            .get_status()
+            .is_some_and(|(status, _)| status.contains("Nothing staged to commit"))
+    })
+    .await;
+    assert!(said, "{:?}", app.editor.get_status());
+    assert!(commit_message(&app).is_none());
+
+    // `--amend`: the last message to start from, the commit replaced
+    send_keys(&mut app, ":diff-commit --amend<ret>").await?;
+    until(&mut app, |app| commit_message(app).is_some()).await;
+    let message: String = commit_message(&app).unwrap();
+    assert!(message.starts_with("Add staged()\n"), "{message}");
+    assert!(message.contains("# Amending the last commit."), "{message}");
+    send_keys(&mut app, "ggvglcAdd staged() and more<esc>:w<ret>").await?;
+    let amended = until(&mut app, |_| {
+        last_commit(root, "%s") == "Add staged() and more"
+    })
+    .await;
+    assert!(amended, "{:?}", app.editor.get_status());
+    let count = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-list", "--count", "HEAD"])
+        .output()?;
+    assert_eq!(String::from_utf8_lossy(&count.stdout).trim(), "2");
+    Ok(())
+}
+
+/// `C` in a review: a commit of the change staged with `-`; the diff then shows against the
+/// new `HEAD`, where that change is no more.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_review_commits_what_it_staged() -> anyhow::Result<()> {
+    let repo = tempfile::tempdir()?;
+    let root = repo.path();
+    git(root, &["init", "-q"])?;
+    committable(&repo)?;
+    std::fs::write(root.join("f.rs"), "a\nb\nc\nd\ne\nf\ng\nh\n")?;
+    git(root, &["add", "."])?;
+    git(root, &["commit", "-qm", "first"])?;
+    std::fs::write(root.join("f.rs"), "a\nB\nc\nd\ne\nf\nG\nh\n")?;
+    let mut config = helpers::test_config();
+    config.editor.notifications.enable = false;
+    let mut app = helpers::AppBuilder::new()
+        .with_file(root.join("f.rs"), None)
+        .with_config(config)
+        .build()?;
+    app.resize_terminal(100, 20).await;
+    send_keys(&mut app, ":diff-review<ret>").await?;
+    wait_for_diff(&mut app, "HEAD:f.rs").await;
+    send_keys(&mut app, "gg]c-").await?;
+    until(&mut app, |_| index_of(root, "f.rs").contains('B')).await;
+    send_keys(&mut app, "C").await?;
+    until(&mut app, |app| commit_message(app).is_some()).await;
+    send_keys(&mut app, "ggiB, not b<esc>:wq<ret>").await?;
+    let committed = until(&mut app, |_| last_commit(root, "%s") == "B, not b").await;
+    assert!(committed, "{:?}", app.editor.get_status());
+    // against the new `HEAD`: only the change not committed is left
+    let refreshed = until(&mut app, |app| {
+        app.editor
+            .diff_sessions
+            .first()
+            .is_some_and(|s| s.hunks.len() == 1)
+    })
+    .await;
+    assert!(
+        refreshed,
+        "{:?}",
+        app.editor.diff_sessions.first().map(|s| &s.hunks)
+    );
+    let session = app.editor.diff_sessions.first().unwrap();
+    assert_eq!(session.hunks[0].right, 6..7);
+    let left: String = app
+        .editor
+        .document(session.left_doc)
+        .unwrap()
+        .text()
+        .to_string();
+    assert_eq!(left, "a\nB\nc\nd\ne\nf\ng\nh\n");
+    Ok(())
+}

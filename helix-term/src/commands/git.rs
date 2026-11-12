@@ -647,21 +647,34 @@ fn browse_stashes(cx: &mut compositor::Context, _: &GitChange, data: Arc<GitPick
 
 /// The changed-files picker (`Space g`).
 pub fn changed_file_picker(cx: &mut Context) {
+    match changed_files_picker(cx.editor) {
+        Ok(picker) => crate::ui::quickfix::show_from_command(cx, picker),
+        Err(err) => cx.editor.set_error(err),
+    }
+}
+
+/// Starts a commit from the changed files list (`Alt-c`): the message to write.
+fn commit_from_list(cx: &mut compositor::Context, _: &GitChange, data: Arc<GitPickerData>, _: u32) {
+    crate::commands::diff::start_commit(cx.editor, cx.jobs, data.cwd.clone(), false);
+}
+
+/// The changed files list of the working directory (the picker of `Space g`, which also
+/// shows in the quickfix panel).
+pub fn changed_files_picker(
+    editor: &helix_view::Editor,
+) -> Result<Picker<GitChange, GitPickerData>, &'static str> {
     let cwd = helix_stdx::env::current_working_dir();
     if !cwd.exists() {
-        cx.editor
-            .set_error("Current working directory does not exist");
-        return;
+        return Err("Current working directory does not exist");
     }
-    let trusted = cx
-        .editor
+    let trusted = editor
         .workspace_trust
         .query(
             &helix_loader::find_workspace_in(&cwd).0,
             helix_loader::workspace_trust::TrustQuery::Git,
         )
         .is_trusted();
-    let theme = &cx.editor.theme;
+    let theme = &editor.theme;
     let data = GitPickerData {
         cwd: cwd.clone(),
         trusted,
@@ -701,6 +714,7 @@ pub fn changed_file_picker(cx: &mut Context) {
         alt!('u') => Box::new(unstage_selected) as ui::picker::PickerKeyHandler<_, _>,
         alt!('z') => Box::new(stash_all) as ui::picker::PickerKeyHandler<_, _>,
         alt!('l') => Box::new(browse_stashes) as ui::picker::PickerKeyHandler<_, _>,
+        alt!('c') => Box::new(commit_from_list) as ui::picker::PickerKeyHandler<_, _>,
     };
 
     let review_dir = cwd.clone();
@@ -745,7 +759,7 @@ pub fn changed_file_picker(cx: &mut Context) {
     .with_key_handlers(handlers)
     .with_title("Changed Files");
 
-    feed_status(cx.editor, cwd.clone(), trusted, picker.injector());
+    feed_status(editor, cwd.clone(), trusted, picker.injector());
 
     // Follow edits, staging and commits made while the picker is open.
     let watch = crate::fs_watch::FsWatch::workspace(&cwd);
@@ -756,8 +770,7 @@ pub fn changed_file_picker(cx: &mut Context) {
         })),
         |change| change.path.display().to_string(),
     );
-
-    crate::ui::quickfix::show_from_command(cx, picker);
+    Ok(picker)
 }
 
 // --- blame popup -----------------------------------------------------------

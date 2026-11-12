@@ -593,6 +593,8 @@ back to the built-in listing, which only has the unstaged column.
 | `Alt-u`                      | Unstage the selected file                                  |
 | `Alt-z`                      | Stash all changes, untracked files included (asks first)   |
 | `Alt-l`                      | Browse the stashes                                         |
+| `Alt-c`                      | Commit what is staged: write the message (see [Diffs](./diff.md#committing)) |
+| `Enter`                      | Open the file: its [diff](./diff.md#reviewing-changed-files) against git, the other changed files after it with `]f` (or the file itself, with `[editor.diff] open-changed-files-in-diff = false`) |
 
 The stash picker is also available as the `git_stash_picker` command, which can
 be bound to a key. In it, `Enter` and `Alt-s` apply the selected stash and

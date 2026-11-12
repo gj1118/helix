@@ -2578,6 +2578,8 @@ pub struct Editor {
     pub diff_sessions: Vec<crate::diff_view::DiffSession>,
     /// The changed files being reviewed in a diff, one after the other (`]f`, `[f`).
     pub diff_review: Option<crate::diff_view::ReviewQueue>,
+    /// The commit message being written: saving it commits.
+    pub commit_message: Option<crate::diff_view::CommitMessage>,
     /// Explorer internal clipboard for cut/copy-paste entries.
     pub explorer_clipboard: Option<ExplorerClipboard>,
 
@@ -2836,6 +2838,7 @@ impl Editor {
             plugin_explorer: crate::explorer::PluginExplorer::default(),
             diff_sessions: Vec::new(),
             diff_review: None,
+            commit_message: None,
             explorer_clipboard: None,
             config,
             auto_pairs,

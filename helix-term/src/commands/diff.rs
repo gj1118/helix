@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context as _};
 use helix_core::diff_hunks::{hunk_at, line_count, DiffHunk, Side};
 use helix_core::{Tendril, Transaction};
-use helix_view::diff_view::{DiffConfig, GitFile, OldVersion, ReviewFile, ReviewQueue, Stage};
+use helix_view::diff_view::{
+    CommitMessage, DiffConfig, GitFile, OldVersion, ReviewFile, ReviewQueue, Stage,
+};
 use helix_view::input::KeyEvent;
 use helix_view::{DocumentId, Editor, ViewId};
 
@@ -358,6 +360,247 @@ pub fn diff_next_file(cx: &mut Context) {
 
 pub fn diff_previous_file(cx: &mut Context) {
     move_in_review(cx, false)
+}
+
+// --- commits ---------------------------------------------------------------
+
+/// Starts a commit of what is staged in the repository of `dir` (`--amend`: replacing the last
+/// commit): the message to write, opened in a split below (a file of the git directory) with the
+/// staged files listed in comments, the changed files list beside it in the quickfix panel
+/// (when enabled). Saving the message commits (see [`commit_on_save`]).
+pub fn start_commit(editor: &mut Editor, jobs: &mut crate::job::Jobs, dir: PathBuf, amend: bool) {
+    if !git_allowed(editor, &dir) {
+        return;
+    }
+    jobs.callback(async move {
+        let root = repo_root(&dir).await?;
+        let path = prepare_commit(&root, amend).await?;
+        let call: crate::job::Callback = crate::job::Callback::EditorCompositor(Box::new(
+            move |editor: &mut Editor, compositor: &mut crate::compositor::Compositor| {
+                open_commit_message(editor, compositor, root, path, amend)
+            },
+        ));
+        Ok(call)
+    });
+}
+
+/// Checks there is something to commit, and writes the message to start from in the git
+/// directory (`HELIX_COMMIT_EDITMSG`), whose path it returns.
+async fn prepare_commit(root: &Path, amend: bool) -> anyhow::Result<PathBuf> {
+    let conflicts = git(
+        root,
+        &[
+            "diff".into(),
+            "--name-only".into(),
+            "--diff-filter=U".into(),
+        ],
+    )
+    .await?;
+    let conflicts = String::from_utf8_lossy(&conflicts);
+    if !conflicts.trim().is_empty() {
+        anyhow::bail!(
+            "Resolve the merge conflicts before committing: {}",
+            conflicts.lines().collect::<Vec<_>>().join(", ")
+        );
+    }
+    let staged = git(
+        root,
+        &["diff".into(), "--cached".into(), "--name-status".into()],
+    )
+    .await?;
+    let staged = String::from_utf8_lossy(&staged);
+    if staged.trim().is_empty() && !amend {
+        anyhow::bail!(
+            "Nothing staged to commit: stage changes with - in a diff, or Alt-s in the changed files (Space g)"
+        );
+    }
+    let message = if amend {
+        let last = git(root, &["log".into(), "-1".into(), "--format=%B".into()]).await?;
+        String::from_utf8_lossy(&last).trim_end().to_string() + "\n"
+    } else {
+        "\n".to_string()
+    };
+    let mut text = message;
+    text.push_str("# Write the commit message, then :w to commit (:wq to commit and close).\n");
+    text.push_str("# Lines starting with '#' are left out; an empty message commits nothing.\n");
+    if amend {
+        text.push_str("# Amending the last commit.\n");
+    }
+    text.push_str("#\n# Changes to be committed:\n");
+    for line in staged.lines() {
+        let mut parts = line.split('\t');
+        let kind = match parts.next().unwrap_or("").chars().next() {
+            Some('A') => "new file",
+            Some('D') => "deleted",
+            Some('R') => "renamed",
+            Some('C') => "copied",
+            Some('T') => "typechange",
+            _ => "modified",
+        };
+        let paths: Vec<&str> = parts.collect();
+        text.push_str(&format!("#\t{kind}:   {}\n", paths.join(" -> ")));
+    }
+    if staged.trim().is_empty() {
+        text.push_str("#\t(nothing new: the last commit's message only)\n");
+    }
+    let path = git(
+        root,
+        &[
+            "rev-parse".into(),
+            "--git-path".into(),
+            // not git's `COMMIT_EDITMSG`, which `git commit` writes itself: the buffer would
+            // then be changed under the editor
+            "HELIX_COMMIT_EDITMSG".into(),
+        ],
+    )
+    .await?;
+    let path = root.join(String::from_utf8_lossy(&path).trim());
+    std::fs::write(&path, text)?;
+    Ok(path)
+}
+
+/// Opens the commit message `path` (of the repository `root`) in a split below; the changed
+/// files list in the quickfix panel when it is enabled, the focus staying on the message.
+fn open_commit_message(
+    editor: &mut Editor,
+    compositor: &mut crate::compositor::Compositor,
+    root: PathBuf,
+    path: PathBuf,
+    amend: bool,
+) {
+    use helix_view::editor::Action;
+    // a message still open is from before: written again, it is opened again
+    if let Some(open) = editor.document_by_path(&path).map(|doc| doc.id()) {
+        let _ = editor.close_document(open, true);
+    }
+    let action = if editor.tree.views().next().is_some() {
+        Action::HorizontalSplit
+    } else {
+        Action::VerticalSplit
+    };
+    let doc = match editor.open(&path, action) {
+        Ok(doc) => doc,
+        Err(err) => {
+            editor.set_error(format!("cannot open the commit message: {err}"));
+            return;
+        }
+    };
+    // highlighted as a commit message (git's own file name would be recognized)
+    if let Some(document) = editor.documents.get_mut(&doc) {
+        let loader = editor.syn_loader.load();
+        if let Some(language) = loader.language_for_name("git-commit") {
+            document.set_language(Some(loader.language(language).config().clone()), &loader);
+        }
+    }
+    editor.commit_message = Some(CommitMessage { doc, root, amend });
+    if editor.config().quickfix.enable {
+        if let Ok(picker) = super::git::changed_files_picker(editor) {
+            crate::ui::quickfix::dock(compositor, editor, picker);
+            // the message keeps the focus
+            editor.quickfix_panel.focused = false;
+        }
+    }
+    editor.set_status(if amend {
+        "Write the new message of the last commit, then :w to amend it"
+    } else {
+        "Write the commit message, then :w to commit"
+    });
+}
+
+/// After `doc` was saved: when it is the commit message being written, the commit (in the
+/// background, finished before Helix exits: `:wq`), then the message closed and the diffs
+/// against git brought up to date with the new `HEAD`.
+pub fn commit_on_save(editor: &mut Editor, jobs: &mut crate::job::Jobs, doc: DocumentId) {
+    let Some(commit) = editor
+        .commit_message
+        .clone()
+        .filter(|commit| commit.doc == doc)
+    else {
+        return;
+    };
+    let Some(path) = editor
+        .document(doc)
+        .and_then(|doc| doc.path().map(Path::to_path_buf))
+    else {
+        return;
+    };
+    // the diffs against git, to show again against the new commit
+    let diffs: Vec<(ViewId, PathBuf, Option<String>)> = editor
+        .diff_sessions
+        .iter()
+        .filter_map(|session| {
+            let git = session.git.as_ref()?;
+            let file = session.right_doc_path(editor)?.to_path_buf();
+            let rev = git.left_is_head.then(|| "HEAD".to_string());
+            Some((session.right_view, file, rev))
+        })
+        .collect();
+    let job = crate::job::Job::with_callback(async move {
+        let mut args: Vec<OsString> = vec![
+            "commit".into(),
+            "--cleanup=strip".into(),
+            "-F".into(),
+            path.clone().into(),
+        ];
+        if commit.amend {
+            args.push("--amend".into());
+        }
+        let committed = git(&commit.root, &args).await;
+        let summary = match &committed {
+            Ok(_) => git(
+                &commit.root,
+                &["log".into(), "-1".into(), "--format=%h %s".into()],
+            )
+            .await
+            .map(|out| String::from_utf8_lossy(&out).trim().to_string())
+            .unwrap_or_default(),
+            Err(_) => String::new(),
+        };
+        let mut refreshed = Vec::new();
+        if committed.is_ok() {
+            for (view, file, rev) in diffs {
+                if let Ok((old, git)) = git_version(&file, rev.as_deref()).await {
+                    refreshed.push((view, old, git));
+                }
+            }
+        }
+        let call: crate::job::Callback =
+            crate::job::Callback::Editor(Box::new(move |editor: &mut Editor| {
+                if let Err(err) = committed {
+                    let err = err.to_string();
+                    // git's reason, without its prefix
+                    let reason = err.strip_prefix("git commit: ").unwrap_or(&err);
+                    editor.set_error(format!("Not committed: {reason}"));
+                    return;
+                }
+                editor.commit_message = None;
+                if editor.document(doc).is_some() && editor.tree.views().count() > 1 {
+                    let _ = editor.close_document(doc, true);
+                }
+                for (view, old, git) in refreshed {
+                    editor.update_git_diff(view, old.text, git);
+                }
+                editor.set_status(format!("Committed {summary}"));
+            }));
+        Ok(call)
+    })
+    .wait_before_exiting();
+    jobs.add(job);
+}
+
+/// `C` in a diff: a commit of what is staged (see [`start_commit`]).
+pub fn diff_commit(cx: &mut Context) {
+    let dir = doc_dir(cx.editor);
+    start_commit(cx.editor, cx.jobs, dir, false);
+}
+
+/// The folder of the current file, or the working directory.
+pub fn doc_dir(editor: &Editor) -> PathBuf {
+    let (_, doc) = helix_view::current_ref!(editor);
+    doc.path()
+        .and_then(|path| path.parent())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(helix_stdx::env::current_working_dir)
 }
 
 // --- actions ---------------------------------------------------------------
@@ -763,6 +1006,7 @@ fn action(name: &str) -> Option<fn(&mut Context)> {
         "align-bottom" => diff_align_bottom,
         "apply-left-to-right" => diff_apply_left_to_right,
         "stage" => diff_stage,
+        "commit" => diff_commit,
         "close" => diff_close,
         _ => return None,
     })

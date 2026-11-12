@@ -72,6 +72,25 @@ under the cursor, which then leaves the diff. Against another revision (`:diff-r
 
 Staging runs git, which needs a trusted workspace (see `:workspace-trust`).
 
+## Committing
+
+`C` in a diff, `:diff-commit` anywhere, or `Alt-c` in the changed files list (`Space g`)
+starts a commit of what is staged: the message to write opens in a split below, its
+comments listing the staged files, and the changed files list shows beside it in the quickfix
+panel when `[editor.quickfix] enable` is on (`Alt-s` / `Alt-u` stage and unstage whole files
+there; without the panel, `Space g` brings the list up). `:w` commits; `:wq` commits and
+closes. The message is a file of the git directory, `HELIX_COMMIT_EDITMSG`, highlighted as a
+commit message.
+
+Lines starting with `#` are left out. Nothing is committed with an empty message, with
+nothing staged, or with merge conflicts not resolved: the status line says why. Git's commit
+hooks run as with `git commit`.
+
+`:diff-commit --amend` (`-a`) replaces the last commit instead: the message to write starts
+from its message, and nothing needs to be staged (to reword it only).
+
+After a commit, the open diffs against git show against the new `HEAD`.
+
 With `open-changed-files-in-diff = false` (see [Settings](#settings)), opening a file from the
 changed files list opens it as a plain buffer; `:diff-review` still reviews.
 
@@ -86,6 +105,7 @@ In the windows of a diff, these keys come first (normal mode):
 | `]c`, `[c` | The next / previous change (with a count: `3]c`). The other side scrolls to the same change, at the same height |
 | `]f`, `[f` | In a review of changed files: the next / previous file (see [Reviewing changed files](#reviewing-changed-files)) |
 | `-` | Stage the change under the cursor, or unstage it (see [Staging](#staging)) |
+| `C` | Commit what is staged (see [Committing](#committing)) |
 | `]s` | Line the other side up with the cursor's line (for when `scroll-sync` is off) |
 | `[d`, `]d` | Both sides to their first / last line |
 | `>>` | Revert the change under the cursor: the right side gets the left side's lines, from either side (undo with `u`, as any edit) |
@@ -104,11 +124,12 @@ apply-left-to-right = "" # no key
 ```
 
 The actions are `next-change`, `previous-change`, `next-file`, `previous-file`, `snap`,
-`align-top`, `align-bottom`, `apply-left-to-right`, `stage` and `close` (`>` and `<` are
-written `<gt>` and `<lt>`). They are also commands, which can be bound to keys anywhere like
-any other: `diff_next_change`, `diff_previous_change`, `diff_next_file`,
+`align-top`, `align-bottom`, `apply-left-to-right`, `stage`, `commit` and `close` (`>` and `<`
+are written `<gt>` and `<lt>`). They are also commands, which can be bound to keys anywhere
+like any other: `diff_next_change`, `diff_previous_change`, `diff_next_file`,
 `diff_previous_file`, `diff_snap`, `diff_align_top`, `diff_align_bottom`,
-`diff_apply_left_to_right`, `diff_stage` and `diff_close`.
+`diff_apply_left_to_right`, `diff_stage`, `diff_commit` and `diff_close`. `C` stands in for
+Helix's `C` (copy the selection to the next line) in diff views only.
 
 ## Settings
 

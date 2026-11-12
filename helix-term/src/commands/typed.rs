@@ -405,6 +405,19 @@ fn diff_review_command(
     Ok(())
 }
 
+fn diff_commit_command(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let dir = crate::commands::diff::doc_dir(cx.editor);
+    crate::commands::diff::start_commit(cx.editor, cx.jobs, dir, args.has_flag("amend"));
+    Ok(())
+}
+
 fn diff_close_command(
     cx: &mut compositor::Context,
     _args: Args,
@@ -5449,6 +5462,23 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         fun: diff_review_command,
         completer: CommandCompleter::none(),
         signature: Signature { positionals: (0, Some(1)), ..Signature::DEFAULT },
+    },
+    TypableCommand {
+        name: "diff-commit",
+        aliases: &[],
+        doc: "Commit what is staged: writes the message (in a split, the changed files in the quickfix panel when enabled), which :w commits",
+        fun: diff_commit_command,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            flags: &[Flag {
+                name: "amend",
+                alias: Some('a'),
+                doc: "replace the last commit (its message to start from)",
+                ..Flag::DEFAULT
+            }],
+            ..Signature::DEFAULT
+        },
     },
     TypableCommand {
         name: "diff-close",

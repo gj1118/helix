@@ -81,7 +81,7 @@ impl Default for StageMarkers {
 }
 
 /// The actions of the diff views, with their default keys.
-pub const ACTIONS: [(&str, &str); 10] = [
+pub const ACTIONS: [(&str, &str); 11] = [
     ("next-change", "]c"),
     ("previous-change", "[c"),
     ("next-file", "]f"),
@@ -91,6 +91,7 @@ pub const ACTIONS: [(&str, &str); 10] = [
     ("align-bottom", "]d"),
     ("apply-left-to-right", "<gt><gt>"),
     ("stage", "-"),
+    ("commit", "C"),
     ("close", "q"),
 ];
 
@@ -375,6 +376,17 @@ impl GitFile {
     }
 }
 
+/// The commit message being written (`C` in a diff, `:diff-commit`): saving it commits.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitMessage {
+    /// The message's document (git's `COMMIT_EDITMSG`).
+    pub doc: DocumentId,
+    /// The repository.
+    pub root: std::path::PathBuf,
+    /// Whether the commit replaces the last one.
+    pub amend: bool,
+}
+
 /// Changed files reviewed one after the other in the diff of a view (`]f`, `[f`): from the
 /// changed-files list or `:diff-review`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -522,6 +534,32 @@ impl Editor {
                 left.locked = locked;
             }
         }
+        self.recompute_diff(at);
+    }
+
+    /// The diff whose right view is `right_view` shown again against `old` (the version in git
+    /// changed: a commit), with `git` for staging.
+    pub fn update_git_diff(
+        &mut self,
+        right_view: ViewId,
+        old: helix_core::Rope,
+        git: Option<GitFile>,
+    ) {
+        let Some(at) = self
+            .diff_sessions
+            .iter()
+            .position(|session| session.right_view == right_view)
+        else {
+            return;
+        };
+        let session = &mut self.diff_sessions[at];
+        if let Some(left) = self.documents.get_mut(&session.left_doc) {
+            let locked = left.locked.take();
+            let change = helix_core::diff::compare_ropes(left.text(), &old);
+            left.apply(&change, session.left_view);
+            left.locked = locked;
+        }
+        session.git = git;
         self.recompute_diff(at);
     }
 
