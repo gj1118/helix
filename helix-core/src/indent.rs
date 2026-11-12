@@ -695,6 +695,10 @@ fn query_indents<'a>(
     result
 }
 
+fn is_trivia(node: &Node) -> bool {
+    node.is_extra() && node.kind() != "ERROR"
+}
+
 /// Handle extend queries. deepest_preceding is the deepest descendant of node that directly precedes the cursor position.
 /// Any ancestor of deepest_preceding which is also a descendant of node may be "extended". In that case, node will be updated,
 /// so that the indent computation starts with the correct syntax node.
@@ -706,8 +710,10 @@ fn extend_nodes<'a>(
     line: usize,
     tab_width: usize,
     indent_width: usize,
-) {
+) -> bool {
     let mut stop_extend = false;
+    // Ancestors may also span trailing comments
+    let content_end_line = text.byte_to_line(deepest_preceding.end_byte() as usize);
 
     while deepest_preceding != *node {
         let mut extend_node = false;
@@ -727,7 +733,7 @@ fn extend_nodes<'a>(
                         // - the cursor is on the same line as the end of the node OR
                         // - the line that the cursor is on is more indented than the
                         //   first line of the node
-                        if text.byte_to_line(deepest_preceding.end_byte() as usize) == line {
+                        if content_end_line == line {
                             extend_node = true;
                         } else {
                             let cursor_indent =
@@ -753,15 +759,16 @@ fn extend_nodes<'a>(
             stop_extend = false;
         } else if extend_node && !stop_extend {
             *node = deepest_preceding.clone();
-            break;
+            return true;
         }
         // If the tree contains a syntax error, `deepest_preceding` may not
         // have a parent despite being a descendant of `node`.
         deepest_preceding = match deepest_preceding.parent() {
             Some(parent) => parent,
-            None => return,
+            None => return false,
         }
     }
+    false
 }
 
 /// When a newline is typed after a header (`while (c)`, `if x:`), the body it
@@ -799,6 +806,11 @@ fn candidate_body_for_new_line<'a>(
             loop {
                 if cursor.node().id() == node.id() {
                     if cursor.goto_next_sibling() {
+                        // Step over a trailing comment on the header line.
+                        while is_trivia(&cursor.node())
+                            && cursor.node().end_byte() <= byte_pos
+                            && cursor.goto_next_sibling()
+                        {}
                         let child = cursor.node();
                         if child.start_byte() >= byte_pos {
                             return Some(child);
@@ -834,6 +846,7 @@ fn init_indent_query<'a, 'b>(
     Node<'a>,
     HashMap<usize, Vec<IndentCapture<'b>>>,
     Vec<std::ops::Range<u32>>,
+    bool,
 )> {
     // The innermost tree-sitter node which is considered for the indent
     // computation. It may change if some preceding node is extended
@@ -842,19 +855,18 @@ fn init_indent_query<'a, 'b>(
     let (query_result, deepest_preceding, candidate_body) = {
         // The query range should intersect with all nodes directly preceding
         // the position of the indent query in case one of them is extended.
-        let mut deepest_preceding = None; // The deepest node preceding the indent query position
-        for child in node.children() {
-            if child.byte_range().end <= byte_pos {
-                deepest_preceding = Some(child.clone());
-            }
+        // A trailing comment belongs to the node before it
+        let mut deepest_preceding = node
+            .children()
+            .filter(|child| child.byte_range().end <= byte_pos && !is_trivia(child))
+            .last();
+        // Get the deepest directly preceding node
+        while let Some(last) = deepest_preceding
+            .as_ref()
+            .and_then(|prec| prec.children().filter(|c| !is_trivia(c)).last())
+        {
+            deepest_preceding = Some(last);
         }
-        deepest_preceding = deepest_preceding.map(|mut prec| {
-            // Get the deepest directly preceding node
-            while prec.child_count() > 0 {
-                prec = prec.child(prec.child_count() - 1).unwrap().clone();
-            }
-            prec
-        });
         // When typing a newline, the body the new line opens is a sibling past
         // the cursor — extend the query range to cover it so its capture (and
         // in particular its `(#set! "scope" "header")` annotation) is present
@@ -895,9 +907,10 @@ fn init_indent_query<'a, 'b>(
         .is_some();
 
     // Check for extend captures, potentially changing the node that the indent calculation starts with
+    let mut extended = false;
     if let Some(deepest_preceding) = deepest_preceding {
         if !descended {
-            extend_nodes(
+            extended = extend_nodes(
                 &mut node,
                 deepest_preceding,
                 &extend_captures,
@@ -908,7 +921,15 @@ fn init_indent_query<'a, 'b>(
             );
         }
     }
-    Some((node, query_result.indent_captures, opaque_ranges))
+    let delimited = {
+        let mut children = node.children().filter(|child| !is_trivia(child));
+        match (children.next(), children.last()) {
+            (Some(first), Some(last)) => !first.is_named() && !last.is_named(),
+            _ => false,
+        }
+    };
+    let open_ended = extended && !delimited;
+    Some((node, query_result.indent_captures, opaque_ranges, open_ended))
 }
 
 /// Use the syntax tree to determine the indentation for a given position.
@@ -1086,7 +1107,7 @@ fn containment_accounting<'a>(
     // Reuse the standard setup: this applies @extend repositioning / body-descent
     // and returns the per-node capture map (all ancestors of the cursor intersect
     // the query range, so their captures are present).
-    let (start_node, captures, opaque_ranges) = init_indent_query(
+    let (start_node, captures, opaque_ranges, open_ended) = init_indent_query(
         query,
         root,
         text,
@@ -1163,7 +1184,10 @@ fn containment_accounting<'a>(
             }
 
             let node_start = get_node_start_line(text, &node, new_line_byte_pos);
-            let end = get_node_end_line(text, &node, new_line_byte_pos);
+            let mut end = get_node_end_line(text, &node, new_line_byte_pos);
+            if open_ended && new_line {
+                end = end.max(target_line);
+            }
             // `scope "all"`: a node that begins its line also covers that line, so its
             // scope opens one line earlier. A node that starts mid-line covers only
             // the lines after it, like the default scope.
