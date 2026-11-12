@@ -105,6 +105,10 @@ pub fn request_signature_help(
     cancel: TaskHandle,
 ) {
     let (view, doc) = current!(editor);
+    // a completion previewed: the cursor's position isn't in the servers' text
+    if doc.has_unsent_changes() {
+        return;
+    }
 
     // TODO merge multiple language server signature help into one instead of just taking the first language server that supports it
     let future = doc

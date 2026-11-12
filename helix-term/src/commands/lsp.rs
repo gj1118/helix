@@ -2286,6 +2286,10 @@ fn compute_inlay_hints_for_view(
 ) -> Option<std::pin::Pin<Box<impl Future<Output = Result<crate::job::Callback, anyhow::Error>>>>> {
     let view_id = view.id;
     let doc_id = view.doc;
+    // a completion previewed: the range may not be in the servers' text
+    if doc.has_unsent_changes() {
+        return None;
+    }
 
     let language_server = doc
         .language_servers_with_feature(LanguageServerFeature::InlayHints)

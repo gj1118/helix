@@ -318,6 +318,10 @@ pub struct Document {
     /// in one (see [`Document::track_diff_changes`]), for the diff to follow them until it is
     /// worked out again. `None` when not tracked, or when the changes could not be followed.
     diff_changes: Option<helix_core::ChangeSet>,
+    /// The text the language servers have, while the document differs from it: changes were
+    /// applied without telling them (the preview of a completion, see
+    /// [`Document::apply_temporary`]). `None` when they are in step.
+    unsent_base: Option<Rope>,
     /// The name shown for a document without a path (e.g. a historical version).
     pub title: Option<String>,
 
@@ -1150,6 +1154,7 @@ impl Document {
             locked: None,
             edit_refused: false,
             diff_changes: None,
+            unsent_base: None,
             title: None,
             jump_labels: HashMap::new(),
             plugin_annotations: HashMap::new(),
@@ -1994,6 +1999,18 @@ impl Document {
         if !changes.apply(&mut self.text) {
             return false;
         }
+        if !changes.is_empty() {
+            if emit_lsp_notification {
+                self.unsent_base = None;
+            } else {
+                // the servers keep the text from before; back to it (the preview taken back),
+                // they are in step again
+                let base = self.unsent_base.take().unwrap_or_else(|| old_doc.clone());
+                if base.len_chars() != self.text.len_chars() || base != self.text {
+                    self.unsent_base = Some(base);
+                }
+            }
+        }
         if let Some(tracked) = self.diff_changes.take() {
             // changes since the diff was worked out, one after the other (lengths that don't
             // line up can't be followed: the diff is then worked out again)
@@ -2236,6 +2253,13 @@ impl Document {
         }
         success
     }
+    /// Whether the document has changes the language servers weren't told of (the preview of
+    /// a completion): positions in it may not exist in their text, so requests made with them
+    /// (highlights, signature help, inlay hints) would fail.
+    pub fn has_unsent_changes(&self) -> bool {
+        self.unsent_base.is_some()
+    }
+
     /// Starts (again) collecting the changes made to this document, from its text now: see
     /// [`Document::diff_changes`].
     pub fn track_diff_changes(&mut self) {
@@ -3365,6 +3389,42 @@ mod test {
     use arc_swap::ArcSwap;
 
     use super::*;
+
+    /// A completion previewed (changes not sent to the language servers) leaves the document
+    /// out of step with them until it is taken back, or a change is sent.
+    #[test]
+    fn unsent_changes_are_known() {
+        let mut doc = Document::from(
+            Rope::from("fmt.\n"),
+            None,
+            Arc::new(ArcSwap::new(Arc::new(Config::default()))),
+            Arc::new(ArcSwap::from_pointee(syntax::Loader::default())),
+        );
+        let view = ViewId::default();
+        doc.set_selection(view, Selection::single(4, 4));
+        let unsent: bool = doc.has_unsent_changes();
+        assert!(!unsent);
+
+        // the preview of `Println`, then of `Printf` instead
+        let preview = Transaction::change(doc.text(), [(4, 4, Some("Println".into()))].into_iter());
+        doc.apply_temporary(&preview, view);
+        assert!(doc.has_unsent_changes());
+        let other = Transaction::change(doc.text(), [(4, 11, Some("Printf".into()))].into_iter());
+        doc.apply_temporary(&other, view);
+        assert!(doc.has_unsent_changes());
+        // taken back: in step again
+        let back = Transaction::change(doc.text(), [(4, 10, None)].into_iter());
+        doc.apply_temporary(&back, view);
+        assert_eq!(doc.text(), "fmt.\n");
+        assert!(!doc.has_unsent_changes());
+
+        // previewed, then a change sent (the item taken): in step
+        doc.apply_temporary(&preview, view);
+        assert!(doc.has_unsent_changes());
+        let typed = Transaction::change(doc.text(), [(0, 0, Some("x".into()))].into_iter());
+        doc.apply(&typed, view);
+        assert!(!doc.has_unsent_changes());
+    }
 
     #[test]
     fn changeset_to_changes_ignore_line_endings() {

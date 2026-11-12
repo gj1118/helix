@@ -22,6 +22,11 @@ fn request_document_highlights(editor: &mut Editor, doc_id: DocumentId, view_id:
     };
 
     doc.ensure_view_init(view_id);
+    // a completion previewed: the cursor's position isn't in the servers' text (gopls answers
+    // "column is beyond end of line"); the highlights stay until it is taken or dropped
+    if doc.has_unsent_changes() {
+        return;
+    }
 
     let Some(language_server) = doc
         .language_servers_with_feature(LanguageServerFeature::DocumentHighlight)
