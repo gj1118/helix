@@ -25,6 +25,10 @@ pub struct DiffConfig {
     pub connector_width: u16,
     /// Jumping to a change (`]c`, `[c`) scrolls the other side to the same change.
     pub align_on_jump: bool,
+    /// Scrolling one side scrolls the other with it, to the same place: the line matching the
+    /// cursor's line of the scrolled side at the same height. Off, each side scrolls on its
+    /// own (and `]s` lines them up).
+    pub scroll_sync: bool,
     /// The keys of the diff views, by action (see [`ACTIONS`]); the actions not set keep
     /// their default keys, and an empty string turns an action's keys off.
     #[serde(deserialize_with = "deserialize_keys")]
@@ -37,6 +41,7 @@ impl Default for DiffConfig {
             ignore_whitespace: false,
             connector_width: 9,
             align_on_jump: true,
+            scroll_sync: true,
             keys: default_keys(),
         }
     }
@@ -104,7 +109,14 @@ pub struct DiffSession {
     versions: Option<(i32, i32)>,
     /// The gutters of the right view before the connector was added to them.
     right_gutters: GutterConfig,
+    /// Where the left and right views were scrolled to when they were last in step (see
+    /// [`Editor::sync_diff_scrolling`]).
+    scrolled: Option<[Scroll; 2]>,
 }
+
+/// How far a view is scrolled: its first line, and the rows of it above the window (of a
+/// wrapped line).
+type Scroll = (usize, usize);
 
 impl DiffSession {
     pub fn new(
@@ -124,6 +136,7 @@ impl DiffSession {
             hunks: Vec::new(),
             versions: None,
             right_gutters,
+            scrolled: None,
         }
     }
 
@@ -345,6 +358,7 @@ impl Editor {
             .map_or(0, |pos| pos.row);
         let other_line = helix_core::diff_hunks::map_line(&hunks, line, side.other());
         self.show_diff_line(other_view, other_doc, other_line, row);
+        self.mark_diff_aligned(view);
     }
 
     /// Puts `line` of `doc` in `view` at `row` of the window (as near as the top of the
@@ -368,6 +382,130 @@ impl Editor {
             },
         );
     }
+
+    /// Where `view` (showing `doc`) is scrolled to.
+    fn diff_scroll(&self, view: ViewId, doc: DocumentId) -> Option<Scroll> {
+        let doc = self.documents.get(&doc)?;
+        let offset = doc.get_view_offset(view)?;
+        let text = doc.text().slice(..);
+        let line = text.char_to_line(offset.anchor.min(text.len_chars()));
+        Some((line, offset.vertical_offset))
+    }
+
+    /// Where the left and right sides of `session` are scrolled to.
+    fn diff_scrolls(&self, session: &DiffSession) -> Option<[Scroll; 2]> {
+        Some([
+            self.diff_scroll(session.left_view, session.left_doc)?,
+            self.diff_scroll(session.right_view, session.right_doc)?,
+        ])
+    }
+
+    /// Takes the two sides of `view`'s diff as in step where they are now: scrolling syncs on
+    /// from there. For the actions that line the sides up themselves (`]c`, `]s`, `[d`...),
+    /// so that the next scroll keeps their alignment rather than redoing it.
+    pub fn mark_diff_aligned(&mut self, view: ViewId) {
+        let Some(index) = self
+            .diff_sessions
+            .iter()
+            .position(|session| session.side_of(view).is_some())
+        else {
+            return;
+        };
+        self.diff_sessions[index].scrolled = self.diff_scrolls(&self.diff_sessions[index]);
+    }
+
+    /// Keeps the two sides of each diff scrolled together (`scroll-sync`): a side that
+    /// scrolled since they were last in step (by keys, the mouse wheel, a jump, a plugin...)
+    /// takes the other one along, which then shows the line matching the cursor's line of the
+    /// scrolled side at the same height (or, the cursor out of the window, the line in its
+    /// middle). Both scrolled: the focused one leads.
+    pub fn sync_diff_scrolling(&mut self) {
+        if !self.config().diff.scroll_sync {
+            for session in &mut self.diff_sessions {
+                session.scrolled = None;
+            }
+            return;
+        }
+        for index in 0..self.diff_sessions.len() {
+            let session = &self.diff_sessions[index];
+            let Some(now) = self.diff_scrolls(session) else {
+                continue;
+            };
+            let Some(before) = session.scrolled else {
+                self.diff_sessions[index].scrolled = Some(now);
+                continue;
+            };
+            let leader = match (now[0] != before[0], now[1] != before[1]) {
+                (false, false) => continue,
+                (true, false) => Side::Left,
+                (false, true) => Side::Right,
+                (true, true) => session.side_of(self.tree.focus).unwrap_or(Side::Right),
+            };
+            let session = session.clone();
+            self.follow_diff_scroll(&session, leader);
+            self.diff_sessions[index].scrolled = self.diff_scrolls(&self.diff_sessions[index]);
+        }
+    }
+
+    /// Scrolls the side of `session` other than `leader` to where `leader` is.
+    fn follow_diff_scroll(&mut self, session: &DiffSession, leader: Side) {
+        let (view_id, doc_id) = (session.view(leader), session.doc(leader));
+        let (Some(view), Some(doc)) = (self.tree.try_get(view_id), self.documents.get(&doc_id))
+        else {
+            return;
+        };
+        let text = doc.text().slice(..);
+        let height = view.inner_height(doc);
+        let cursor = doc.selection(view_id).primary().cursor(text);
+        let (line, row) = match view.screen_coords_at_pos(doc, text, cursor) {
+            Some(pos) if pos.row < height => (text.char_to_line(cursor), pos.row),
+            _ => {
+                let row = height / 2;
+                let line = match view.pos_at_visual_coords(doc, row as u16, 0, false) {
+                    Some(pos) => text.char_to_line(pos.min(text.len_chars())),
+                    None => {
+                        let anchor = doc.view_offset(view_id).anchor.min(text.len_chars());
+                        text.char_to_line(anchor) + row
+                    }
+                };
+                (line, row)
+            }
+        };
+        let other = leader.other();
+        let other_line = helix_core::diff_hunks::map_line(&session.hunks, line, other);
+        self.scroll_diff_side(session.view(other), session.doc(other), other_line, row);
+    }
+
+    /// Scrolls `view` (showing `doc`) to have `line` at `row` of the window (as near as the top
+    /// of the document allows). The cursor stays where it is if it is still in the window, or
+    /// goes to `line`.
+    fn scroll_diff_side(&mut self, view_id: ViewId, doc_id: DocumentId, line: usize, row: usize) {
+        let (Some(view), Some(doc)) = (self.tree.try_get(view_id), self.documents.get_mut(&doc_id))
+        else {
+            return;
+        };
+        let text = doc.text().slice(..);
+        let lines = helix_core::diff_hunks::line_count(text).max(1);
+        let line = line.min(lines - 1);
+        let top = line.saturating_sub(row);
+        let horizontal_offset = doc.view_offset(view_id).horizontal_offset;
+        doc.set_view_offset(
+            view_id,
+            crate::view::ViewPosition {
+                anchor: text.line_to_char(top),
+                horizontal_offset,
+                vertical_offset: 0,
+            },
+        );
+        // the cursor out of the window goes to the matching line
+        let text = doc.text().slice(..);
+        let cursor = doc.selection(view_id).primary().cursor(text);
+        let in_window = view.screen_coords_at_pos(doc, text, cursor).is_some();
+        if !in_window {
+            let pos = text.line_to_char(line);
+            doc.set_selection(view_id, helix_core::Selection::point(pos));
+        }
+    }
 }
 
 /// The styles of a diff, from the theme: `ui.diff.add`, `ui.diff.delete`, `ui.diff.change`
@@ -384,30 +522,53 @@ pub struct DiffStyles {
 /// How much of the diff color goes into a line's background, and into a changed word's.
 const LINE_BLEND: f32 = 0.2;
 const EMPHASIS_BLEND: f32 = 0.42;
+/// How far (in the channel that differs most, out of 255) a line's background, and a changed
+/// word's, is from the editor's background at least: a dark diff color on a dark theme still
+/// shows.
+const LINE_CONTRAST: u8 = 28;
+const EMPHASIS_CONTRAST: u8 = 64;
+/// Below this spread between their channels, colors count as greys: a monochrome theme's diff
+/// colors tell the kinds of change apart by brightness only, which a tint of the background
+/// loses, so the default tints below are used instead.
+const GREY_SPREAD: u8 = 32;
+/// The tints of the kinds of change when the theme's colors are greys (or missing).
+const ADD_TINT: Color = Color::Rgb(0x3f, 0xb9, 0x50);
+const DELETE_TINT: Color = Color::Rgb(0xf8, 0x51, 0x49);
+const CHANGE_TINT: Color = Color::Rgb(0x58, 0xa6, 0xff);
 
 impl DiffStyles {
     pub fn new(theme: &Theme) -> Self {
         let background = theme.get("ui.background").bg;
-        let derived = |scope: &str, amount: f32| -> Style {
-            let color = theme.get(scope).fg;
+        let known_background = matches!(background, Some(Color::Rgb(..)));
+        let derived = |scope: &str, tint: Color, amount: f32, contrast: u8| -> Style {
+            let color = match theme.get(scope).fg {
+                Some(color) if is_grey(color) => Some(tint),
+                Some(color) => Some(color),
+                // no color, but a background to tint
+                None if known_background => Some(tint),
+                None => None,
+            };
             match color {
-                Some(color) => Style::default().bg(blend(color, background, amount)),
+                Some(color) => {
+                    Style::default().bg(blend_visibly(color, background, amount, contrast))
+                }
                 None => Style::default().add_modifier(Modifier::REVERSED),
             }
         };
+        let line = |scope: &str, tint: Color| derived(scope, tint, LINE_BLEND, LINE_CONTRAST);
         let add = theme
             .try_get_exact("ui.diff.add")
-            .unwrap_or_else(|| derived("diff.plus", LINE_BLEND));
+            .unwrap_or_else(|| line("diff.plus", ADD_TINT));
         let delete = theme
             .try_get_exact("ui.diff.delete")
-            .unwrap_or_else(|| derived("diff.minus", LINE_BLEND));
+            .unwrap_or_else(|| line("diff.minus", DELETE_TINT));
         let change = theme
             .try_get_exact("ui.diff.change")
-            .unwrap_or_else(|| derived("diff.delta", LINE_BLEND));
+            .unwrap_or_else(|| line("diff.delta", CHANGE_TINT));
         let change_emphasis = theme
             .try_get_exact("ui.diff.change.emphasis")
             .unwrap_or_else(|| {
-                let style = derived("diff.delta", EMPHASIS_BLEND);
+                let style = derived("diff.delta", CHANGE_TINT, EMPHASIS_BLEND, EMPHASIS_CONTRAST);
                 // without colors to mix, at least something to see
                 if style.bg.is_some_and(|bg| !matches!(bg, Color::Rgb(..))) {
                     style.add_modifier(Modifier::BOLD)
@@ -451,6 +612,37 @@ pub fn blend(color: Color, background: Option<Color>, amount: f32) -> Color {
     Color::Rgb(mix(r, br), mix(g, bg), mix(b, bb))
 }
 
+/// Whether `color` (RGB) is a grey: its channels about the same. Other colors are not.
+pub fn is_grey(color: Color) -> bool {
+    let Color::Rgb(r, g, b) = color else {
+        return false;
+    };
+    r.max(g).max(b) - r.min(g).min(b) < GREY_SPREAD
+}
+
+/// `color` mixed into `background` by `amount`, or by more if that is not `contrast` away from
+/// the background (in the channel that differs most): as much more as it takes, up to `color`
+/// itself.
+pub fn blend_visibly(color: Color, background: Option<Color>, amount: f32, contrast: u8) -> Color {
+    let (Color::Rgb(r, g, b), base) = (color, background) else {
+        return color;
+    };
+    let (br, bg, bb) = match base {
+        Some(Color::Rgb(r, g, b)) => (r, g, b),
+        _ => (0, 0, 0),
+    };
+    let spread = [r.abs_diff(br), g.abs_diff(bg), b.abs_diff(bb)]
+        .into_iter()
+        .max()
+        .unwrap_or(0);
+    let amount = if spread == 0 {
+        amount
+    } else {
+        amount.max(contrast as f32 / spread as f32).min(1.0)
+    };
+    blend(color, background, amount)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -466,6 +658,101 @@ mod tests {
         );
         assert_eq!(mixed, Color::Rgb(105, 105, 105));
         assert_eq!(blend(Color::Red, None, 0.5), Color::Red);
+    }
+
+    fn theme(toml: &str) -> Theme {
+        toml::from_str(toml).expect("a theme")
+    }
+
+    fn background(style: Style) -> (u8, u8, u8) {
+        match style.bg {
+            Some(Color::Rgb(r, g, b)) => (r, g, b),
+            other => panic!("expected an RGB background, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn greys_are_told_apart_from_colors() {
+        let grey: bool = is_grey(Color::Rgb(0xaa, 0xab, 0xa6));
+        assert!(grey);
+        let purplish_grey: bool = is_grey(Color::Rgb(0x63, 0x53, 0x61));
+        assert!(purplish_grey);
+        let green: bool = is_grey(Color::Rgb(0xa6, 0xe2, 0x2e));
+        assert!(!green);
+        let named: bool = is_grey(Color::Gray);
+        assert!(!named);
+    }
+
+    #[test]
+    fn faint_colors_get_enough_contrast() {
+        // 20% of a dark green on black is barely there: mixed in until 28 away
+        let mixed: Color = blend_visibly(
+            Color::Rgb(0, 0x40, 0),
+            Some(Color::Rgb(0, 0, 0)),
+            LINE_BLEND,
+            LINE_CONTRAST,
+        );
+        assert_eq!(mixed, Color::Rgb(0, 28, 0));
+        // a bright color is far enough at 20%
+        let mixed: Color = blend_visibly(
+            Color::Rgb(200, 100, 0),
+            Some(Color::Rgb(0, 0, 0)),
+            LINE_BLEND,
+            LINE_CONTRAST,
+        );
+        assert_eq!(mixed, Color::Rgb(40, 20, 0));
+        // never past the color itself
+        let mixed: Color = blend_visibly(
+            Color::Rgb(10, 10, 10),
+            Some(Color::Rgb(0, 0, 0)),
+            LINE_BLEND,
+            LINE_CONTRAST,
+        );
+        assert_eq!(mixed, Color::Rgb(10, 10, 10));
+    }
+
+    #[test]
+    fn a_monochrome_theme_gets_tinted_backgrounds() {
+        // simpledark's diff colors: greys
+        let mono = theme(
+            r##""ui.background" = { bg = "#121212" }
+"diff.plus" = "#aaaba6"
+"diff.minus" = "#635361"
+"diff.delta" = "#939490""##,
+        );
+        let styles: DiffStyles = DiffStyles::new(&mono);
+        let (add, delete, change) = (
+            background(styles.add),
+            background(styles.delete),
+            background(styles.change),
+        );
+        assert_eq!(add, (0x1b, 0x33, 0x1e));
+        assert_eq!(delete, (0x40, 0x1f, 0x1d));
+        assert_eq!(change, (0x20, 0x30, 0x41));
+        // each the color of its kind
+        assert!(add.1 > add.0 && add.1 > add.2);
+        assert!(delete.0 > delete.1 && delete.0 > delete.2);
+        assert!(change.2 > change.0 && change.2 > change.1);
+        let emphasis = background(styles.change_emphasis);
+        assert!(
+            emphasis.2 > change.2,
+            "{emphasis:?} stronger than {change:?}"
+        );
+    }
+
+    #[test]
+    fn a_colorful_theme_keeps_its_colors_and_ui_diff_wins() {
+        let colorful = theme(
+            r##""ui.background" = { bg = "#000000" }
+"diff.plus" = "#00ff00"
+"diff.minus" = "#ff0000"
+"diff.delta" = "#0000ff"
+"ui.diff.change" = { bg = "#123456" }"##,
+        );
+        let styles: DiffStyles = DiffStyles::new(&colorful);
+        assert_eq!(styles.add.bg, Some(Color::Rgb(0, 51, 0)));
+        assert_eq!(styles.delete.bg, Some(Color::Rgb(51, 0, 0)));
+        assert_eq!(styles.change.bg, Some(Color::Rgb(0x12, 0x34, 0x56)));
     }
 
     #[test]

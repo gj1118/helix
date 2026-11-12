@@ -514,3 +514,134 @@ async fn diff_git_works_through_symlinks() -> anyhow::Result<()> {
     assert_eq!(left.text().to_string(), "one\n");
     Ok(())
 }
+
+/// 200 lines, `line 0` to `line 199`, and the same with 20 lines (`new 0` to `new 19`) put in
+/// after `line 49`.
+fn long_versions() -> (String, String) {
+    let old: Vec<String> = (0..200).map(|i| format!("line {i}")).collect();
+    let mut new = old.clone();
+    new.splice(50..50, (0..20).map(|i| format!("new {i}")));
+    (old.join("\n") + "\n", new.join("\n") + "\n")
+}
+
+async fn app_with_long_diff(
+    config: Config,
+) -> anyhow::Result<(
+    Application,
+    tempfile::NamedTempFile,
+    tempfile::NamedTempFile,
+)> {
+    let (old_text, new_text) = long_versions();
+    let old = helpers::temp_file_with_contents(old_text)?;
+    let new = helpers::temp_file_with_contents(new_text)?;
+    let mut app = helpers::AppBuilder::new()
+        .with_file(new.path(), None)
+        .with_config(config)
+        .build()?;
+    app.resize_terminal(100, 14).await;
+    send_keys(&mut app, &format!(":diff {}<ret>", old.path().display())).await?;
+    Ok((app, old, new))
+}
+
+/// The first line shown by the left (or right) side of the diff.
+fn top_line(app: &Application, left: bool) -> usize {
+    let session = app.editor.diff_sessions.first().expect("a diff");
+    let view = if left {
+        session.left_view
+    } else {
+        session.right_view
+    };
+    let doc = app.editor.document(app.editor.tree.get(view).doc).unwrap();
+    let text = doc.text().slice(..);
+    text.char_to_line(doc.view_offset(view).anchor)
+}
+
+/// The number of times `text` (a whole word: `line 7` is not in `line 70`) is on `row`.
+fn times_on_row(app: &Application, row: usize, text: &str) -> usize {
+    let rows = app.rendered_rows();
+    rows[row]
+        .match_indices(text)
+        .filter(|(at, _)| {
+            !rows[row][at + text.len()..]
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_digit())
+        })
+        .count()
+}
+
+/// The row where the left side shows `line {n}`, which must be the row where the right side
+/// shows it too.
+fn row_of_both(app: &Application, n: usize) -> usize {
+    let text = format!("line {n}");
+    let rows = app.rendered_rows();
+    (0..12)
+        .find(|row| times_on_row(app, *row, &text) == 2)
+        .unwrap_or_else(|| panic!("{text:?} not on the same row of both sides: {rows:#?}"))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_sides_of_a_diff_scroll_together() -> anyhow::Result<()> {
+    let (mut app, _old, _new) = app_with_long_diff(helpers::test_config()).await?;
+    let session = app.editor.diff_sessions.first().cloned().expect("a diff");
+
+    // down the right side, past the added lines: the left one follows, the cursor's line
+    // (`line 99`, the right's 120th) level with its match
+    send_keys(&mut app, "120gg").await?;
+    assert_eq!(cursor(&app), ("right", 119));
+    let top: usize = top_line(&app, true);
+    assert!(top > 80, "the left side scrolled: {top}");
+    let row: usize = row_of_both(&app, 99);
+    assert!(row < 12);
+
+    // up the left side: the right one follows
+    send_keys(&mut app, "<C-w>h20gg").await?;
+    assert_eq!(cursor(&app), ("left", 19));
+    let right_top: usize = top_line(&app, false);
+    assert!(right_top < 20, "the right side scrolled back: {right_top}");
+    row_of_both(&app, 19);
+
+    // a side scrolled without the focus (the mouse wheel, a plugin): the focused one follows,
+    // its cursor brought into the window
+    {
+        let doc = app.editor.documents.get_mut(&session.right_doc).unwrap();
+        let anchor = doc.text().line_to_char(150);
+        doc.set_view_offset(
+            session.right_view,
+            helix_view::view::ViewPosition {
+                anchor,
+                horizontal_offset: 0,
+                vertical_offset: 0,
+            },
+        );
+    }
+    send_keys(&mut app, "<esc>").await?;
+    let left_top: usize = top_line(&app, true);
+    assert!((125..135).contains(&left_top), "{left_top}");
+    let (side, line): (&str, usize) = cursor(&app);
+    assert_eq!(side, "left");
+    assert!(
+        (left_top..left_top + 12).contains(&line),
+        "{line} in the window from {left_top}"
+    );
+    row_of_both(&app, 135);
+    // and keys don't scroll it back
+    send_keys(&mut app, "l").await?;
+    assert_eq!(top_line(&app, true), left_top);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn scroll_sync_can_be_turned_off() -> anyhow::Result<()> {
+    let mut config = helpers::test_config();
+    config.editor.diff.scroll_sync = false;
+    let (mut app, _old, _new) = app_with_long_diff(config).await?;
+    send_keys(&mut app, "120gg").await?;
+    assert_eq!(cursor(&app), ("right", 119));
+    let left_top: usize = top_line(&app, true);
+    assert_eq!(left_top, 0);
+    // `]s` still lines them up
+    send_keys(&mut app, "]s").await?;
+    row_of_both(&app, 99);
+    Ok(())
+}

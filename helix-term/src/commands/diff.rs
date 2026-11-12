@@ -179,6 +179,9 @@ fn jump_to_change(cx: &mut Context, forward: bool) {
     let row = row.min(height.saturating_sub(1) / 3);
     cx.editor
         .show_diff_line(view, doc_id, hunk.lines(side).start, row);
+    // where the scroll-off leaves it, so that the other side is lined up with that (and the
+    // alignment stays)
+    cx.editor.ensure_cursor_in_view(view);
     if cx.editor.config().diff.align_on_jump {
         // the same change on the other side, at the same height
         let session = cx.editor.diff_session(view).cloned().expect("in a diff");
@@ -190,6 +193,7 @@ fn jump_to_change(cx: &mut Context, forward: bool) {
             hunk.lines(other).start,
             row,
         );
+        cx.editor.mark_diff_aligned(view);
     }
 }
 
@@ -231,6 +235,7 @@ fn align_end(cx: &mut Context, top: bool) {
                 .show_diff_line(view, doc, lines.saturating_sub(1), row);
         }
     }
+    cx.editor.mark_diff_aligned(view);
 }
 
 pub fn diff_align_top(cx: &mut Context) {

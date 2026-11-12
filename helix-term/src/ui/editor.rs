@@ -2839,6 +2839,8 @@ impl Component for EditorView {
 
         // The diffs as the documents are now (or ended, when a view of one went).
         cx.editor.refresh_diff_sessions();
+        // a side of a diff scrolled since the last frame takes the other one along
+        cx.editor.sync_diff_scrolling();
         for (view, is_focused) in cx.editor.tree.views() {
             let doc = cx.editor.document(view.doc).unwrap();
             // The views' frame: a view ending short of it has a neighbour (and a divider) on

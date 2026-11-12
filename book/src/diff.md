@@ -6,6 +6,8 @@ the left to the same change on the right.
 
 Each side keeps its own lines and line numbers. Nothing is inserted to line the sides up;
 the connector bends instead, from a change's lines on the left to its lines on the right.
+The two sides scroll together: scroll one (with keys, the mouse wheel, a jump) and the other
+follows, the line matching the cursor's line level with it (`scroll-sync`).
 Changed lines have a colored background (added, removed, changed), and inside a changed line
 the words that changed are emphasized.
 
@@ -37,7 +39,7 @@ In the windows of a diff, these keys come first (normal mode):
 | Key | Action |
 | --- | --- |
 | `]c`, `[c` | The next / previous change (with a count: `3]c`). The other side scrolls to the same change, at the same height |
-| `]s` | Line the other side up with the cursor's line (scrolling each side is independent) |
+| `]s` | Line the other side up with the cursor's line (for when `scroll-sync` is off) |
 | `[d`, `]d` | Both sides to their first / last line |
 | `>>` | Apply the change under the cursor from left to right: the right side gets the left side's lines (undo with `u`, as any edit) |
 | `<<` | Apply it from right to left: into the old version's snapshot |
@@ -69,12 +71,22 @@ The actions are `next-change`, `previous-change`, `snap`, `align-top`, `align-bo
 ignore-whitespace = false  # lines that differ only in whitespace are not changes
 connector-width = 9        # columns of the connector
 align-on-jump = true       # `]c`/`[c` scroll the other side to the same change
+scroll-sync = true         # scrolling one side scrolls the other; false: each on its own
 ```
 
 The colors come from the theme: `ui.diff.add`, `ui.diff.delete`, `ui.diff.change` and
 `ui.diff.change.emphasis` (backgrounds). A theme without them gets backgrounds mixed from its
 `diff.plus`, `diff.minus` and `diff.delta` colors (the ones of the diff gutter) and its
-background.
+background, never so faint that they don't show. A monochrome theme, whose diff colors are
+greys, gets green, red and blue tints instead (greys would all look the same); to keep it
+grey, set the `ui.diff.*` keys in the theme:
+
+```toml
+"ui.diff.add" = { bg = "#2e2e2c" }
+"ui.diff.delete" = { bg = "#1a1a19" }
+"ui.diff.change" = { bg = "#262624" }
+"ui.diff.change.emphasis" = { bg = "#444442" }
+```
 
 ## Helix as git's diff tool
 
