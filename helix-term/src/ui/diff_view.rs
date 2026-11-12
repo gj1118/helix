@@ -99,30 +99,61 @@ impl Decoration for DiffDecoration {
     }
 }
 
-/// The row (from the top of the text area of `view`) where `line` starts, as a fraction:
-/// negative above the view, past its height below it (counted in lines there).
-fn line_row(view: &View, doc: &Document, line: usize) -> f32 {
-    let text = doc.text().slice(..);
-    let height = view.inner_area(doc).height as f32;
-    let top = text.char_to_line(doc.view_offset(view.id).anchor.min(text.len_chars()));
-    if line < top {
-        return line as f32 - top as f32;
+/// Where the lines of one side of a diff are on the screen: worked out once per frame, so that
+/// only the lines in the window are laid out (a long file has many changes out of it).
+struct SideRows<'a> {
+    view: &'a View,
+    doc: &'a Document,
+    /// The first line in the window, and (an estimate, ignoring soft wrap) the last one.
+    top: usize,
+    last: usize,
+    /// The lines of the document (see [`line_count`]).
+    lines: usize,
+    height: f32,
+}
+
+impl<'a> SideRows<'a> {
+    fn new(view: &'a View, doc: &'a Document) -> Self {
+        let text = doc.text().slice(..);
+        let top = text.char_to_line(doc.view_offset(view.id).anchor.min(text.len_chars()));
+        let annotations = view.text_annotations(doc, None);
+        Self {
+            view,
+            doc,
+            top,
+            last: view.estimate_last_doc_line(&annotations, doc),
+            lines: line_count(text),
+            height: view.inner_area(doc).height as f32,
+        }
     }
-    let lines = line_count(text);
-    if lines == 0 {
-        // an empty document: its lines would start at the top
-        return line as f32;
-    }
-    if line >= lines {
-        // past the last line: the row after it
-        return line_row(view, doc, lines - 1) + (line - lines + 1) as f32;
-    }
-    match view.screen_coords_at_pos(doc, text, text.line_to_char(line)) {
-        Some(pos) => pos.row as f32,
-        None => {
-            let annotations = view.text_annotations(doc, None);
-            let last = view.estimate_last_doc_line(&annotations, doc);
-            height + line.saturating_sub(last + 1) as f32
+
+    /// The row (from the top of the text area) where `line` starts, as a fraction: negative
+    /// above the window, past its height below it (counted in lines there).
+    fn row(&self, line: usize) -> f32 {
+        if line < self.top {
+            return line as f32 - self.top as f32;
+        }
+        if self.lines == 0 {
+            // an empty document: its lines would start at the top
+            return line as f32;
+        }
+        if line >= self.lines {
+            // past the last line: the row after it
+            return self.row(self.lines - 1) + (line - self.lines + 1) as f32;
+        }
+        let below = |line: usize| self.height + line.saturating_sub(self.last + 1) as f32;
+        if line > self.last {
+            // out of the window: not laid out
+            return below(line);
+        }
+        let text = self.doc.text().slice(..);
+        match self
+            .view
+            .screen_coords_at_pos(self.doc, text, text.line_to_char(line))
+        {
+            Some(pos) => pos.row as f32,
+            // pushed out of the window by wrapped lines above it
+            None => below(line),
         }
     }
 }
@@ -168,11 +199,15 @@ fn render_connector(editor: &Editor, session: &DiffSession, surface: &mut Surfac
     // the left side's rows, in the connector's rows
     let shift = left_inner.y as f32 - right_inner.y as f32;
     let height = area.height as f32;
+    let (left, right) = (
+        SideRows::new(left_view, left_doc),
+        SideRows::new(right_view, right_doc),
+    );
     for hunk in &session.hunks {
-        let left_top = line_row(left_view, left_doc, hunk.left.start) + shift;
-        let left_bottom = line_row(left_view, left_doc, hunk.left.end) + shift;
-        let right_top = line_row(right_view, right_doc, hunk.right.start);
-        let right_bottom = line_row(right_view, right_doc, hunk.right.end);
+        let left_top = left.row(hunk.left.start) + shift;
+        let left_bottom = left.row(hunk.left.end) + shift;
+        let right_top = right.row(hunk.right.start);
+        let right_bottom = right.row(hunk.right.end);
         if (left_bottom < 0.0 && right_bottom < 0.0) || (left_top >= height && right_top >= height)
         {
             continue;

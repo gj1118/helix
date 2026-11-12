@@ -477,9 +477,10 @@ impl Editor {
     }
 
     /// Scrolls `view` (showing `doc`) to have `line` at `row` of the window (as near as the top
-    /// of the document allows). The cursor stays where it is if it is still in the window, or
-    /// goes to `line`.
+    /// of the document allows). The cursor stays where it is if Helix would not scroll to it,
+    /// or goes to `line`.
     fn scroll_diff_side(&mut self, view_id: ViewId, doc_id: DocumentId, line: usize, row: usize) {
+        let scrolloff = self.config().scrolloff;
         let (Some(view), Some(doc)) = (self.tree.try_get(view_id), self.documents.get_mut(&doc_id))
         else {
             return;
@@ -497,11 +498,11 @@ impl Editor {
                 vertical_offset: 0,
             },
         );
-        // the cursor out of the window goes to the matching line
-        let text = doc.text().slice(..);
-        let cursor = doc.selection(view_id).primary().cursor(text);
-        let in_window = view.screen_coords_at_pos(doc, text, cursor).is_some();
-        if !in_window {
+        // the cursor where Helix would scroll the view to it (out of the window, or in its
+        // scroll-off margin) goes to the matching line: else the next key or wheel step on
+        // this side would scroll it back, and the other side with it
+        if view.offset_coords_to_in_view(doc, scrolloff).is_some() {
+            let text = doc.text().slice(..);
             let pos = text.line_to_char(line);
             doc.set_selection(view_id, helix_core::Selection::point(pos));
         }

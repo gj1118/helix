@@ -645,3 +645,49 @@ async fn scroll_sync_can_be_turned_off() -> anyhow::Result<()> {
     row_of_both(&app, 99);
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_mouse_wheel_scrolls_both_sides() -> anyhow::Result<()> {
+    #[cfg(windows)]
+    use crossterm::event::{Event, KeyModifiers as Modifiers, MouseEvent, MouseEventKind};
+    #[cfg(not(windows))]
+    use termina::event::{Event, Modifiers, MouseEvent, MouseEventKind};
+
+    let (mut app, _old, _new) = app_with_long_diff(helpers::test_config()).await?;
+    let session = app.editor.diff_sessions.first().cloned().expect("a diff");
+    let wheel = |kind: MouseEventKind, column: u16, times: usize| -> Vec<Event> {
+        (0..times)
+            .map(|_| {
+                Event::Mouse(MouseEvent {
+                    kind,
+                    column,
+                    row: 5,
+                    modifiers: Modifiers::empty(),
+                })
+            })
+            .collect()
+    };
+    async fn send(app: &mut Application, events: Vec<Event>) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        for event in events {
+            tx.send(Ok(event)).unwrap();
+        }
+        let mut rx = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
+        app.event_loop_until_idle(&mut rx).await;
+    }
+
+    // the wheel over the left side (not focused): the focused right side follows
+    send(&mut app, wheel(MouseEventKind::ScrollDown, 10, 10)).await;
+    assert_eq!(app.editor.tree.focus, session.right_view);
+    let left_top: usize = top_line(&app, true);
+    assert_eq!(left_top, 30);
+    row_of_both(&app, 35);
+
+    // over the right side, past the added lines and far down a long file: the left side
+    // follows (and a frame stays cheap with many changes out of the window)
+    send(&mut app, wheel(MouseEventKind::ScrollDown, 80, 40)).await;
+    let right_top: usize = top_line(&app, false);
+    assert_eq!(right_top, 150);
+    row_of_both(&app, 135);
+    Ok(())
+}
