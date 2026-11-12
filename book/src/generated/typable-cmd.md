@@ -120,6 +120,7 @@
 | `:diff` | Show a side-by-side diff of two files: `:diff <old> <new>`, or `:diff <old>` against the current buffer. The old version is a read-only snapshot on the left, the new one an editable buffer on the right |
 | `:diff-buffers` | Show a side-by-side diff of two buffers: `:diff-buffers <old> [<new>]` (by name or path; the new one defaults to the current buffer). The old one is shown as a snapshot taken now |
 | `:diff-git` | Show a side-by-side diff of the current file and its version in git: the index by default (what `git diff` shows), or a revision (`:diff-git HEAD`, `:diff-git main`) |
+| `:diff-review` | Review the changed files in side-by-side diffs, one after the other (`]f` / `[f`): against git as `git status` lists them, or `:diff-review <revision>` for the files changed since a revision |
 | `:diff-close` | Close the side-by-side diff of the current window (the right side's buffer stays) |
 | `:explorer` | Show the explorer on the side set by [editor.explorer] side (left, right or floating), or hide it when it is open |
 | `:explorer-focus` | Focus the explorer file tree panel (opening it if hidden) |

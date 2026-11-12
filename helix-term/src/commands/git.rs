@@ -157,7 +157,7 @@ pub fn parse_status(output: &[u8], repo_root: &Path) -> Vec<GitChange> {
 // --- running git -----------------------------------------------------------
 
 /// Runs `git -C dir args...`, returning stdout or the error git printed.
-pub(super) async fn git(dir: &Path, args: &[OsString]) -> anyhow::Result<Vec<u8>> {
+pub(crate) async fn git(dir: &Path, args: &[OsString]) -> anyhow::Result<Vec<u8>> {
     let output = tokio::process::Command::new("git")
         .arg("-C")
         .arg(dir)
@@ -188,7 +188,7 @@ pub(super) fn args<const N: usize>(args: [&str; N]) -> Vec<OsString> {
     args.iter().map(OsString::from).collect()
 }
 
-pub(super) async fn repo_root(dir: &Path) -> anyhow::Result<PathBuf> {
+pub(crate) async fn repo_root(dir: &Path) -> anyhow::Result<PathBuf> {
     let out = git(dir, &args(["rev-parse", "--show-toplevel"])).await?;
     // Only the line break goes: a folder's name may end in a space.
     Ok(path_from_bytes(strip_newline(&out)))
@@ -201,7 +201,7 @@ pub(super) fn strip_newline(out: &[u8]) -> &[u8] {
 }
 
 /// `git status` for `dir` (the whole repository when `whole_repo`).
-async fn status(dir: &Path, whole_repo: bool) -> anyhow::Result<Vec<GitChange>> {
+pub(super) async fn status(dir: &Path, whole_repo: bool) -> anyhow::Result<Vec<GitChange>> {
     let root = repo_root(dir).await?;
     let mut a = args(["status", "--porcelain=v1", "-z", "--untracked-files=all"]);
     if !whole_repo {
@@ -665,12 +665,33 @@ pub fn changed_file_picker(cx: &mut Context) {
         alt!('l') => Box::new(browse_stashes) as ui::picker::PickerKeyHandler<_, _>,
     };
 
+    let review_dir = cwd.clone();
     let picker = Picker::new(
         columns,
         2, // path
         [],
         data,
-        |cx, change: &GitChange, action| {
+        move |cx, change: &GitChange, action| {
+            // `[editor.diff] open-changed-files-in-diff`: its diff, and the other changed
+            // files after it (`]f`)
+            if cx.editor.config().diff.open_changed_files_in_diff
+                && workspace_trusted(cx.editor, &review_dir)
+            {
+                let (dir, path) = (review_dir.clone(), change.path.clone());
+                cx.jobs.callback(async move {
+                    let mut files = crate::commands::diff::review_files(&dir, None).await?;
+                    let index = match files.iter().position(|file| file.path == path) {
+                        Some(index) => index,
+                        // changed back meanwhile: still shown, against the index
+                        None => {
+                            files.push(helix_view::diff_view::ReviewFile { path, base: None });
+                            files.len() - 1
+                        }
+                    };
+                    crate::commands::diff::review_file(files, index, action).await
+                });
+                return;
+            }
             // A deleted file cannot be opened.
             let path = &change.path;
             if let Err(e) = cx.editor.open(path, action) {

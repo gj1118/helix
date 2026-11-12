@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context as _};
 use helix_core::diff_hunks::{hunk_at, line_count, DiffHunk, Side};
 use helix_core::{Tendril, Transaction};
-use helix_view::diff_view::{DiffConfig, OldVersion};
+use helix_view::diff_view::{DiffConfig, OldVersion, ReviewFile, ReviewQueue};
 use helix_view::input::KeyEvent;
 use helix_view::{DocumentId, Editor, ViewId};
 
@@ -110,6 +110,193 @@ pub async fn git_version(path: &Path, rev: Option<&str>) -> anyhow::Result<OldVe
         title: label,
         syntax_path: Some(PathBuf::from(&relative)),
     })
+}
+
+// --- reviews of changed files ----------------------------------------------
+
+/// The changed files of `dir` (and the folders below) to review, in order: against `rev`
+/// (with the files added since), or, without, as `git status` lists them, each against the
+/// index when it has changes not staged (what `git diff` shows) and against `HEAD` when its
+/// changes are all staged (else the diff would show nothing).
+pub async fn review_files(dir: &Path, rev: Option<&str>) -> anyhow::Result<Vec<ReviewFile>> {
+    let root = repo_root(dir).await?;
+    let mut files: Vec<ReviewFile> = match rev {
+        None => super::git::status(dir, false)
+            .await?
+            .into_iter()
+            .map(|change| ReviewFile {
+                base: change.unstaged.is_none().then(|| "HEAD".to_string()),
+                path: change.path,
+            })
+            .collect(),
+        Some(rev) => {
+            let changed = |out: Vec<u8>| -> Vec<PathBuf> {
+                out.split(|byte| *byte == 0)
+                    .filter(|path| !path.is_empty())
+                    .map(|path| root.join(super::git::path_from_bytes(path)))
+                    .collect()
+            };
+            let dir_arg = std::ffi::OsString::from(dir);
+            let diffed = git(
+                &root,
+                &[
+                    "diff".into(),
+                    "--name-only".into(),
+                    "-z".into(),
+                    rev.into(),
+                    "--".into(),
+                    dir_arg.clone(),
+                ],
+            )
+            .await?;
+            let added = git(
+                &root,
+                &[
+                    "ls-files".into(),
+                    "--others".into(),
+                    "--exclude-standard".into(),
+                    "-z".into(),
+                    "--".into(),
+                    dir_arg,
+                ],
+            )
+            .await?;
+            let mut paths = changed(diffed);
+            paths.extend(changed(added));
+            paths
+                .into_iter()
+                .map(|path| ReviewFile {
+                    path,
+                    base: Some(rev.to_string()),
+                })
+                .collect()
+        }
+    };
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    files.dedup_by(|a, b| a.path == b.path);
+    Ok(files)
+}
+
+/// Shows file `index` of `files` in a diff, in the focused view (`action` `Replace`), or in a
+/// new one (a split), and makes `files` the review (`]f`, `[f`): once its old version is read
+/// from git, in the background.
+pub fn open_review(
+    jobs: &mut crate::job::Jobs,
+    files: Vec<ReviewFile>,
+    index: usize,
+    action: helix_view::editor::Action,
+) {
+    jobs.callback(review_file(files, index, action));
+}
+
+/// What [`open_review`] does in the background: the old version of the file read, the
+/// callback that shows it.
+pub async fn review_file(
+    files: Vec<ReviewFile>,
+    index: usize,
+    action: helix_view::editor::Action,
+) -> anyhow::Result<crate::job::Callback> {
+    let file = files
+        .get(index)
+        .cloned()
+        .ok_or_else(|| anyhow!("no changed file {index}"))?;
+    let old = git_version(&file.path, file.base.as_deref()).await?;
+    Ok(crate::job::Callback::Editor(Box::new(
+        move |editor: &mut Editor| show_review_file(editor, files, index, old, action),
+    )))
+}
+
+/// The diff of file `index` of `files` (whose old version is `old`), and the review made of
+/// `files`.
+fn show_review_file(
+    editor: &mut Editor,
+    files: Vec<ReviewFile>,
+    index: usize,
+    old: OldVersion,
+    action: helix_view::editor::Action,
+) {
+    use helix_view::editor::Action;
+    let path = files[index].path.clone();
+    // the diff shown in the focused view goes, its right view takes the file
+    let mut action = action;
+    if let Some(session) = editor.diff_session(editor.tree.focus).cloned() {
+        if matches!(action, Action::Replace) {
+            editor.focus(session.right_view);
+            editor.close_diff(session.right_view);
+        }
+    } else if editor.tree.views().next().is_none() {
+        action = Action::VerticalSplit;
+    }
+    let right = match editor.open(&path, action) {
+        Ok(doc) => doc,
+        Err(err) => {
+            editor.set_error(format!("cannot open {}: {err}", path.display()));
+            return;
+        }
+    };
+    editor.open_diff(old, right);
+    let count = files.len();
+    editor.diff_review = Some(ReviewQueue {
+        files,
+        current: index,
+        view: editor.tree.focus,
+    });
+    let shown = helix_stdx::path::get_relative_path(&path);
+    editor.set_status(format!(
+        "File {} of {count}: {}",
+        index + 1,
+        shown.display()
+    ));
+}
+
+/// Whether git may be run for `dir` (see [`super::git::workspace_trusted`]), saying so when
+/// not.
+pub fn git_allowed(editor: &mut Editor, dir: &Path) -> bool {
+    let trusted = super::git::workspace_trusted(editor, dir);
+    if !trusted {
+        editor.set_error("Git needs a trusted workspace (see :workspace-trust)");
+    }
+    trusted
+}
+
+/// Moves `count` files forward (or back) in the review of the focused diff.
+fn move_in_review(cx: &mut Context, forward: bool) {
+    let Some(review) = cx.editor.active_review().cloned() else {
+        cx.editor
+            .set_error("Not reviewing changed files (open one from Space g or :diff-review)");
+        return;
+    };
+    let count = cx.count();
+    let target = if forward {
+        review
+            .current
+            .checked_add(count)
+            .filter(|i| *i < review.files.len())
+    } else {
+        review.current.checked_sub(count)
+    };
+    let Some(index) = target else {
+        cx.editor.set_status(if forward {
+            "No more changed files after this one"
+        } else {
+            "No more changed files before this one"
+        });
+        return;
+    };
+    open_review(
+        cx.jobs,
+        review.files,
+        index,
+        helix_view::editor::Action::Replace,
+    );
+}
+
+pub fn diff_next_file(cx: &mut Context) {
+    move_in_review(cx, true)
+}
+
+pub fn diff_previous_file(cx: &mut Context) {
+    move_in_review(cx, false)
 }
 
 // --- actions ---------------------------------------------------------------
@@ -358,6 +545,8 @@ fn action(name: &str) -> Option<fn(&mut Context)> {
     Some(match name {
         "next-change" => diff_next_change,
         "previous-change" => diff_previous_change,
+        "next-file" => diff_next_file,
+        "previous-file" => diff_previous_file,
         "snap" => diff_snap,
         "align-top" => diff_align_top,
         "align-bottom" => diff_align_bottom,
@@ -367,10 +556,14 @@ fn action(name: &str) -> Option<fn(&mut Context)> {
     })
 }
 
-/// What `keys` are to the keymap of the diff views of `config`.
-pub fn match_keys(config: &DiffConfig, keys: &[KeyEvent]) -> KeyMatch {
+/// What `keys` are to the keymap of the diff views of `config`. The file keys (`]f`, `[f`)
+/// only in a review: elsewhere they keep their usual meaning (the next function...).
+pub fn match_keys(config: &DiffConfig, keys: &[KeyEvent], reviewing: bool) -> KeyMatch {
     let mut prefix = false;
     for (name, sequence) in &config.keys {
+        if !reviewing && matches!(name.as_str(), "next-file" | "previous-file") {
+            continue;
+        }
         let Some(action) = action(name) else {
             continue;
         };

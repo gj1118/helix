@@ -2576,6 +2576,8 @@ pub struct Editor {
     pub plugin_explorer: crate::explorer::PluginExplorer,
     /// The side-by-side diffs shown (see [`crate::diff_view`]).
     pub diff_sessions: Vec<crate::diff_view::DiffSession>,
+    /// The changed files being reviewed in a diff, one after the other (`]f`, `[f`).
+    pub diff_review: Option<crate::diff_view::ReviewQueue>,
     /// Explorer internal clipboard for cut/copy-paste entries.
     pub explorer_clipboard: Option<ExplorerClipboard>,
 
@@ -2833,6 +2835,7 @@ impl Editor {
             explorer_panel: crate::explorer::ExplorerState::default(),
             plugin_explorer: crate::explorer::PluginExplorer::default(),
             diff_sessions: Vec::new(),
+            diff_review: None,
             explorer_clipboard: None,
             config,
             auto_pairs,

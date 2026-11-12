@@ -34,6 +34,10 @@ pub struct DiffConfig {
     /// cursor's line of the scrolled side at the same height. Off, each side scrolls on its
     /// own (and `]s` lines them up).
     pub scroll_sync: bool,
+    /// Opening a file from the changed-files list (`Space g`, the picker or the quickfix
+    /// panel) shows its diff against git, and the other changed files after it with `]f`;
+    /// off, the file opens as a plain buffer.
+    pub open_changed_files_in_diff: bool,
     /// The keys of the diff views, by action (see [`ACTIONS`]); the actions not set keep
     /// their default keys, and an empty string turns an action's keys off.
     #[serde(deserialize_with = "deserialize_keys")]
@@ -47,15 +51,18 @@ impl Default for DiffConfig {
             connector_width: 9,
             align_on_jump: true,
             scroll_sync: true,
+            open_changed_files_in_diff: true,
             keys: default_keys(),
         }
     }
 }
 
 /// The actions of the diff views, with their default keys.
-pub const ACTIONS: [(&str, &str); 7] = [
+pub const ACTIONS: [(&str, &str); 9] = [
     ("next-change", "]c"),
     ("previous-change", "[c"),
+    ("next-file", "]f"),
+    ("previous-file", "[f"),
     ("snap", "]s"),
     ("align-top", "[d"),
     ("align-bottom", "]d"),
@@ -219,6 +226,42 @@ pub fn shown_hunks(
     // up to the first one starting below the window
     let end = hunks.partition_point(|hunk| hunk.lines(side).start <= bottom);
     start..end.max(start)
+}
+
+/// Changed files reviewed one after the other in the diff of a view (`]f`, `[f`): from the
+/// changed-files list or `:diff-review`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewQueue {
+    pub files: Vec<ReviewFile>,
+    /// The file shown.
+    pub current: usize,
+    /// The right view of the diff showing the files.
+    pub view: ViewId,
+}
+
+/// A file of a [`ReviewQueue`]: its path, and the version in git it is compared with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewFile {
+    pub path: std::path::PathBuf,
+    /// A revision (`HEAD`, a branch...), or `None` for the index (what `git diff` shows).
+    pub base: Option<String>,
+}
+
+impl Editor {
+    /// The review the focused view shows a file of: the right side of its diff showing the
+    /// queue's current file.
+    pub fn active_review(&self) -> Option<&ReviewQueue> {
+        let review = self.diff_review.as_ref()?;
+        let session = self.diff_session(self.tree.focus)?;
+        let file = review.files.get(review.current)?;
+        let shown = self.document(session.right_doc)?.path()?;
+        (session.right_view == review.view && same_file(shown, &file.path)).then_some(review)
+    }
+}
+
+/// Whether `a` and `b` are the same file (one may have its links resolved, not the other).
+fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
+    a == b || std::fs::canonicalize(a).ok() == std::fs::canonicalize(b).ok() && a.exists()
 }
 
 /// The right view's gutters with the connector in front.

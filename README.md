@@ -415,6 +415,10 @@ the changed words inside them are emphasized.
 - `:diff <old> [<new>]` (two files, or a file and the current buffer), `:diff-buffers <old>
   [<new>]`, `:diff-git` (the current file against the git index: what `git diff` shows) and
   `:diff-git <revision>` (`HEAD`, `main`, ...), and `hx --diff <old> <new>`.
+- Reviewing changed files: opening a file from the changed files list (`Space g`, a picker or
+  the quickfix panel) shows its diff, and `]f` / `[f` go to the next / previous changed file in
+  the same windows; `:diff-review [<revision>]` starts the same review. `[editor.diff]
+  open-changed-files-in-diff = false` opens the files as plain buffers instead.
 - In a diff: the two sides scroll together. `]c` / `[c` next / previous change (the other side
   follows), `]s` lines the other side up with the cursor, `[d` / `]d` both sides to the top / bottom, `>>` reverts the
   change under the cursor (the right side gets the old lines), `q` closes it. The old version
@@ -422,7 +426,7 @@ the changed words inside them are emphasized.
   usual (`]f`, `>` with a motion...). The keys are set in `[editor.diff.keys]`, and the actions
   are commands too (`diff_next_change`, ...).
 - `[editor.diff]`: `ignore-whitespace`, `connector-width`, `align-on-jump`, `scroll-sync` (on by
-  default). Colors: the theme's `ui.diff.add`, `ui.diff.delete`, `ui.diff.change`,
+  default), `open-changed-files-in-diff` (on by default). Colors: the theme's `ui.diff.add`, `ui.diff.delete`, `ui.diff.change`,
   `ui.diff.change.emphasis`, or mixed from its `diff.plus`, `diff.minus` and `diff.delta` (green,
   red and blue tints when those are greys, as in a monochrome theme).
 

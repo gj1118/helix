@@ -2078,7 +2078,8 @@ impl EditorView {
         }
         self.diff_pending.push(event);
         let config = cxt.editor.config();
-        match commands::diff::match_keys(&config.diff, &self.diff_pending) {
+        let reviewing = cxt.editor.active_review().is_some();
+        match commands::diff::match_keys(&config.diff, &self.diff_pending, reviewing) {
             commands::diff::KeyMatch::Action(action) => {
                 self.diff_pending.clear();
                 drop(config);

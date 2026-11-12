@@ -345,6 +345,10 @@ fn diff_git_command(
         .path()
         .map(Path::to_path_buf)
         .ok_or_else(|| anyhow!("the buffer has no file to compare with git"))?;
+    let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
+    if !crate::commands::diff::git_allowed(cx.editor, &dir) {
+        return Ok(());
+    }
     let rev = args.first().map(|rev| rev.to_string());
     cx.jobs.callback(async move {
         let old = crate::commands::diff::git_version(&path, rev.as_deref()).await?;
@@ -354,6 +358,46 @@ fn diff_git_command(
             }
         }));
         Ok(call)
+    });
+    Ok(())
+}
+
+fn diff_review_command(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    // the working directory, as the changed files picker (`Space g`); or the repository of
+    // the current file when it is elsewhere
+    let cwd = helix_stdx::env::current_working_dir();
+    let dir = match doc!(cx.editor).path().and_then(|path| path.parent()) {
+        Some(parent) if !parent.starts_with(&cwd) => parent.to_path_buf(),
+        _ => cwd,
+    };
+    if !crate::commands::diff::git_allowed(cx.editor, &dir) {
+        return Ok(());
+    }
+    let rev = args.first().map(|rev| rev.to_string());
+    cx.jobs.callback(async move {
+        let dir = match crate::commands::git::repo_root(&dir).await {
+            Ok(root) if !dir.starts_with(helix_stdx::env::current_working_dir()) => root,
+            _ => dir,
+        };
+        let files = crate::commands::diff::review_files(&dir, rev.as_deref()).await?;
+        if files.is_empty() {
+            let call: job::Callback =
+                job::Callback::Editor(Box::new(move |editor: &mut Editor| {
+                    editor.set_status(match &rev {
+                        Some(rev) => format!("No files changed since {rev}"),
+                        None => "No changed files".to_string(),
+                    })
+                }));
+            return Ok(call);
+        }
+        crate::commands::diff::review_file(files, 0, helix_view::editor::Action::Replace).await
     });
     Ok(())
 }
@@ -5392,6 +5436,14 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Show a side-by-side diff of the current file and its version in git: the index by default (what `git diff` shows), or a revision (`:diff-git HEAD`, `:diff-git main`)",
         fun: diff_git_command,
+        completer: CommandCompleter::none(),
+        signature: Signature { positionals: (0, Some(1)), ..Signature::DEFAULT },
+    },
+    TypableCommand {
+        name: "diff-review",
+        aliases: &[],
+        doc: "Review the changed files in side-by-side diffs, one after the other (`]f` / `[f`): against git as `git status` lists them, or `:diff-review <revision>` for the files changed since a revision",
+        fun: diff_review_command,
         completer: CommandCompleter::none(),
         signature: Signature { positionals: (0, Some(1)), ..Signature::DEFAULT },
     },

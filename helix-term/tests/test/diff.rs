@@ -843,3 +843,144 @@ async fn the_diff_follows_typing() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+/// A repository with changes: `a.rs` changed and staged, `b.rs` changed (not staged),
+/// `c.rs` new (untracked).
+fn repo_with_changes() -> anyhow::Result<tempfile::TempDir> {
+    let repo = tempfile::tempdir()?;
+    let root = repo.path();
+    git(root, &["init", "-q"])?;
+    for name in ["a.rs", "b.rs"] {
+        std::fs::write(root.join(name), format!("// {name}\nfn one() {{}}\n"))?;
+    }
+    git(root, &["add", "."])?;
+    git(root, &["commit", "-qm", "first"])?;
+    std::fs::write(root.join("a.rs"), "// a.rs\nfn one() {}\nfn staged() {}\n")?;
+    git(root, &["add", "a.rs"])?;
+    std::fs::write(root.join("b.rs"), "// b.rs\nfn changed() {}\n")?;
+    std::fs::write(root.join("c.rs"), "fn new() {}\n")?;
+    Ok(repo)
+}
+
+/// `:diff-review`: the changed files one after the other, `]f` / `[f`; each against what
+/// shows its changes (`HEAD` for staged ones, the index otherwise; nothing for a new file).
+#[tokio::test(flavor = "multi_thread")]
+async fn changed_files_are_reviewed_one_after_the_other() -> anyhow::Result<()> {
+    let repo = repo_with_changes()?;
+    let root = repo.path();
+    let mut app = helpers::AppBuilder::new()
+        .with_file(root.join("b.rs"), None)
+        .build()?;
+    app.resize_terminal(100, 14).await;
+    let shown = |app: &Application| -> String {
+        let session = app.editor.diff_sessions.first().expect("a diff");
+        let doc = app.editor.document(session.right_doc).unwrap();
+        doc.path()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned()
+    };
+
+    send_keys(&mut app, ":diff-review<ret>").await?;
+    wait_for_diff(&mut app, "HEAD:a.rs").await;
+    assert_eq!(shown(&app), "a.rs");
+    let (status, _) = app.editor.get_status().unwrap();
+    assert!(
+        status.starts_with("File 1 of 3: ") && status.ends_with("a.rs"),
+        "{status}"
+    );
+    let review = app.editor.diff_review.clone().expect("a review");
+    let bases: Vec<Option<String>> = review.files.iter().map(|file| file.base.clone()).collect();
+    assert_eq!(bases, [Some("HEAD".to_string()), None, None]);
+
+    send_keys(&mut app, "]f").await?;
+    wait_for_diff(&mut app, "index:b.rs").await;
+    assert_eq!(shown(&app), "b.rs");
+    // one diff at a time, in the same windows
+    assert_eq!(app.editor.diff_sessions.len(), 1);
+    assert_eq!(app.editor.tree.views().count(), 2);
+    // from the left side too
+    send_keys(&mut app, "<C-w>h]f").await?;
+    wait_for_diff(&mut app, "index:c.rs").await;
+    let session = app.editor.diff_sessions.first().unwrap();
+    assert_eq!(session.hunks[0].kind(), HunkKind::Added);
+    send_keys(&mut app, "]f").await?;
+    let (status, _) = app.editor.get_status().unwrap();
+    assert_eq!(status, "No more changed files after this one");
+    send_keys(&mut app, "2[f").await?;
+    wait_for_diff(&mut app, "HEAD:a.rs").await;
+
+    // closed: `]f` is the next function again, no review
+    send_keys(&mut app, "q").await?;
+    assert!(app.editor.diff_sessions.is_empty());
+    assert!(app.editor.active_review().is_none());
+    send_keys(&mut app, "gg]f").await?;
+    let (view, doc) = helix_view::current_ref!(app.editor);
+    let selected: String = doc
+        .selection(view.id)
+        .primary()
+        .fragment(doc.text().slice(..))
+        .into();
+    assert_eq!(selected, "fn one() {}");
+    let path = doc
+        .path()
+        .unwrap()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    assert_eq!(path, "a.rs");
+    Ok(())
+}
+
+/// `:diff-review <revision>`: the files changed since it, new ones too.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_review_since_a_revision() -> anyhow::Result<()> {
+    let repo = repo_with_changes()?;
+    let root = repo.path();
+    git(root, &["add", "."])?;
+    git(root, &["commit", "-qm", "second"])?;
+    std::fs::write(root.join("b.rs"), "// b.rs\nfn again() {}\n")?;
+    let mut app = helpers::AppBuilder::new()
+        .with_file(root.join("a.rs"), None)
+        .build()?;
+    app.resize_terminal(100, 14).await;
+    send_keys(&mut app, ":diff-review HEAD~1<ret>").await?;
+    wait_for_diff(&mut app, "HEAD~1:a.rs").await;
+    let review = app.editor.diff_review.clone().expect("a review");
+    let files: Vec<String> = review
+        .files
+        .iter()
+        .map(|file| {
+            file.path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    assert_eq!(files, ["a.rs", "b.rs", "c.rs"]);
+    assert!(review
+        .files
+        .iter()
+        .all(|file| file.base.as_deref() == Some("HEAD~1")));
+    // since `HEAD`: the one file changed after the last commit
+    send_keys(&mut app, "q:diff-review HEAD<ret>").await?;
+    wait_for_diff(&mut app, "HEAD:b.rs").await;
+    let count: usize = app.editor.diff_review.as_ref().unwrap().files.len();
+    assert_eq!(count, 1);
+    // nothing changed: said so, no diff
+    git(root, &["commit", "-qam", "third"])?;
+    send_keys(&mut app, "q:diff-review HEAD<ret>").await?;
+    let said = until(&mut app, |app| {
+        app.editor
+            .get_status()
+            .is_some_and(|(status, _)| status == "No files changed since HEAD")
+    })
+    .await;
+    assert!(said, "{:?}", app.editor.get_status());
+    assert!(app.editor.diff_sessions.is_empty());
+    Ok(())
+}

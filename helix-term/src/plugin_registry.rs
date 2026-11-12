@@ -579,6 +579,7 @@ fn static_permissions(name: &str) -> &'static [Permission] {
         "explorer" => &[Explorer],
         name if name.starts_with("explorer_") => &[Explorer],
         // moving in a diff (applying a change from a side to the other edits)
+        "diff_next_file" | "diff_previous_file" => &[Files, Windows],
         "diff_next_change"
         | "diff_previous_change"
         | "diff_snap"
@@ -689,7 +690,7 @@ fn typable_permissions(name: &str) -> Option<&'static [Permission]> {
         | "write-quit-all"
         | "write-quit-all!" => &[Files, Windows],
         // files (or git) read, and windows opened
-        "diff" | "diff-buffers" | "diff-git" => &[Files, Windows],
+        "diff" | "diff-buffers" | "diff-git" | "diff-review" => &[Files, Windows],
         "diff-close" => &[Windows],
         // settings
         "change-current-directory"
@@ -833,7 +834,7 @@ mod tests {
     fn static_commands_are_classified() {
         let count = crate::commands::MappableCommand::STATIC_COMMAND_LIST.len();
         assert_eq!(
-            count, 397,
+            count, 399,
             "commands were added or removed: check `static_permissions` for them"
         );
         use helix_plugin::types::EditorCommandRegistry;
