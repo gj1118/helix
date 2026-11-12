@@ -120,7 +120,6 @@
 | `diff_align_top` | Both sides of a diff to their first line |  |
 | `diff_align_bottom` | Both sides of a diff to their last line |  |
 | `diff_apply_left_to_right` | Replace the change under the cursor on the right side of a diff with the left side's lines |  |
-| `diff_apply_right_to_left` | Replace the change under the cursor on the left side of a diff with the right side's lines |  |
 | `diff_close` | Close the side-by-side diff (the right side's buffer stays) |  |
 | `explorer` | Show the explorer on the side set by [editor.explorer] side (left, right or floating), or hide it when it is open | normal: `` <space>x ``, select: `` <space>x `` |
 | `explorer_focus` | Focus the explorer file tree panel (opening it if hidden) | normal: `` <C-h> ``, select: `` <C-h> `` |

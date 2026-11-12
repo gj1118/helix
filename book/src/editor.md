@@ -825,7 +825,7 @@ Side-by-side diffs (`:diff`, `:diff-git`, `hx --diff`): see [Diffs](./diff.md).
 | `connector-width` | Columns of the connector between the two sides | `9` |
 | `align-on-jump` | `]c` / `[c` scroll the other side to the same change | `true` |
 | `scroll-sync` | Scrolling one side scrolls the other, the line matching the cursor's line level with it; `false`: each side scrolls on its own (and `]s` lines them up) | `true` |
-| `keys` | The keys of the diff views, by action (see [Diffs](./diff.md#keys)) | `]c`, `[c`, `]s`, `[d`, `]d`, `>>`, `<<`, `q` |
+| `keys` | The keys of the diff views, by action (see [Diffs](./diff.md#keys)) | `]c`, `[c`, `]s`, `[d`, `]d`, `>>`, `q` |
 
 ### `[editor.inline-blame]` Section
 

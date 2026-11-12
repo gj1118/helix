@@ -10,8 +10,8 @@ pub(crate) mod snippets;
 pub(crate) mod syntax;
 pub(crate) mod todos;
 pub(crate) use diff::{
-    diff_align_bottom, diff_align_top, diff_apply_left_to_right, diff_apply_right_to_left,
-    diff_close, diff_next_change, diff_previous_change, diff_snap,
+    diff_align_bottom, diff_align_top, diff_apply_left_to_right, diff_close, diff_next_change,
+    diff_previous_change, diff_snap,
 };
 pub(crate) mod typed;
 
@@ -469,7 +469,6 @@ impl MappableCommand {
         diff_align_top, "Both sides of a diff to their first line",
         diff_align_bottom, "Both sides of a diff to their last line",
         diff_apply_left_to_right, "Replace the change under the cursor on the right side of a diff with the left side's lines",
-        diff_apply_right_to_left, "Replace the change under the cursor on the left side of a diff with the right side's lines",
         diff_close, "Close the side-by-side diff (the right side's buffer stays)",
         explorer, "Show the explorer on the side set by [editor.explorer] side (left, right or floating), or hide it when it is open",
         explorer_focus, "Focus the explorer file tree panel (opening it if hidden)",
@@ -5369,7 +5368,7 @@ fn open_above(cx: &mut Context) {
     open(cx, Open::Above, CommentContinuation::Enabled)
 }
 
-fn normal_mode(cx: &mut Context) {
+pub(crate) fn normal_mode(cx: &mut Context) {
     cx.editor.enter_normal_mode();
 }
 

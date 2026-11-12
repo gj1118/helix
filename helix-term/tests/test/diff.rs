@@ -246,16 +246,23 @@ async fn changes_are_applied_from_one_side_to_the_other() -> anyhow::Result<()> 
     send_keys(&mut app, "u").await?;
     assert!(!right(&app).contains("removed();"));
 
-    // `<<` on the added lines: into the left side (the snapshot)
-    send_keys(&mut app, "]c<lt><lt>").await?;
+    // `>>` from the left side too: into the right side (the left one is read-only)
+    send_keys(&mut app, "<C-w>hgg]c<gt><gt><C-w>l").await?;
+    assert!(
+        right(&app).contains("let total = price * count;\n"),
+        "{}",
+        right(&app)
+    );
+    // `<<` is no diff key: `<` (unindent) as usual, which the read-only left side refuses
+    send_keys(&mut app, "<C-w>h<lt><lt><C-w>l").await?;
     let session = &app.editor.diff_sessions[0];
-    let left = app
+    let left: String = app
         .editor
         .document(session.left_doc)
         .unwrap()
         .text()
         .to_string();
-    assert!(left.contains("fn added() {}\nfn more() {}\n"), "{left}");
+    assert_eq!(left, OLD);
     // nothing to apply where nothing changed
     send_keys(&mut app, "gg<gt><gt>").await?;
     let (status, _) = app.editor.get_status().unwrap();
@@ -764,5 +771,75 @@ async fn a_buffer_snapshot_shares_the_text() -> anyhow::Result<()> {
     assert!(shared);
     assert_eq!(snapshot.to_string(), "one\ntwo\n");
     send_keys(&mut app, ":q!<ret>").await?;
+    Ok(())
+}
+
+/// The old version (the left side) can't be changed: typing, deleting, pasting are refused,
+/// with a word on why, and insert mode is left at once.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_old_version_is_read_only() -> anyhow::Result<()> {
+    let (mut app, _old, _new) = app_with_diff(helpers::test_config()).await?;
+    let left_text = |app: &Application| -> String {
+        let session = &app.editor.diff_sessions[0];
+        app.editor
+            .document(session.left_doc)
+            .unwrap()
+            .text()
+            .to_string()
+    };
+    send_keys(&mut app, "<C-w>hihello").await?;
+    assert_eq!(app.editor.mode(), helix_view::document::Mode::Normal);
+    let (status, severity) = app.editor.get_status().expect("a message");
+    assert_eq!(status, "The old version is read-only");
+    assert_eq!(*severity, helix_view::editor::Severity::Error);
+    // `hello` was typed as normal-mode keys: nothing they do changes the text
+    assert_eq!(left_text(&app), OLD);
+    for keys in ["dd", "xd", "yp", "o", "<gt>j", "~", "<C-a>"] {
+        send_keys(&mut app, &format!("<esc>gg{keys}<esc>")).await?;
+        let text: String = left_text(&app);
+        assert_eq!(text, OLD, "after {keys}");
+    }
+    // the right side is edited as usual
+    send_keys(&mut app, "<C-w>lggiok <esc>").await?;
+    let right: String = helix_view::doc!(app.editor).text().to_string();
+    assert!(right.starts_with("ok fn main()"), "{right}");
+    Ok(())
+}
+
+/// Typing in the right side: after a pause (the idle timeout), still in insert mode, the
+/// diff is worked out again, with the new lines as a change.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_diff_follows_typing() -> anyhow::Result<()> {
+    let (mut app, _old, _new) = app_with_diff(helpers::test_config()).await?;
+    let kinds =
+        |app: &Application| -> Vec<(std::ops::Range<usize>, std::ops::Range<usize>, HunkKind)> {
+            app.editor.diff_sessions[0]
+                .hunks
+                .iter()
+                .map(|hunk| (hunk.left.clone(), hunk.right.clone(), hunk.kind()))
+                .collect()
+        };
+    send_keys(&mut app, "ggOuse std::fmt;").await?;
+    assert_eq!(app.editor.mode(), helix_view::document::Mode::Insert);
+    assert_eq!(
+        kinds(&app),
+        [
+            (0..0, 0..1, HunkKind::Added),
+            (1..2, 2..3, HunkKind::Changed),
+            (3..4, 4..4, HunkKind::Removed),
+            (6..6, 6..9, HunkKind::Added),
+        ]
+    );
+    // out of insert mode, after more edits in normal mode: worked out at once
+    send_keys(&mut app, "<esc>jdd").await?;
+    assert_eq!(
+        kinds(&app),
+        [
+            // the new line in place of `fn main() {`, next to the changed one: one change
+            (0..2, 0..2, HunkKind::Changed),
+            (3..4, 3..3, HunkKind::Removed),
+            (6..6, 5..8, HunkKind::Added),
+        ]
+    );
     Ok(())
 }

@@ -53,16 +53,19 @@ impl Default for DiffConfig {
 }
 
 /// The actions of the diff views, with their default keys.
-pub const ACTIONS: [(&str, &str); 8] = [
+pub const ACTIONS: [(&str, &str); 7] = [
     ("next-change", "]c"),
     ("previous-change", "[c"),
     ("snap", "]s"),
     ("align-top", "[d"),
     ("align-bottom", "]d"),
     ("apply-left-to-right", "<gt><gt>"),
-    ("apply-right-to-left", "<lt><lt>"),
     ("close", "q"),
 ];
+
+/// Actions there were once, still accepted in `[editor.diff.keys]` (and ignored) so that a
+/// configuration setting them still loads.
+const REMOVED_ACTIONS: [&str; 1] = ["apply-right-to-left"];
 
 /// The default keys of the diff views.
 pub fn default_keys() -> HashMap<String, String> {
@@ -82,6 +85,10 @@ where
     let set = HashMap::<String, String>::deserialize(deserializer)?;
     let mut keys = default_keys();
     for (action, sequence) in set {
+        if REMOVED_ACTIONS.contains(&action.as_str()) {
+            log::warn!("[editor.diff.keys]: {action} is no more (the old version is read-only)");
+            continue;
+        }
         if !ACTIONS.iter().any(|(name, _)| *name == action) {
             let names: Vec<&str> = ACTIONS.iter().map(|(name, _)| *name).collect();
             return Err(D::Error::custom(format!(
@@ -116,6 +123,11 @@ pub struct DiffSession {
     words: Vec<Option<HunkWords>>,
     /// The versions of the documents the hunks are of.
     versions: Option<(i32, i32)>,
+    /// The right document's text the hunks are of (a rope: shared, not copied).
+    right_text: helix_core::Rope,
+    /// The hunks only followed edits since the diff was last worked out (see
+    /// [`Editor::refresh_diff_sessions`]).
+    stale: bool,
     /// The gutters of the right view before the connector was added to them.
     right_gutters: GutterConfig,
     /// Where the left and right views were scrolled to when they were last in step (see
@@ -145,6 +157,8 @@ impl DiffSession {
             hunks: Arc::from([]),
             words: Vec::new(),
             versions: None,
+            right_text: helix_core::Rope::new(),
+            stale: false,
             right_gutters,
             scrolled: None,
         }
@@ -225,19 +239,25 @@ impl Editor {
             .find(|session| session.side_of(view).is_some())
     }
 
-    /// Brings the sessions up to date: the hunks of the documents as they are now, and the
-    /// end of a session whose view or document is gone (the other view keeps its document;
-    /// the right one gets its gutters back; the left snapshot is closed).
+    /// Brings the sessions up to date with the documents, and ends a session whose view or
+    /// document is gone (the other view keeps its document; the right one gets its gutters
+    /// back; the left snapshot is closed).
+    ///
+    /// While the right side is typed into (insert mode), its hunks only follow the edits
+    /// (see [`helix_core::diff_hunks::shift_hunks`]): cheap at any size. The diff is worked
+    /// out again otherwise: out of insert mode, after a pause in typing
+    /// ([`Editor::recompute_stale_diffs`] on the idle timeout), and before the diff actions.
     pub fn refresh_diff_sessions(&mut self) {
+        let typing = self.mode == crate::document::Mode::Insert;
         let mut ended = Vec::new();
-        for (index, session) in self.diff_sessions.iter_mut().enumerate() {
+        for index in 0..self.diff_sessions.len() {
+            let session = &self.diff_sessions[index];
             let views_alive =
                 self.tree.contains(session.left_view) && self.tree.contains(session.right_view);
-            let docs = (
+            let (Some(left), Some(right)) = (
                 self.documents.get(&session.left_doc),
                 self.documents.get(&session.right_doc),
-            );
-            let (Some(left), Some(right)) = docs else {
+            ) else {
                 ended.push(index);
                 continue;
             };
@@ -250,15 +270,21 @@ impl Editor {
                 continue;
             }
             let versions = (left.version(), right.version());
-            if session.versions != Some(versions) {
-                session.hunks = diff_hunks(
-                    left.text().slice(..),
-                    right.text().slice(..),
-                    session.options,
-                )
-                .into();
-                session.words = vec![None; session.hunks.len()];
-                session.versions = Some(versions);
+            let changed = session.versions != Some(versions);
+            // edits only to the right side, followed since the diff was worked out (by this
+            // session alone: another diff of the same buffer restarts the following)
+            let followable = session.versions.map(|(left, _)| left) == Some(versions.0)
+                && right.diff_changes().is_some()
+                && self
+                    .diff_sessions
+                    .iter()
+                    .filter(|other| other.right_doc == session.right_doc)
+                    .count()
+                    == 1;
+            if changed && typing && followable {
+                self.shift_diff(index);
+            } else if changed || (session.stale && !typing) {
+                self.recompute_diff(index);
             }
         }
         for index in ended.into_iter().rev() {
@@ -267,9 +293,87 @@ impl Editor {
         }
     }
 
+    /// Works out again the diffs whose hunks only followed edits (see
+    /// [`Editor::refresh_diff_sessions`]); whether there were any.
+    pub fn recompute_stale_diffs(&mut self) -> bool {
+        let mut any = false;
+        for index in 0..self.diff_sessions.len() {
+            let session = &self.diff_sessions[index];
+            let present = self.documents.contains_key(&session.left_doc)
+                && self.documents.contains_key(&session.right_doc);
+            if present && session.stale {
+                self.recompute_diff(index);
+                any = true;
+            }
+        }
+        any
+    }
+
+    /// The diff of session `index` worked out from the documents as they are now.
+    fn recompute_diff(&mut self, index: usize) {
+        let session = &mut self.diff_sessions[index];
+        let Some((left_text, left_version)) = self
+            .documents
+            .get(&session.left_doc)
+            .map(|left| (left.text().clone(), left.version()))
+        else {
+            return;
+        };
+        let Some(right) = self.documents.get_mut(&session.right_doc) else {
+            return;
+        };
+        session.hunks =
+            diff_hunks(left_text.slice(..), right.text().slice(..), session.options).into();
+        session.words = vec![None; session.hunks.len()];
+        session.versions = Some((left_version, right.version()));
+        session.right_text = right.text().clone();
+        session.stale = false;
+        right.track_diff_changes();
+    }
+
+    /// The hunks of session `index` moved along with the edits made to the right side since.
+    fn shift_diff(&mut self, index: usize) {
+        let session = &mut self.diff_sessions[index];
+        let Some(left_version) = self
+            .documents
+            .get(&session.left_doc)
+            .map(|left| left.version())
+        else {
+            return;
+        };
+        let Some(right) = self.documents.get_mut(&session.right_doc) else {
+            return;
+        };
+        let Some(changes) = right.diff_changes() else {
+            return;
+        };
+        session.hunks = helix_core::diff_hunks::shift_hunks(
+            &session.hunks,
+            session.right_text.slice(..),
+            right.text().slice(..),
+            changes,
+        )
+        .into();
+        // the words of the hunks shown are worked out again, from the texts as they are
+        session.words = vec![None; session.hunks.len()];
+        session.versions = Some((left_version, right.version()));
+        session.right_text = right.text().clone();
+        session.stale = true;
+        right.track_diff_changes();
+    }
+
     /// Ends `session` (already out of the list): the right view gets its gutters back, the left
     /// view and its snapshot go.
     pub fn end_diff_session(&mut self, session: DiffSession) {
+        let followed_elsewhere = self
+            .diff_sessions
+            .iter()
+            .any(|other| other.right_doc == session.right_doc);
+        if !followed_elsewhere {
+            if let Some(doc) = self.documents.get_mut(&session.right_doc) {
+                doc.untrack_diff_changes();
+            }
+        }
         if self.tree.contains(session.right_view) {
             self.tree.get_mut(session.right_view).gutters = session.right_gutters.clone();
         }
@@ -339,6 +443,7 @@ impl Editor {
         );
         doc.title = Some(old.title);
         doc.readonly = true;
+        doc.locked = Some("The old version is read-only".to_string());
         if let Some(path) = &old.syntax_path {
             let loader = self.syn_loader.load();
             if let Some(language) = loader.language_for_filename(path) {
@@ -842,6 +947,11 @@ mod tests {
             .contains("unknown action \"jump\""));
         let wrong = toml::from_str::<DiffConfig>("[keys]\nclose = \"<nope>\"");
         assert!(wrong.unwrap_err().to_string().contains("invalid keys"));
+        // an action that is no more still loads, and is ignored
+        let old: DiffConfig =
+            toml::from_str("[keys]\napply-right-to-left = \"<lt><lt>\"").expect("loads");
+        assert!(!old.keys.contains_key("apply-right-to-left"));
+        assert_eq!(old.keys.len(), ACTIONS.len());
     }
 
     #[test]

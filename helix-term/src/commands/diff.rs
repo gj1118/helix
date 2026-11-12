@@ -114,8 +114,10 @@ pub async fn git_version(path: &Path, rev: Option<&str>) -> anyhow::Result<OldVe
 
 // --- actions ---------------------------------------------------------------
 
-/// The diff of the focused view: `(the focused side, its hunks)`.
-fn focused_diff(editor: &Editor) -> Option<(ViewId, Side, std::sync::Arc<[DiffHunk]>)> {
+/// The diff of the focused view, worked out from the documents as they are now:
+/// `(the focused view, its side, the hunks)`.
+fn focused_diff(editor: &mut Editor) -> Option<(ViewId, Side, std::sync::Arc<[DiffHunk]>)> {
+    refresh(editor);
     let view = editor.tree.focus;
     let session = editor.diff_session(view)?;
     Some((view, session.side_of(view)?, session.hunks.clone()))
@@ -144,7 +146,6 @@ fn jump_to_change(cx: &mut Context, forward: bool) {
     let Some((view, side, hunks)) = focused_diff(cx.editor) else {
         return not_in_a_diff(cx);
     };
-    refresh(cx.editor);
     let (line, _) = cursor_line_and_row(cx.editor, view);
     let count = cx.count();
     let starts: Vec<usize> = hunks.iter().map(|hunk| hunk.lines(side).start).collect();
@@ -211,7 +212,6 @@ pub fn diff_snap(cx: &mut Context) {
     let Some((view, _, _)) = focused_diff(cx.editor) else {
         return not_in_a_diff(cx);
     };
-    refresh(cx.editor);
     cx.editor.align_diff(view);
 }
 
@@ -247,9 +247,10 @@ pub fn diff_align_bottom(cx: &mut Context) {
     align_end(cx, false)
 }
 
-/// Replaces the lines of the change under the cursor on the `to` side with those of the other
-/// side.
-fn apply_change(cx: &mut Context, to: Side) {
+/// Replaces the lines of the change under the cursor on the right side (the document) with
+/// those of the left side (the old version, which is read-only), from either side.
+fn apply_change(cx: &mut Context) {
+    let to = Side::Right;
     let Some((view, side, hunks)) = focused_diff(cx.editor) else {
         return not_in_a_diff(cx);
     };
@@ -318,12 +319,7 @@ fn apply_change(cx: &mut Context, to: Side) {
 
 /// The change under the cursor: the left side's lines into the right side.
 pub fn diff_apply_left_to_right(cx: &mut Context) {
-    apply_change(cx, Side::Right)
-}
-
-/// The change under the cursor: the right side's lines into the left side.
-pub fn diff_apply_right_to_left(cx: &mut Context) {
-    apply_change(cx, Side::Left)
+    apply_change(cx)
 }
 
 pub fn diff_close(cx: &mut Context) {
@@ -339,8 +335,10 @@ fn view_height(editor: &Editor, view: ViewId) -> usize {
     view.inner_height(&editor.documents[&view.doc])
 }
 
+/// The diffs up to date with the documents: worked out again where they only followed edits.
 fn refresh(editor: &mut Editor) {
     editor.refresh_diff_sessions();
+    editor.recompute_stale_diffs();
 }
 
 // --- keys ------------------------------------------------------------------
@@ -364,7 +362,6 @@ fn action(name: &str) -> Option<fn(&mut Context)> {
         "align-top" => diff_align_top,
         "align-bottom" => diff_align_bottom,
         "apply-left-to-right" => diff_apply_left_to_right,
-        "apply-right-to-left" => diff_apply_right_to_left,
         "close" => diff_close,
         _ => return None,
     })

@@ -416,8 +416,9 @@ the changed words inside them are emphasized.
   [<new>]`, `:diff-git` (the current file against the git index: what `git diff` shows) and
   `:diff-git <revision>` (`HEAD`, `main`, ...), and `hx --diff <old> <new>`.
 - In a diff: the two sides scroll together. `]c` / `[c` next / previous change (the other side
-  follows), `]s` lines the other side up with the cursor, `[d` / `]d` both sides to the top / bottom, `>>` / `<<` apply the
-  change under the cursor from left to right / right to left, `q` closes it. Other keys work as
+  follows), `]s` lines the other side up with the cursor, `[d` / `]d` both sides to the top / bottom, `>>` reverts the
+  change under the cursor (the right side gets the old lines), `q` closes it. The old version
+  on the left is read-only. Other keys work as
   usual (`]f`, `>` with a motion...). The keys are set in `[editor.diff.keys]`, and the actions
   are commands too (`diff_next_change`, ...).
 - `[editor.diff]`: `ignore-whitespace`, `connector-width`, `align-on-jump`, `scroll-sync` (on by

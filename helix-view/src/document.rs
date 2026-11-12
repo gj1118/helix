@@ -308,6 +308,16 @@ pub struct Document {
     pub focused_at: std::time::Instant,
 
     pub readonly: bool,
+    /// A document that can't be changed at all (unlike `readonly`, which is about writing the
+    /// file): every edit is refused, by any command, undo or plugin. The message says why
+    /// (`The old version is read-only`).
+    pub locked: Option<String>,
+    /// An edit was refused since this was last taken (see `locked`): for the editor to say why.
+    pub edit_refused: bool,
+    /// The changes made since the side-by-side diff of this document was last worked out, all
+    /// in one (see [`Document::track_diff_changes`]), for the diff to follow them until it is
+    /// worked out again. `None` when not tracked, or when the changes could not be followed.
+    diff_changes: Option<helix_core::ChangeSet>,
     /// The name shown for a document without a path (e.g. a historical version).
     pub title: Option<String>,
 
@@ -1137,6 +1147,9 @@ impl Document {
             version_control_head: None,
             focused_at: std::time::Instant::now(),
             readonly: false,
+            locked: None,
+            edit_refused: false,
+            diff_changes: None,
             title: None,
             jump_labels: HashMap::new(),
             plugin_annotations: HashMap::new(),
@@ -1972,10 +1985,21 @@ impl Document {
     ) -> bool {
         use helix_core::Assoc;
 
-        let old_doc = self.text().clone();
         let changes = transaction.changes();
+        if self.locked.is_some() && !changes.is_empty() {
+            self.edit_refused = true;
+            return false;
+        }
+        let old_doc = self.text().clone();
         if !changes.apply(&mut self.text) {
             return false;
+        }
+        if let Some(tracked) = self.diff_changes.take() {
+            // changes since the diff was worked out, one after the other (lengths that don't
+            // line up can't be followed: the diff is then worked out again)
+            if tracked.len_after() == changes.len() {
+                self.diff_changes = Some(tracked.compose(changes.clone()));
+            }
         }
 
         if changes.is_empty() {
@@ -2212,6 +2236,23 @@ impl Document {
         }
         success
     }
+    /// Starts (again) collecting the changes made to this document, from its text now: see
+    /// [`Document::diff_changes`].
+    pub fn track_diff_changes(&mut self) {
+        self.diff_changes = Some(helix_core::ChangeSet::new(self.text.slice(..)));
+    }
+
+    /// Stops collecting changes for a diff.
+    pub fn untrack_diff_changes(&mut self) {
+        self.diff_changes = None;
+    }
+
+    /// The changes made since [`Document::track_diff_changes`], all in one; `None` when not
+    /// tracked or when they could not be followed.
+    pub fn diff_changes(&self) -> Option<&helix_core::ChangeSet> {
+        self.diff_changes.as_ref()
+    }
+
     /// Apply a [`Transaction`] to the [`Document`] to change its text.
     pub fn apply(&mut self, transaction: &Transaction, view_id: ViewId) -> bool {
         self.apply_inner(transaction, view_id, true)

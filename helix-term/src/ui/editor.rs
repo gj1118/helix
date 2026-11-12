@@ -2287,6 +2287,10 @@ impl EditorView {
 
     pub fn handle_idle_timeout(&mut self, cx: &mut commands::Context) -> EventResult {
         commands::compute_inlay_hints_for_all_views(cx.editor, cx.jobs);
+        // a pause in typing: the diffs that only followed the edits are worked out again
+        if cx.editor.recompute_stale_diffs() {
+            helix_event::request_redraw();
+        }
 
         EventResult::Ignored(None)
     }
@@ -2748,6 +2752,22 @@ impl Component for EditorView {
                 // on the next loop cycle the Application will then terminate.
                 if cx.editor.should_close() {
                     return EventResult::Ignored(None);
+                }
+
+                // a locked buffer (the old side of a diff): out of insert mode at once, and a
+                // word on why an edit did nothing
+                {
+                    let doc = doc_mut!(cx.editor);
+                    if let Some(why) = doc.locked.clone() {
+                        let refused = std::mem::take(&mut doc.edit_refused);
+                        let inserting = cx.editor.mode() == Mode::Insert;
+                        if inserting {
+                            commands::normal_mode(&mut cx);
+                        }
+                        if refused || inserting {
+                            cx.editor.set_error(why);
+                        }
+                    }
                 }
 
                 let config = cx.editor.config();

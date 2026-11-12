@@ -359,6 +359,46 @@ pub fn map_line(hunks: &[DiffHunk], line: usize, to: Side) -> usize {
     (line as isize + delta).max(0) as usize
 }
 
+/// `hunks` (of a left text and of `old`, the right one) moved along with `changes`, which made
+/// `new` from `old`: the lines of the right side where they went, the left ones as they are.
+/// Cheap (it doesn't compare the texts), for following edits as they are typed; the hunks of
+/// lines changed meanwhile are not found until the diff is worked out again.
+pub fn shift_hunks(
+    hunks: &[DiffHunk],
+    old: RopeSlice,
+    new: RopeSlice,
+    changes: &crate::ChangeSet,
+) -> Vec<DiffHunk> {
+    let char_of = |line: usize| {
+        if line >= old.len_lines() {
+            old.len_chars()
+        } else {
+            old.line_to_char(line)
+        }
+    };
+    let line_of = |pos: usize| {
+        let pos = pos.min(new.len_chars());
+        let line = new.char_to_line(pos);
+        // the end of a text ending with a line ending is the line after the last
+        if pos == new.len_chars() && pos > 0 && new.char(pos - 1) == '\n' {
+            line_count(new)
+        } else {
+            line
+        }
+    };
+    hunks
+        .iter()
+        .map(|hunk| {
+            let start = line_of(changes.map_pos(char_of(hunk.right.start), crate::Assoc::Before));
+            let end = line_of(changes.map_pos(char_of(hunk.right.end), crate::Assoc::Before));
+            DiffHunk {
+                left: hunk.left.clone(),
+                right: start..end.max(start),
+            }
+        })
+        .collect()
+}
+
 /// The index of the hunk with `line` on `side`, or of the first one after it, and whether
 /// `line` is in it.
 pub fn hunk_at(hunks: &[DiffHunk], line: usize, side: Side) -> (usize, bool) {
@@ -512,6 +552,50 @@ mod tests {
         assert_eq!(hunk_at(&found, 3, Side::Left), (1, true));
         assert_eq!(hunk_at(&found, 4, Side::Right), (2, true));
         assert_eq!(hunk_at(&found, 4, Side::Left), (2, false));
+    }
+
+    /// Hunks follow the edits made to the right side: lines added or removed before a hunk
+    /// move it, lines added inside it grow it.
+    #[test]
+    fn hunks_follow_edits() {
+        let left = "a\nb\nc\nd\ne\n";
+        let right = Rope::from("a\nB\nc\nd\nE\n");
+        let found = hunks(left, &right.to_string(), DiffOptions::default());
+        assert_eq!(
+            lines_of(&found),
+            [
+                (1..2, 1..2, HunkKind::Changed),
+                (4..5, 4..5, HunkKind::Changed)
+            ]
+        );
+        // two lines added at the top, one inside the second hunk
+        let changes = crate::Transaction::change(
+            &right,
+            [(0, 0, Some("x\ny\n".into())), (8, 8, Some("E2\n".into()))].into_iter(),
+        )
+        .changes()
+        .clone();
+        let mut new = right.clone();
+        assert!(changes.apply(&mut new));
+        assert_eq!(new.to_string(), "x\ny\na\nB\nc\nd\nE2\nE\n");
+        let shifted: Vec<DiffHunk> = shift_hunks(&found, right.slice(..), new.slice(..), &changes);
+        assert_eq!(
+            lines_of(&shifted),
+            [
+                (1..2, 3..4, HunkKind::Changed),
+                (4..5, 6..8, HunkKind::Changed)
+            ]
+        );
+        // the whole right side gone: the hunks stay in its (now empty) text
+        let changes =
+            crate::Transaction::change(&right, [(0, right.len_chars(), None)].into_iter())
+                .changes()
+                .clone();
+        let mut empty = right.clone();
+        assert!(changes.apply(&mut empty));
+        let shifted: Vec<DiffHunk> =
+            shift_hunks(&found, right.slice(..), empty.slice(..), &changes);
+        assert!(shifted.iter().all(|hunk| hunk.right == (0..0)));
     }
 
     /// Past [`HISTOGRAM_MAX_LINES`] the diff is Myers': the same hunks for a simple change.

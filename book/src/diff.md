@@ -13,9 +13,12 @@ the words that changed are emphasized (not in very big changes: more than 200 li
 than 16,000 characters on a side, such as a minified file, where it would cost a lot and show
 little).
 
-The left side is a read-only snapshot of the old version, with syntax highlighting. The
+The left side is a snapshot of the old version, with syntax highlighting, and it can't be
+changed: typing, deleting or pasting there is refused ("The old version is read-only"). The
 right side is the document itself, editable as usual: completion, diagnostics, undo and
-`:write` all work, and the diff follows every edit.
+`:write` all work, and the diff follows every edit. While you type, the changes shown move
+along with your edits; the diff is worked out again when you pause (after `idle-timeout`),
+when you leave insert mode, and before `]c`, `>>` and the other diff keys.
 
 ## Opening a diff
 
@@ -43,8 +46,7 @@ In the windows of a diff, these keys come first (normal mode):
 | `]c`, `[c` | The next / previous change (with a count: `3]c`). The other side scrolls to the same change, at the same height |
 | `]s` | Line the other side up with the cursor's line (for when `scroll-sync` is off) |
 | `[d`, `]d` | Both sides to their first / last line |
-| `>>` | Apply the change under the cursor from left to right: the right side gets the left side's lines (undo with `u`, as any edit) |
-| `<<` | Apply it from right to left: into the old version's snapshot |
+| `>>` | Revert the change under the cursor: the right side gets the left side's lines, from either side (undo with `u`, as any edit) |
 | `q` | Close the diff |
 
 Other keys work as usual, those that begin like a diff key too: `]f` still goes to the next
@@ -60,11 +62,10 @@ apply-left-to-right = "" # no key
 ```
 
 The actions are `next-change`, `previous-change`, `snap`, `align-top`, `align-bottom`,
-`apply-left-to-right`, `apply-right-to-left` and `close` (`>` and `<` are written `<gt>` and
-`<lt>`). They are also commands, which can be bound to keys anywhere like any other:
-`diff_next_change`, `diff_previous_change`, `diff_snap`, `diff_align_top`,
-`diff_align_bottom`, `diff_apply_left_to_right`, `diff_apply_right_to_left` and
-`diff_close`.
+`apply-left-to-right` and `close` (`>` and `<` are written `<gt>` and `<lt>`). They are also
+commands, which can be bound to keys anywhere like any other: `diff_next_change`,
+`diff_previous_change`, `diff_snap`, `diff_align_top`, `diff_align_bottom`,
+`diff_apply_left_to_right` and `diff_close`.
 
 ## Settings
 
