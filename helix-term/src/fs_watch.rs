@@ -110,9 +110,14 @@ impl Tree {
     }
 
     fn is_relevant(&self, event: &Event) -> bool {
+        // Events were dropped (FSEvents under load sends a rescan instead of them): anything
+        // under its path may have changed.
+        if event.need_rescan() {
+            return event.paths.is_empty() || event.paths.iter().any(|path| !self.is_noise(path));
+        }
         matches!(
             event.kind,
-            EventKind::Create(_) | EventKind::Remove(_) | EventKind::Modify(_)
+            EventKind::Create(_) | EventKind::Remove(_) | EventKind::Modify(_) | EventKind::Any
         ) && event.paths.iter().any(|path| !self.is_noise(path))
     }
 }
@@ -426,6 +431,34 @@ mod tests {
         assert!(is_ignored(&root.join("src/build")));
         assert!(!is_ignored(&root.join("src")));
         assert!(!is_ignored(&root.join("src/lib")));
+    }
+
+    /// A rescan (FSEvents dropped events) counts as a change, unless all its paths are noise;
+    /// other events need a create, remove or modify kind.
+    #[test]
+    fn rescans_count_as_changes() {
+        use notify::event::{Flag, ModifyKind};
+        let tree = Tree {
+            root: PathBuf::from("/project"),
+            real_root: None,
+            external_git_dir: None,
+        };
+        let rescan = |paths: &[&str]| {
+            paths.iter().fold(
+                Event::new(EventKind::Other).set_flag(Flag::Rescan),
+                |event, path| event.add_path(PathBuf::from(path)),
+            )
+        };
+        assert!(tree.is_relevant(&rescan(&["/project"])));
+        assert!(tree.is_relevant(&rescan(&["/project/src/deep"])));
+        assert!(tree.is_relevant(&rescan(&[])));
+        assert!(!tree.is_relevant(&rescan(&["/project/target/debug"])));
+        // without the flag, `Other` is not a change
+        let other = Event::new(EventKind::Other).add_path(PathBuf::from("/project/a.txt"));
+        assert!(!tree.is_relevant(&other));
+        let modify = Event::new(EventKind::Modify(ModifyKind::Any))
+            .add_path(PathBuf::from("/project/src/a.txt"));
+        assert!(tree.is_relevant(&modify));
     }
 
     /// The tests that start watchers run one at a time: on macOS each starts an FSEvents
