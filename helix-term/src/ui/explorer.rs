@@ -603,7 +603,12 @@ impl Explorer {
     // Key handling
     // --------------------------------------------------------------------
 
-    fn on_nav_key(&mut self, key: KeyEvent, cx: &mut Context) -> EventResult {
+    fn on_nav_key(&mut self, mut key: KeyEvent, cx: &mut Context) -> EventResult {
+        // A typed uppercase letter arrives with SHIFT; drop it, as the editor's
+        // canonicalize_key does, so that G, H, R and A reach the match below.
+        if let KeyCode::Char(_) = key.code {
+            key.modifiers.remove(KeyModifiers::SHIFT);
+        }
         if key.modifiers != KeyModifiers::NONE {
             return EventResult::Ignored(None);
         }
