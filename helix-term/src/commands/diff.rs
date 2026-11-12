@@ -64,7 +64,7 @@ pub fn diff_buffers(
 }
 
 /// The repository of `path`, and the path of the file in it (`/`-separated).
-async fn repo_path(path: &Path) -> anyhow::Result<(PathBuf, String)> {
+pub(crate) async fn repo_path(path: &Path) -> anyhow::Result<(PathBuf, String)> {
     let dir = path
         .parent()
         .ok_or_else(|| anyhow!("{} has no folder", path.display()))?;
@@ -98,7 +98,7 @@ async fn repo_path(path: &Path) -> anyhow::Result<(PathBuf, String)> {
 
 /// The file `relative` of the repository `root` at `rev` (`None`: in the index); `None` when
 /// it isn't there (or there is no commit yet).
-async fn show_file(
+pub(crate) async fn show_file(
     root: &Path,
     relative: &str,
     rev: Option<&str>,
@@ -185,6 +185,8 @@ pub async fn review_files(dir: &Path, rev: Option<&str>) -> anyhow::Result<Vec<R
             .into_iter()
             .map(|change| ReviewFile {
                 base: Some("HEAD".to_string()),
+                conflict: [change.staged, change.unstaged]
+                    .contains(&Some(super::git::ChangeKind::Conflict)),
                 path: change.path,
             })
             .collect(),
@@ -227,6 +229,7 @@ pub async fn review_files(dir: &Path, rev: Option<&str>) -> anyhow::Result<Vec<R
                 .map(|path| ReviewFile {
                     path,
                     base: Some(rev.to_string()),
+                    conflict: false,
                 })
                 .collect()
         }
@@ -259,6 +262,10 @@ pub async fn review_file(
         .get(index)
         .cloned()
         .ok_or_else(|| anyhow!("no changed file {index}"))?;
+    // a file with conflicts: the merge resolver
+    if file.conflict {
+        return super::merge::merge_of(file.path, Some((files, index))).await;
+    }
     let (old, git) = git_version(&file.path, file.base.as_deref()).await?;
     Ok(crate::job::Callback::Editor(Box::new(
         move |editor: &mut Editor| show_review_file(editor, files, index, old, git, action),
@@ -277,9 +284,12 @@ fn show_review_file(
 ) {
     use helix_view::editor::Action;
     let path = files[index].path.clone();
-    // the diff shown in the focused view goes, its right view takes the file
+    // the diff (or merge) shown in the focused view goes, its right view takes the file
     let mut action = action;
-    if let Some(session) = editor.diff_session(editor.tree.focus).cloned() {
+    if let Some(merge) = editor.merge_of(editor.tree.focus).cloned() {
+        editor.focus(merge.result_view);
+        editor.close_merge();
+    } else if let Some(session) = editor.diff_session(editor.tree.focus).cloned() {
         if matches!(action, Action::Replace) {
             editor.focus(session.right_view);
             editor.close_diff(session.right_view);
@@ -620,7 +630,7 @@ fn not_in_a_diff(cx: &mut Context) {
 }
 
 /// The cursor's line in `view`, and its row in the window.
-fn cursor_line_and_row(editor: &Editor, view: ViewId) -> (usize, usize) {
+pub(crate) fn cursor_line_and_row(editor: &Editor, view: ViewId) -> (usize, usize) {
     let view = editor.tree.get(view);
     let doc = &editor.documents[&view.doc];
     let text = doc.text().slice(..);
@@ -971,7 +981,7 @@ pub fn diff_close(cx: &mut Context) {
 }
 
 /// The rows of text of `view`.
-fn view_height(editor: &Editor, view: ViewId) -> usize {
+pub(crate) fn view_height(editor: &Editor, view: ViewId) -> usize {
     let view = editor.tree.get(view);
     view.inner_height(&editor.documents[&view.doc])
 }
@@ -995,7 +1005,7 @@ pub enum KeyMatch {
 }
 
 /// The action of `action` (a name of `[editor.diff.keys]`).
-fn action(name: &str) -> Option<fn(&mut Context)> {
+pub(crate) fn action(name: &str) -> Option<fn(&mut Context)> {
     Some(match name {
         "next-change" => diff_next_change,
         "previous-change" => diff_previous_change,
@@ -1015,12 +1025,28 @@ fn action(name: &str) -> Option<fn(&mut Context)> {
 /// What `keys` are to the keymap of the diff views of `config`. The file keys (`]f`, `[f`)
 /// only in a review: elsewhere they keep their usual meaning (the next function...).
 pub fn match_keys(config: &DiffConfig, keys: &[KeyEvent], reviewing: bool) -> KeyMatch {
+    match_table(&config.keys, keys, action, |name| {
+        !reviewing && matches!(name, "next-file" | "previous-file")
+    })
+}
+
+/// The actions of a table of keys, by name.
+pub type ActionOf = fn(&str) -> Option<fn(&mut Context)>;
+
+/// What `keys` are to a table of keys by action (`[editor.diff.keys]`...), `action_of` the
+/// actions by name; those `skipped` don't count.
+pub fn match_table(
+    table: &std::collections::HashMap<String, String>,
+    keys: &[KeyEvent],
+    action_of: ActionOf,
+    skipped: impl Fn(&str) -> bool,
+) -> KeyMatch {
     let mut prefix = false;
-    for (name, sequence) in &config.keys {
-        if !reviewing && matches!(name.as_str(), "next-file" | "previous-file") {
+    for (name, sequence) in table {
+        if skipped(name) {
             continue;
         }
-        let Some(action) = action(name) else {
+        let Some(action) = action_of(name) else {
             continue;
         };
         let Ok(sequence) = helix_view::input::parse_macro(sequence) else {

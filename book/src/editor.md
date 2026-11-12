@@ -825,6 +825,7 @@ Side-by-side diffs (`:diff`, `:diff-git`, `hx --diff`): see [Diffs](./diff.md).
 | `connector-width` | Columns of the connector between the two sides | `9` |
 | `align-on-jump` | `]c` / `[c` scroll the other side to the same change | `true` |
 | `open-changed-files-in-diff` | Opening a file from the changed files list (`Space g`, as a picker or in the quickfix panel) shows its diff against git, and the other changed files after it with `]f` / `[f`; `false`: the file opens as a plain buffer | `true` |
+| `merge-keys` | The keys of the merge conflict resolver, by action (see [Diffs](./diff.md#resolving-merge-conflicts)) | `]c`, `[c`, `>>`, `<<`, `gb`, `]s`, `q` |
 | `stage-markers` | The marks in front of the changes of a diff against `HEAD`: `staged`, `unstaged`, `partial` (a table, `[editor.diff.stage-markers]`) | `"▣"`, `"□"`, `"◩"` |
 | `scroll-sync` | Scrolling one side scrolls the other, the line matching the cursor's line level with it; `false`: each side scrolls on its own (and `]s` lines them up) | `true` |
 | `keys` | The keys of the diff views, by action (see [Diffs](./diff.md#keys)) | `]c`, `[c`, `]f`, `[f`, `]s`, `[d`, `]d`, `>>`, `-`, `C`, `q` |

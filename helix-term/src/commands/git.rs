@@ -736,7 +736,11 @@ pub fn changed_files_picker(
                         Some(index) => index,
                         // changed back meanwhile: still shown, against the index
                         None => {
-                            files.push(helix_view::diff_view::ReviewFile { path, base: None });
+                            files.push(helix_view::diff_view::ReviewFile {
+                                path,
+                                base: None,
+                                conflict: false,
+                            });
                             files.len() - 1
                         }
                     };

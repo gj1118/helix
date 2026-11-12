@@ -1053,12 +1053,6 @@ impl Application {
         );
 
         doc.set_last_saved_revision(doc_save_event.revision, doc_save_event.save_time);
-        // the commit message written: the commit
-        crate::commands::diff::commit_on_save(
-            &mut self.editor,
-            &mut self.jobs,
-            doc_save_event.doc_id,
-        );
         // A file saved (under a new name, say) is a recent one.
         let saved_path = doc_save_event.path.clone();
         self.editor.record_recent_file(&saved_path);
@@ -1102,6 +1096,19 @@ impl Application {
             "'{}' written, {lines}L {size}",
             get_relative_path(&doc_save_event.path).to_string_lossy(),
         ));
+        // after the line above: theirs say more than it
+        // the commit message written: the commit
+        crate::commands::diff::commit_on_save(
+            &mut self.editor,
+            &mut self.jobs,
+            doc_save_event.doc_id,
+        );
+        // the result of a merge written: resolved when no conflicts are left
+        crate::commands::merge::merge_on_save(
+            &mut self.editor,
+            &mut self.jobs,
+            doc_save_event.doc_id,
+        );
 
         // Fire OnBufferPostSave event
         if let Err(e) = self.plugin_manager.fire_event(

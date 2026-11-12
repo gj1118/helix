@@ -339,6 +339,10 @@ impl EditorView {
         if let Some(diff) = crate::ui::diff_view::DiffDecoration::new(editor, doc, view) {
             decorations.add_decoration(diff);
         }
+        // A window of the merge conflict resolver: the conflicts' lines.
+        if let Some(merge) = crate::ui::merge_view::MergeDecoration::new(editor, doc, view) {
+            decorations.add_decoration(merge);
+        }
 
         if is_focused && config.cursorline {
             decorations.add_decoration(Self::cursorline(doc, view, theme));
@@ -2070,16 +2074,23 @@ impl EditorView {
     /// for the next key; other keys (the held back ones with them) go to the keymap, so `]f`
     /// or `>` still work there.
     fn command_mode_in_diffs(&mut self, mode: Mode, cxt: &mut commands::Context, event: KeyEvent) {
+        let focus = cxt.editor.tree.focus;
+        let in_merge = cxt.editor.merge_of(focus).is_some();
         let in_diff = mode == Mode::Normal
             && self.keymaps.pending().is_empty()
-            && cxt.editor.diff_session(cxt.editor.tree.focus).is_some();
+            && (cxt.editor.diff_session(focus).is_some() || in_merge);
         if !in_diff && self.diff_pending.is_empty() {
             return self.command_mode(mode, cxt, event);
         }
         self.diff_pending.push(event);
         let config = cxt.editor.config();
         let reviewing = cxt.editor.active_review().is_some();
-        match commands::diff::match_keys(&config.diff, &self.diff_pending, reviewing) {
+        let matched = if in_merge {
+            commands::merge::match_keys(&config.diff, &self.diff_pending, reviewing)
+        } else {
+            commands::diff::match_keys(&config.diff, &self.diff_pending, reviewing)
+        };
+        match matched {
             commands::diff::KeyMatch::Action(action) => {
                 self.diff_pending.clear();
                 drop(config);
@@ -2860,6 +2871,8 @@ impl Component for EditorView {
 
         // The diffs as the documents are now (or ended, when a view of one went).
         cx.editor.refresh_diff_sessions();
+        // the merge conflict resolver too (its windows scrolled together)
+        cx.editor.refresh_merge();
         // a side of a diff scrolled since the last frame takes the other one along
         cx.editor.sync_diff_scrolling();
         // the changed words of the changes now in view

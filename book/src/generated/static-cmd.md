@@ -117,6 +117,13 @@
 | `diff_next_change` | Go to the next change of a side-by-side diff (the other side follows) |  |
 | `diff_stage` | Stage the change under the cursor of a side-by-side diff against git, or unstage it |  |
 | `diff_commit` | Commit what is staged: write the message (:w commits) |  |
+| `merge_next_conflict` | Go to the next conflict of the merge conflict resolver |  |
+| `merge_previous_conflict` | Go to the previous conflict of the merge conflict resolver |  |
+| `merge_take_local` | Resolve the conflict under the cursor with your side (local, ours) |  |
+| `merge_take_remote` | Resolve the conflict under the cursor with their side (remote, theirs) |  |
+| `merge_take_both` | Resolve the conflict under the cursor with both sides: yours, then theirs |  |
+| `merge_snap` | Line the other windows of the merge up with the cursor's line |  |
+| `merge_close` | Close the merge conflict resolver (the result stays) |  |
 | `diff_next_file` | Show the next changed file of a review in its side-by-side diff |  |
 | `diff_previous_file` | Show the previous changed file of a review in its side-by-side diff |  |
 | `diff_previous_change` | Go to the previous change of a side-by-side diff (the other side follows) |  |

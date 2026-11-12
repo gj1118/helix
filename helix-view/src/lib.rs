@@ -21,6 +21,7 @@ pub mod info;
 pub mod inline_completion;
 pub mod input;
 pub mod keyboard;
+pub mod merge_view;
 pub mod persistence;
 pub mod quicklist;
 pub mod recent_files;

@@ -418,6 +418,19 @@ fn diff_commit_command(
     Ok(())
 }
 
+fn diff_merge_command(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let path = crate::commands::merge::current_path(cx.editor)?;
+    crate::commands::merge::open_merge(cx.editor, cx.jobs, path);
+    Ok(())
+}
+
 fn diff_close_command(
     cx: &mut compositor::Context,
     _args: Args,
@@ -5479,6 +5492,14 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
             }],
             ..Signature::DEFAULT
         },
+    },
+    TypableCommand {
+        name: "diff-merge",
+        aliases: &[],
+        doc: "Resolve the merge conflicts of the current file: your version, the result and theirs side by side (>> yours, << theirs, gb both; :w marks it resolved)",
+        fun: diff_merge_command,
+        completer: CommandCompleter::none(),
+        signature: Signature { positionals: (0, Some(0)), ..Signature::DEFAULT },
     },
     TypableCommand {
         name: "diff-close",

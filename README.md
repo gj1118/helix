@@ -426,6 +426,10 @@ the changed words inside them are emphasized.
   opens the message to write in a split (the changed files beside it in the quickfix panel when
   enabled); `:w` commits, `:wq` commits and closes. Open diffs then show against the new
   `HEAD`.
+- Merge conflicts: `:diff-merge` (or a conflicted file opened from the changed files list or a
+  review) shows your version, the result and theirs side by side, scrolled together; `]c` /
+  `[c` go from conflict to conflict, `>>` takes yours, `<<` theirs, `gb` both, and `:w` marks
+  the file resolved once no conflicts are left. Keys in `[editor.diff.merge-keys]`.
 - In a diff: the two sides scroll together. `]c` / `[c` next / previous change (the other side
   follows), `]s` lines the other side up with the cursor, `[d` / `]d` both sides to the top / bottom, `>>` reverts the
   change under the cursor (the right side gets the old lines), `q` closes it. The old version

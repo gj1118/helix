@@ -122,6 +122,7 @@
 | `:diff-git` | Show a side-by-side diff of the current file and its version in git: the index by default (what `git diff` shows), or a revision (`:diff-git HEAD`, `:diff-git main`) |
 | `:diff-review` | Review the changed files in side-by-side diffs, one after the other (`]f` / `[f`): against git as `git status` lists them, or `:diff-review <revision>` for the files changed since a revision |
 | `:diff-commit` | Commit what is staged: writes the message (in a split, the changed files in the quickfix panel when enabled), which :w commits |
+| `:diff-merge` | Resolve the merge conflicts of the current file: your version, the result and theirs side by side (>> yours, << theirs, gb both; :w marks it resolved) |
 | `:diff-close` | Close the side-by-side diff of the current window (the right side's buffer stays) |
 | `:explorer` | Show the explorer on the side set by [editor.explorer] side (left, right or floating), or hide it when it is open |
 | `:explorer-focus` | Focus the explorer file tree panel (opening it if hidden) |

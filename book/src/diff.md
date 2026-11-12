@@ -91,6 +91,42 @@ from its message, and nothing needs to be staged (to reword it only).
 
 After a commit, the open diffs against git show against the new `HEAD`.
 
+## Resolving merge conflicts
+
+A file git could not merge (after a `git merge`, `rebase`, `cherry-pick` or `stash pop`
+with conflicts) opens in the merge conflict resolver: `:diff-merge` on it, or opening it from
+the changed files list or in a review. Three windows, scrolled together: your version on the
+left (*local*, git's `ours`), the result in the middle (the file itself, with git's conflict
+markers, edited as usual) and their version on the right (*remote*, `theirs`). In the result,
+your side of each conflict is colored as an addition, theirs as a change, the merge base (with
+`merge.conflictStyle = diff3`) as a removal; the same lines are colored in your and their
+versions, which are read-only.
+
+| Key | Action |
+| --- | --- |
+| `]c`, `[c` | The next / previous conflict (with a count) |
+| `>>` | Resolve the conflict under the cursor with your side |
+| `<<` | Resolve it with their side |
+| `gb` | Resolve it with both: yours, then theirs |
+| `]s` | Line the other windows up with the cursor's line |
+| `q` | Close the resolver (the result stays) |
+
+Any conflict can also be resolved by editing the result, and `u` undoes a resolution as any
+edit. `:w` saves the result; with no conflicts left it marks the file resolved (`git add`),
+otherwise the status line says how many are left. In a review, `]f` and `[f` go on to the
+other files.
+
+These keys are the actions of `[editor.diff.merge-keys]`: `next-conflict`,
+`previous-conflict`, `take-local`, `take-remote`, `take-both`, `snap` and `close`; and the
+commands `merge_next_conflict`, `merge_previous_conflict`, `merge_take_local`,
+`merge_take_remote`, `merge_take_both`, `merge_snap` and `merge_close`.
+
+```toml
+[editor.diff.merge-keys]
+take-both = "B"
+close = "Q"
+```
+
 With `open-changed-files-in-diff = false` (see [Settings](#settings)), opening a file from the
 changed files list opens it as a plain buffer; `:diff-review` still reviews.
 

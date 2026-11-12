@@ -2580,6 +2580,8 @@ pub struct Editor {
     pub diff_review: Option<crate::diff_view::ReviewQueue>,
     /// The commit message being written: saving it commits.
     pub commit_message: Option<crate::diff_view::CommitMessage>,
+    /// The merge conflict resolver shown (see [`crate::merge_view`]).
+    pub merge: Option<crate::merge_view::MergeSession>,
     /// Explorer internal clipboard for cut/copy-paste entries.
     pub explorer_clipboard: Option<ExplorerClipboard>,
 
@@ -2839,6 +2841,7 @@ impl Editor {
             diff_sessions: Vec::new(),
             diff_review: None,
             commit_message: None,
+            merge: None,
             explorer_clipboard: None,
             config,
             auto_pairs,
@@ -3936,6 +3939,14 @@ impl Editor {
         {
             let session = self.diff_sessions.remove(index);
             self.end_diff_session(session);
+        }
+        // a window of the merge closed: the merge ends (the result stays)
+        if self
+            .merge
+            .as_ref()
+            .is_some_and(|merge| merge.pane_of(id).is_some())
+        {
+            self.close_merge();
         }
     }
 

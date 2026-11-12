@@ -1309,3 +1309,176 @@ async fn a_review_commits_what_it_staged() -> anyhow::Result<()> {
     assert_eq!(left, "a\nB\nc\nd\ne\nf\ng\nh\n");
     Ok(())
 }
+
+/// A repository in the middle of a merge with a conflict in `f.rs` (you changed `b` to `B2` and
+/// `d` to `D`, they changed `b` to `B1`), and a new file `z.rs`.
+fn repo_with_a_conflict() -> anyhow::Result<tempfile::TempDir> {
+    let repo = tempfile::tempdir()?;
+    let root = repo.path();
+    git(root, &["init", "-q"])?;
+    committable(&repo)?;
+    std::fs::write(root.join("f.rs"), "a\nb\nc\nd\n")?;
+    git(root, &["add", "."])?;
+    git(root, &["commit", "-qm", "first"])?;
+    git(root, &["branch", "other"])?;
+    std::fs::write(root.join("f.rs"), "a\nB2\nc\nD\n")?;
+    git(root, &["commit", "-qam", "mine"])?;
+    git(root, &["checkout", "-q", "other"])?;
+    std::fs::write(root.join("f.rs"), "a\nB1\nc\nd\n")?;
+    git(root, &["commit", "-qam", "theirs"])?;
+    git(root, &["checkout", "-q", "-"])?;
+    // the merge stops on the conflict (and fails)
+    let _ = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["merge", "-q", "other"])
+        .output()?;
+    std::fs::write(root.join("z.rs"), "fn z() {}\n")?;
+    Ok(repo)
+}
+
+/// Whether git still has `relative` as not merged.
+fn unmerged(root: &std::path::Path, relative: &str) -> bool {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["diff", "--name-only", "--diff-filter=U"])
+        .output()
+        .expect("git");
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .any(|line| line == relative)
+}
+
+/// `:diff-merge`: yours, the result and theirs side by side; the conflicts resolved with one
+/// side, the other or both; saved without conflicts, the file is resolved.
+#[tokio::test(flavor = "multi_thread")]
+async fn conflicts_are_resolved_in_three_windows() -> anyhow::Result<()> {
+    let repo = repo_with_a_conflict()?;
+    let root = repo.path();
+    assert!(unmerged(root, "f.rs"));
+    let mut config = helpers::test_config();
+    config.editor.notifications.enable = false;
+    let mut app = helpers::AppBuilder::new()
+        .with_file(root.join("f.rs"), None)
+        .with_config(config)
+        .build()?;
+    app.resize_terminal(120, 16).await;
+    let merged = "a\n<<<<<<< HEAD\nB2\n=======\nB1\n>>>>>>> other\nc\nD\n";
+    let result = |app: &Application| -> String {
+        let merge = app.editor.merge.as_ref().expect("a merge");
+        app.editor
+            .document(merge.result_doc)
+            .unwrap()
+            .text()
+            .to_string()
+    };
+
+    send_keys(&mut app, ":diff-merge<ret>").await?;
+    let opened = until(&mut app, |app| app.editor.merge.is_some()).await;
+    assert!(opened, "{:?}", app.editor.get_status());
+    let merge = app.editor.merge.clone().unwrap();
+    assert_eq!(app.editor.tree.views().count(), 3);
+    assert_eq!(app.editor.tree.focus, merge.result_view);
+    let text =
+        |app: &Application, doc| -> String { app.editor.document(doc).unwrap().text().to_string() };
+    assert_eq!(text(&app, merge.local_doc), "a\nB2\nc\nD\n");
+    assert_eq!(text(&app, merge.remote_doc), "a\nB1\nc\nd\n");
+    assert_eq!(result(&app), merged);
+    assert_eq!(merge.conflicts.len(), 1);
+    // left to right: yours, the result, theirs
+    let x = |view| app.editor.tree.get(view).area.x;
+    assert!(x(merge.local_view) < x(merge.result_view));
+    assert!(x(merge.result_view) < x(merge.remote_view));
+    // the conflict's lines colored: yours in the result, and in your version
+    let styles = DiffStyles::new(&app.editor.theme);
+    let row_of = |app: &Application, text: &str, from: u16| -> u16 {
+        (0..14u16)
+            .find(|row| {
+                let line = &app.rendered_rows()[*row as usize];
+                line.char_indices()
+                    .any(|(at, _)| at as u16 >= from && line[at..].starts_with(text))
+            })
+            .unwrap_or_else(|| panic!("{text:?} not shown: {:#?}", app.rendered_rows()))
+    };
+    let result_x = x(merge.result_view);
+    let row = row_of(&app, "B2", 0);
+    let local_b2 = column(&app, row, "B2");
+    assert_eq!(app.rendered_cell(local_b2, row).bg, styles.add.bg.unwrap());
+    // the other windows are read-only
+    let _ = result_x;
+    send_keys(&mut app, "<C-w>hdd<C-w>l").await?;
+    assert_eq!(text(&app, merge.local_doc), "a\nB2\nc\nD\n");
+
+    // `]c`, then both sides: yours, then theirs
+    send_keys(&mut app, "gg]c").await?;
+    let (view, doc) = helix_view::current_ref!(app.editor);
+    let cursor_line = doc.text().char_to_line(
+        doc.selection(view.id)
+            .primary()
+            .cursor(doc.text().slice(..)),
+    );
+    assert_eq!(cursor_line, 1);
+    send_keys(&mut app, "gb").await?;
+    assert_eq!(result(&app), "a\nB2\nB1\nc\nD\n");
+    assert!(app.editor.merge.as_ref().unwrap().conflicts.is_empty());
+    // undone, then yours only
+    send_keys(&mut app, "u").await?;
+    assert_eq!(result(&app), merged);
+    send_keys(&mut app, "]c<gt><gt>").await?;
+    assert_eq!(result(&app), "a\nB2\nc\nD\n");
+    let (status, _) = app.editor.get_status().unwrap();
+    assert!(
+        status.starts_with("Took yours: no conflicts left"),
+        "{status}"
+    );
+
+    // saved: resolved
+    send_keys(&mut app, ":w<ret>").await?;
+    let resolved = until(&mut app, |_| !unmerged(root, "f.rs")).await;
+    assert!(resolved, "{:?}", app.editor.get_status());
+    assert_eq!(std::fs::read_to_string(root.join("f.rs"))?, "a\nB2\nc\nD\n");
+
+    // closed: the result stays, alone
+    send_keys(&mut app, "q").await?;
+    assert!(app.editor.merge.is_none());
+    assert_eq!(app.editor.tree.views().count(), 1);
+    Ok(())
+}
+
+/// Saved with conflicts left: not resolved, and said so. In a review, a file with conflicts
+/// opens in the merge resolver, and `]f` goes on to the next file.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_review_goes_through_conflicts() -> anyhow::Result<()> {
+    let repo = repo_with_a_conflict()?;
+    let root = repo.path();
+    let mut config = helpers::test_config();
+    config.editor.notifications.enable = false;
+    let mut app = helpers::AppBuilder::new()
+        .with_file(root.join("z.rs"), None)
+        .with_config(config)
+        .build()?;
+    app.resize_terminal(120, 16).await;
+    send_keys(&mut app, ":diff-review<ret>").await?;
+    let opened = until(&mut app, |app| app.editor.merge.is_some()).await;
+    assert!(opened, "{:?}", app.editor.get_status());
+    let review = app.editor.diff_review.clone().expect("a review");
+    let conflicts: Vec<bool> = review.files.iter().map(|file| file.conflict).collect();
+    assert_eq!(conflicts, [true, false]);
+
+    send_keys(&mut app, "ggiedited <esc>:w<ret>").await?;
+    let said = until(&mut app, |app| {
+        app.editor
+            .get_status()
+            .is_some_and(|(status, _)| status.starts_with("Saved with 1 conflict left"))
+    })
+    .await;
+    assert!(said, "{:?}", app.editor.get_status());
+    assert!(unmerged(root, "f.rs"));
+
+    send_keys(&mut app, "]f").await?;
+    wait_for_diff(&mut app, "HEAD:z.rs").await;
+    assert!(app.editor.merge.is_none());
+    assert_eq!(app.editor.tree.views().count(), 2);
+    Ok(())
+}

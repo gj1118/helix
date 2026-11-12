@@ -45,6 +45,9 @@ pub struct DiffConfig {
     /// their default keys, and an empty string turns an action's keys off.
     #[serde(deserialize_with = "deserialize_keys")]
     pub keys: HashMap<String, String>,
+    /// The keys of the merge conflict resolver, by action (see [`MERGE_ACTIONS`]), as `keys`.
+    #[serde(deserialize_with = "deserialize_merge_keys")]
+    pub merge_keys: HashMap<String, String>,
 }
 
 impl Default for DiffConfig {
@@ -57,6 +60,7 @@ impl Default for DiffConfig {
             open_changed_files_in_diff: true,
             stage_markers: StageMarkers::default(),
             keys: default_keys(),
+            merge_keys: default_merge_keys(),
         }
     }
 }
@@ -113,18 +117,40 @@ fn deserialize_keys<'de, D>(deserializer: D) -> Result<HashMap<String, String>, 
 where
     D: serde::Deserializer<'de>,
 {
+    deserialize_action_keys(deserializer, "keys", &ACTIONS, &REMOVED_ACTIONS)
+}
+
+/// `[editor.diff.merge-keys]`, as [`deserialize_keys`].
+fn deserialize_merge_keys<'de, D>(deserializer: D) -> Result<HashMap<String, String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserialize_action_keys(deserializer, "merge-keys", &MERGE_ACTIONS, &[])
+}
+
+/// A table of keys by action (`[editor.diff.<table>]`): the defaults of `actions`, with those
+/// set replaced; actions of `removed` are ignored (a configuration setting them still loads).
+fn deserialize_action_keys<'de, D>(
+    deserializer: D,
+    table: &str,
+    actions: &[(&str, &str)],
+    removed: &[&str],
+) -> Result<HashMap<String, String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
     use serde::de::Error;
     let set = HashMap::<String, String>::deserialize(deserializer)?;
-    let mut keys = default_keys();
+    let mut keys = keys_of(actions);
     for (action, sequence) in set {
-        if REMOVED_ACTIONS.contains(&action.as_str()) {
-            log::warn!("[editor.diff.keys]: {action} is no more (the old version is read-only)");
+        if removed.contains(&action.as_str()) {
+            log::warn!("[editor.diff.{table}]: {action} is no more");
             continue;
         }
-        if !ACTIONS.iter().any(|(name, _)| *name == action) {
-            let names: Vec<&str> = ACTIONS.iter().map(|(name, _)| *name).collect();
+        if !actions.iter().any(|(name, _)| *name == action) {
+            let names: Vec<&str> = actions.iter().map(|(name, _)| *name).collect();
             return Err(D::Error::custom(format!(
-                "unknown action {action:?} in [editor.diff.keys] (expected one of {})",
+                "unknown action {action:?} in [editor.diff.{table}] (expected one of {})",
                 names.join(", ")
             )));
         }
@@ -136,6 +162,30 @@ where
         keys.insert(action, sequence);
     }
     Ok(keys)
+}
+
+/// The keys of `actions`, by action.
+fn keys_of(actions: &[(&str, &str)]) -> HashMap<String, String> {
+    actions
+        .iter()
+        .map(|(action, keys)| (action.to_string(), keys.to_string()))
+        .collect()
+}
+
+/// The actions of the merge views (see [`crate::merge_view`]), with their default keys.
+pub const MERGE_ACTIONS: [(&str, &str); 7] = [
+    ("next-conflict", "]c"),
+    ("previous-conflict", "[c"),
+    ("take-local", "<gt><gt>"),
+    ("take-remote", "<lt><lt>"),
+    ("take-both", "gb"),
+    ("snap", "]s"),
+    ("close", "q"),
+];
+
+/// The default keys of the merge views.
+pub fn default_merge_keys() -> HashMap<String, String> {
+    keys_of(&MERGE_ACTIONS)
 }
 
 /// A diff shown side by side.
@@ -171,7 +221,7 @@ pub struct DiffSession {
 
 /// How far a view is scrolled: its first line, and the rows of it above the window (of a
 /// wrapped line).
-type Scroll = (usize, usize);
+pub(crate) type Scroll = (usize, usize);
 
 impl DiffSession {
     pub fn new(
@@ -404,6 +454,8 @@ pub struct ReviewFile {
     pub path: std::path::PathBuf,
     /// A revision (`HEAD`, a branch...), or `None` for the index (what `git diff` shows).
     pub base: Option<String>,
+    /// The file has merge conflicts: it is shown in the merge resolver.
+    pub conflict: bool,
 }
 
 impl Editor {
@@ -411,10 +463,18 @@ impl Editor {
     /// queue's current file.
     pub fn active_review(&self) -> Option<&ReviewQueue> {
         let review = self.diff_review.as_ref()?;
-        let session = self.diff_session(self.tree.focus)?;
         let file = review.files.get(review.current)?;
-        let shown = self.document(session.right_doc)?.path()?;
-        (session.right_view == review.view && same_file(shown, &file.path)).then_some(review)
+        // the right side of the diff, or the result of the merge, showing the file
+        let (view, doc) = match (
+            self.diff_session(self.tree.focus),
+            self.merge_of(self.tree.focus),
+        ) {
+            (Some(session), _) => (session.right_view, session.right_doc),
+            (None, Some(merge)) => (merge.result_view, merge.result_doc),
+            (None, None) => return None,
+        };
+        let shown = self.document(doc)?.path()?;
+        (view == review.view && same_file(shown, &file.path)).then_some(review)
     }
 }
 
@@ -567,6 +627,10 @@ impl Editor {
     /// [`Editor::refresh_diff_sessions`]); whether there were any.
     pub fn recompute_stale_diffs(&mut self) -> bool {
         let mut any = false;
+        if self.merge.as_ref().is_some_and(|merge| merge.is_stale()) {
+            self.recompute_merge();
+            any = true;
+        }
         for index in 0..self.diff_sessions.len() {
             let session = &self.diff_sessions[index];
             let present = self.documents.contains_key(&session.left_doc)
@@ -802,7 +866,7 @@ impl Editor {
     }
 
     /// Where `view` (showing `doc`) is scrolled to.
-    fn diff_scroll(&self, view: ViewId, doc: DocumentId) -> Option<Scroll> {
+    pub(crate) fn diff_scroll(&self, view: ViewId, doc: DocumentId) -> Option<Scroll> {
         let doc = self.documents.get(&doc)?;
         let offset = doc.get_view_offset(view)?;
         let text = doc.text().slice(..);
@@ -899,15 +963,27 @@ impl Editor {
 
     /// Scrolls the side of `session` other than `leader` to where `leader` is.
     fn follow_diff_scroll(&mut self, session: &DiffSession, leader: Side) {
-        let (view_id, doc_id) = (session.view(leader), session.doc(leader));
-        let (Some(view), Some(doc)) = (self.tree.try_get(view_id), self.documents.get(&doc_id))
+        let Some((line, row)) = self.scroll_reference(session.view(leader), session.doc(leader))
         else {
             return;
         };
+        let other = leader.other();
+        let other_line = helix_core::diff_hunks::map_line(&session.hunks, line, other);
+        self.scroll_diff_side(session.view(other), session.doc(other), other_line, row);
+    }
+
+    /// The line of `view` (showing `doc`) the views scrolled with it line up with, and its row:
+    /// the cursor's, or (the cursor out of the window) the middle row's.
+    pub(crate) fn scroll_reference(
+        &self,
+        view_id: ViewId,
+        doc_id: DocumentId,
+    ) -> Option<(usize, usize)> {
+        let (view, doc) = (self.tree.try_get(view_id)?, self.documents.get(&doc_id)?);
         let text = doc.text().slice(..);
         let height = view.inner_height(doc);
         let cursor = doc.selection(view_id).primary().cursor(text);
-        let (line, row) = match view.screen_coords_at_pos(doc, text, cursor) {
+        Some(match view.screen_coords_at_pos(doc, text, cursor) {
             Some(pos) if pos.row < height => (text.char_to_line(cursor), pos.row),
             _ => {
                 let row = height / 2;
@@ -920,16 +996,19 @@ impl Editor {
                 };
                 (line, row)
             }
-        };
-        let other = leader.other();
-        let other_line = helix_core::diff_hunks::map_line(&session.hunks, line, other);
-        self.scroll_diff_side(session.view(other), session.doc(other), other_line, row);
+        })
     }
 
     /// Scrolls `view` (showing `doc`) to have `line` at `row` of the window (as near as the top
     /// of the document allows). The cursor stays where it is if Helix would not scroll to it,
     /// or goes to `line`.
-    fn scroll_diff_side(&mut self, view_id: ViewId, doc_id: DocumentId, line: usize, row: usize) {
+    pub(crate) fn scroll_diff_side(
+        &mut self,
+        view_id: ViewId,
+        doc_id: DocumentId,
+        line: usize,
+        row: usize,
+    ) {
         let scrolloff = self.config().scrolloff;
         let (Some(view), Some(doc)) = (self.tree.try_get(view_id), self.documents.get_mut(&doc_id))
         else {
@@ -1228,6 +1307,16 @@ mod tests {
         };
         assert_eq!(marks.stage_markers, expected);
         assert_eq!(marks.stage_markers.unstaged, "□");
+        // the merge keys: their own table, with their own actions
+        let merge: DiffConfig = toml::from_str("[merge-keys]\ntake-both = \"B\"").expect("loads");
+        assert_eq!(merge.merge_keys["take-both"], "B");
+        assert_eq!(merge.merge_keys["take-local"], "<gt><gt>");
+        assert_eq!(merge.merge_keys.len(), MERGE_ACTIONS.len());
+        let wrong = toml::from_str::<DiffConfig>("[merge-keys]\nstage = \"-\"");
+        assert!(wrong
+            .unwrap_err()
+            .to_string()
+            .contains("unknown action \"stage\" in [editor.diff.merge-keys]"));
         // an action that is no more still loads, and is ignored
         let old: DiffConfig =
             toml::from_str("[keys]\napply-right-to-left = \"<lt><lt>\"").expect("loads");

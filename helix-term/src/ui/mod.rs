@@ -13,6 +13,7 @@ pub mod logo;
 pub mod lsp;
 mod markdown;
 pub mod menu;
+pub mod merge_view;
 mod notification_popup;
 pub mod overlay;
 pub mod picker;
