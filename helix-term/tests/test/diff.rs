@@ -1573,6 +1573,91 @@ async fn the_connector_is_an_image_with_kitty_graphics() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The hunks of the first diff once worked out from the documents as they are (waiting for
+/// one worked out on its own thread), as `(left lines, right lines)`.
+async fn current_hunks(
+    app: &mut Application,
+) -> anyhow::Result<Vec<(std::ops::Range<usize>, std::ops::Range<usize>)>> {
+    for _ in 0..1000 {
+        app.editor.refresh_diff_sessions();
+        let session = app.editor.diff_sessions.first().expect("a diff");
+        if session.is_current() && !session.hunks.is_empty() {
+            return Ok(session
+                .hunks
+                .iter()
+                .map(|hunk| (hunk.left.clone(), hunk.right.clone()))
+                .collect());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    anyhow::bail!("the diff was not worked out within 20 s")
+}
+
+/// A diff too long to work out between two frames is worked out on a thread of its own and
+/// shows once done; edits meanwhile move its changes along at once, and the exact diff follows.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_long_diff_is_worked_out_on_its_own_thread() -> anyhow::Result<()> {
+    let lines = 12_000;
+    let old_text: String = (0..lines).map(|i| format!("line {i}\n")).collect();
+    let new_text: String = (0..lines)
+        .map(|i| match i % 4000 {
+            2000 => format!("changed {i}\n"),
+            _ => format!("line {i}\n"),
+        })
+        .collect();
+    let old = helpers::temp_file_with_contents(old_text)?;
+    let new = helpers::temp_file_with_contents(new_text)?;
+    let mut app = helpers::AppBuilder::new()
+        .with_file(new.path(), None)
+        .with_config(helpers::test_config())
+        .build()?;
+    app.resize_terminal(100, 14).await;
+    send_keys(&mut app, &format!(":diff {}<ret>", old.path().display())).await?;
+
+    let found = current_hunks(&mut app).await?;
+    assert_eq!(
+        found,
+        [
+            (2000..2001, 2000..2001),
+            (6000..6001, 6000..6001),
+            (10000..10001, 10000..10001)
+        ]
+    );
+
+    // the first line deleted (normal mode): the changes move up a line right away, or the
+    // diff is already worked out again
+    send_keys(&mut app, "ggxd").await?;
+    let session = app.editor.diff_sessions.first().expect("a diff");
+    let starts: Vec<usize> = session.hunks.iter().map(|hunk| hunk.right.start).collect();
+    let moved = starts == [1999, 5999, 9999];
+    let worked_out = starts == [0, 1999, 5999, 9999];
+    assert!(moved || worked_out, "{starts:?}");
+
+    // then the exact diff: the deleted line is a change too
+    let found = current_hunks(&mut app).await?;
+    assert_eq!(
+        found,
+        [
+            (0..1, 0..0),
+            (2000..2001, 1999..2000),
+            (6000..6001, 5999..6000),
+            (10000..10001, 9999..10000)
+        ]
+    );
+
+    // the actions changing text use the exact diff: `]c` then `<gt><gt>` takes back line 2000
+    send_keys(&mut app, "]c<gt><gt>").await?;
+    let found = current_hunks(&mut app).await?;
+    assert_eq!(found.len(), 3_usize);
+    let doc = app
+        .editor
+        .document(app.editor.diff_sessions[0].right_doc)
+        .unwrap();
+    let line: String = doc.text().line(1999).to_string();
+    assert_eq!(line, "line 2000\n");
+    Ok(())
+}
+
 /// A theme with RGB colors: named terminal colors can't be in an image (cells then).
 fn rgb_theme() -> anyhow::Result<helix_view::Theme> {
     Ok(toml::from_str(

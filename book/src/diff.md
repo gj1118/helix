@@ -17,8 +17,11 @@ The left side is a snapshot of the old version, with syntax highlighting, and it
 changed: typing, deleting or pasting there is refused ("The old version is read-only"). The
 right side is the document itself, editable as usual: completion, diagnostics, undo and
 `:write` all work, and the diff follows every edit. While you type, the changes shown move
-along with your edits; the diff is worked out again when you pause (after `idle-timeout`),
-when you leave insert mode, and before `]c`, `>>` and the other diff keys.
+along with your edits; the diff is worked out again when you pause (after `idle-timeout`)
+and when you leave insert mode. Long files (over 20,000 lines on the two sides together)
+are worked out in the background, so the editor never waits on them: meanwhile the changes
+move along with your edits, and the exact diff shows once it's ready. `>>` and staging (`-`)
+always act on the exact diff; `]c` and the other keys that move around act on the one shown.
 
 ## Opening a diff
 

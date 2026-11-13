@@ -114,10 +114,10 @@ pub fn diff_hunks(left: RopeSlice, right: RopeSlice, options: DiffOptions) -> Ve
     let diff = if options.ignore_whitespace {
         let key = |line: &&str| -> String { line.chars().filter(|c| !c.is_whitespace()).collect() };
         let input = interned(left_lines.iter().map(key), right_lines.iter().map(key));
-        line_diff(&input, |line: &String| line.bytes().collect::<Vec<_>>())
+        line_diff(&input)
     } else {
         let input = interned(left_lines.into_iter(), right_lines.into_iter());
-        line_diff(&input, |line: &&str| line.bytes().collect::<Vec<_>>())
+        line_diff(&input)
     };
     diff.hunks()
         .map(|hunk| DiffHunk {
@@ -142,12 +142,8 @@ fn interned<T: std::hash::Hash + Eq>(
     input
 }
 
-/// The diff of the lines of `input`, the hunks slid to indentation boundaries; `indent` is
-/// the start of a line, for its indentation.
-fn line_diff<T: std::hash::Hash + Eq>(
-    input: &InternedInput<T>,
-    indent: impl Fn(&T) -> Vec<u8>,
-) -> Diff {
+/// The diff of the lines of `input`, the hunks slid to indentation boundaries.
+fn line_diff<T: std::hash::Hash + Eq + AsRef<str>>(input: &InternedInput<T>) -> Diff {
     // Histogram reads better on code (it doesn't line up on `}` and blank lines) but slows
     // down on big files with many changes (50 ms for 50,000 lines), where Myers (git's
     // default) stays around a millisecond
@@ -160,7 +156,7 @@ fn line_diff<T: std::hash::Hash + Eq>(
     diff.postprocess_with_heuristic(
         input,
         IndentHeuristic::new(|token| {
-            IndentLevel::for_ascii_line(indent(&input.interner[token]), 8)
+            IndentLevel::for_ascii_line(input.interner[token].as_ref().bytes(), 8)
         }),
     );
     diff
@@ -344,18 +340,20 @@ fn merge(ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {
 /// other side of the hunk (its last line, or where it would be when that side is empty).
 pub fn map_line(hunks: &[DiffHunk], line: usize, to: Side) -> usize {
     let from = to.other();
-    let mut delta: isize = 0;
-    for hunk in hunks {
+    // the first hunk not wholly before the line (a binary search: this runs as the views
+    // scroll, and a long file can have tens of thousands of hunks)
+    let index = hunks.partition_point(|hunk| hunk.lines(from).end <= line);
+    if let Some(hunk) = hunks.get(index) {
         let (from_lines, to_lines) = (hunk.lines(from), hunk.lines(to));
-        if line < from_lines.start {
-            break;
-        }
-        if line < from_lines.end {
+        if from_lines.contains(&line) {
             let into = line - from_lines.start;
             return to_lines.start + into.min(to_lines.len().saturating_sub(1));
         }
-        delta = to_lines.end as isize - from_lines.end as isize;
     }
+    let delta = match index.checked_sub(1).map(|before| &hunks[before]) {
+        Some(hunk) => hunk.lines(to).end as isize - hunk.lines(from).end as isize,
+        None => 0,
+    };
     (line as isize + delta).max(0) as usize
 }
 
@@ -386,11 +384,17 @@ pub fn shift_hunks(
             line
         }
     };
+    // the hunks' bounds as chars, mapped through the changes in one pass (they are in order)
+    let mut bounds: Vec<usize> = hunks
+        .iter()
+        .flat_map(|hunk| [char_of(hunk.right.start), char_of(hunk.right.end)])
+        .collect();
+    changes.update_positions(bounds.iter_mut().map(|pos| (pos, crate::Assoc::Before)));
     hunks
         .iter()
-        .map(|hunk| {
-            let start = line_of(changes.map_pos(char_of(hunk.right.start), crate::Assoc::Before));
-            let end = line_of(changes.map_pos(char_of(hunk.right.end), crate::Assoc::Before));
+        .zip(bounds.chunks_exact(2))
+        .map(|(hunk, bounds)| {
+            let (start, end) = (line_of(bounds[0]), line_of(bounds[1]));
             DiffHunk {
                 left: hunk.left.clone(),
                 right: start..end.max(start),
@@ -409,6 +413,21 @@ pub fn ranges_touch(a: &Range<usize>, b: &Range<usize>) -> bool {
         (false, true) => a.start <= b.start && b.start <= a.end,
         (true, true) => a.start == b.start,
     }
+}
+
+/// The hunks of `hunks` (in order) whose lines of `side` touch `lines` (see [`ranges_touch`]):
+/// found by a binary search, not by going through all of them.
+pub fn touching<'a>(
+    hunks: &'a [DiffHunk],
+    lines: &'a Range<usize>,
+    side: Side,
+) -> impl Iterator<Item = &'a DiffHunk> {
+    // the hunks ending before `lines` can't touch it, nor those starting after it
+    let first = hunks.partition_point(|hunk| hunk.lines(side).end < lines.start);
+    hunks[first..]
+        .iter()
+        .take_while(move |hunk| hunk.lines(side).start <= lines.end)
+        .filter(move |hunk| ranges_touch(&hunk.lines(side), lines))
 }
 
 /// `base` with the lines of some hunks of a diff between `base` and `other` taken from
@@ -648,6 +667,51 @@ mod tests {
         let shifted: Vec<DiffHunk> =
             shift_hunks(&found, right.slice(..), empty.slice(..), &changes);
         assert!(shifted.iter().all(|hunk| hunk.right == (0..0)));
+    }
+
+    /// `map_line` and `touching` (binary searches) agree with going through every hunk.
+    #[test]
+    fn lookups_agree_with_going_through_every_hunk() {
+        fn map_line_by_walking(hunks: &[DiffHunk], line: usize, to: Side) -> usize {
+            let from = to.other();
+            let mut delta: isize = 0;
+            for hunk in hunks {
+                let (from_lines, to_lines) = (hunk.lines(from), hunk.lines(to));
+                if line < from_lines.start {
+                    break;
+                }
+                if line < from_lines.end {
+                    let into = line - from_lines.start;
+                    return to_lines.start + into.min(to_lines.len().saturating_sub(1));
+                }
+                delta = to_lines.end as isize - from_lines.end as isize;
+            }
+            (line as isize + delta).max(0) as usize
+        }
+        let left: String = (0..300).map(|i| format!("line {}\n", i % 7)).collect();
+        let right: String = (0..280)
+            .map(|i| match i % 11 {
+                0 => "new\n".to_string(),
+                3 => String::new(),
+                _ => format!("line {}\n", (i * 3) % 7),
+            })
+            .collect();
+        let found: Vec<DiffHunk> = hunks(&left, &right, DiffOptions::default());
+        assert!(found.len() > 20, "{} hunks", found.len());
+        for side in [Side::Left, Side::Right] {
+            for line in 0..320 {
+                let mapped: usize = map_line(&found, line, side);
+                assert_eq!(mapped, map_line_by_walking(&found, line, side), "{line}");
+                for lines in [line..line, line..line + 1, line..line + 4] {
+                    let near: Vec<&DiffHunk> = touching(&found, &lines, side).collect();
+                    let all: Vec<&DiffHunk> = found
+                        .iter()
+                        .filter(|hunk| ranges_touch(&hunk.lines(side), &lines))
+                        .collect();
+                    assert_eq!(near, all, "{lines:?}");
+                }
+            }
+        }
     }
 
     #[test]

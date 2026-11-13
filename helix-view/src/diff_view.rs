@@ -8,12 +8,14 @@ use std::collections::HashMap;
 
 use std::ops::Range;
 use std::sync::Arc;
+use std::time::Duration;
 
 use helix_core::diff_hunks::{
     diff_hunks, hunk_at, hunk_words, DiffHunk, DiffOptions, HunkKind, HunkWords, Side,
 };
 use serde::{Deserialize, Serialize};
 
+use crate::background::Background;
 use crate::image_preview::Protocol;
 
 use crate::{
@@ -227,6 +229,30 @@ pub fn default_merge_keys() -> HashMap<String, String> {
     keys_of(&MERGE_ACTIONS)
 }
 
+/// Diffs of texts of up to this many lines in all are worked out between two frames (a few
+/// milliseconds, 15 at worst); longer ones on a thread of their own (see [`Background`]),
+/// meanwhile the changes shown moving along with the edits.
+const INLINE_MAX_LINES: usize = 20_000;
+/// How long a frame waits for a diff started on its own thread: most are done by then, and
+/// show at once.
+const BACKGROUND_WAIT: Duration = Duration::from_millis(20);
+
+/// A diff being worked out on a thread of its own, of the documents at `versions`.
+#[derive(Debug, Clone)]
+struct PendingDiff {
+    versions: (i32, i32),
+    work: Background<WorkedOut>,
+}
+
+/// What a diff worked out on its own thread found.
+struct WorkedOut {
+    hunks: Vec<DiffHunk>,
+    /// The right side's text it is of.
+    right_text: helix_core::Rope,
+    /// For a diff against git: the changes not staged (see [`GitFile`]).
+    unstaged: Option<Vec<DiffHunk>>,
+}
+
 /// A diff shown side by side.
 #[derive(Debug, Clone)]
 pub struct DiffSession {
@@ -249,6 +275,8 @@ pub struct DiffSession {
     /// The hunks only followed edits since the diff was last worked out (see
     /// [`Editor::refresh_diff_sessions`]).
     stale: bool,
+    /// The diff being worked out on a thread of its own, if any: one at a time.
+    pending: Option<PendingDiff>,
     /// For a diff of a file against git (`HEAD` or the index): what staging needs.
     pub git: Option<GitFile>,
     /// The gutters of the right view before the connector was added to them.
@@ -282,6 +310,7 @@ impl DiffSession {
             versions: None,
             right_text: helix_core::Rope::new(),
             stale: false,
+            pending: None,
             git: None,
             right_gutters,
             scrolled: None,
@@ -311,6 +340,12 @@ impl DiffSession {
             Side::Left => self.left_doc,
             Side::Right => self.right_doc,
         }
+    }
+
+    /// Whether the hunks are the diff of the documents as they are, worked out (not only
+    /// moved along with the latest edits, nor being worked out on a thread of their own).
+    pub fn is_current(&self) -> bool {
+        !self.stale && self.pending.is_none()
     }
 
     /// The path of the right side's document, if it has one.
@@ -425,7 +460,20 @@ impl GitFile {
     /// The changes not staged, and how much of each hunk of the diff (from the left side to
     /// `right`, the document) is staged, worked out again.
     fn update(&mut self, hunks: &[DiffHunk], right: helix_core::RopeSlice) {
-        self.unstaged = diff_hunks(Self::text(&self.index), right, DiffOptions::default()).into();
+        let unstaged = Self::unstaged(self.index.as_ref(), right);
+        self.set_unstaged(unstaged.into(), hunks);
+    }
+
+    /// The changes not staged: from `index` (the file in the index) to `right`.
+    fn unstaged(index: Option<&helix_core::Rope>, right: helix_core::RopeSlice) -> Vec<DiffHunk> {
+        let index = index.map_or_else(|| helix_core::RopeSlice::from(""), |index| index.slice(..));
+        diff_hunks(index, right, DiffOptions::default())
+    }
+
+    /// The changes not staged are `unstaged`: how much of each of `hunks` (of the diff) is
+    /// staged follows.
+    fn set_unstaged(&mut self, unstaged: Arc<[DiffHunk]>, hunks: &[DiffHunk]) {
+        self.unstaged = unstaged;
         let stages = hunks
             .iter()
             .map(|hunk| {
@@ -452,16 +500,12 @@ impl GitFile {
     /// The staged changes (`HEAD` to index) that are part of `hunk` (of the diff, its left side
     /// `HEAD`).
     pub fn staged_of<'a>(&'a self, hunk: &'a DiffHunk) -> impl Iterator<Item = &'a DiffHunk> {
-        self.staged
-            .iter()
-            .filter(move |staged| helix_core::diff_hunks::ranges_touch(&staged.left, &hunk.left))
+        helix_core::diff_hunks::touching(&self.staged, &hunk.left, Side::Left)
     }
 
     /// The changes not staged (index to document) that are part of `hunk` (of the diff).
     pub fn unstaged_of<'a>(&'a self, hunk: &'a DiffHunk) -> impl Iterator<Item = &'a DiffHunk> {
-        self.unstaged.iter().filter(move |unstaged| {
-            helix_core::diff_hunks::ranges_touch(&unstaged.right, &hunk.right)
-        })
+        helix_core::diff_hunks::touching(&self.unstaged, &hunk.right, Side::Right)
     }
 }
 
@@ -542,56 +586,95 @@ impl Editor {
 
     /// Brings the sessions up to date with the documents, and ends a session whose view or
     /// document is gone (the other view keeps its document; the right one gets its gutters
-    /// back; the left snapshot is closed).
+    /// back; the left snapshot is closed). Runs each frame: never longer than a few
+    /// milliseconds.
     ///
-    /// While the right side is typed into (insert mode), its hunks only follow the edits
-    /// (see [`helix_core::diff_hunks::shift_hunks`]): cheap at any size. The diff is worked
-    /// out again otherwise: out of insert mode, after a pause in typing
-    /// ([`Editor::recompute_stale_diffs`] on the idle timeout), and before the diff actions.
+    /// While the right side is typed into (insert mode), and while the diff of long texts is
+    /// worked out on its own thread, the hunks only follow the edits (see
+    /// [`helix_core::diff_hunks::shift_hunks`]): cheap at any size. The diff is worked out
+    /// again otherwise: out of insert mode, after a pause in typing
+    /// ([`Editor::recompute_stale_diffs`] on the idle timeout), and before the actions that
+    /// need it exact ([`Editor::settle_diffs`]).
     pub fn refresh_diff_sessions(&mut self) {
         let typing = self.mode == crate::document::Mode::Insert;
         let mut ended = Vec::new();
         for index in 0..self.diff_sessions.len() {
-            let session = &self.diff_sessions[index];
-            let views_alive =
-                self.tree.contains(session.left_view) && self.tree.contains(session.right_view);
-            let (Some(left), Some(right)) = (
-                self.documents.get(&session.left_doc),
-                self.documents.get(&session.right_doc),
-            ) else {
+            let Some(versions) = self.shown_diff_versions(index) else {
                 ended.push(index);
                 continue;
             };
-            // a view showing another document left the session
-            let shown = views_alive
-                && self.tree.get(session.left_view).doc == session.left_doc
-                && self.tree.get(session.right_view).doc == session.right_doc;
-            if !shown {
-                ended.push(index);
-                continue;
-            }
-            let versions = (left.version(), right.version());
+            self.poll_diff(index, Duration::ZERO);
+            let session = &self.diff_sessions[index];
             let changed = session.versions != Some(versions);
-            // edits only to the right side, followed since the diff was worked out (by this
-            // session alone: another diff of the same buffer restarts the following)
-            let followable = session.versions.map(|(left, _)| left) == Some(versions.0)
-                && right.diff_changes().is_some()
-                && self
-                    .diff_sessions
-                    .iter()
-                    .filter(|other| other.right_doc == session.right_doc)
-                    .count()
-                    == 1;
-            if changed && typing && followable {
+            if changed
+                && self.can_follow_edits(index, versions)
+                && (typing || self.diff_is_long(index))
+            {
                 self.shift_diff(index);
-            } else if changed || (session.stale && !typing) {
+            } else if changed && session.versions.is_none() {
+                // just opened: nothing shown yet, until it is worked out
+                self.request_diff(index);
+            } else if changed {
+                // short, or the hunks can't follow the edits: worked out now
                 self.recompute_diff(index);
+            }
+            if !typing && self.diff_sessions[index].stale {
+                self.request_diff(index);
             }
         }
         for index in ended.into_iter().rev() {
             let session = self.diff_sessions.remove(index);
             self.end_diff_session(session);
         }
+    }
+
+    /// The versions of the documents of session `index`, if its views still show them.
+    fn shown_diff_versions(&self, index: usize) -> Option<(i32, i32)> {
+        let session = &self.diff_sessions[index];
+        let (left, right) = (
+            self.documents.get(&session.left_doc)?,
+            self.documents.get(&session.right_doc)?,
+        );
+        // a view showing another document left the session
+        let shown = |view: ViewId, doc: DocumentId| {
+            self.tree.contains(view) && self.tree.get(view).doc == doc
+        };
+        (shown(session.left_view, session.left_doc) && shown(session.right_view, session.right_doc))
+            .then(|| (left.version(), right.version()))
+    }
+
+    /// Whether the hunks of session `index` can follow the edits that made the documents
+    /// `versions`: edits to the right side only, followed since the diff was worked out (by
+    /// this session alone: another diff of the same buffer restarts the following).
+    fn can_follow_edits(&self, index: usize, versions: (i32, i32)) -> bool {
+        let session = &self.diff_sessions[index];
+        session.versions.map(|(left, _)| left) == Some(versions.0)
+            && self
+                .documents
+                .get(&session.right_doc)
+                .is_some_and(|right| right.diff_changes().is_some())
+            && self
+                .diff_sessions
+                .iter()
+                .filter(|other| other.right_doc == session.right_doc)
+                .count()
+                == 1
+    }
+
+    /// Whether the diff of session `index` is too long to work out between two frames (see
+    /// [`INLINE_MAX_LINES`]).
+    fn diff_is_long(&self, index: usize) -> bool {
+        let session = &self.diff_sessions[index];
+        let lines = |doc: DocumentId| {
+            self.documents
+                .get(&doc)
+                .map_or(0, |doc| doc.text().len_lines())
+        };
+        let right = lines(session.right_doc);
+        let git = session.git.as_ref().map_or(0, |git| {
+            right + git.index.as_ref().map_or(0, |index| index.len_lines())
+        });
+        lines(session.left_doc) + right + git > INLINE_MAX_LINES
     }
 
     /// The configured gutters are now `gutters` (the configuration reloaded, a theme set): the
@@ -675,11 +758,12 @@ impl Editor {
     }
 
     /// Works out again the diffs whose hunks only followed edits (see
-    /// [`Editor::refresh_diff_sessions`]); whether there were any.
+    /// [`Editor::refresh_diff_sessions`]); whether there were any. Long ones go to a thread of
+    /// their own.
     pub fn recompute_stale_diffs(&mut self) -> bool {
         let mut any = false;
         if self.merge.as_ref().is_some_and(|merge| merge.is_stale()) {
-            self.recompute_merge();
+            self.request_merge();
             any = true;
         }
         for index in 0..self.diff_sessions.len() {
@@ -687,16 +771,122 @@ impl Editor {
             let present = self.documents.contains_key(&session.left_doc)
                 && self.documents.contains_key(&session.right_doc);
             if present && session.stale {
-                self.recompute_diff(index);
+                self.request_diff(index);
                 any = true;
             }
         }
         any
     }
 
-    /// The diff of session `index` worked out from the documents as they are now.
+    /// The diffs (and the merge) worked out from the documents as they are now, at once
+    /// whatever their length: for the actions that change text by them (taking a change to
+    /// the other side, staging, taking a side of a conflict).
+    pub fn settle_diffs(&mut self) {
+        self.refresh_diff_sessions();
+        for index in 0..self.diff_sessions.len() {
+            let session = &self.diff_sessions[index];
+            if session.stale || session.pending.is_some() {
+                self.recompute_diff(index);
+            }
+        }
+        self.refresh_merge();
+        if self
+            .merge
+            .as_ref()
+            .is_some_and(|merge| merge.is_stale() || merge.is_pending())
+        {
+            self.recompute_merge();
+        }
+    }
+
+    /// The diff of session `index` worked out again: now when short, else on a thread of its
+    /// own (one at a time), picked up by [`Editor::refresh_diff_sessions`] once done.
+    fn request_diff(&mut self, index: usize) {
+        if !self.diff_is_long(index) {
+            self.recompute_diff(index);
+            return;
+        }
+        let session = &self.diff_sessions[index];
+        if session.pending.is_some() {
+            // asked again once that one is done, if the documents changed meanwhile
+            return;
+        }
+        let (Some(left), Some(right)) = (
+            self.documents.get(&session.left_doc),
+            self.documents.get(&session.right_doc),
+        ) else {
+            return;
+        };
+        let versions = (left.version(), right.version());
+        let (left_text, right_text, options) =
+            (left.text().clone(), right.text().clone(), session.options);
+        let index_text = session.git.as_ref().map(|git| git.index.clone());
+        let work = Background::spawn(move || {
+            let hunks = diff_hunks(left_text.slice(..), right_text.slice(..), options);
+            let unstaged =
+                index_text.map(|index| GitFile::unstaged(index.as_ref(), right_text.slice(..)));
+            WorkedOut {
+                hunks,
+                right_text,
+                unstaged,
+            }
+        });
+        self.diff_sessions[index].pending = Some(PendingDiff { versions, work });
+        self.poll_diff(index, BACKGROUND_WAIT);
+    }
+
+    /// Takes the diff of session `index` worked out on its own thread, if done (waiting up to
+    /// `wait` for it): shown when the documents didn't change since it started, else asked
+    /// again when due. Whether it was shown.
+    fn poll_diff(&mut self, index: usize, wait: Duration) -> bool {
+        let session = &mut self.diff_sessions[index];
+        let Some(pending) = &session.pending else {
+            return false;
+        };
+        let Some(outcome) = pending.work.take(wait) else {
+            return false;
+        };
+        let versions = pending.versions;
+        session.pending = None;
+        let worked_out = match outcome {
+            Ok(worked_out) => worked_out,
+            Err(_) => {
+                // not asked again until the documents change: it would end the same way
+                log::error!("working out a diff failed");
+                session.stale = false;
+                return false;
+            }
+        };
+        let Some(left_version) = self
+            .documents
+            .get(&session.left_doc)
+            .map(|left| left.version())
+        else {
+            return false;
+        };
+        let Some(right) = self.documents.get_mut(&session.right_doc) else {
+            return false;
+        };
+        if (left_version, right.version()) != versions {
+            session.stale = true;
+            return false;
+        }
+        session.hunks = worked_out.hunks.into();
+        if let (Some(git), Some(unstaged)) = (&mut session.git, worked_out.unstaged) {
+            git.set_unstaged(unstaged.into(), &session.hunks);
+        }
+        session.words = vec![None; session.hunks.len()];
+        session.versions = Some(versions);
+        session.right_text = worked_out.right_text;
+        session.stale = false;
+        right.track_diff_changes();
+        true
+    }
+
+    /// The diff of session `index` worked out now from the documents as they are.
     fn recompute_diff(&mut self, index: usize) {
         let session = &mut self.diff_sessions[index];
+        session.pending = None;
         let Some((left_text, left_version)) = self
             .documents
             .get(&session.left_doc)
@@ -974,8 +1164,13 @@ impl Editor {
                 (false, true) => Side::Right,
                 (true, true) => session.side_of(self.tree.focus).unwrap_or(Side::Right),
             };
-            let session = session.clone();
-            self.follow_diff_scroll(&session, leader);
+            // what following needs, not the whole session (its words, its git state)
+            let (views, docs, hunks) = (
+                [session.view(leader), session.view(leader.other())],
+                [session.doc(leader), session.doc(leader.other())],
+                Arc::clone(&session.hunks),
+            );
+            self.follow_diff_scroll(views, docs, &hunks, leader.other());
             self.diff_sessions[index].scrolled = self.diff_scrolls(&self.diff_sessions[index]);
         }
     }
@@ -1012,15 +1207,20 @@ impl Editor {
         }
     }
 
-    /// Scrolls the side of `session` other than `leader` to where `leader` is.
-    fn follow_diff_scroll(&mut self, session: &DiffSession, leader: Side) {
-        let Some((line, row)) = self.scroll_reference(session.view(leader), session.doc(leader))
-        else {
+    /// Scrolls the side `other` of a diff of `hunks` (its view and document second in `views`
+    /// and `docs`) to where the leading side (first) is.
+    fn follow_diff_scroll(
+        &mut self,
+        views: [ViewId; 2],
+        docs: [DocumentId; 2],
+        hunks: &[DiffHunk],
+        other: Side,
+    ) {
+        let Some((line, row)) = self.scroll_reference(views[0], docs[0]) else {
             return;
         };
-        let other = leader.other();
-        let other_line = helix_core::diff_hunks::map_line(&session.hunks, line, other);
-        self.scroll_diff_side(session.view(other), session.doc(other), other_line, row);
+        let other_line = helix_core::diff_hunks::map_line(hunks, line, other);
+        self.scroll_diff_side(views[1], docs[1], other_line, row);
     }
 
     /// The line of `view` (showing `doc`) the views scrolled with it line up with, and its row:

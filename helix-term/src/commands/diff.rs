@@ -706,10 +706,19 @@ pub fn doc_dir(editor: &Editor) -> PathBuf {
 
 // --- actions ---------------------------------------------------------------
 
-/// The diff of the focused view, worked out from the documents as they are now:
-/// `(the focused view, its side, the hunks)`.
-fn focused_diff(editor: &mut Editor) -> Option<(ViewId, Side, std::sync::Arc<[DiffHunk]>)> {
-    refresh(editor);
+/// The diff of the focused view: `(the focused view, its side, the hunks)`. `exact`: worked
+/// out from the documents as they are now, whatever their length (for the actions changing
+/// text by it), else as shown (its hunks may only have followed the latest edits, for the
+/// actions moving around).
+fn focused_diff(
+    editor: &mut Editor,
+    exact: bool,
+) -> Option<(ViewId, Side, std::sync::Arc<[DiffHunk]>)> {
+    if exact {
+        editor.settle_diffs();
+    } else {
+        editor.refresh_diff_sessions();
+    }
     let view = editor.tree.focus;
     let session = editor.diff_session(view)?;
     Some((view, session.side_of(view)?, session.hunks.clone()))
@@ -735,7 +744,7 @@ pub(crate) fn cursor_line_and_row(editor: &Editor, view: ViewId) -> (usize, usiz
 /// Moves to the `count`th next (or previous) change of the focused side; the other side
 /// follows with `align-on-jump`.
 fn jump_to_change(cx: &mut Context, forward: bool) {
-    let Some((view, side, hunks)) = focused_diff(cx.editor) else {
+    let Some((view, side, hunks)) = focused_diff(cx.editor, false) else {
         return not_in_a_diff(cx);
     };
     let (line, _) = cursor_line_and_row(cx.editor, view);
@@ -801,7 +810,7 @@ pub fn diff_previous_change(cx: &mut Context) {
 
 /// Lines the other side up with the cursor's line of this one.
 pub fn diff_snap(cx: &mut Context) {
-    let Some((view, _, _)) = focused_diff(cx.editor) else {
+    let Some((view, _, _)) = focused_diff(cx.editor, false) else {
         return not_in_a_diff(cx);
     };
     cx.editor.align_diff(view);
@@ -809,7 +818,7 @@ pub fn diff_snap(cx: &mut Context) {
 
 /// Both sides to their first (or last) line.
 fn align_end(cx: &mut Context, top: bool) {
-    let Some((view, _, _)) = focused_diff(cx.editor) else {
+    let Some((view, _, _)) = focused_diff(cx.editor, false) else {
         return not_in_a_diff(cx);
     };
     let session = cx.editor.diff_session(view).cloned().expect("in a diff");
@@ -843,7 +852,7 @@ pub fn diff_align_bottom(cx: &mut Context) {
 /// those of the left side (the old version, which is read-only), from either side.
 fn apply_change(cx: &mut Context) {
     let to = Side::Right;
-    let Some((view, side, hunks)) = focused_diff(cx.editor) else {
+    let Some((view, side, hunks)) = focused_diff(cx.editor, true) else {
         return not_in_a_diff(cx);
     };
     let (line, _) = cursor_line_and_row(cx.editor, view);
@@ -906,7 +915,7 @@ fn apply_change(cx: &mut Context) {
         .get_mut(&to_doc)
         .expect("a diff's document");
     doc.append_changes_to_history(to_view);
-    refresh(cx.editor);
+    cx.editor.settle_diffs();
 }
 
 /// The change under the cursor: the left side's lines into the right side.
@@ -937,7 +946,7 @@ fn hunk_under_cursor(
 /// staged (a partly staged one is staged whole): the index takes the change's lines of the
 /// document (as shown, saved or not), or back those of `HEAD`.
 pub fn diff_stage(cx: &mut Context) {
-    let Some((view, side, hunks)) = focused_diff(cx.editor) else {
+    let Some((view, side, hunks)) = focused_diff(cx.editor, true) else {
         return not_in_a_diff(cx);
     };
     let session = cx.editor.diff_session(view).cloned().expect("in a diff");
@@ -1082,12 +1091,6 @@ pub fn diff_close(cx: &mut Context) {
 pub(crate) fn view_height(editor: &Editor, view: ViewId) -> usize {
     let view = editor.tree.get(view);
     view.inner_height(&editor.documents[&view.doc])
-}
-
-/// The diffs up to date with the documents: worked out again where they only followed edits.
-fn refresh(editor: &mut Editor) {
-    editor.refresh_diff_sessions();
-    editor.recompute_stale_diffs();
 }
 
 // --- keys ------------------------------------------------------------------

@@ -1673,11 +1673,11 @@ dependencies = [
  "chrono",
  "encoding_rs",
  "foldhash 0.2.0",
+ "gix-imara-diff",
  "globset",
  "helix-loader",
  "helix-parsec",
  "helix-stdx",
- "imara-diff",
  "indoc",
  "log",
  "nucleo",
@@ -1915,10 +1915,10 @@ dependencies = [
  "anyhow",
  "arc-swap",
  "gix",
+ "gix-imara-diff",
  "helix-core",
  "helix-event",
  "helix-stdx",
- "imara-diff",
  "log",
  "parking_lot",
  "tempfile",
@@ -2036,16 +2036,6 @@ checksum = "525e9ff3e1a4be2fbea1fdf0e98686a6d98b4d8f937e1bf7402245af1909e8c3"
 dependencies = [
  "byteorder-lite",
  "quick-error",
-]
-
-[[package]]
-name = "imara-diff"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f01d462f766df78ab820dd06f5eb700233c51f0f4c2e846520eaf4ba6aa5c5c"
-dependencies = [
- "hashbrown 0.15.5",
- "memchr",
 ]
 
 [[package]]

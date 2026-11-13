@@ -5,10 +5,12 @@
 //! saving a result without conflicts left marks the file resolved (`git add`).
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use helix_core::diff_hunks::{diff_hunks, map_line, DiffHunk, DiffOptions, Side};
 use helix_core::merge_conflicts::{find_conflicts, Conflict};
 
+use crate::background::Background;
 use crate::diff_view::{OldVersion, Scroll};
 use crate::{DocumentId, Editor, ViewId};
 
@@ -25,7 +27,7 @@ pub struct MergeSession {
     pub root: std::path::PathBuf,
     pub relative: String,
     /// The conflicts left in the result.
-    pub conflicts: Vec<Conflict>,
+    pub conflicts: Arc<[Conflict]>,
     /// The changes from your version to the result, and from theirs: what lines up the
     /// windows.
     pub local_hunks: Arc<[DiffHunk]>,
@@ -34,9 +36,25 @@ pub struct MergeSession {
     version: Option<i32>,
     /// The result was typed into since (see [`Editor::refresh_merge`]).
     stale: bool,
+    /// The merge being worked out on a thread of its own (a long file), of the result at a
+    /// version.
+    pending: Option<(i32, Background<WorkedOut>)>,
     /// Where the three windows were scrolled to when last in step.
     scrolled: Option<[Scroll; 3]>,
 }
+
+/// What working out a merge found.
+struct WorkedOut {
+    conflicts: Vec<Conflict>,
+    local_hunks: Vec<DiffHunk>,
+    remote_hunks: Vec<DiffHunk>,
+}
+
+/// Merges of up to this many lines in all (the three versions) are worked out between two
+/// frames; longer ones on a thread of their own (see [`Background`]).
+const INLINE_MAX_LINES: usize = 20_000;
+/// How long a frame waits for a merge started on its own thread.
+const BACKGROUND_WAIT: Duration = Duration::from_millis(20);
 
 /// One of the windows of a merge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,26 +99,62 @@ impl MergeSession {
         self.stale
     }
 
+    /// Whether it is being worked out on a thread of its own.
+    pub fn is_pending(&self) -> bool {
+        self.pending.is_some()
+    }
+
     /// The line of the result matching `line` of `pane`.
     pub fn to_result(&self, pane: Pane, line: usize) -> usize {
-        match pane {
-            Pane::Local => map_line(&self.local_hunks, line, Side::Right),
-            Pane::Remote => map_line(&self.remote_hunks, line, Side::Right),
-            Pane::Result => line,
-        }
+        pane_line(
+            [&self.local_hunks, &self.remote_hunks],
+            pane,
+            line,
+            Side::Right,
+        )
     }
 
     /// The line of `pane` matching `line` of the result.
     pub fn from_result(&self, pane: Pane, line: usize) -> usize {
-        match pane {
-            Pane::Local => map_line(&self.local_hunks, line, Side::Left),
-            Pane::Remote => map_line(&self.remote_hunks, line, Side::Left),
-            Pane::Result => line,
-        }
+        pane_line(
+            [&self.local_hunks, &self.remote_hunks],
+            pane,
+            line,
+            Side::Left,
+        )
     }
 }
 
 const PANES: [Pane; 3] = [Pane::Local, Pane::Result, Pane::Remote];
+
+/// `line` mapped through the hunks of `pane` (`[yours, theirs]` against the result): to the
+/// result (`Side::Right`), or from it to the pane (`Side::Left`).
+fn pane_line(hunks: [&[DiffHunk]; 2], pane: Pane, line: usize, to: Side) -> usize {
+    match pane {
+        Pane::Local => map_line(hunks[0], line, to),
+        Pane::Remote => map_line(hunks[1], line, to),
+        Pane::Result => line,
+    }
+}
+
+impl MergeSession {
+    fn set(&mut self, worked_out: WorkedOut) {
+        self.conflicts = worked_out.conflicts.into();
+        self.local_hunks = worked_out.local_hunks.into();
+        self.remote_hunks = worked_out.remote_hunks.into();
+    }
+}
+
+/// The conflicts of the result, and the changes from yours and from theirs to it, of `texts`
+/// (yours, the result, theirs).
+fn work_out_merge([local, result, remote]: &[helix_core::Rope; 3]) -> WorkedOut {
+    let options = DiffOptions::default();
+    WorkedOut {
+        conflicts: find_conflicts(result.slice(..)),
+        local_hunks: diff_hunks(local.slice(..), result.slice(..), options),
+        remote_hunks: diff_hunks(remote.slice(..), result.slice(..), options),
+    }
+}
 
 impl Editor {
     /// The merge `view` is a window of, if any.
@@ -150,13 +204,17 @@ impl Editor {
             remote_doc,
             root,
             relative,
-            conflicts: Vec::new(),
+            conflicts: Arc::from([]),
             local_hunks: Arc::from([]),
             remote_hunks: Arc::from([]),
             version: None,
             stale: false,
+            pending: None,
             scrolled: None,
         });
+        // worked out now whatever its length (opening it is waited for): its first conflict
+        // is shown
+        self.recompute_merge();
         self.refresh_merge();
         // the first conflict in view
         let first = self
@@ -225,6 +283,10 @@ impl Editor {
             self.close_merge();
             return;
         };
+        self.poll_merge(Duration::ZERO);
+        let Some(merge) = &self.merge else {
+            return;
+        };
         let typing = self.mode == crate::document::Mode::Insert;
         let changed = merge.version != Some(version);
         if changed && typing {
@@ -233,30 +295,86 @@ impl Editor {
                 merge.version = Some(version);
             }
         } else if changed || (merge.stale && !typing) {
-            self.recompute_merge();
+            self.request_merge();
         }
         self.sync_merge_scrolling();
     }
 
-    /// The conflicts and the alignment of the windows worked out from the documents.
-    pub(crate) fn recompute_merge(&mut self) {
+    /// The texts of the merge's documents: yours, the result and theirs.
+    fn merge_texts(&self) -> Option<[helix_core::Rope; 3]> {
+        let merge = self.merge.as_ref()?;
+        let text = |doc: DocumentId| self.document(doc).map(|doc| doc.text().clone());
+        Some([
+            text(merge.local_doc)?,
+            text(merge.result_doc)?,
+            text(merge.remote_doc)?,
+        ])
+    }
+
+    /// The merge worked out again: now when short, else on a thread of its own (one at a
+    /// time), picked up by [`Editor::refresh_merge`] once done.
+    pub(crate) fn request_merge(&mut self) {
+        let Some(texts) = self.merge_texts() else {
+            return;
+        };
+        if texts.iter().map(|text| text.len_lines()).sum::<usize>() <= INLINE_MAX_LINES {
+            self.recompute_merge();
+            return;
+        }
+        let merge = self.merge.as_ref().expect("a merge");
+        if merge.pending.is_some() {
+            return;
+        }
+        let Some(version) = self.document(merge.result_doc).map(|doc| doc.version()) else {
+            return;
+        };
+        let work = Background::spawn(move || work_out_merge(&texts));
+        if let Some(merge) = self.merge.as_mut() {
+            merge.pending = Some((version, work));
+        }
+        self.poll_merge(BACKGROUND_WAIT);
+    }
+
+    /// Takes the merge worked out on its own thread, if done (waiting up to `wait`): shown
+    /// when the result didn't change since it started, else asked again when due.
+    fn poll_merge(&mut self, wait: Duration) {
         let Some(merge) = &self.merge else {
             return;
         };
-        let text = |doc: DocumentId| self.document(doc).map(|doc| doc.text().clone());
-        let (Some(local), Some(result), Some(remote)) = (
-            text(merge.local_doc),
-            text(merge.result_doc),
-            text(merge.remote_doc),
-        ) else {
+        let Some((version, outcome)) = merge
+            .pending
+            .as_ref()
+            .and_then(|(version, work)| Some((*version, work.take(wait)?)))
+        else {
             return;
         };
-        let version = self.document(merge.result_doc).map(|doc| doc.version());
-        let options = DiffOptions::default();
+        let current = self.document(merge.result_doc).map(|doc| doc.version());
         let merge = self.merge.as_mut().expect("a merge");
-        merge.conflicts = find_conflicts(result.slice(..));
-        merge.local_hunks = diff_hunks(local.slice(..), result.slice(..), options).into();
-        merge.remote_hunks = diff_hunks(remote.slice(..), result.slice(..), options).into();
+        merge.pending = None;
+        match outcome {
+            Ok(worked_out) if current == Some(version) => {
+                merge.set(worked_out);
+                merge.version = Some(version);
+                merge.stale = false;
+            }
+            Ok(_) => merge.stale = true,
+            Err(_) => log::error!("working out the merge failed"),
+        }
+    }
+
+    /// The conflicts and the alignment of the windows worked out now from the documents.
+    pub(crate) fn recompute_merge(&mut self) {
+        let Some(texts) = self.merge_texts() else {
+            return;
+        };
+        let version = self
+            .merge
+            .as_ref()
+            .and_then(|merge| self.document(merge.result_doc))
+            .map(|doc| doc.version());
+        let merge = self.merge.as_mut().expect("a merge");
+        merge.set(work_out_merge(&texts));
+        merge.pending = None;
         merge.version = version;
         merge.stale = false;
     }
@@ -264,14 +382,14 @@ impl Editor {
     /// The windows of the merge scrolled together: one that scrolled since (the focused one
     /// leads when several did) takes the others along, through the result.
     fn sync_merge_scrolling(&mut self) {
-        let Some(merge) = self.merge.clone() else {
+        let Some(merge) = &self.merge else {
             return;
         };
-        let scrolls: Option<Vec<Scroll>> = PANES
-            .iter()
-            .map(|pane| self.diff_scroll(merge.view(*pane), merge.doc(*pane)))
-            .collect();
-        let Some(now) = scrolls.and_then(|scrolls| <[Scroll; 3]>::try_from(scrolls).ok()) else {
+        let scrolls = |editor: &Self, merge: &MergeSession| -> Option<[Scroll; 3]> {
+            let [a, b, c] = PANES.map(|pane| editor.diff_scroll(merge.view(pane), merge.doc(pane)));
+            Some([a?, b?, c?])
+        };
+        let Some(now) = scrolls(self, merge) else {
             return;
         };
         let Some(before) = merge.scrolled else {
@@ -280,30 +398,36 @@ impl Editor {
             }
             return;
         };
-        let moved: Vec<Pane> = PANES
+        let mut moved = PANES
             .iter()
             .zip(now.iter().zip(before.iter()))
             .filter(|(_, (now, before))| now != before)
-            .map(|(pane, _)| *pane)
-            .collect();
-        let leader = match moved.as_slice() {
-            [] => return,
-            [pane] => *pane,
+            .map(|(pane, _)| *pane);
+        let leader = match (moved.next(), moved.next()) {
+            (None, _) => return,
+            (Some(pane), None) => pane,
             _ => merge.pane_of(self.tree.focus).unwrap_or(Pane::Result),
         };
-        if let Some((line, row)) = self.scroll_reference(merge.view(leader), merge.doc(leader)) {
-            let result_line = merge.to_result(leader, line);
+        // what following needs (the views, documents and hunks), not the whole merge
+        let (views, docs) = (
+            PANES.map(|pane| merge.view(pane)),
+            PANES.map(|pane| merge.doc(pane)),
+        );
+        let (local, remote) = (
+            Arc::clone(&merge.local_hunks),
+            Arc::clone(&merge.remote_hunks),
+        );
+        let at = |pane: Pane| PANES.iter().position(|p| *p == pane).expect("a pane");
+        if let Some((line, row)) = self.scroll_reference(views[at(leader)], docs[at(leader)]) {
+            let result_line = pane_line([&local, &remote], leader, line, Side::Right);
             for pane in PANES.into_iter().filter(|pane| *pane != leader) {
-                let other = merge.from_result(pane, result_line);
-                self.scroll_diff_side(merge.view(pane), merge.doc(pane), other, row);
+                let other = pane_line([&local, &remote], pane, result_line, Side::Left);
+                self.scroll_diff_side(views[at(pane)], docs[at(pane)], other, row);
             }
         }
-        let scrolls: Option<Vec<Scroll>> = PANES
-            .iter()
-            .map(|pane| self.diff_scroll(merge.view(*pane), merge.doc(*pane)))
-            .collect();
+        let scrolled = self.merge.as_ref().and_then(|merge| scrolls(self, merge));
         if let Some(merge) = self.merge.as_mut() {
-            merge.scrolled = scrolls.and_then(|scrolls| <[Scroll; 3]>::try_from(scrolls).ok());
+            merge.scrolled = scrolled;
         }
     }
 

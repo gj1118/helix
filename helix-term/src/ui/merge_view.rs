@@ -34,7 +34,7 @@ impl MergeDecoration {
         let (ours, theirs, base) = (styles.add, styles.change, styles.delete);
         let marker = styles.change_emphasis.add_modifier(Modifier::BOLD);
         let mut lines = Vec::new();
-        for conflict in &merge.conflicts {
+        for conflict in merge.conflicts.iter() {
             match pane {
                 Pane::Result => lines.extend(result_lines(conflict, ours, theirs, base, marker)),
                 Pane::Local | Pane::Remote => {

@@ -3,6 +3,7 @@ pub mod macros;
 
 pub mod action;
 pub mod annotations;
+pub mod background;
 pub mod clipboard;
 pub mod component_keys;
 pub mod custom_commands;

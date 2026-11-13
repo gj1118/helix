@@ -127,15 +127,8 @@ fn not_in_a_merge(cx: &mut Context) {
 /// The merge up to date with its result, and the line of the result of the cursor of the
 /// focused window, with its row.
 fn focused_merge(cx: &mut Context) -> Option<(helix_view::merge_view::MergeSession, usize, usize)> {
-    cx.editor.refresh_merge();
-    if cx
-        .editor
-        .merge
-        .as_ref()
-        .is_some_and(|merge| merge.is_stale())
-    {
-        cx.editor.recompute_stale_diffs();
-    }
+    // exact, whatever its length: the actions take sides of the conflicts by it
+    cx.editor.settle_diffs();
     let view = cx.editor.tree.focus;
     let merge = cx.editor.merge_of(view)?.clone();
     let pane = merge.pane_of(view)?;
@@ -221,8 +214,7 @@ fn take(cx: &mut Context, resolution: Resolution) {
         .expect("the merge's result");
     doc.append_changes_to_history(view);
     let left = find_conflicts(doc.text().slice(..)).len();
-    cx.editor.recompute_stale_diffs();
-    cx.editor.refresh_merge();
+    cx.editor.settle_diffs();
     let taken = match resolution {
         Resolution::Ours => "yours",
         Resolution::Theirs => "theirs",

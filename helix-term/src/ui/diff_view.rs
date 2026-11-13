@@ -168,6 +168,9 @@ pub fn render_connectors(editor: &Editor, surface: &mut Surface) {
     for (index, session) in editor.diff_sessions.iter().enumerate() {
         render_connector(editor, index, session, surface);
     }
+    // the images of the diffs closed since are forgotten
+    let ids = KITTY_CONNECTOR_ID..KITTY_CONNECTOR_ID + editor.diff_sessions.len() as u32;
+    IMAGES.with(|images| images.borrow_mut().retain(|id, _| ids.contains(id)));
 }
 
 /// The id of the connector image of the diff `index` in the terminal's memory (kitty
@@ -210,39 +213,40 @@ fn render_connector(editor: &Editor, index: usize, session: &DiffSession, surfac
         SideRows::new(left_view, left_doc),
         SideRows::new(right_view, right_doc),
     );
-    // the stage of each change, against `HEAD`
-    let markers = session
-        .git
-        .as_ref()
-        .filter(|git| git.left_is_head)
-        .map(|git| {
-            let config = editor.config();
-            let marks = &config.diff.stage_markers;
-            let mark = |stage: Stage| -> String {
-                match stage {
-                    Stage::Staged => marks.staged.clone(),
-                    Stage::Unstaged => marks.unstaged.clone(),
-                    Stage::Partial => marks.partial.clone(),
-                }
-            };
-            (0..session.hunks.len())
-                .map(|index| git.stage(index).map(mark))
-                .collect::<Vec<_>>()
-        });
+    // the stage of a change, against `HEAD`
+    let config = editor.config();
+    let marks = &config.diff.stage_markers;
+    let mark_of = |hunk_index: usize| -> Option<String> {
+        let git = session.git.as_ref().filter(|git| git.left_is_head)?;
+        let mark = match git.stage(hunk_index)? {
+            Stage::Staged => &marks.staged,
+            Stage::Unstaged => &marks.unstaged,
+            Stage::Partial => &marks.partial,
+        };
+        Some(mark.clone()).filter(|mark| !mark.is_empty())
+    };
     let marker_fg = editor
         .theme
         .get("ui.text")
         .fg
         .or_else(|| editor.theme.get("ui.linenr.selected").fg);
-    // the bands of the changes in view (or crossing it)
+    // the bands of the changes in view (or crossing it): from the first one not wholly above
+    // both windows (binary search: a long file has tens of thousands of changes)
+    let (left_top, right_top) = (left.top, right.top);
+    let first = session
+        .hunks
+        .partition_point(|hunk| hunk.left.end < left_top && hunk.right.end < right_top);
     let mut bands = Vec::new();
-    for (hunk_index, hunk) in session.hunks.iter().enumerate() {
+    for (hunk_index, hunk) in session.hunks.iter().enumerate().skip(first) {
         let left_top = left.row(hunk.left.start) + shift;
         let left_bottom = left.row(hunk.left.end) + shift;
         let right_top = right.row(hunk.right.start);
         let right_bottom = right.row(hunk.right.end);
-        if (left_bottom < 0.0 && right_bottom < 0.0) || (left_top >= height && right_top >= height)
-        {
+        if left_top >= height && right_top >= height {
+            // this one and the next ones are below both windows
+            break;
+        }
+        if left_bottom < 0.0 && right_bottom < 0.0 {
             continue;
         }
         let style = styles.lines(hunk.kind(), Side::Right);
@@ -287,15 +291,12 @@ fn render_connector(editor: &Editor, index: usize, session: &DiffSession, surfac
     };
     // the stage marks at the right edge, on each change's first row (over the image too)
     for (hunk_index, _, (right_top, _), _) in &bands {
-        let mark = markers
-            .as_ref()
-            .and_then(|marks| marks[*hunk_index].as_deref());
-        if let Some(mark) = mark.filter(|mark| !mark.is_empty()) {
+        if let Some(mark) = mark_of(*hunk_index) {
             let row = right_top.floor();
             if (0.0..height).contains(&row) {
                 let (x, y) = (area.right() - 1, area.y + row as u16);
                 let cell = &mut surface[(x, y)];
-                cell.set_symbol(mark);
+                cell.set_symbol(&mark);
                 if let Some(fg) = marker_fg {
                     cell.set_fg(fg);
                 }
