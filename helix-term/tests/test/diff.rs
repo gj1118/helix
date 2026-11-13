@@ -1580,3 +1580,134 @@ async fn the_connector_is_an_image_with_kitty_graphics() -> anyhow::Result<()> {
     assert!(app.raw_output().is_empty());
     Ok(())
 }
+
+/// The tests' config, in a workspace not trusted (the default level: only language servers
+/// trusted), the trust prompt off.
+fn untrusted_config() -> Config {
+    use helix_view::editor::{ImplicitTrustLevelConfig, WorkspaceTrustConfig};
+    let mut config = helpers::test_config();
+    config.editor.workspace_trust = WorkspaceTrustConfig {
+        level: ImplicitTrustLevelConfig::Servers,
+        prompt: false,
+        ..Default::default()
+    };
+    config.editor.notifications.enable = false;
+    config
+}
+
+/// The app built with `untrusted_config`, its workspace trust set from that config (the test
+/// harness trusts everything otherwise).
+fn untrusted_app(file: std::path::PathBuf) -> anyhow::Result<Application> {
+    let config = untrusted_config();
+    let mut app = helpers::AppBuilder::new()
+        .with_file(file, None)
+        .with_config(config.clone())
+        .build()?;
+    app.editor
+        .workspace_trust
+        .set_config((&config.editor.workspace_trust).into());
+    Ok(app)
+}
+
+/// Without trust, diffs against git are still shown (read in-process, no `git` run); staging
+/// needs trust, and says so.
+#[tokio::test(flavor = "multi_thread")]
+async fn diffs_against_git_are_viewed_without_trust() -> anyhow::Result<()> {
+    let repo = repo_with_changes()?;
+    let root = repo.path();
+    let mut app = untrusted_app(root.join("b.rs"))?;
+    app.resize_terminal(100, 14).await;
+
+    send_keys(&mut app, ":diff-git<ret>").await?;
+    wait_for_diff(&mut app, "index:b.rs").await;
+    let session = app.editor.diff_sessions.first().cloned().expect("a diff");
+    let left: String = app
+        .editor
+        .document(session.left_doc)
+        .unwrap()
+        .text()
+        .to_string();
+    assert_eq!(left, "// b.rs\nfn one() {}\n");
+    assert!(session.git.is_none());
+    assert_eq!(session.hunks.len(), 1);
+
+    send_keys(&mut app, "gg]c-").await?;
+    let (status, _) = app.editor.get_status().expect("a message");
+    assert_eq!(
+        status,
+        "Staging needs a trusted workspace: :workspace-trust trusts it"
+    );
+    assert_eq!(index_of(root, "b.rs"), "// b.rs\nfn one() {}\n");
+    send_keys(&mut app, "C").await?;
+    let (status, _) = app.editor.get_status().expect("a message");
+    assert_eq!(
+        status,
+        "Committing needs a trusted workspace: :workspace-trust trusts it"
+    );
+
+    // against `HEAD` too
+    send_keys(&mut app, "q:diff-git HEAD<ret>").await?;
+    wait_for_diff(&mut app, "HEAD:b.rs").await;
+    Ok(())
+}
+
+/// Without trust, a review goes through the files with changes not staged and the new ones
+/// (listed in-process), each against `HEAD`, viewing only; a review since a revision needs
+/// trust.
+#[tokio::test(flavor = "multi_thread")]
+async fn changed_files_are_reviewed_without_trust() -> anyhow::Result<()> {
+    let repo = repo_with_changes()?;
+    let root = repo.path();
+    let mut app = untrusted_app(root.join("b.rs"))?;
+    app.resize_terminal(100, 14).await;
+
+    send_keys(&mut app, ":diff-review<ret>").await?;
+    wait_for_diff(&mut app, "HEAD:b.rs").await;
+    let review = app.editor.diff_review.clone().expect("a review");
+    let files: Vec<String> = review
+        .files
+        .iter()
+        .map(|file| {
+            file.path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    // `a.rs` has its changes staged only: the listing without git doesn't see them
+    assert_eq!(files, ["b.rs", "c.rs"]);
+    let (status, _) = app.editor.get_status().expect("a message");
+    assert!(
+        status.ends_with("(viewing only: the workspace isn't trusted)"),
+        "{status}"
+    );
+    send_keys(&mut app, "]f").await?;
+    wait_for_diff(&mut app, "HEAD:c.rs").await;
+
+    send_keys(&mut app, "q:diff-review HEAD~1<ret>").await?;
+    let refused = until(&mut app, |app| {
+        app.editor.get_status().is_some_and(|(status, _)| {
+            status.contains("Reviewing the changes since HEAD~1 needs a trusted workspace")
+        })
+    })
+    .await;
+    assert!(refused, "{:?}", app.editor.get_status());
+    Ok(())
+}
+
+/// Resolving merge conflicts needs trust (marking a file resolved runs git).
+#[tokio::test(flavor = "multi_thread")]
+async fn merges_need_trust() -> anyhow::Result<()> {
+    let repo = repo_with_a_conflict("merge")?;
+    let root = repo.path();
+    let mut app = untrusted_app(root.join("f.rs"))?;
+    send_keys(&mut app, ":diff-merge<ret>").await?;
+    let (status, _) = app.editor.get_status().expect("a message");
+    assert_eq!(
+        status,
+        "Resolving merge conflicts needs a trusted workspace: :workspace-trust trusts it"
+    );
+    assert!(app.editor.merge.is_none());
+    Ok(())
+}

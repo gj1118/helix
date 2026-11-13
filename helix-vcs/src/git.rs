@@ -95,6 +95,75 @@ pub fn for_each_changed_file(
     status(&open_repo(cwd, trust_full)?.to_thread_local(), f)
 }
 
+/// The version of `file` in git, read in-process (no `git` program run, so nothing of the
+/// repository's own config executed without `trust_full`): in the index (`rev` `None`) or at
+/// `rev` (`HEAD`, a branch, a commit...); `None` when the file isn't there (new, or no commit
+/// yet). As the working copy would have it (line endings...), with the file's path in the
+/// repository (`/`-separated).
+pub fn file_version(
+    file: &Path,
+    rev: Option<&str>,
+    trust_full: bool,
+) -> Result<(String, Option<Vec<u8>>)> {
+    // a deleted file has no real path: its folder's then
+    let file = match (gix::path::realpath(file), file.parent(), file.file_name()) {
+        (Ok(file), _, _) => file,
+        (Err(_), Some(parent), Some(name)) => gix::path::realpath(parent)
+            .context("resolve symlinks")?
+            .join(name),
+        (Err(err), _, _) => return Err(err).context("resolve symlinks"),
+    };
+    let repo_dir = get_repo_dir(&file)?;
+    let repo = open_repo(repo_dir, trust_full)
+        .context("failed to open git repo")?
+        .to_thread_local();
+    let work_dir = repo.workdir().context("repo has no worktree")?;
+    let rel_path = file.strip_prefix(work_dir)?;
+    let rela_path = gix::path::try_into_bstr(rel_path)?;
+    let relative = rela_path.to_str_lossy().into_owned();
+    let data = match rev {
+        None => {
+            let index = repo.index_or_empty()?;
+            match index.entry_by_path(rela_path.as_ref()) {
+                // stage 0, or yours (2) in a merge conflict
+                Some(entry) => Some(repo.find_object(entry.id)?.detach().data),
+                None => None,
+            }
+        }
+        Some(rev) => {
+            let Ok(id) = repo.rev_parse_single(rev) else {
+                // no commit yet (no `HEAD`): nothing there
+                if rev == "HEAD" {
+                    return Ok((relative, None));
+                }
+                bail!("unknown revision {rev}");
+            };
+            let commit = id.object()?.peel_to_commit()?;
+            match commit.tree()?.lookup_entry_by_path(rel_path)? {
+                Some(entry)
+                    if matches!(
+                        entry.mode().kind(),
+                        EntryKind::Blob | EntryKind::BlobExecutable
+                    ) =>
+                {
+                    Some(repo.find_object(entry.object_id())?.detach().data)
+                }
+                _ => None,
+            }
+        }
+    };
+    let Some(data) = data else {
+        return Ok((relative, None));
+    };
+    // as the working copy has it (see `get_diff_base`)
+    let (mut pipeline, _) = repo.filter_pipeline(None)?;
+    let mut worktree_outcome =
+        pipeline.convert_to_worktree(&data, rela_path.as_ref(), Delay::Forbid)?;
+    let mut buf = Vec::with_capacity(data.len());
+    worktree_outcome.read_to_end(&mut buf)?;
+    Ok((relative, Some(buf)))
+}
+
 fn open_repo(path: &Path, trust_full: bool) -> Result<ThreadSafeRepository> {
     // `trust_full` is the workspace-trust decision made by the caller, and it must be the
     // authority on the gix trust level. gix's own discovery (`discover_*`) ignores a

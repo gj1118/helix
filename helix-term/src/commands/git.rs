@@ -726,12 +726,13 @@ pub fn changed_files_picker(
         move |cx, change: &GitChange, action| {
             // `[editor.diff] open-changed-files-in-diff`: its diff, and the other changed
             // files after it (`]f`)
-            if cx.editor.config().diff.open_changed_files_in_diff
-                && workspace_trusted(cx.editor, &review_dir)
-            {
+            if cx.editor.config().diff.open_changed_files_in_diff {
+                // viewing doesn't need trust (see `diff::git_version`)
+                let trusted = workspace_trusted(cx.editor, &review_dir);
                 let (dir, path) = (review_dir.clone(), change.path.clone());
                 cx.jobs.callback(async move {
-                    let mut files = crate::commands::diff::review_files(&dir, None).await?;
+                    let mut files =
+                        crate::commands::diff::review_files(&dir, None, trusted).await?;
                     let index = match files.iter().position(|file| file.path == path) {
                         Some(index) => index,
                         // changed back meanwhile: still shown, against the index
@@ -744,7 +745,7 @@ pub fn changed_files_picker(
                             files.len() - 1
                         }
                     };
-                    crate::commands::diff::review_file(files, index, action).await
+                    crate::commands::diff::review_file(files, index, action, trusted).await
                 });
                 return;
             }

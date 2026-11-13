@@ -26,7 +26,7 @@ pub fn open_merge(editor: &mut Editor, jobs: &mut crate::job::Jobs, path: PathBu
     let Some(dir) = path.parent() else {
         return;
     };
-    if !git_allowed(editor, dir) {
+    if !git_allowed(editor, dir, "Resolving merge conflicts") {
         return;
     }
     jobs.callback(merge_of(path, None));
@@ -284,7 +284,7 @@ pub fn merge_on_save(editor: &mut Editor, jobs: &mut crate::job::Jobs, doc: Docu
         ));
         return;
     }
-    if !git_allowed(editor, &merge.root) {
+    if !git_allowed(editor, &merge.root, "Marking the file resolved") {
         return;
     }
     let (root, relative) = (merge.root.clone(), merge.relative.clone());

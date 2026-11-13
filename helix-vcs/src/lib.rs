@@ -13,6 +13,8 @@ use std::{
 mod git;
 #[cfg(feature = "git")]
 pub use git::blame::{BlameDetails, FileBlame, LineBlame};
+#[cfg(feature = "git")]
+pub use git::{file_version as git_file_version, for_each_changed_file as git_changed_files};
 
 mod diff;
 

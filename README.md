@@ -421,7 +421,8 @@ the changed words inside them are emphasized.
   open-changed-files-in-diff = false` opens the files as plain buffers instead.
 - Staging: in a review the files are compared with `HEAD`, each change marked `▣` staged, `□`
   not staged or `◩` partly staged (`[editor.diff.stage-markers]`); `-` stages the change under
-  the cursor, or unstages it.
+  the cursor, or unstages it. Viewing diffs and reviews works in a workspace not trusted (read
+  without running git); staging, committing and resolving conflicts need `:workspace-trust`.
 - Committing: `C` in a diff, `:diff-commit [--amend]` or `Alt-c` in the changed files list
   opens the message to write in a split (the changed files beside it in the quickfix panel when
   enabled); `:w` commits, `:wq` commits and closes. Open diffs then show against the new

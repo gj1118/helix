@@ -346,12 +346,11 @@ fn diff_git_command(
         .map(Path::to_path_buf)
         .ok_or_else(|| anyhow!("the buffer has no file to compare with git"))?;
     let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
-    if !crate::commands::diff::git_allowed(cx.editor, &dir) {
-        return Ok(());
-    }
+    // viewing doesn't need trust: without it, read in-process, and no staging
+    let trusted = crate::commands::diff::trusted(cx.editor, &dir);
     let rev = args.first().map(|rev| rev.to_string());
     cx.jobs.callback(async move {
-        let (old, git) = crate::commands::diff::git_version(&path, rev.as_deref()).await?;
+        let (old, git) = crate::commands::diff::git_version(&path, rev.as_deref(), trusted).await?;
         let call: job::Callback = job::Callback::Editor(Box::new(move |editor: &mut Editor| {
             if editor.document(right).is_some() {
                 editor.open_diff(old, right);
@@ -380,16 +379,20 @@ fn diff_review_command(
         Some(parent) if !parent.starts_with(&cwd) => parent.to_path_buf(),
         _ => cwd,
     };
-    if !crate::commands::diff::git_allowed(cx.editor, &dir) {
-        return Ok(());
-    }
+    // viewing doesn't need trust: without it, read in-process, and no staging
+    let trusted = crate::commands::diff::trusted(cx.editor, &dir);
     let rev = args.first().map(|rev| rev.to_string());
     cx.jobs.callback(async move {
-        let dir = match crate::commands::git::repo_root(&dir).await {
-            Ok(root) if !dir.starts_with(helix_stdx::env::current_working_dir()) => root,
-            _ => dir,
+        let outside = !dir.starts_with(helix_stdx::env::current_working_dir());
+        let dir = if !outside {
+            dir
+        } else if trusted {
+            crate::commands::git::repo_root(&dir).await.unwrap_or(dir)
+        } else {
+            // the repository found without running git
+            helix_loader::find_workspace_in(&dir).0
         };
-        let files = crate::commands::diff::review_files(&dir, rev.as_deref()).await?;
+        let files = crate::commands::diff::review_files(&dir, rev.as_deref(), trusted).await?;
         if files.is_empty() {
             let call: job::Callback =
                 job::Callback::Editor(Box::new(move |editor: &mut Editor| {
@@ -400,7 +403,8 @@ fn diff_review_command(
                 }));
             return Ok(call);
         }
-        crate::commands::diff::review_file(files, 0, helix_view::editor::Action::Replace).await
+        crate::commands::diff::review_file(files, 0, helix_view::editor::Action::Replace, trusted)
+            .await
     });
     Ok(())
 }

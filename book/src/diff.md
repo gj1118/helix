@@ -70,7 +70,16 @@ In a diff against the index (`:diff-git`), only what isn't staged shows: `-` sta
 under the cursor, which then leaves the diff. Against another revision (`:diff-review main`,
 `:diff-git HEAD~2`) nothing can be staged.
 
-Staging runs git, which needs a trusted workspace (see `:workspace-trust`).
+### Workspace trust
+
+Running git in a repository can run programs its configuration names (`core.fsmonitor`,
+filters, hooks), so the actions that run git need a trusted workspace (`:workspace-trust`, or
+`[editor.workspace-trust]`): staging, committing, resolving merge conflicts, and reviewing the
+changes since a revision. Viewing doesn't: in a workspace not trusted, `:diff-git`, the changed
+files list and `:diff-review` still show their diffs, the versions read in Helix itself (as the
+diff gutter does) without running git, and the status line says the review is for viewing only.
+The review then goes through the files with changes not staged and the new ones (the files
+whose changes are all staged need git to be listed), without the stage marks.
 
 ## Committing
 

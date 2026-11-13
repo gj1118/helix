@@ -126,10 +126,17 @@ pub(crate) async fn show_file(
 /// is not there (a new file). With the title of its buffer. Against the index or `HEAD`, also
 /// what staging its changes needs (see [`GitFile`]): `None` for a file git can't stage from
 /// here (another revision, a merge conflict).
+///
+/// In a workspace not `trusted`, no `git` program is run (the repository's config could make
+/// it run others): the version is read in-process, and there is no staging.
 pub async fn git_version(
     path: &Path,
     rev: Option<&str>,
+    trusted: bool,
 ) -> anyhow::Result<(OldVersion, Option<GitFile>)> {
+    if !trusted {
+        return untrusted_version(path, rev).await;
+    }
     let (root, relative) = repo_path(path).await?;
     let label = match rev {
         Some(rev) => format!("{rev}:{relative}"),
@@ -171,13 +178,81 @@ pub async fn git_version(
     Ok((old, git))
 }
 
+/// [`git_version`] in a workspace not trusted: read in-process (see
+/// [`helix_vcs::git_file_version`]), for viewing only.
+async fn untrusted_version(
+    path: &Path,
+    rev: Option<&str>,
+) -> anyhow::Result<(OldVersion, Option<GitFile>)> {
+    let (file, spec) = (path.to_path_buf(), rev.map(str::to_string));
+    let (relative, text) = tokio::task::spawn_blocking(move || {
+        helix_vcs::git_file_version(&file, spec.as_deref(), false)
+    })
+    .await??;
+    let label = match rev {
+        Some(rev) => format!("{rev}:{relative}"),
+        None => format!("index:{relative}"),
+    };
+    let text = text.map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
+    let old = OldVersion {
+        text: text.unwrap_or_default().into(),
+        title: label,
+        syntax_path: Some(PathBuf::from(&relative)),
+    };
+    Ok((old, None))
+}
+
+/// Whether git may be run for `dir`: its workspace is trusted (see
+/// [`super::git::workspace_trusted`]). Viewing diffs doesn't need it; staging, committing and
+/// resolving conflicts do.
+pub fn trusted(editor: &Editor, dir: &Path) -> bool {
+    super::git::workspace_trusted(editor, dir)
+}
+
 // --- reviews of changed files ----------------------------------------------
 
 /// The changed files of `dir` (and the folders below) to review, in order: against `rev`
 /// (with the files added since), or, without, as `git status` lists them, each against the
 /// index when it has changes not staged (what `git diff` shows) and against `HEAD` when its
 /// changes are all staged (else the diff would show nothing).
-pub async fn review_files(dir: &Path, rev: Option<&str>) -> anyhow::Result<Vec<ReviewFile>> {
+///
+/// In a workspace not `trusted`, the files are listed in-process (those with changes not
+/// staged, and new ones), without merge conflicts (resolving them needs trust); against a
+/// revision, not at all.
+pub async fn review_files(
+    dir: &Path,
+    rev: Option<&str>,
+    trusted: bool,
+) -> anyhow::Result<Vec<ReviewFile>> {
+    if !trusted {
+        if let Some(rev) = rev {
+            anyhow::bail!(
+                "Reviewing the changes since {rev} needs a trusted workspace: :workspace-trust trusts it"
+            );
+        }
+        let dir = dir.to_path_buf();
+        let mut files = tokio::task::spawn_blocking(move || {
+            let files = std::sync::Mutex::new(Vec::new());
+            helix_vcs::git_changed_files(&dir, false, |change| {
+                if let Ok(change) = change {
+                    let path = change.path().to_path_buf();
+                    if path.starts_with(&dir) {
+                        files.lock().expect("not poisoned").push(ReviewFile {
+                            path,
+                            base: Some("HEAD".to_string()),
+                            conflict: false,
+                        });
+                    }
+                }
+                true
+            })
+            .map(|()| files.into_inner().expect("not poisoned"))
+        })
+        .await??;
+        files.sort_by(|a, b| a.path.cmp(&b.path));
+        files.dedup_by(|a, b| a.path == b.path);
+        return Ok(files);
+    }
     let root = repo_root(dir).await?;
     let mut files: Vec<ReviewFile> = match rev {
         None => super::git::status(dir, false)
@@ -247,8 +322,9 @@ pub fn open_review(
     files: Vec<ReviewFile>,
     index: usize,
     action: helix_view::editor::Action,
+    trusted: bool,
 ) {
-    jobs.callback(review_file(files, index, action));
+    jobs.callback(review_file(files, index, action, trusted));
 }
 
 /// What [`open_review`] does in the background: the old version of the file read, the
@@ -257,16 +333,17 @@ pub async fn review_file(
     files: Vec<ReviewFile>,
     index: usize,
     action: helix_view::editor::Action,
+    trusted: bool,
 ) -> anyhow::Result<crate::job::Callback> {
     let file = files
         .get(index)
         .cloned()
         .ok_or_else(|| anyhow!("no changed file {index}"))?;
     // a file with conflicts: the merge resolver
-    if file.conflict {
+    if file.conflict && trusted {
         return super::merge::merge_of(file.path, Some((files, index))).await;
     }
-    let (old, git) = git_version(&file.path, file.base.as_deref()).await?;
+    let (old, git) = git_version(&file.path, file.base.as_deref(), trusted).await?;
     Ok(crate::job::Callback::Editor(Box::new(
         move |editor: &mut Editor| show_review_file(editor, files, index, old, git, action),
     )))
@@ -315,19 +392,30 @@ fn show_review_file(
         view: editor.tree.focus,
     });
     let shown = helix_stdx::path::get_relative_path(&path);
+    let viewing_only = if editor
+        .diff_session(editor.tree.focus)
+        .is_some_and(|s| s.git.is_none())
+        && !super::git::workspace_trusted(editor, path.parent().unwrap_or(&path))
+    {
+        " (viewing only: the workspace isn't trusted)"
+    } else {
+        ""
+    };
     editor.set_status(format!(
-        "File {} of {count}: {}",
+        "File {} of {count}: {}{viewing_only}",
         index + 1,
         shown.display()
     ));
 }
 
-/// Whether git may be run for `dir` (see [`super::git::workspace_trusted`]), saying so when
-/// not.
-pub fn git_allowed(editor: &mut Editor, dir: &Path) -> bool {
+/// Whether git may be run for `dir` to do `what` (`Staging`...): its workspace is trusted;
+/// saying so when not.
+pub fn git_allowed(editor: &mut Editor, dir: &Path, what: &str) -> bool {
     let trusted = super::git::workspace_trusted(editor, dir);
     if !trusted {
-        editor.set_error("Git needs a trusted workspace (see :workspace-trust)");
+        editor.set_error(format!(
+            "{what} needs a trusted workspace: :workspace-trust trusts it"
+        ));
     }
     trusted
 }
@@ -356,11 +444,14 @@ fn move_in_review(cx: &mut Context, forward: bool) {
         });
         return;
     };
+    let file = &review.files[index].path;
+    let trusted = trusted(cx.editor, file.parent().unwrap_or(file));
     open_review(
         cx.jobs,
         review.files,
         index,
         helix_view::editor::Action::Replace,
+        trusted,
     );
 }
 
@@ -379,7 +470,7 @@ pub fn diff_previous_file(cx: &mut Context) {
 /// staged files listed in comments, the changed files list beside it in the quickfix panel
 /// (when enabled). Saving the message commits (see [`commit_on_save`]).
 pub fn start_commit(editor: &mut Editor, jobs: &mut crate::job::Jobs, dir: PathBuf, amend: bool) {
-    if !git_allowed(editor, &dir) {
+    if !git_allowed(editor, &dir, "Committing") {
         return;
     }
     jobs.callback(async move {
@@ -569,7 +660,7 @@ pub fn commit_on_save(editor: &mut Editor, jobs: &mut crate::job::Jobs, doc: Doc
         let mut refreshed = Vec::new();
         if committed.is_ok() {
             for (view, file, rev) in diffs {
-                if let Ok((old, git)) = git_version(&file, rev.as_deref()).await {
+                if let Ok((old, git)) = git_version(&file, rev.as_deref(), true).await {
                     refreshed.push((view, old, git));
                 }
             }
@@ -850,15 +941,22 @@ pub fn diff_stage(cx: &mut Context) {
         return not_in_a_diff(cx);
     };
     let session = cx.editor.diff_session(view).cloned().expect("in a diff");
+    let dir = session
+        .right_doc_path(cx.editor)
+        .and_then(Path::parent)
+        .map(Path::to_path_buf);
+    if let Some(dir) = dir {
+        if !git_allowed(cx.editor, &dir, "Staging") {
+            return;
+        }
+    }
     let Some(git) = session.git.clone() else {
         cx.editor.set_error(
             "Staging needs a diff against git: a review (Space g, :diff-review) or :diff-git",
         );
         return;
     };
-    if !git_allowed(cx.editor, &git.root) {
-        return;
-    }
+
     let Some(index) = hunk_under_cursor(cx.editor, view, side, &hunks) else {
         cx.editor.set_status("No change under the cursor");
         return;
