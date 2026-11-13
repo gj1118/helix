@@ -319,6 +319,13 @@ pub fn test_editor_config() -> helix_view::editor::Config {
             level: ImplicitTrustLevelConfig::Insecure,
             ..Default::default()
         },
+        // The diff connector drawn with cells, wherever the tests run: `auto` would draw it as
+        // an image (blank cells) in a terminal with the kitty graphics protocol and a true
+        // color theme (kitty, Ghostty).
+        diff: helix_view::diff_view::DiffConfig {
+            connector_graphics: helix_view::diff_view::ConnectorGraphics::Cells,
+            ..Default::default()
+        },
         ..Default::default()
     }
 }
