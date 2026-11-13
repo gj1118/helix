@@ -2544,6 +2544,9 @@ pub struct Editor {
     /// The size of a cell of the terminal in pixels, when it reports one. The application
     /// updates it before every frame.
     pub cell_size: Option<(u16, u16)>,
+    /// Whether the terminal answered that it shows images with the kitty graphics protocol
+    /// (asked at startup where the environment doesn't tell). The application sets it.
+    pub kitty_graphics: bool,
 
     /// The primary Selection prior to starting a goto_line_number preview. This is
     /// restored when the preview is aborted, or added to the jumplist when it is
@@ -2813,6 +2816,7 @@ impl Editor {
             macro_replaying: Vec::new(),
             theme: theme_loader.default(),
             cell_size: None,
+            kitty_graphics: false,
             language_servers,
             diagnostics: Diagnostics::new(),
             diff_providers: DiffProviderRegistry::default(),

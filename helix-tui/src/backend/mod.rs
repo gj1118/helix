@@ -92,4 +92,9 @@ pub trait Backend {
     fn cell_size(&self) -> Option<(u16, u16)> {
         None
     }
+    /// Whether the terminal answered that it shows images with the kitty graphics protocol
+    /// (asked when [`Config::query_kitty_graphics`](crate::terminal::Config)).
+    fn supports_kitty_graphics(&self) -> bool {
+        false
+    }
 }

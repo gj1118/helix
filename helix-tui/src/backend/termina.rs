@@ -54,6 +54,8 @@ struct Capabilities {
     /// shape.
     kitty_multi_cursor: bool,
     synchronized_output: bool,
+    /// Images with the kitty graphics protocol (only when asked: [`Config::query_kitty_graphics`]).
+    kitty_graphics: bool,
     true_color: bool,
     extended_underlines: bool,
     /// OSC11 / OSC111 - change the terminal's background color.
@@ -106,6 +108,10 @@ impl TerminaBackend {
 
         // HACK: emitting OSC11 / OSC111 seems to break SGR and cause flickering in tmux.
         capabilities.dynamic_background_color = std::env::var_os("TMUX").is_none();
+
+        if config.query_kitty_graphics {
+            capabilities.kitty_graphics = query_kitty_graphics(Duration::from_millis(500));
+        }
 
         capabilities.kitty_keyboard = match config.kitty_keyboard_protocol {
             KittyKeyboardProtocolConfig::Disabled => KittyKeyboardSupport::None,
@@ -640,6 +646,10 @@ impl Backend for TerminaBackend {
         Some(((width / size.cols).max(1), (height / size.rows).max(1)))
     }
 
+    fn supports_kitty_graphics(&self) -> bool {
+        self.capabilities.kitty_graphics
+    }
+
     fn supports_true_color(&self) -> bool {
         self.capabilities.true_color
     }
@@ -724,6 +734,76 @@ impl TerminaBackend {
 
 /// Whether a terminal answering the multiple cursors query with `supported` can draw secondary
 /// cursors the way Helix asks for them: in the shape of the main cursor.
+/// The kitty graphics protocol's query: a terminal that has the protocol answers it (`OK`),
+/// then all answer the request for the primary device attributes.
+/// <https://sw.kovidgoyal.net/kitty/graphics-protocol/#querying-support-and-available-transmission-mediums>
+const KITTY_GRAPHICS_QUERY: &[u8] = b"\x1b_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b[c";
+
+/// Whether the terminal shows images with the kitty graphics protocol. It is asked on the
+/// terminal device itself (in raw mode), before anything reads it: the answer is an APC
+/// sequence, which the event parser would take for key presses. `false` without an answer
+/// within `timeout`.
+#[cfg(unix)]
+fn query_kitty_graphics(timeout: std::time::Duration) -> bool {
+    use rustix::event::{poll, PollFd, PollFlags, Timespec};
+    use std::io::Read as _;
+
+    let Ok(mut tty) = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+    else {
+        return false;
+    };
+    if tty.write_all(KITTY_GRAPHICS_QUERY).is_err() {
+        return false;
+    }
+    let deadline = std::time::Instant::now() + timeout;
+    let mut answer = Vec::new();
+    loop {
+        if let Some(supported) = kitty_graphics_answer(&answer) {
+            log::debug!("kitty graphics protocol: {supported}");
+            return supported;
+        }
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            log::debug!("No answer about the kitty graphics protocol within {timeout:?}");
+            return false;
+        }
+        let left = Timespec {
+            tv_sec: left.as_secs() as _,
+            tv_nsec: left.subsec_nanos() as _,
+        };
+        let mut fds = [PollFd::new(&tty, PollFlags::IN)];
+        match poll(&mut fds, Some(&left)) {
+            Ok(0) => continue,
+            Ok(_) => {
+                let mut bytes = [0; 256];
+                match tty.read(&mut bytes) {
+                    Ok(0) | Err(_) => return false,
+                    Ok(read) => answer.extend_from_slice(&bytes[..read]),
+                }
+            }
+            Err(rustix::io::Errno::INTR) => continue,
+            Err(_) => return false,
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn query_kitty_graphics(_timeout: std::time::Duration) -> bool {
+    false
+}
+
+/// What the answers to [`KITTY_GRAPHICS_QUERY`] read so far say: nothing until the device
+/// attributes (the last answer) came.
+fn kitty_graphics_answer(bytes: &[u8]) -> Option<bool> {
+    let find = |needle: &[u8]| bytes.windows(needle.len()).position(|w| w == needle);
+    let attributes = find(b"\x1b[?")?;
+    bytes[attributes..].contains(&b'c').then_some(())?;
+    Some(find(b"\x1b_Gi=31;OK").is_some_and(|ok| ok < attributes))
+}
+
 fn multi_cursor_supported(supported: &[csi::MultiCursorCapability]) -> bool {
     supported.contains(&csi::MultiCursorCapability::FollowMainCursorShape)
 }
@@ -809,6 +889,28 @@ fn diff_modifiers(from: Modifier, to: Modifier) -> SgrModifiers {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The answer to the kitty graphics query counts once the device attributes came, which
+    /// every terminal sends.
+    #[test]
+    fn the_kitty_graphics_answer() {
+        let yes: Option<bool> = kitty_graphics_answer(b"\x1b_Gi=31;OK\x1b\\\x1b[?62;22;52c");
+        assert_eq!(yes, Some(true));
+        // only the attributes: no protocol
+        assert_eq!(kitty_graphics_answer(b"\x1b[?62;22c"), Some(false));
+        // an error instead of OK
+        assert_eq!(
+            kitty_graphics_answer(b"\x1b_Gi=31;EINVAL:bad\x1b\\\x1b[?62c"),
+            Some(false)
+        );
+        // not all there yet
+        assert_eq!(kitty_graphics_answer(b"\x1b_Gi=31;OK\x1b\\"), None);
+        assert_eq!(
+            kitty_graphics_answer(b"\x1b_Gi=31;OK\x1b\\\x1b[?62;2"),
+            None
+        );
+        assert_eq!(kitty_graphics_answer(b""), None);
+    }
 
     /// The reply kitty documents for the multiple cursors query enables secondary cursors;
     /// terminals that cannot follow the main cursor's shape (or don't reply) don't get them.

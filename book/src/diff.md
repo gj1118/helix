@@ -182,7 +182,7 @@ Helix's `C` (copy the selection to the next line) in diff views only.
 [editor.diff]
 ignore-whitespace = false  # lines that differ only in whitespace are not changes
 connector-width = 9        # columns of the connector
-connector-graphics = "auto" # "auto", "kitty" or "cells": how the connector is drawn
+connector-graphics = "auto" # "auto", "kitty", "iterm2" or "cells": how the connector is drawn
 align-on-jump = true       # `]c`/`[c` scroll the other side to the same change
 scroll-sync = true         # scrolling one side scrolls the other; false: each on its own
 open-changed-files-in-diff = true # files opened from `Space g` show their diff; false: a buffer
@@ -193,13 +193,20 @@ unstaged = "□"
 partial = "◩"
 ```
 
-On terminals that show images with the kitty graphics protocol (kitty, Ghostty; the
-detection of `[editor.image-preview] protocol`, never inside tmux or zellij), the connector
-is drawn as an image: smooth, anti-aliased curves from each change on the left to the same
-change on the right, over the terminal's own background, the stage marks on top. Elsewhere,
-and with a theme whose diff colors are terminal palette names (`green`) rather than RGB, it
-is drawn with cells. `connector-graphics = "kitty"` uses the image whatever the detection
-says, `"cells"` never.
+On terminals that show images, the connector is drawn as an image: smooth, anti-aliased
+curves from each change on the left to the same change on the right, over the terminal's own
+background, the stage marks on top. `auto` picks the protocol:
+
+- the kitty graphics protocol where the terminal has it: kitty and Ghostty (the detection of
+  `[editor.image-preview] protocol`), and any other terminal that says so when asked at
+  startup, such as WezTerm with `config.enable_kitty_graphics = true` in its `wezterm.lua`;
+- else iTerm2's inline images where the terminal has those (iTerm2, WezTerm);
+- else cells. Sixel terminals get cells too: Sixel's fixed palette and opaque background
+  would band the curves.
+
+Inside tmux or zellij, and with a theme whose diff colors are terminal palette names
+(`green`) rather than RGB, it is drawn with cells. `connector-graphics = "kitty"` or
+`"iterm2"` uses that protocol whatever the detection says, `"cells"` never draws an image.
 
 The colors come from the theme: `ui.diff.add`, `ui.diff.delete`, `ui.diff.change` and
 `ui.diff.change.emphasis` (backgrounds). A theme without them gets backgrounds mixed from its

@@ -26,5 +26,8 @@ termina = { workspace = true, optional = true }
 termini = "1.0"
 log = "~0.4"
 
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1", features = ["event"] }
+
 [target.'cfg(windows)'.dependencies]
 crossterm = { version = "0.28", optional = true }

@@ -599,6 +599,7 @@ impl Application {
         // TODO: need to recalculate view tree if necessary
 
         cx.editor.cell_size = self.terminal.backend().cell_size();
+        cx.editor.kitty_graphics = self.terminal.backend().supports_kitty_graphics();
         let surface = self.terminal.current_buffer_mut();
 
         self.compositor.render(area, surface, &mut cx);
@@ -2193,6 +2194,12 @@ impl Application {
     #[cfg(feature = "integration")]
     pub fn set_cell_size(&mut self, size: Option<(u16, u16)>) {
         self.terminal.backend_mut().cell_size = size;
+    }
+
+    /// Sets whether the (test) terminal answers that it has the kitty graphics protocol.
+    #[cfg(feature = "integration")]
+    pub fn set_kitty_graphics(&mut self, supported: bool) {
+        self.terminal.backend_mut().kitty_graphics = supported;
     }
 
     pub async fn close(&mut self) -> Vec<anyhow::Error> {

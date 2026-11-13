@@ -19,6 +19,8 @@ pub struct TestBackend {
     pub raw: Vec<(u16, u16, Vec<u8>)>,
     /// What `cell_size` reports.
     pub cell_size: Option<(u16, u16)>,
+    /// What `supports_kitty_graphics` reports.
+    pub kitty_graphics: bool,
     /// The secondary cursors set with `set_multiple_cursors`, one entry per call.
     pub multiple_cursors: Vec<Vec<(u16, u16)>>,
     /// The window title, as a terminal with a title stack has it: the title before Helix
@@ -28,6 +30,9 @@ pub struct TestBackend {
     pub title_stack: Vec<String>,
     /// The titles set with `set_title`, one entry per call.
     pub titles_set: Vec<String>,
+    /// When set, what reaches the terminal, in order: `raw x,y` for `write_raw`, `x,y symbol`
+    /// for each cell drawn.
+    pub events: Option<Vec<String>>,
 }
 
 /// Returns a string representation of the given buffer for debugging purpose.
@@ -69,10 +74,12 @@ impl TestBackend {
             pos: (0, 0),
             raw: Vec::new(),
             cell_size: None,
+            kitty_graphics: false,
             multiple_cursors: Vec::new(),
             title: "terminal".to_string(),
             title_stack: Vec::new(),
             titles_set: Vec::new(),
+            events: None,
         }
     }
 
@@ -128,11 +135,18 @@ impl TestBackend {
 impl Backend for TestBackend {
     fn write_raw(&mut self, x: u16, y: u16, bytes: &[u8]) -> Result<(), io::Error> {
         self.raw.push((x, y, bytes.to_vec()));
+        if let Some(events) = &mut self.events {
+            events.push(format!("raw {x},{y}"));
+        }
         Ok(())
     }
 
     fn cell_size(&self) -> Option<(u16, u16)> {
         self.cell_size
+    }
+
+    fn supports_kitty_graphics(&self) -> bool {
+        self.kitty_graphics
     }
 
     fn claim(&mut self) -> Result<(), io::Error> {
@@ -152,6 +166,9 @@ impl Backend for TestBackend {
         I: Iterator<Item = (u16, u16, &'a Cell)>,
     {
         for (x, y, c) in content {
+            if let Some(events) = &mut self.events {
+                events.push(format!("{x},{y} {}", c.symbol));
+            }
             self.buffer[(x, y)] = c.clone();
         }
         Ok(())

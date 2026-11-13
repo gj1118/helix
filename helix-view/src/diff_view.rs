@@ -14,6 +14,8 @@ use helix_core::diff_hunks::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::image_preview::Protocol;
+
 use crate::{
     editor::{GutterConfig, GutterType},
     graphics::{Color, Modifier, Style},
@@ -29,7 +31,7 @@ pub struct DiffConfig {
     /// Columns of the connector between the two sides.
     pub connector_width: u16,
     /// How the connector is drawn: an image (smooth curves) on terminals with the kitty
-    /// graphics protocol, cells otherwise.
+    /// graphics protocol or iTerm2's inline images, cells otherwise.
     pub connector_graphics: ConnectorGraphics,
     /// Jumping to a change (`]c`, `[c`) scrolls the other side to the same change.
     pub align_on_jump: bool,
@@ -73,14 +75,33 @@ impl Default for DiffConfig {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ConnectorGraphics {
-    /// An image where the terminal shows images with the kitty graphics protocol (the
-    /// detection of `[editor.image-preview] protocol`), cells elsewhere.
+    /// An image with the kitty graphics protocol where the terminal has it (the protocol of
+    /// `[editor.image-preview]`, or the terminal's answer when asked), else with iTerm2's
+    /// inline images where the terminal has those; cells elsewhere.
     #[default]
     Auto,
-    /// Always an image (kitty graphics protocol).
+    /// Always an image, with the kitty graphics protocol.
     Kitty,
+    /// Always an image, with iTerm2's inline images.
+    Iterm2,
     /// Always cells.
     Cells,
+}
+
+impl ConnectorGraphics {
+    /// The protocol the connector is drawn with (`None`: cells), where the image preview uses
+    /// `preview` and the terminal answered that it has the kitty graphics protocol or not.
+    pub fn protocol(self, preview: Protocol, kitty_answered: bool) -> Option<Protocol> {
+        match self {
+            Self::Cells => None,
+            Self::Kitty => Some(Protocol::Kitty),
+            Self::Iterm2 => Some(Protocol::Iterm2),
+            Self::Auto if kitty_answered || preview == Protocol::Kitty => Some(Protocol::Kitty),
+            Self::Auto if preview == Protocol::Iterm2 => Some(Protocol::Iterm2),
+            // Sixel's fixed palette and opaque background would band the smooth curves
+            Self::Auto => None,
+        }
+    }
 }
 
 /// `[editor.diff.stage-markers]`
@@ -1205,6 +1226,36 @@ pub fn blend_visibly(color: Color, background: Option<Color>, amount: f32, contr
 
 #[cfg(test)]
 mod tests {
+    /// `auto` takes the kitty graphics protocol where the terminal has it, then iTerm2's
+    /// inline images; the explicit settings take their protocol anywhere.
+    #[test]
+    fn the_connector_protocol() {
+        use crate::image_preview::Protocol::*;
+        let auto = ConnectorGraphics::Auto;
+        let wezterm: Option<crate::image_preview::Protocol> = auto.protocol(Iterm2, false);
+        assert_eq!(wezterm, Some(Iterm2));
+        // WezTerm with `enable_kitty_graphics`: it answered the query
+        assert_eq!(auto.protocol(Iterm2, true), Some(Kitty));
+        assert_eq!(auto.protocol(Kitty, false), Some(Kitty));
+        assert_eq!(auto.protocol(Sixel, false), None);
+        assert_eq!(auto.protocol(Halfblocks, false), None);
+        assert_eq!(auto.protocol(Halfblocks, true), Some(Kitty));
+        assert_eq!(
+            ConnectorGraphics::Iterm2.protocol(Kitty, true),
+            Some(Iterm2)
+        );
+        assert_eq!(
+            ConnectorGraphics::Kitty.protocol(Halfblocks, false),
+            Some(Kitty)
+        );
+        assert_eq!(ConnectorGraphics::Cells.protocol(Kitty, true), None);
+        let setting: ConnectorGraphics =
+            toml::from_str::<DiffConfig>("connector-graphics = \"iterm2\"")
+                .unwrap()
+                .connector_graphics;
+        assert_eq!(setting, ConnectorGraphics::Iterm2);
+    }
+
     use super::*;
 
     #[test]

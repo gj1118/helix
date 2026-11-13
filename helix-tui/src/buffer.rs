@@ -9,7 +9,7 @@ pub const SYMBOL_CAPACITY: usize = 28;
 pub type Symbol = arrayvec::ArrayString<SYMBOL_CAPACITY>;
 
 /// One cell of the terminal. Contains one stylized grapheme.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Cell {
     pub symbol: Symbol,
     /// Cached display width of `symbol` to avoid multiple recomputes in the hot path.
@@ -173,8 +173,9 @@ pub struct Buffer {
 /// can't be part of a [`Cell`], they have to reach the terminal as they are, at the position of
 /// the area.
 ///
-/// An overlay is sent when the previous frame didn't have one with the same area and `key`, and
-/// the cells below it are drawn again when it goes away.
+/// An overlay is sent when the previous frame didn't have one with the same area, `key` and
+/// cells below it, and the cells below it are drawn again when it goes away. Something drawn
+/// over its area after it (a popup) hides it for that frame.
 #[derive(Debug, Clone)]
 pub struct Overlay {
     pub area: Rect,
@@ -183,11 +184,17 @@ pub struct Overlay {
     pub payload: std::sync::Arc<[u8]>,
     /// Sent when the overlay goes away, for terminals that keep the image in their memory.
     pub cleanup: Option<std::sync::Arc<[u8]>>,
+    /// The text in the cells below is written again after the overlay, for the terminals that
+    /// put an image in place of the text of its cells (iTerm2's inline images), where the
+    /// kitty graphics protocol can show it below the text.
+    pub text_on_top: bool,
+    /// The cells below it when it was added (set by [`Buffer::add_overlay`]).
+    pub cells: u64,
 }
 
 impl PartialEq for Overlay {
     fn eq(&self, other: &Self) -> bool {
-        self.area == other.area && self.key == other.key
+        self.area == other.area && self.key == other.key && self.cells == other.cells
     }
 }
 
@@ -729,9 +736,23 @@ impl Buffer {
         self.overlays.clear();
     }
 
-    /// Shows `overlay` over its area. The cells below should be blank.
-    pub fn add_overlay(&mut self, overlay: Overlay) {
+    /// Shows `overlay` over its area, which has its final cells (blank, or the text over it).
+    pub fn add_overlay(&mut self, mut overlay: Overlay) {
+        overlay.cells = self.cells_of(overlay.area);
         self.overlays.push(overlay);
+    }
+
+    /// A hash of the cells of `area`.
+    pub fn cells_of(&self, area: Rect) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        let area = self.area.intersection(area);
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                self[(x, y)].hash(&mut hasher);
+            }
+        }
+        hasher.finish()
     }
 
     /// Marks the cells of the area as unknown, so that the next [`Buffer::diff`] against this

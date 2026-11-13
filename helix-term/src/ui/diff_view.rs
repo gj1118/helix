@@ -7,10 +7,10 @@ use std::sync::Arc;
 use helix_core::diff_hunks::{hunk_at, line_count, DiffHunk, Side};
 use helix_core::doc_formatter::FormattedGrapheme;
 use helix_view::diff_connector::{connector_image, connector_png, Band, MAX_CELL};
-use helix_view::diff_view::{shown_hunks, ConnectorGraphics, DiffSession, DiffStyles, Stage};
+use helix_view::diff_view::{shown_hunks, DiffSession, DiffStyles, Stage};
 use helix_view::graphics::Color;
 use helix_view::graphics::{Rect, Style};
-use helix_view::image_preview::{kitty, Encoded, Placement, Protocol};
+use helix_view::image_preview::{iterm2, kitty, Encoded, Placement, Protocol};
 use helix_view::{Document, Editor, View};
 use tui::buffer::{Buffer as Surface, Overlay};
 
@@ -253,8 +253,8 @@ fn render_connector(editor: &Editor, index: usize, session: &DiffSession, surfac
             style,
         ));
     }
-    let image_bands: Option<Vec<Band>> = use_graphics(editor)
-        .then(|| {
+    let image_bands: Option<(Protocol, Vec<Band>)> =
+        connector_protocol(editor).and_then(|protocol| {
             bands
                 .iter()
                 .map(|(_, left, right, style)| match style.bg {
@@ -266,23 +266,25 @@ fn render_connector(editor: &Editor, index: usize, session: &DiffSession, surfac
                     // a color the image can't have: cells
                     _ => None,
                 })
-                .collect()
-        })
-        .flatten();
-    match image_bands {
-        Some(image_bands) => draw_image(
+                .collect::<Option<Vec<_>>>()
+                .map(|image_bands| (protocol, image_bands))
+        });
+    let image = match image_bands {
+        Some((protocol, image_bands)) => Some(draw_image(
             editor,
+            protocol,
             KITTY_CONNECTOR_ID + index as u32,
             area,
             &image_bands,
             surface,
-        ),
+        )),
         None => {
             for (_, left, right, style) in &bands {
                 draw_band(surface, area, *style, *left, *right);
             }
+            None
         }
-    }
+    };
     // the stage marks at the right edge, on each change's first row (over the image too)
     for (hunk_index, _, (right_top, _), _) in &bands {
         let mark = markers
@@ -300,22 +302,23 @@ fn render_connector(editor: &Editor, index: usize, session: &DiffSession, surfac
             }
         }
     }
+    if let Some(image) = image {
+        surface.add_overlay(image);
+    }
 }
 
-/// Whether the connector is drawn as an image (`[editor.diff] connector-graphics`).
-fn use_graphics(editor: &Editor) -> bool {
+/// The protocol the connector image is drawn with, `None` for cells
+/// (`[editor.diff] connector-graphics`).
+fn connector_protocol(editor: &Editor) -> Option<Protocol> {
     let config = editor.config();
-    match config.diff.connector_graphics {
-        ConnectorGraphics::Cells => false,
-        ConnectorGraphics::Kitty => true,
-        ConnectorGraphics::Auto => {
-            config
-                .image_preview
-                .protocol
-                .resolve(|name| std::env::var(name).ok())
-                == Protocol::Kitty
-        }
-    }
+    let preview = config
+        .image_preview
+        .protocol
+        .resolve(|name| std::env::var(name).ok());
+    config
+        .diff
+        .connector_graphics
+        .protocol(preview, editor.kitty_graphics)
 }
 
 thread_local! {
@@ -326,9 +329,17 @@ thread_local! {
 }
 
 /// The connector over `area` as an image (`bands` drawn smooth and anti-aliased), shown with
-/// the kitty graphics protocol as image `id`; its cells blank under it. An image like the one
-/// shown is not sent again (see the overlays of [`Surface`]).
-fn draw_image(editor: &Editor, id: u32, area: Rect, bands: &[Band], surface: &mut Surface) {
+/// `protocol` (the kitty graphics protocol as image `id`); its cells blank under it. To add to
+/// `surface` once the text over it is drawn. An image like the one shown is not sent again
+/// (see the overlays of [`Surface`]).
+fn draw_image(
+    editor: &Editor,
+    protocol: Protocol,
+    id: u32,
+    area: Rect,
+    bands: &[Band],
+    surface: &mut Surface,
+) -> Overlay {
     for y in area.top()..area.bottom() {
         for x in area.left()..area.right() {
             surface[(x, y)].set_symbol(" ");
@@ -342,7 +353,7 @@ fn draw_image(editor: &Editor, id: u32, area: Rect, bands: &[Band], surface: &mu
     let key = {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        (area.width, area.height, cell).hash(&mut hasher);
+        (protocol, area.width, area.height, cell).hash(&mut hasher);
         // to a 64th of a row: what the image can show
         let at = |row: f32| (row * 64.0).round() as i64;
         for band in bands {
@@ -371,18 +382,25 @@ fn draw_image(editor: &Editor, id: u32, area: Rect, bands: &[Band], surface: &mu
                     width_px: image.width(),
                     height_px: image.height(),
                 };
-                let encoded = kitty(&connector_png(&image), &placement, id);
+                let png = connector_png(&image);
+                let encoded = match protocol {
+                    Protocol::Iterm2 => iterm2(&png, &placement),
+                    _ => kitty(&png, &placement, id),
+                };
                 images.insert(id, (key, encoded.clone()));
                 encoded
             }
         }
     });
-    surface.add_overlay(Overlay {
+    Overlay {
         area,
         key,
         payload: Arc::from(encoded.payload.as_slice()),
         cleanup: encoded.cleanup.as_deref().map(Arc::from),
-    });
+        // iTerm2's images take the place of the text of their cells (the stage markers)
+        text_on_top: protocol == Protocol::Iterm2,
+        cells: 0,
+    }
 }
 
 /// A band across `area`, from the rows `left` (top, bottom) at its left edge to `right` at its

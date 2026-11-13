@@ -26,6 +26,8 @@ pub struct Config {
     pub enable_mouse_capture: bool,
     pub force_enable_extended_underlines: bool,
     pub kitty_keyboard_protocol: KittyKeyboardProtocolConfig,
+    /// Ask the terminal whether it has the kitty graphics protocol (for the diff connector).
+    pub query_kitty_graphics: bool,
 }
 
 impl From<&EditorConfig> for Config {
@@ -34,6 +36,11 @@ impl From<&EditorConfig> for Config {
             enable_mouse_capture: config.mouse,
             force_enable_extended_underlines: config.undercurl,
             kitty_keyboard_protocol: config.kitty_keyboard_protocol,
+            query_kitty_graphics: config.diff.connector_graphics
+                == helix_view::diff_view::ConnectorGraphics::Auto
+                && helix_view::image_preview::kitty_graphics_unknown(|name| {
+                    std::env::var(name).ok()
+                }),
         }
     }
 }
@@ -192,11 +199,16 @@ where
         // that were below them again.
         let (previous_buffer, current_buffer) = if self.current == 0 {
             let (current, previous) = self.buffers.split_at_mut(1);
-            (&mut previous[0], &current[0])
+            (&mut previous[0], &mut current[0])
         } else {
             let (previous, current) = self.buffers.split_at_mut(1);
-            (&mut previous[0], &current[0])
+            (&mut previous[0], &mut current[0])
         };
+        // the ones something was drawn over after them (a popup) are hidden in this frame
+        let mut overlays = std::mem::take(&mut current_buffer.overlays);
+        overlays.retain(|overlay| overlay.cells == current_buffer.cells_of(overlay.area));
+        current_buffer.overlays = overlays;
+        let current_buffer = &*current_buffer;
         for overlay in &previous_buffer.overlays {
             if !current_buffer.overlays.contains(overlay) {
                 if let Some(cleanup) = &overlay.cleanup {
@@ -223,6 +235,14 @@ where
             if !previous_buffer.overlays.contains(overlay) {
                 self.backend
                     .write_raw(overlay.area.x, overlay.area.y, &overlay.payload)?;
+                if overlay.text_on_top {
+                    let area = current_buffer.area.intersection(overlay.area);
+                    let text = (area.top()..area.bottom())
+                        .flat_map(|y| (area.left()..area.right()).map(move |x| (x, y)))
+                        .map(|(x, y)| (x, y, &current_buffer[(x, y)]))
+                        .filter(|(_, _, cell)| !cell.symbol.trim().is_empty());
+                    self.backend.draw(text)?;
+                }
             }
         }
         Ok(())
@@ -370,6 +390,8 @@ mod overlay_tests {
             key,
             payload: Arc::from(format!("image {key}").into_bytes()),
             cleanup: Some(Arc::from(format!("delete {key}").into_bytes())),
+            text_on_top: false,
+            cells: 0,
         }
     }
 
@@ -442,6 +464,69 @@ mod overlay_tests {
         terminal.clear().unwrap();
         frame(&mut terminal, &[overlay(1, area)]);
         assert_eq!(raw(&mut terminal), [(1, 1, "image 1".to_string())]);
+    }
+
+    /// A popup drawn over an image after it hides the image while it is there; the image is
+    /// shown again over its cells when the popup goes.
+    #[test]
+    fn an_image_under_a_popup_is_hidden_until_the_popup_goes() {
+        let mut terminal = Terminal::new(TestBackend::new(20, 10)).unwrap();
+        let area = Rect::new(2, 2, 4, 4);
+        frame(&mut terminal, &[overlay(1, area)]);
+        assert_eq!(raw(&mut terminal), [(2, 2, "image 1".to_string())]);
+
+        // the popup is drawn after the image, over a cell of it
+        terminal.current_buffer_mut().add_overlay(overlay(1, area));
+        terminal.current_buffer_mut()[(3, 3)].set_symbol("p");
+        terminal.draw(None, CursorKind::Hidden).unwrap();
+        let sent = raw(&mut terminal);
+        assert_eq!(sent, [(2, 2, "delete 1".to_string())]);
+        assert_eq!(sent.len(), 1_usize);
+        let popup: &str = &terminal.backend().buffer()[(3, 3)].symbol;
+        assert_eq!(popup, "p");
+
+        // the popup is gone: the cells are blank again, and the image is over them
+        frame(&mut terminal, &[overlay(1, area)]);
+        assert_eq!(raw(&mut terminal), [(2, 2, "image 1".to_string())]);
+        let blank: &str = &terminal.backend().buffer()[(3, 3)].symbol;
+        assert_eq!(blank, " ");
+    }
+
+    /// An image that takes the place of the text of its cells (iTerm2) has that text written
+    /// again after it; the same image over other text is sent again.
+    #[test]
+    fn the_text_over_an_image_is_written_after_it() {
+        let mut terminal = Terminal::new(TestBackend::new(20, 10)).unwrap();
+        terminal.backend_mut().events = Some(Vec::new());
+        let area = Rect::new(2, 2, 3, 2);
+        let image = Overlay {
+            text_on_top: true,
+            ..overlay(1, area)
+        };
+        let draw = |terminal: &mut Terminal<TestBackend>, mark: &str| {
+            terminal.current_buffer_mut()[(4, 3)].set_symbol(mark);
+            terminal.current_buffer_mut().add_overlay(image.clone());
+            terminal.draw(None, CursorKind::Hidden).unwrap();
+            std::mem::take(terminal.backend_mut().events.as_mut().unwrap())
+        };
+
+        let events: Vec<String> = draw(&mut terminal, "m");
+        let image_at = events.iter().position(|event| event == "raw 2,2");
+        assert_eq!(image_at, Some(events.len() - 2));
+        // only the text, not the blank cells, after the image
+        assert_eq!(events[events.len() - 1..], ["4,3 m".to_string()]);
+
+        // nothing changed: nothing sent
+        let events: Vec<String> = draw(&mut terminal, "m");
+        assert_eq!(events, Vec::<String>::new());
+
+        // other text: the cell, then the image again, then the text over it
+        let events: Vec<String> = draw(&mut terminal, "n");
+        assert_eq!(
+            events[events.len() - 2..],
+            ["raw 2,2".to_string(), "4,3 n".to_string()]
+        );
+        assert!(events.contains(&"raw 2,2".to_string()));
     }
 
     fn sent_cursors(terminal: &mut Terminal<TestBackend>) -> Vec<Vec<(u16, u16)>> {

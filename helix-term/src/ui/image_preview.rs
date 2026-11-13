@@ -291,6 +291,8 @@ impl ImagePreview {
                         key: drawn.id,
                         payload: payload.clone(),
                         cleanup: drawn.cleanup.clone(),
+                        text_on_top: false,
+                        cells: 0,
                     });
                 }
             }

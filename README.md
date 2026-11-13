@@ -438,8 +438,9 @@ the changed words inside them are emphasized.
   usual (`]f`, `>` with a motion...). The keys are set in `[editor.diff.keys]`, and the actions
   are commands too (`diff_next_change`, ...).
 - The connector is drawn as an image of smooth curves with the kitty graphics protocol (kitty,
-  Ghostty), with cells elsewhere (`[editor.diff] connector-graphics = "auto" | "kitty" |
-  "cells"`).
+  Ghostty, and terminals that say they have it when asked, like WezTerm with
+  `enable_kitty_graphics`), else with iTerm2's inline images (iTerm2, WezTerm), with cells
+  elsewhere (`[editor.diff] connector-graphics = "auto" | "kitty" | "iterm2" | "cells"`).
 - `[editor.diff]`: `ignore-whitespace`, `connector-width`, `align-on-jump`, `scroll-sync` (on by
   default), `open-changed-files-in-diff` (on by default). Colors: the theme's `ui.diff.add`, `ui.diff.delete`, `ui.diff.change`,
   `ui.diff.change.emphasis`, or mixed from its `diff.plus`, `diff.minus` and `diff.delta` (green,

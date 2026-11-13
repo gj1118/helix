@@ -32,7 +32,7 @@ pub enum ProtocolConfig {
     Halfblocks,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Protocol {
     Kitty,
     Iterm2,
@@ -74,6 +74,19 @@ impl Default for ImagePreviewConfig {
 /// terminal, so a terminal that isn't recognised gets half blocks, which always work.
 /// Multiplexers get half blocks too: they swallow the escape sequences of the other protocols
 /// unless they are set up to pass them through (`protocol` forces one anyway).
+/// Whether to ask the terminal if it has the kitty graphics protocol: not where the environment
+/// already says it (kitty, Ghostty), nor through a multiplexer (which would not pass the images
+/// on), nor on the consoles that print what they don't know.
+pub fn kitty_graphics_unknown(env: impl Fn(&str) -> Option<String>) -> bool {
+    let term = env("TERM").unwrap_or_default().to_ascii_lowercase();
+    detect_protocol(&env) != Protocol::Kitty
+        && !matches!(term.as_str(), "" | "linux" | "dumb")
+        && !["TMUX", "ZELLIJ"]
+            .iter()
+            .any(|name| env(name).is_some_and(|value| !value.is_empty()))
+        && !term.contains("screen")
+}
+
 pub fn detect_protocol(env: impl Fn(&str) -> Option<String>) -> Protocol {
     let has = |name: &str| env(name).is_some_and(|value| !value.is_empty());
     let contains = |name: &str, needle: &str| {
@@ -466,6 +479,33 @@ mod tests {
         assert_eq!(load_scaled(&path, 100).unwrap().size(), (100, 25));
         assert_eq!(load_scaled(&path, 1000).unwrap().size(), (400, 100));
         assert_eq!(load(&path).unwrap().size(), (400, 100));
+    }
+
+    /// The terminal is asked about the kitty graphics protocol where the environment doesn't
+    /// tell, and where an answer can come back.
+    #[test]
+    fn kitty_graphics_are_asked_about_where_unknown() {
+        let wezterm: bool = kitty_graphics_unknown(env(&[
+            ("TERM", "xterm-256color"),
+            ("TERM_PROGRAM", "WezTerm"),
+        ]));
+        assert!(wezterm);
+        assert!(kitty_graphics_unknown(env(&[("TERM", "xterm-256color")])));
+        // known
+        assert!(!kitty_graphics_unknown(env(&[("TERM", "xterm-kitty")])));
+        assert!(!kitty_graphics_unknown(env(&[
+            ("TERM", "xterm-ghostty"),
+            ("TERM_PROGRAM", "ghostty")
+        ])));
+        // no answer would come back, or the query would be printed
+        assert!(!kitty_graphics_unknown(env(&[
+            ("TERM", "xterm-256color"),
+            ("TMUX", "/tmp/tmux-1000/default,1,0")
+        ])));
+        assert!(!kitty_graphics_unknown(env(&[("TERM", "screen-256color")])));
+        assert!(!kitty_graphics_unknown(env(&[("TERM", "linux")])));
+        assert!(!kitty_graphics_unknown(env(&[("TERM", "dumb")])));
+        assert!(!kitty_graphics_unknown(env(&[])));
     }
 
     #[test]

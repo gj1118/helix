@@ -1523,15 +1523,7 @@ async fn the_connector_is_an_image_with_kitty_graphics() -> anyhow::Result<()> {
     config.editor.diff.connector_graphics = ConnectorGraphics::Kitty;
     config.editor.notifications.enable = false;
     let (mut app, _old, _new) = app_with_long_diff(config).await?;
-    // a theme with RGB colors: named terminal colors can't be in an image (cells then)
-    let theme: helix_view::Theme = toml::from_str(
-        r##""ui.background" = { bg = "#101010" }
-"ui.selection" = { bg = "#303030" }
-"diff.plus" = "#40c040"
-"diff.minus" = "#c04040"
-"diff.delta" = "#4080c0""##,
-    )?;
-    app.editor.set_theme(theme)?;
+    app.editor.set_theme(rgb_theme()?)?;
     send_keys(&mut app, "<esc>").await?;
     let session = app.editor.diff_sessions.first().cloned().expect("a diff");
     let view = app.editor.tree.get(session.right_view);
@@ -1578,6 +1570,71 @@ async fn the_connector_is_an_image_with_kitty_graphics() -> anyhow::Result<()> {
     config.editor.diff.connector_graphics = ConnectorGraphics::Cells;
     let (app, _old, _new) = app_with_long_diff(config).await?;
     assert!(app.raw_output().is_empty());
+    Ok(())
+}
+
+/// A theme with RGB colors: named terminal colors can't be in an image (cells then).
+fn rgb_theme() -> anyhow::Result<helix_view::Theme> {
+    Ok(toml::from_str(
+        r##""ui.background" = { bg = "#101010" }
+"ui.selection" = { bg = "#303030" }
+"diff.plus" = "#40c040"
+"diff.minus" = "#c04040"
+"diff.delta" = "#4080c0""##,
+    )?)
+}
+
+/// With iTerm2's inline images (WezTerm, iTerm2), the connector is a PNG sized to its cells,
+/// sent again only when it changes; `auto` takes the kitty graphics protocol once the terminal
+/// answered that it has it.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_connector_is_an_iterm2_image_or_kitty_when_the_terminal_says() -> anyhow::Result<()> {
+    use helix_view::diff_view::ConnectorGraphics;
+    let mut config = helpers::test_config();
+    config.editor.diff.connector_graphics = ConnectorGraphics::Iterm2;
+    config.editor.notifications.enable = false;
+    let (mut app, _old, _new) = app_with_long_diff(config).await?;
+    app.editor.set_theme(rgb_theme()?)?;
+    send_keys(&mut app, "<esc>").await?;
+    let session = app.editor.diff_sessions.first().cloned().expect("a diff");
+    let view = app.editor.tree.get(session.right_view);
+    let doc = app.editor.document(session.right_doc).unwrap();
+    let (x, y, rows) = (
+        view.area.x,
+        view.inner_area(doc).y,
+        view.inner_area(doc).height,
+    );
+
+    let sent: Vec<String> = images_at(&app, x, y);
+    let image: &String = sent.last().expect("an image sent");
+    let expected = "\x1b]1337;File=inline=1;";
+    assert!(image.starts_with(expected), "{image:?}");
+    let size = format!(";width=9;height={rows};preserveAspectRatio=0:");
+    assert!(image.contains(&size), "{image:?}");
+    let blank: &str = app.rendered_cell(x, y).symbol.as_str();
+    assert_eq!(blank, " ");
+
+    // a frame where the connector doesn't change: nothing sent again
+    let count: usize = app.raw_output().len();
+    send_keys(&mut app, "l").await?;
+    assert_eq!(app.raw_output().len(), count);
+
+    // scrolled: another image (nothing to delete: it is in the cells, drawn over)
+    send_keys(&mut app, "60gg").await?;
+    let sent: Vec<String> = images_at(&app, x, y);
+    assert!(sent.len() > 1, "{} sent", sent.len());
+    assert!(sent[sent.len() - 1].starts_with(expected));
+    assert!(sent[sent.len() - 2].starts_with(expected));
+
+    // `auto`, where the terminal answered the kitty graphics query: kitty's image
+    app.set_kitty_graphics(true);
+    send_keys(&mut app, ":set diff.connector-graphics auto<ret>").await?;
+    let setting: ConnectorGraphics = app.editor.config().diff.connector_graphics;
+    assert_eq!(setting, ConnectorGraphics::Auto);
+    let sent: Vec<String> = images_at(&app, x, y);
+    let image: &String = sent.last().expect("an image sent");
+    assert!(image.starts_with("\x1b_Ga=T,f=100,"), "{image:?}");
+    assert!(image.contains("i=4810600,c=9,"), "{image:?}");
     Ok(())
 }
 
