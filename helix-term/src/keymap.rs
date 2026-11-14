@@ -261,6 +261,20 @@ impl KeyTrie {
             .insert(*last, leaf);
     }
 
+    /// Names the menu at `path` (the key help shows the name), if there is one.
+    pub fn name_menu(&mut self, path: &[KeyEvent], name: &str) {
+        let mut trie = self;
+        for key in path {
+            match trie.node_mut().and_then(|node| node.map.get_mut(key)) {
+                Some(next) => trie = next,
+                None => return,
+            }
+        }
+        if let Some(node) = trie.node_mut() {
+            node.name = name.to_string();
+        }
+    }
+
     /// Descend a trie following the given path of keys
     pub fn search(&self, keys: &[KeyEvent]) -> Option<&KeyTrie> {
         let mut trie = self;

@@ -911,6 +911,79 @@ fn key_bindings_are_stored_for_the_application() {
     assert!(engine.get_commands().is_empty());
 }
 
+/// A binding for some languages only, in a named menu; the same keys for all languages are
+/// another binding.
+#[test]
+fn key_bindings_may_be_for_some_languages_in_a_menu() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    let result = result_of(
+        &engine,
+        &mut editor,
+        r#"
+        helix.keymap.set("normal", "<space>tn", function() end,
+            { desc = "New task", language = "plaintasks", menu = "Tasks" })
+        helix.keymap.set("normal", "C-d", function() end, { language = { "plaintasks", "markdown" } })
+        helix.keymap.set("normal", "C-d", function() end)
+        local bindings = helix.keymap.list()
+        local ok, err = pcall(helix.keymap.set, "normal", "x", function() end, { language = 3 })
+        assert(type(bindings[1].language) == "table" and bindings[1].language[1] == "plaintasks")
+        assert(math.type(#bindings) == "integer")
+        result = table.concat({
+            #bindings, bindings[1].menu, table.concat(bindings[2].language, ","),
+            tostring(bindings[3].language), tostring(ok),
+            tostring(err):match("a language name or a list") or tostring(err),
+        }, "|")
+        "#,
+    );
+    assert_eq!(
+        result,
+        "3|Tasks|plaintasks,markdown|nil|false|a language name or a list"
+    );
+    let bindings = &editor.plugin_keymaps.bindings;
+    let tasks: Option<Vec<String>> = bindings[0].languages.clone();
+    assert_eq!(tasks, Some(vec!["plaintasks".to_string()]));
+    let applies: Vec<bool> = [Some("plaintasks"), Some("rust"), None]
+        .into_iter()
+        .map(|language| bindings[0].applies_to(language))
+        .collect();
+    assert_eq!(applies, [true, false, false]);
+    assert!(bindings[2].applies_to(Some("rust")));
+    assert!(editor.plugin_keymaps.has_language_bindings());
+}
+
+/// `helix.fs` tells whether a path exists, and whether it is a directory.
+#[test]
+fn file_system_paths_are_checked() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "a").unwrap();
+    let code = format!(
+        r#"
+        local dir = {dir:?}
+        local values = {{
+            helix.fs.exists(dir .. "/a.txt"), helix.fs.is_dir(dir .. "/a.txt"),
+            helix.fs.exists(dir), helix.fs.is_dir(dir), helix.fs.exists(dir .. "/none"),
+        }}
+        for _, value in ipairs(values) do
+            assert(type(value) == "boolean")
+        end
+        result = table.concat({{
+            tostring(values[1]), tostring(values[2]), tostring(values[3]),
+            tostring(values[4]), tostring(values[5]),
+        }}, "|")
+        "#,
+        dir = dir.path().to_string_lossy()
+    );
+    let result = result_of(&engine, &mut editor, &code);
+    assert_eq!(result, "true|false|true|true|false");
+}
+
 #[test]
 fn key_bindings_need_the_keymaps_permission() {
     let rt = runtime();

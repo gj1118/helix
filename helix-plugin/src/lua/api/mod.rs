@@ -5,6 +5,7 @@
 pub mod buffer;
 pub mod editor;
 pub mod explorer;
+pub mod fs;
 pub mod log;
 pub mod lsp;
 pub mod process;
@@ -18,6 +19,7 @@ pub mod window;
 pub use buffer::*;
 pub use editor::*;
 pub use explorer::*;
+pub use fs::register_fs_api;
 pub use log::*;
 pub use lsp::*;
 pub use process::register_process_api;

@@ -2737,15 +2737,40 @@ pub struct PluginBinding {
     pub command: String,
     /// What the key help shows for it (`None`: the command's own).
     pub description: Option<String>,
+    /// The languages of the buffers it is for (`plaintasks`, ...): the key keeps its meaning
+    /// in the others. `None`: all.
+    pub languages: Option<Vec<String>>,
+    /// The name the key help shows for the menu the key is in (`<space>t` of `<space>tn`).
+    pub menu: Option<String>,
+}
+
+impl PluginBinding {
+    /// Whether it applies in a buffer of `language`.
+    pub fn applies_to(&self, language: Option<&str>) -> bool {
+        match &self.languages {
+            None => true,
+            Some(languages) => {
+                language.is_some_and(|language| languages.iter().any(|l| l == language))
+            }
+        }
+    }
 }
 
 impl PluginKeymaps {
-    /// Binds (replacing the binding of the same keys in the same mode, whoever set it).
+    /// Binds (replacing the binding of the same keys in the same mode for the same languages,
+    /// whoever set it).
     pub fn set(&mut self, binding: PluginBinding) {
-        self.bindings
-            .retain(|b| !(b.mode == binding.mode && b.keys == binding.keys));
+        self.bindings.retain(|b| {
+            !(b.mode == binding.mode && b.keys == binding.keys && b.languages == binding.languages)
+        });
         self.bindings.push(binding);
         self.version += 1;
+    }
+
+    /// Whether some bindings are for some languages only: the keymap then depends on the
+    /// focused buffer's language.
+    pub fn has_language_bindings(&self) -> bool {
+        self.bindings.iter().any(|b| b.languages.is_some())
     }
 
     /// Removes the binding `plugin` set for `keys` in `mode`; whether there was one.

@@ -39,6 +39,7 @@ mod test {
     mod movement;
     mod multi_cursor;
     mod persistence;
+    mod plaintasks;
     mod plugin_panels;
     mod plugins;
     mod popups;

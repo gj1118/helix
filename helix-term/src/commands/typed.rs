@@ -3053,6 +3053,21 @@ fn open_log(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> an
     Ok(())
 }
 
+/// Opens a URL with the system's opener (the browser for `https:`), like `gf` on one.
+fn open_url_externally(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let text = &args[0];
+    let url = Url::parse(text).map_err(|err| anyhow!("'{text}' is not a URL: {err}"))?;
+    cx.jobs.callback(crate::open_external_url_callback(url));
+    Ok(())
+}
+
 fn refresh_config(
     cx: &mut compositor::Context,
     _args: Args,
@@ -5137,6 +5152,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "open-url",
+        aliases: &[],
+        doc: "Open a URL with the system's opener: the browser for a web page.",
+        fun: open_url_externally,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (1, Some(1)),
             ..Signature::DEFAULT
         },
     },

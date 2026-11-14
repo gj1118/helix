@@ -684,6 +684,7 @@ impl LuaEngine {
         api::register_lsp_api(&lua, &helix)?;
         api::register_quickfix_api(&lua, &helix)?;
         api::register_explorer_api(&lua, &helix)?;
+        api::register_fs_api(&lua, &helix)?;
         api::register_statusline_api(&lua, &helix)?;
         api::register_process_api(&lua, &helix)?;
         api::register_log_api(&lua, &helix)?;
@@ -844,7 +845,10 @@ impl LuaEngine {
         // helix.keymap.set(modes, keys, action, opts) - Bind `keys` ("<space>z", "gx",
         // "C-s") in `modes` ("normal", "insert", "select", or a list) to `action`: a command
         // as in `[keys]` ("move_line_down", ":write", "@ihi<esc>", "no_op" to unbind) or a
-        // Lua function. `opts.desc`: what the key help shows.
+        // Lua function. `opts.desc`: what the key help shows; `opts.language`: a language
+        // name or a list of them, the buffers the binding is for (the key keeps its meaning
+        // in the others); `opts.menu`: the name of the menu the key is in (`<space>t` of
+        // `<space>tn`).
         let set = lua.create_function(
             move |lua,
                   (modes, keys, action, opts): (LuaValue, String, LuaValue, Option<LuaTable>)| {
@@ -853,6 +857,27 @@ impl LuaEngine {
                 let keys = parse_keys(&keys)?;
                 let description: Option<String> = match &opts {
                     Some(opts) => opts.get("desc")?,
+                    None => None,
+                };
+                let languages: Option<Vec<String>> = match &opts {
+                    Some(opts) => match opts.get::<LuaValue>("language")? {
+                        LuaValue::Nil => None,
+                        LuaValue::String(language) => Some(vec![language.to_str()?.to_string()]),
+                        LuaValue::Table(list) => Some(
+                            list.sequence_values::<String>()
+                                .collect::<LuaResult<Vec<_>>>()?,
+                        ),
+                        other => {
+                            return Err(LuaError::RuntimeError(format!(
+                                "opts.language must be a language name or a list of them (got a value of type {})",
+                                other.type_name()
+                            )))
+                        }
+                    },
+                    None => None,
+                };
+                let menu: Option<String> = match &opts {
+                    Some(opts) => opts.get("menu")?,
                     None => None,
                 };
                 let plugin = current_plugin_name();
@@ -939,6 +964,8 @@ impl LuaEngine {
                                 keys: keys.clone(),
                                 command: command.clone(),
                                 description: description.clone(),
+                                languages: languages.clone(),
+                                menu: menu.clone(),
                             });
                     }
                     Ok(())
@@ -965,7 +992,7 @@ impl LuaEngine {
         keymap.set("del", del)?;
 
         // helix.keymap.list() - The bindings of all plugins:
-        // { {plugin, mode, keys, command, desc}, ... }
+        // { {plugin, mode, keys, command, desc, language, menu}, ... }
         let list = lua.create_function(|lua, ()| {
             require(lua, Permission::Read, "helix.keymap.list")?;
             let bindings = with_editor(|editor| Ok(editor.plugin_keymaps.bindings.clone()))?;
@@ -989,6 +1016,8 @@ impl LuaEngine {
                 entry.set("keys", keys)?;
                 entry.set("command", binding.command)?;
                 entry.set("desc", binding.description)?;
+                entry.set("language", binding.languages)?;
+                entry.set("menu", binding.menu)?;
                 list.push(entry)?;
             }
             Ok(list)
@@ -1415,6 +1444,24 @@ fn event_table(lua: &Lua, event: &PluginEvent) -> LuaResult<LuaTable> {
 mod tests {
     use super::*;
     use crate::permissions::{Permission, Permissions};
+
+    /// The modules of the `plaintasks` plugin of `contrib/plugins` (dates, the format, the
+    /// edits, links), checked by its `spec.lua` in a plugin's sandbox.
+    #[test]
+    fn plaintasks_modules() {
+        let lua = new_sandboxed_lua().unwrap();
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../contrib/plugins");
+        sandbox::add_module_dir(&lua, &dir).unwrap();
+        let spec = std::fs::read_to_string(dir.join("plaintasks/spec.lua")).unwrap();
+        let result = lua
+            .load(spec)
+            .set_name("@plaintasks/spec.lua")
+            .eval::<String>();
+        match result {
+            Ok(result) => assert_eq!(result, "ok"),
+            Err(err) => panic!("{err}"),
+        }
+    }
 
     /// An engine with a plugin state `p` of the given permissions.
     fn engine_with(permissions: Permissions) -> LuaEngine {

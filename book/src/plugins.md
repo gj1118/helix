@@ -62,11 +62,14 @@ Run `:hello` (or bind it to a key like any typable command; it is also listed in
 palette). `:reload-all-plugins` loads every plugin again without restarting Helix: handlers,
 commands and pending callbacks of the old ones are dropped first.
 
-The repository has three examples in `contrib/plugins/`: an `auto-save` skeleton,
+The repository has four examples in `contrib/plugins/`: an `auto-save` skeleton,
 `inline-diagnostic`, which shows the diagnostics of the cursor line in a panel (`set_panel`),
-and `hlslens`, a port of [nvim-hlslens](https://github.com/kevinhwang91/nvim-hlslens) (see
-[Search lenses](#search-lenses-hlslens) and [Inline diagnostics](#inline-diagnostics-inline-diagnostic)).
-Copy a directory to `~/.config/helix/plugins/` to use it.
+`hlslens`, a port of [nvim-hlslens](https://github.com/kevinhwang91/nvim-hlslens), and
+`plaintasks`, task lists like Sublime Text's [PlainTasks](https://github.com/aziz/PlainTasks)
+(see [Search lenses](#search-lenses-hlslens),
+[Inline diagnostics](#inline-diagnostics-inline-diagnostic) and
+[Task lists](#task-lists-plaintasks)). Copy a directory to `~/.config/helix/plugins/` to use
+it.
 
 ## Configuration
 
@@ -472,15 +475,18 @@ Window methods (they raise an error once the window is closed):
   `"select"` or a list of them) to `action`, a command as in `[keys]` of `config.toml`
   (`"move_line_down"`, `":write"`, `"@ihello<esc>"`, `"no_op"` to unbind) or a Lua function.
   `keys` is written like a macro: `"<space>z"`, `"gx"`, `"<C-s>"` (one named key may leave
-  out the brackets: `"C-s"`). `opts.desc` is what the key help shows. It needs `keymaps`,
+  out the brackets: `"C-s"`). `opts.desc` is what the key help shows; `opts.language` (a
+  language name or a list of them) makes the binding for the buffers of those languages only:
+  the key keeps its meaning in the others, and follows the focused buffer; `opts.menu` names
+  the menu the key is in (`"Tasks"` for the `<space>t` of `<space>tn`). It needs `keymaps`,
   and for a command what the command needs when the key is pressed (`":sh ..."` needs
   `shell`, a macro every permission): a plugin cannot make a key do what it may not do
   itself. A function runs as the plugin's code, with its permissions. A plugin may bind its
   own `:` commands, not another plugin's.
 - `del(modes, keys)`: removes a binding the plugin set; the configured one is back. Returns
   whether there was one (`keymaps`).
-- `list()`: the bindings of all plugins: `{ { plugin, mode, keys, command, desc }, ... }`
-  (`read`).
+- `list()`: the bindings of all plugins: `{ { plugin, mode, keys, command, desc, language,
+  menu }, ... }` (`read`).
 
 The bindings go over the keys of `config.toml` (also after `:config-reload`); a later
 binding of the same keys replaces an earlier one, whichever plugin set it.
@@ -550,6 +556,24 @@ A plugin's own list can also go in the panel: `helix.ui.picker{ ..., dock = true
 
 What the explorer does to files is heard of with the `file_create`, `file_rename`,
 `file_copy` and `file_delete` events, and its cursor with `explorer_select`.
+
+### `helix.fs`
+
+Plugins cannot read or write files themselves (`io` is not available), but may ask about
+paths (`read`). A relative path is relative to the working directory; `~` is expanded.
+
+- `exists(path)`: whether a file or directory is there; `is_dir(path)`: whether it is a
+  directory.
+
+```lua
+local here = helix.editor.get_cwd()
+local exists = helix.fs.exists(here)
+assert(type(exists) == "boolean" and exists == true)
+local is_dir = helix.fs.is_dir(here)
+assert(type(is_dir) == "boolean" and is_dir == true)
+local missing = helix.fs.exists(here .. "/no such file")
+assert(type(missing) == "boolean" and missing == false)
+```
 
 ### Timers
 
@@ -694,3 +718,106 @@ config = { other_lines = true }
 | `other_lines_align` | Where they go (see `set_annotations`): `"eol_or_right"` (after the end of the line, or at the window's right edge on a line too long for it), `"right"` or `"eol"` | `"eol_or_right"` |
 
 The panel starts after the lenses of `hlslens` on the cursor line, rather than covering them.
+
+## Task lists (`plaintasks`)
+
+`contrib/plugins/plaintasks` makes the `.todo`, `.tasks`, `.taskpaper`, `.todolist` and
+`TODO` files (the `plaintasks` language) task lists like Sublime Text's
+[PlainTasks](https://github.com/aziz/PlainTasks), and reads and writes PlainTasks's files:
+
+```
+Errands:
+ ☐ buy milk @today
+ ☐ pay the rent @due(24-12-01 10:00) @high
+ ✔ call the bank @done (24-11-13 18:00)
+ ✘ fix the bike @cancelled (24-11-13 18:05)
+   a note under a task
+--- ✄ -----------------------
+```
+
+A line ending with a colon is a project (indent to nest them); a task starts with a bullet
+(`☐`, `-`, `[ ]`...; done `✔`, `+`, `[x]`; cancelled `✘`, `x`, `[-]`); other lines are
+notes. Tags start with `@`: `@today`, `@critical`, `@high` and `@low` stand out, `@due(...)` is
+marked past, soon or invalid, with the time left after the line.
+
+It needs these permissions:
+
+```toml
+[[plugins.plugins]]
+name = "plaintasks"
+permissions = ["edit", "commands", "keymaps", "windows", "files"]
+config = { open_tasks_bullet = "☐" }
+```
+
+`windows` is for opening links and `files` for archiving to a file; without them the other
+commands still work.
+
+The keys work in task lists only (other buffers keep theirs), in normal and select mode
+(`C-ret`, `C-S-ret`, `C-d` and `A-c` in insert mode too, while typing a task), and in the
+`<space>t` menu (which takes the place of the todo picker in task lists). Each is also a
+`:tasks-*` command:
+
+| Key | Menu | Command | What it does |
+| --- | --- | --- | --- |
+| `C-ret` | `n` | `:tasks-new` | A new task under the line (a note becomes a task) |
+| `C-S-ret` | `N` | `:tasks-new-with-date` | The same, with `@created(date)` |
+| `C-d` | `d` | `:tasks-complete` | Done (with `@done (date)`), or back to pending |
+| `A-c` | `c` | `:tasks-cancel` | Cancelled (with `@cancelled (date)`), or back to pending |
+| `C-S-a` | `a` | `:tasks-archive` | Moves the done and cancelled tasks under `Archive:` at the end, each with its project (`@project(Work / Errands)`) |
+| `C-S-o` | `A` | `:tasks-archive-to-file` | Moves the line and the lines under it to `name_archive.todo` |
+| `C-r` | `p` | `:tasks-goto-project` | A picker of the projects |
+| `C-S-r` | `t` | `:tasks-goto-tag` | A picker of the tags of the tasks to do |
+| | `u` | `:tasks-due` | A picker of the tasks with a due date, overdue first |
+| `A-o` | `o` | `:tasks-open-link` | Opens the file the line links to: `./notes.md:11:8`, `./src/main.rs>main`, `[plan](docs/plan.md)`, `[[plan.md::12]]` |
+| `C-S-u` | `O` | `:tasks-open-url` | Opens the URL under the cursor (`https://...`, `<skype:nick>`) with `:open-url` |
+| `F4` | `D` | `:tasks-add-due` | Adds `@due()`, the cursor in it |
+| `F5`, `F7` | `s`, `S` | `:tasks-sort`, `:tasks-sort-descending` | Sorts the tasks of the project by due date, then priority |
+| | `r` | `:tasks-recalculate` | Works out the time spent again |
+| | `y` | `:tasks-copy-stats` | Copies the statistics |
+| | | `:tasks-new-document` | A new task list |
+
+Terminals send `C-ret`, `C-S-ret` and the `C-S-` keys only with the kitty keyboard protocol
+(kitty, WezTerm, Ghostty, foot...); the `<space>t` menu works everywhere.
+
+Tab in insert mode:
+
+- after `t`, `c`, `h`, `l`, `s`, `tg`, `cr`, `d`: `@today`, `@critical`, `@high`, `@low`,
+  `@started`, `@toggle`, `@created`, `@due( )`;
+- after `@started`, `@toggle` or `@created`: the date. A task done or cancelled with
+  `@started` gets the time it took, `@lasted(2:30)` (`@wasted` when cancelled); each
+  `@toggle` pauses or resumes it. A project done gets `@total` of its tasks;
+- in `@due(...)`: a short date expanded: `@due(5)` (the 5th), `@due(2-3 10:)`,
+  `@due(+)` (tomorrow), `@due(+3w)`, `@due(+2:)` (in two hours), `@due(++)` (a day after
+  `@created`); while the cursor is in a short date, what it stands for shows after the line;
+- `--`: a separator, `--- ✄ -----------------------`;
+- on a tag of a done or cancelled task: the time spent worked out again;
+- otherwise what Tab does without the plugin (`tab_fallback`).
+
+The status line shows the statistics of the list: `2/3 done (66%) ■■■■■■■□□□ Last task @done
+(24-11-13 18:00)`.
+
+| Setting | Description | Default |
+| --- | --- | --- |
+| `languages` | The languages of the buffers that are task lists | `["plaintasks"]` |
+| `open_tasks_bullet`, `done_tasks_bullet`, `cancelled_tasks_bullet` | The bullets of new, done and cancelled tasks | `"☐"`, `"✔"`, `"✘"` |
+| `before_tasks_bullet_margin`, `tasks_bullet_space` | Spaces before the bullet of a task that is not indented, and after a bullet | `1`, `" "` |
+| `taskpaper_compatible` | TaskPaper's format: `-` bullets, `@done(date)` | `false` |
+| `date_format`, `before_date_space` | The stamps' dates (strftime) and the space before them | `"(%y-%m-%d %H:%M)"`, `" "` |
+| `done_tag`, `done_date` | Whether the stamps have `@done`/`@cancelled`, and the date | `true`, `true` |
+| `header_to_task` | "New task" on a project turns it into a task | `false` |
+| `archive_name`, `project_tag`, `new_on_top` | The archive's project, `@project(...)` after archived tasks (`false`: their project before), the latest first | `"Archive:"`, `true`, `true` |
+| `archive_org_filemask` | The file of "archive to file" (`{dir}`, `{sep}`, `{base}`, `{ext}`) | `"{dir}{sep}{base}_archive{ext}"` |
+| `decimal_minutes` | The time spent as hours, `1.50`, not `1:30` | `false` |
+| `highlight_past_due`, `highlight_due_soon` | Mark the due dates; hours before a due date that make it soon | `true`, `24` |
+| `show_remain_due`, `due_remain_format`, `due_overdue_format` | The time left after the lines with a due date | `true`, `"{time} remaining"`, `"{time} overdue"` |
+| `due_preview` | What a short `@due(...)` at the cursor stands for | `true` |
+| `icon_past_due`, `icon_due_soon`, `icon_misformatted`, `icon_critical`, `icon_high`, `icon_low`, `icon_today` | Gutter signs (`""`: none) | `"●"`, `"•"`, the others `""` |
+| `stats_format` | The statistics: `$o` pending, `$d` done, `$c` cancelled, `$n` done and cancelled, `$a` all, `$percent`, `$progress`, `$last`, and `{{regex}}` (pending/done/cancelled of the tasks it matches) | `"$n/$a done ($percent%) $progress Last task @done $last"` |
+| `stats_ignore_archive`, `bar_full`, `bar_empty`, `replace_stats_chars` | Leave the archive out; the progress bar; replacements for "copy statistics" (`[["■", "="]]`) | `false`, `"■"`, `"□"`, `[]` |
+| `keys` | The keys of the actions (`new`, `new_with_date`, `complete`, `cancel`, `archive`, `archive_to_file`, `goto_project`, `goto_tag`, `open_link`, `open_url`, `add_due`, `sort`, `sort_descending`): a key, a list, or `false` | see the table above |
+| `menu_key` | The menu's key (`false`: none) | `"<space>t"` |
+| `tab`, `tab_fallback` | Tab's expansions, and what Tab does otherwise | `true`, `"smart_tab"` |
+| `styles` | Styles of the parts over the defaults, written like in a theme: `project`, `note`, `bullet`, `done`, `done.bullet`, `cancelled`, `cancelled.bullet`, `tag`, `today`, `critical`, `high`, `low`, `due.past`, `due.soon`, `due.invalid`, `due.remain`, `due.overdue`, `separator`, `url`, `bold`, `italic` | |
+
+Links are looked for next to the task list, then in the working directory (PlainTasks also
+searches the project's folders).

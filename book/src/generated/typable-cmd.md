@@ -89,6 +89,7 @@
 | `:snippets-open-workspace` | Open .helix/snippets.toml, or .helix/snippets/<file> of the workspace. |
 | `:snippets-reload` | Reload the user and workspace snippets from disk. |
 | `:log-open` | Open the helix log file. |
+| `:open-url` | Open a URL with the system's opener: the browser for a web page. |
 | `:insert-output` | Run shell command, inserting output before each selection. |
 | `:append-output` | Run shell command, appending output after each selection. |
 | `:pipe`, `:\|` | Pipe each selection to the shell command. |

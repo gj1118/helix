@@ -223,6 +223,7 @@
 | pip-requirements | ✓ |  |  |  |  |  |
 | pkgbuild | ✓ | ✓ | ✓ |  |  | `termux-language-server`, `bash-language-server` |
 | pkl | ✓ |  | ✓ |  |  | `pkl-lsp` |
+| plaintasks |  |  |  |  |  |  |
 | po | ✓ | ✓ |  |  |  |  |
 | pod | ✓ |  |  |  |  |  |
 | ponylang | ✓ | ✓ | ✓ |  |  | `pony-lsp` |

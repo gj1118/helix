@@ -1,0 +1,8 @@
+name = "plaintasks"
+version = "0.1.0"
+description = "Task lists like Sublime Text's PlainTasks: tasks, projects, done and cancelled with dates, archive, due dates, time spent, statistics, links"
+author = "Gagan Janjua"
+entry = "init.lua"
+# Edits task lists, registers the :tasks-* commands and binds keys in task lists; opens links
+# ("windows") and appends to the archive file ("files").
+permissions = ["read", "ui", "edit", "commands", "keymaps", "windows", "files"]

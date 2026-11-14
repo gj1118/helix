@@ -677,6 +677,7 @@ fn typable_permissions(name: &str) -> Option<&'static [Permission]> {
         | "snippets-open"
         | "snippets-open-workspace"
         | "log-open"
+        | "open-url"
         | "quickfix"
         | "copen"
         | "cclose"

@@ -358,7 +358,9 @@ permissions = ["edit", "commands"]  # what it may do beyond looking ("read") and
 - **Control** - plugins edit any open buffer (shown or not) and create scratch ones, read and
   set selections with their primary, split, scroll, focus and close windows and show any
   buffer in them, bind keys to commands or Lua functions (`helix.keymap.set("normal",
-  "<space>z", fn)`), run any command of key bindings (`helix.editor.run("goto_definition")`),
+  "<space>z", fn)`, for buffers of some languages only with `{ language = "plaintasks" }`, in
+  a named menu with `{ menu = "Tasks" }`), ask whether a path exists (`helix.fs.exists`), run
+  any command of key bindings (`helix.editor.run("goto_definition")`),
   and read and change settings (`get_option`/`set_option`) and the working directory.
 - **Pickers, quickfix, explorer** - pickers with columns, previews and the plugin's own items
   (`on_select(item, action)`), items added while open, docked in the quickfix panel; the
@@ -383,8 +385,13 @@ permissions = ["edit", "commands"]  # what it may do beyond looking ("read") and
   other lines in view after their end) and `hlslens`, a port of
   [nvim-hlslens](https://github.com/kevinhwang91/nvim-hlslens): `[3/12]` at the end of the
   nearest match's line and `[5]` at the others', with the matches highlighted, while the
-  search is typed and after it, until `:hlslens-stop`. Copy one to `~/.config/helix/plugins/`
-  to use it.
+  search is typed and after it, until `:hlslens-stop`; and `plaintasks`, task lists like
+  Sublime Text's [PlainTasks](https://github.com/aziz/PlainTasks) for `.todo`, `.tasks`,
+  `.taskpaper` and `TODO` files: projects, `☐`/`✔`/`✘` tasks done and cancelled with their
+  dates (`C-d`, `A-c`, or the `<space>t` menu), the archive, `@due` dates with the time left,
+  the time spent (`@started`, `@lasted`), Tab expansions (`t` → `@today`, `@due(+2d)` → the
+  date), statistics in the status line, and links to files and URLs. Copy one to
+  `~/.config/helix/plugins/` to use it.
 - Signs, highlights, annotations and panels move with the text as it is edited. Annotations
   belong to the plugin that drew them, and can be pinned to the window's right edge
   (`align = "right"`, or `"eol_or_right"` for a line too long for the window).

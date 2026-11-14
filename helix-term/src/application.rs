@@ -111,7 +111,9 @@ pub struct Application {
     /// The configured keys, under the plugins' bindings (`helix.keymap`).
     base_keys: HashMap<helix_view::document::Mode, crate::keymap::KeyTrie>,
     /// The version of the plugins' bindings merged into the keys (`None`: merge again).
-    applied_keymaps: Option<u64>,
+    /// The version of the plugins' bindings merged into the keys, and the language of the
+    /// focused buffer they were merged for (when some are for some languages only).
+    applied_keymaps: Option<(u64, Option<String>)>,
     /// Why the last window title could not be expanded (logged once, not for every frame).
     title_error: Option<String>,
     ui_receiver: tokio::sync::mpsc::UnboundedReceiver<crate::plugin_registry::UiRequest>,
@@ -463,7 +465,7 @@ impl Application {
             plugin_manager,
             plugin_watch,
             base_keys,
-            applied_keymaps: Some(0),
+            applied_keymaps: Some((0, None)),
             plugin_pickers: HashMap::new(),
             plugin_popup: None,
             title_error: None,
@@ -476,15 +478,32 @@ impl Application {
         Ok(app)
     }
 
-    /// Merges the plugins' key bindings over the configured keys when they changed: the
+    /// Merges the plugins' key bindings over the configured keys when they changed, or when
+    /// the focused buffer's language changed and some are for some languages only: the
     /// keymap reads the keys of the config.
     fn apply_plugin_keymaps(&mut self) {
-        let version = self.editor.plugin_keymaps.version;
-        if self.applied_keymaps == Some(version) {
+        let keymaps = &self.editor.plugin_keymaps;
+        let language = keymaps
+            .has_language_bindings()
+            .then(|| {
+                let doc = self.editor.tree.get(self.editor.tree.focus).doc;
+                self.editor
+                    .document(doc)
+                    .and_then(|doc| doc.language_name().map(str::to_string))
+            })
+            .flatten();
+        let applied = (keymaps.version, language);
+        if self.applied_keymaps.as_ref() == Some(&applied) {
             return;
         }
         let mut keys = self.base_keys.clone();
-        for binding in &self.editor.plugin_keymaps.bindings {
+        // the bindings for all languages first: those for the focused buffer's go over them
+        let (general, scoped): (Vec<_>, Vec<_>) = keymaps
+            .bindings
+            .iter()
+            .filter(|binding| binding.applies_to(applied.1.as_deref()))
+            .partition(|binding| binding.languages.is_none());
+        for binding in general.into_iter().chain(scoped) {
             let command = match binding.command.parse::<crate::commands::MappableCommand>() {
                 Ok(crate::commands::MappableCommand::Typable { name, args, doc }) => {
                     crate::commands::MappableCommand::Typable {
@@ -508,12 +527,15 @@ impl Application {
                     &binding.keys,
                     crate::keymap::KeyTrie::MappableCommand(command),
                 );
+                if let (Some(menu), Some((_, path))) = (&binding.menu, binding.keys.split_last()) {
+                    trie.name_menu(path, menu);
+                }
             }
         }
         let mut config = (**self.config.load()).clone();
         config.keys = keys;
         self.config.store(Arc::new(config));
-        self.applied_keymaps = Some(version);
+        self.applied_keymaps = Some(applied);
     }
 
     /// Whether plugins are loaded (never in the integration tests).

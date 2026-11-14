@@ -3086,6 +3086,14 @@ indent = { tab-width = 2, unit = "  " }
 name = "task"
 source = { git = "https://github.com/alexanderbrevig/tree-sitter-task", rev = "f2cb435c5dbf3ee19493e224485d977cb2d36d8b" }
 
+# PlainTasks task lists (https://github.com/aziz/PlainTasks): no grammar, the `plaintasks`
+# plugin of `contrib/plugins` highlights them
+[[language]]
+name = "plaintasks"
+scope = "text.todo"
+file-types = ["todo", "tasks", "taskpaper", "todolist", { glob = "TODO" }, { glob = "*.todolist.txt" }]
+indent = { tab-width = 2, unit = "  " }
+
 [[language]]
 name = "xit"
 scope = "source.xit"
