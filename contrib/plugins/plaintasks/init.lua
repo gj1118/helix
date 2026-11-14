@@ -1139,15 +1139,18 @@ local WHILE_TYPING = { new = true, new_with_date = true, complete = true, cancel
 if helix.has_permission("keymaps") then
   for _, action in ipairs(ACTIONS) do
     local modes = WHILE_TYPING[action[1]] and { "normal", "select", "insert" } or { "normal", "select" }
+    -- the keys run the `:tasks-*` command (the command palette then shows them next to it),
+    -- or the function when the plugin may not register commands
+    local run = helix.has_permission("commands") and (":" .. action[2]) or guarded(action[4])
     local keys = config.keys[action[1]]
     if type(keys) == "string" then
       keys = { keys }
     end
     for _, key in ipairs(type(keys) == "table" and keys or {}) do
-      helix.keymap.set(modes, key, guarded(action[4]), { desc = action[3], language = config.languages })
+      helix.keymap.set(modes, key, run, { desc = action[3], language = config.languages })
     end
     if config.menu_key and config.menu_key ~= "" then
-      helix.keymap.set({ "normal", "select" }, config.menu_key .. action[5], guarded(action[4]), {
+      helix.keymap.set({ "normal", "select" }, config.menu_key .. action[5], run, {
         desc = action[3],
         language = config.languages,
         menu = "Tasks",

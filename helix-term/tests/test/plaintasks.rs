@@ -441,3 +441,28 @@ async fn open_url_needs_a_url() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+/// The keys run the `:tasks-*` commands: the command palette shows them next to the commands.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_keys_run_the_commands() -> anyhow::Result<()> {
+    let setup = app(" ☐ a\n").await?;
+    let bindings: Vec<(String, Option<String>)> = setup
+        .app
+        .editor
+        .plugin_keymaps
+        .bindings
+        .iter()
+        .filter(|b| {
+            b.mode == helix_view::document::Mode::Normal && b.command.starts_with(":tasks-complete")
+        })
+        .map(|b| (b.command.clone(), b.menu.clone()))
+        .collect();
+    assert_eq!(
+        bindings,
+        [
+            (":tasks-complete".to_string(), None),
+            (":tasks-complete".to_string(), Some("Tasks".to_string())),
+        ]
+    );
+    Ok(())
+}

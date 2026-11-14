@@ -269,9 +269,11 @@ command needs. `helix.log`, `helix.get_config()`, `helix.permissions()` and
 ### Commands and configuration
 
 - `helix.register_command{ name = ..., doc = ..., args = ..., handler = function(args) end }`
-  registers a typable command. `doc` (or `description`) and `args` are shown in the command
-  palette; `handler` gets the arguments as a table of strings. Built-in commands of the same
-  name take precedence.
+  registers a typable command: `:` completes it, and shows `doc` (or `description`) and
+  `args` below the command line while it is typed; the command palette (`<space>?`) lists it,
+  with the keys bound to it (bind them to `":name"` rather than to a function for that).
+  `handler` gets the arguments as a table of strings. Built-in commands of the same name take
+  precedence.
 - `helix.get_config()`: the `config` table of the calling plugin's `[[plugins.plugins]]`
   entry (nested tables included), or `nil` when it has none.
 - `helix.version`: the Helix version string.
@@ -755,7 +757,9 @@ commands still work.
 The keys work in task lists only (other buffers keep theirs), in normal and select mode
 (`C-ret`, `C-S-ret`, `C-d` and `A-c` in insert mode too, while typing a task), and in the
 `<space>t` menu (which takes the place of the todo picker in task lists). Each is also a
-`:tasks-*` command:
+`:tasks-*` command, so without its key it is at hand: `:tasks` and Tab lists them (with each
+one's help below the command line), and the command palette (`<space>?`) has them with their
+keys:
 
 | Key | Menu | Command | What it does |
 | --- | --- | --- | --- |

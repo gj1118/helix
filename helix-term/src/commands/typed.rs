@@ -5811,8 +5811,11 @@ pub(super) fn command_mode(cx: &mut Context) {
 
             // The documentation of the command, below the popup.
             let custom = cx.editor.config().commands.clone();
+            let plugin_commands = plugin_commands(cx);
             cmdline = cmdline.with_doc_fn(Box::new(move |input| {
-                custom_command_doc(&custom, input).or_else(|| command_line_doc(input))
+                custom_command_doc(&custom, input)
+                    .or_else(|| command_line_doc(input))
+                    .or_else(|| plugin_command_doc(&plugin_commands, input))
             }));
 
             cx.push_layer(Box::new(cmdline));
@@ -5835,8 +5838,11 @@ pub(super) fn command_mode(cx: &mut Context) {
                 },
             );
             let custom = cx.editor.config().commands.clone();
+            let plugin_commands = plugin_commands(cx);
             prompt.doc_fn = Box::new(move |input| {
-                custom_command_doc(&custom, input).or_else(|| command_line_doc(input))
+                custom_command_doc(&custom, input)
+                    .or_else(|| command_line_doc(input))
+                    .or_else(|| plugin_command_doc(&plugin_commands, input))
             });
 
             // Calculate initial completion
@@ -5844,6 +5850,29 @@ pub(super) fn command_mode(cx: &mut Context) {
             cx.push_layer(Box::new(prompt));
         }
     }
+}
+
+/// The plugins' `:` commands (taken when the command line opens: the help below it is looked
+/// up on every key).
+fn plugin_commands(cx: &Context) -> Vec<helix_plugin::types::CommandMetadata> {
+    cx.plugin_manager
+        .as_ref()
+        .map(|plugins| plugins.get_commands())
+        .unwrap_or_default()
+}
+
+/// Help for a plugin's command: its description, and its arguments.
+fn plugin_command_doc<'a>(
+    commands: &[helix_plugin::types::CommandMetadata],
+    input: &str,
+) -> Option<Cow<'a, str>> {
+    let (name, _, _) = command_line::split(input);
+    let command = commands.iter().find(|command| command.name == name)?;
+    let mut doc = command.doc.clone();
+    if let Some(args) = &command.args {
+        write!(doc, "\nArguments: {args}").unwrap();
+    }
+    Some(Cow::Owned(doc))
 }
 
 /// Help for a custom command: its description (Markdown) or what it runs.
@@ -6489,4 +6518,34 @@ fn explorer_width(
     cx.editor
         .set_status(format!("Explorer width set to {width} columns"));
     Ok(())
+}
+
+#[cfg(test)]
+mod plugin_command_doc_tests {
+    use super::*;
+
+    /// The help below `:` for a plugin's command: its description and arguments.
+    #[test]
+    fn a_plugin_command_has_its_help() {
+        let commands = vec![
+            helix_plugin::types::CommandMetadata {
+                name: "tasks-new".to_string(),
+                doc: "PlainTasks: New task".to_string(),
+                args: None,
+                hidden: false,
+            },
+            helix_plugin::types::CommandMetadata {
+                name: "greet".to_string(),
+                doc: "Say hello".to_string(),
+                args: Some("<name>".to_string()),
+                hidden: false,
+            },
+        ];
+        let doc: Option<String> = plugin_command_doc(&commands, "tasks-new").map(Cow::into_owned);
+        assert_eq!(doc, Some("PlainTasks: New task".to_string()));
+        let doc: Option<String> = plugin_command_doc(&commands, "greet you").map(Cow::into_owned);
+        assert_eq!(doc, Some("Say hello\nArguments: <name>".to_string()));
+        let doc: Option<String> = plugin_command_doc(&commands, "nope").map(Cow::into_owned);
+        assert_eq!(doc, None);
+    }
 }
