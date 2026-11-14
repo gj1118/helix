@@ -413,6 +413,33 @@ local function annotations(buffer, p, dues)
   return found
 end
 
+-- The permissions the keys, the menu and the commands need, that are not granted (said once
+-- per task list, when it is first shown: the message at startup is easily missed).
+local NEEDED = { "edit", "commands", "keymaps" }
+local permissions_told = {} -- document ids
+
+local function tell_missing_permissions(id)
+  if permissions_told[id] then
+    return
+  end
+  permissions_told[id] = true
+  local missing = {}
+  for _, name in ipairs(NEEDED) do
+    if not helix.has_permission(name) then
+      table.insert(missing, name)
+    end
+  end
+  if #missing > 0 then
+    notify(
+      "the keys, the <space>t menu and the :tasks-* commands need the "
+        .. table.concat(missing, ", ")
+        .. ' permissions: in config.toml, [[plugins.plugins]] name = "plaintasks" '
+        .. 'permissions = ["edit", "commands", "keymaps", "windows", "files"], then restart',
+      "warning"
+    )
+  end
+end
+
 -- Draws the parts of `buffer` (a task list): highlights, signs, statistics, and for the
 -- focused one the due times.
 -- The due dates of a parsed task list, worked out again each minute (for the cursor's moves).
@@ -445,6 +472,7 @@ local function refresh(buffer)
   local focused = helix.buffer.get_current()
   if focused and focused:id() == id then
     buffer:set_annotations(annotations(buffer, p, dues))
+    tell_missing_permissions(id)
   end
 end
 

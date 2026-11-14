@@ -30,6 +30,25 @@ struct Setup {
 /// 2016-12-31 23:00, `config` adds settings: a TOML inline table's fields) and `name` (in a
 /// directory of its own) holding `text`.
 async fn app_with(name: &str, text: &str, config: &str) -> anyhow::Result<Setup> {
+    app_granted(
+        name,
+        text,
+        config,
+        r#"["edit", "commands", "keymaps", "windows", "files"]"#,
+        false,
+    )
+    .await
+}
+
+/// The same with the permissions `permissions` (a TOML list), and the notifications shown
+/// when `notifications`.
+async fn app_granted(
+    name: &str,
+    text: &str,
+    config: &str,
+    permissions: &str,
+    notifications: bool,
+) -> anyhow::Result<Setup> {
     let plugins = tempfile::tempdir()?;
     let source =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../contrib/plugins/plaintasks");
@@ -40,14 +59,14 @@ async fn app_with(name: &str, text: &str, config: &str) -> anyhow::Result<Setup>
         std::fs::copy(entry.path(), dir.join(entry.file_name()))?;
     }
     let mut app_config = helpers::test_config();
-    app_config.editor.notifications.enable = false;
+    app_config.editor.notifications.enable = notifications;
     let settings = if config.is_empty() {
         "now = \"2016-12-31 23:00\"".to_string()
     } else {
         format!("now = \"2016-12-31 23:00\", {config}")
     };
     app_config.plugins = Some(toml::from_str(&format!(
-        "plugin_dirs = [{:?}]\n[[plugins]]\nname = \"plaintasks\"\npermissions = [\"edit\", \"commands\", \"keymaps\", \"windows\", \"files\"]\nconfig = {{ {settings} }}\n",
+        "plugin_dirs = [{:?}]\n[[plugins]]\nname = \"plaintasks\"\npermissions = {permissions}\nconfig = {{ {settings} }}\n",
         plugins.path()
     ))?);
     let files = tempfile::tempdir()?;
@@ -464,5 +483,33 @@ async fn the_keys_run_the_commands() -> anyhow::Result<()> {
             (":tasks-complete".to_string(), Some("Tasks".to_string())),
         ]
     );
+    Ok(())
+}
+
+/// Without its permissions the plugin still highlights, and says what it needs (the message
+/// at startup is easily missed); `<space>t` is the todo picker then.
+#[tokio::test(flavor = "multi_thread")]
+async fn missing_permissions_are_told_on_a_task_list() -> anyhow::Result<()> {
+    let setup = app_granted("list.todo", " ☐ a\n", "", "[]", true).await?;
+    let app = &setup.app;
+    let told: Vec<String> = app
+        .editor
+        .notifications
+        .get_all()
+        .iter()
+        .map(|notification| notification.message.to_string())
+        .filter(|message| message.starts_with("PlainTasks"))
+        .collect();
+    assert_eq!(
+        told,
+        [concat!(
+            "PlainTasks: the keys, the <space>t menu and the :tasks-* commands need the edit, ",
+            "commands, keymaps permissions: in config.toml, [[plugins.plugins]] name = ",
+            "\"plaintasks\" permissions = [\"edit\", \"commands\", \"keymaps\", ",
+            "\"windows\", \"files\"], then restart"
+        )]
+    );
+    let found = highlights(app);
+    assert!(has(&found, "☐", "plaintasks.bullet"), "{found:?}");
     Ok(())
 }
