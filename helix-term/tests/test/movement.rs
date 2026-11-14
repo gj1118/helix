@@ -955,3 +955,13 @@ async fn search_next_with_a_huge_count() -> anyhow::Result<()> {
     ))
     .await
 }
+
+/// `t` and `f` with the cursor on the last character (the final line ending): nothing to find
+/// after it, the cursor stays (it used to search from past the end and panic).
+#[tokio::test(flavor = "multi_thread")]
+async fn find_char_from_the_last_character() -> anyhow::Result<()> {
+    for keys in ["ta", "fa", "tx", "2ta"] {
+        test(("ab#[\n|]#", keys, "ab#[\n|]#")).await?;
+    }
+    Ok(())
+}
