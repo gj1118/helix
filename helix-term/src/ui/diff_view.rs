@@ -4,6 +4,8 @@
 use std::ops::Range;
 use std::sync::Arc;
 
+use helix_core::unicode::width::UnicodeWidthStr;
+
 use helix_core::diff_hunks::{hunk_at, line_count, DiffHunk, Side};
 use helix_core::doc_formatter::FormattedGrapheme;
 use helix_view::diff_connector::{connector_image, connector_png, Band, MAX_CELL};
@@ -300,6 +302,34 @@ fn render_connector(editor: &Editor, index: usize, session: &DiffSession, surfac
                 if let Some(fg) = marker_fg {
                     cell.set_fg(fg);
                 }
+            }
+        }
+    }
+    // the plugins' marks at the left edge, on each change's first row on the left (over the
+    // image too), leaving the stage marks' column
+    if !session.plugin_marks.is_empty() {
+        let room = area.width.saturating_sub(2) as usize;
+        for (hunk_index, (left_top, _), _, _) in &bands {
+            let row = left_top.floor();
+            if !(0.0..height).contains(&row) {
+                continue;
+            }
+            let y = area.y + row as u16;
+            let mut x = area.x;
+            let mut used = 0;
+            for mark in session
+                .plugin_marks
+                .iter()
+                .filter(|mark| mark.change == *hunk_index)
+            {
+                let width = mark.mark.text.width();
+                if used + width > room {
+                    break;
+                }
+                let style = mark.mark.style(&editor.theme);
+                surface.set_stringn(x, y, &mark.mark.text, room - used, style);
+                x += width as u16;
+                used += width;
             }
         }
     }

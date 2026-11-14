@@ -2577,6 +2577,10 @@ pub struct Editor {
     pub explorer_panel: crate::explorer::ExplorerState,
     /// What plugins see of the explorer and ask of it.
     pub plugin_explorer: crate::explorer::PluginExplorer,
+    /// The keys plugins added to the diff viewer, the explorer and the quickfix panel.
+    pub plugin_actions: crate::plugin_ui::PluginActions,
+    /// The marks plugins show on the quickfix panel's rows.
+    pub plugin_quickfix_marks: crate::plugin_ui::QuickfixMarks,
     /// The side-by-side diffs shown (see [`crate::diff_view`]).
     pub diff_sessions: Vec<crate::diff_view::DiffSession>,
     /// The changed files being reviewed in a diff, one after the other (`]f`, `[f`).
@@ -2867,6 +2871,8 @@ impl Editor {
             keymap_pending: Vec::new(),
             explorer_panel: crate::explorer::ExplorerState::default(),
             plugin_explorer: crate::explorer::PluginExplorer::default(),
+            plugin_actions: Default::default(),
+            plugin_quickfix_marks: Default::default(),
             diff_sessions: Vec::new(),
             diff_review: None,
             commit_message: None,

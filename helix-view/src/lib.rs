@@ -25,6 +25,7 @@ pub mod input;
 pub mod keyboard;
 pub mod merge_view;
 pub mod persistence;
+pub mod plugin_ui;
 pub mod quicklist;
 pub mod recent_files;
 pub mod regex;

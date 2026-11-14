@@ -350,8 +350,8 @@ permissions = ["edit", "commands"]  # what it may do beyond looking ("read") and
 ```
 
 - **Permissions** - a plugin may only read the editor and show things unless its entry grants
-  more: `edit`, `windows`, `files`, `commands`, `config`, `keymaps`, `explorer`, `shell` (or
-  `"all"`). A plugin's `plugin.toml` can list what it needs (it then gets no more); what it asks
+  more: `edit`, `windows`, `files`, `commands`, `config`, `keymaps`, `explorer`, `diff`,
+  `quickfix`, `shell` (or `"all"`). A plugin's `plugin.toml` can list what it needs (it then gets no more); what it asks
   for and is not granted is reported when it loads, and a refused call says which permission
   to grant. `helix.editor.execute_command` checks the command too: `:sh` needs `shell`, `:w`
   needs `files`, `:set shell ...` needs `shell`.
@@ -365,8 +365,16 @@ permissions = ["edit", "commands"]  # what it may do beyond looking ("read") and
 - **Pickers, quickfix, explorer** - pickers with columns, previews and the plugin's own items
   (`on_select(item, action)`), items added while open, docked in the quickfix panel; the
   quicklist set, read and shown from Lua; the explorer opened, revealed at a path, read (root,
-  selection) and decorated per row, with events for its cursor and for the files it creates,
-  renames, copies and deletes.
+  selection) and decorated per row (a text at its right, the name's color, a text after the
+  name), with events for its cursor, the files opened from it and the files it creates,
+  renames, copies and deletes. Plugins add keys to the explorer and the quickfix panel
+  (`helix.explorer.add_action{ key = "y", run = fn }`, run with the entry under the cursor)
+  and marks to the panel's rows.
+- **Diffs** - the side-by-side diffs read (their buffers and changes, with their stage) and
+  followed (`diff_open`, `diff_update`, `diff_close`), their changes marked in the connector,
+  keys added to the diff views (`helix.diff.add_action{ keys = "<space>e", run = fn }`, run
+  with the change under the cursor), and diffs opened of a buffer against a plugin's text (a
+  suggested edit, taken change by change with `>>`).
 - **Drawing** - plugins set data and Helix draws it every frame, without running plugin code:
   status line segments (`helix.statusline.set("branch", { text = "main", position = "left" })`,
   for every buffer or one), gutter signs, highlights of ranges with theme keys, explorer row

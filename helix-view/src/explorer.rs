@@ -115,8 +115,36 @@ pub struct PluginExplorer {
     pub selected: Option<PathBuf>,
     /// Requests of plugins, carried out when the explorer draws next.
     pub requests: Vec<ExplorerRequest>,
-    /// Texts plugins show at the right of rows, by path.
-    pub decorations: std::collections::HashMap<PathBuf, ExplorerDecoration>,
+    /// What plugins show on rows, by path: one decoration per plugin, in the order they were
+    /// set.
+    pub decorations: std::collections::HashMap<PathBuf, Vec<ExplorerDecoration>>,
+}
+
+impl PluginExplorer {
+    /// Sets the decoration of `decoration.plugin` on `path` (replacing its own there).
+    pub fn decorate(&mut self, path: PathBuf, decoration: ExplorerDecoration) {
+        let decorations = self.decorations.entry(path).or_default();
+        decorations.retain(|d| d.plugin != decoration.plugin);
+        decorations.push(decoration);
+    }
+
+    /// Removes the decoration of `plugin` on `path`.
+    pub fn undecorate(&mut self, plugin: &str, path: &std::path::Path) {
+        if let Some(decorations) = self.decorations.get_mut(path) {
+            decorations.retain(|d| d.plugin != plugin);
+            if decorations.is_empty() {
+                self.decorations.remove(path);
+            }
+        }
+    }
+
+    /// Removes the decorations of `plugin`.
+    pub fn clear_plugin(&mut self, plugin: &str) {
+        self.decorations.retain(|_, decorations| {
+            decorations.retain(|d| d.plugin != plugin);
+            !decorations.is_empty()
+        });
+    }
 }
 
 /// A request of a plugin to the explorer.
@@ -128,15 +156,25 @@ pub enum ExplorerRequest {
     Refresh,
 }
 
-/// A text a plugin shows at the right of an explorer row.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// What a plugin shows on an explorer row: a text at its right, a color for the name, a text
+/// right after the name. Colors are `"#rrggbb"` or a theme key (`"diagnostic.error"`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExplorerDecoration {
     pub plugin: String,
+    /// The text at the right of the row (empty: none).
     pub text: String,
-    /// `"#rrggbb"`.
+    /// Its `"#rrggbb"` color.
     pub fg: Option<String>,
-    /// A theme key (`"diagnostic.error"`), when `fg` is not set.
+    /// Its theme key, when `fg` is not set.
     pub style: Option<String>,
+    /// The color of the name: `"#rrggbb"`.
+    pub name_fg: Option<String>,
+    /// The theme key of the name, when `name_fg` is not set.
+    pub name_style: Option<String>,
+    /// The text right after the name (empty: none).
+    pub after: String,
+    pub after_fg: Option<String>,
+    pub after_style: Option<String>,
 }
 
 /// Runtime explorer state owned by [`crate::Editor`]. The `Option` fields are

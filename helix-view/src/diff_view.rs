@@ -284,6 +284,9 @@ pub struct DiffSession {
     /// Where the left and right views were scrolled to when they were last in step (see
     /// [`Editor::sync_diff_scrolling`]).
     scrolled: Option<[Scroll; 2]>,
+    /// The marks plugins show on the changes (`helix.diff.mark`): until the changes are
+    /// worked out again.
+    pub plugin_marks: Vec<crate::plugin_ui::DiffMark>,
 }
 
 /// How far a view is scrolled: its first line, and the rows of it above the window (of a
@@ -314,6 +317,7 @@ impl DiffSession {
             git: None,
             right_gutters,
             scrolled: None,
+            plugin_marks: Vec::new(),
         }
     }
 
@@ -872,6 +876,7 @@ impl Editor {
             return false;
         }
         session.hunks = worked_out.hunks.into();
+        session.plugin_marks.clear();
         if let (Some(git), Some(unstaged)) = (&mut session.git, worked_out.unstaged) {
             git.set_unstaged(unstaged.into(), &session.hunks);
         }
@@ -899,6 +904,7 @@ impl Editor {
         };
         session.hunks =
             diff_hunks(left_text.slice(..), right.text().slice(..), session.options).into();
+        session.plugin_marks.clear();
         if let Some(git) = &mut session.git {
             git.update(&session.hunks, right.text().slice(..));
         }
@@ -932,6 +938,7 @@ impl Editor {
             changes,
         )
         .into();
+        session.plugin_marks.clear();
         // the words of the hunks shown are worked out again, from the texts as they are
         session.words = vec![None; session.hunks.len()];
         session.versions = Some((left_version, right.version()));
@@ -977,6 +984,18 @@ impl Editor {
         }
     }
 
+    /// The index of the change under the cursor of `view`, a side of a diff: the change whose
+    /// lines the cursor is on, or the change with no lines on this side right at the
+    /// cursor's line (an addition on the left, a removal on the right).
+    pub fn diff_change_under_cursor(&self, view: ViewId) -> Option<usize> {
+        let session = self.diff_session(view)?;
+        let side = session.side_of(view)?;
+        let doc = self.documents.get(&session.doc(side))?;
+        let text = doc.text().slice(..);
+        let line = text.char_to_line(doc.selection(view).primary().cursor(text));
+        change_at_line(&session.hunks, line, side)
+    }
+
     /// Ends the session of `view`, if it has one.
     pub fn close_diff(&mut self, view: ViewId) -> bool {
         let Some(index) = self
@@ -990,6 +1009,19 @@ impl Editor {
         self.end_diff_session(session);
         true
     }
+}
+
+/// The change of `hunks` at `line` of `side`: whose lines `line` is in, or with no lines on
+/// this side right at `line`.
+pub fn change_at_line(hunks: &[DiffHunk], line: usize, side: Side) -> Option<usize> {
+    let (index, inside) = hunk_at(hunks, line, side);
+    if inside {
+        return Some(index);
+    }
+    hunks
+        .get(index)
+        .filter(|hunk| hunk.lines(side).is_empty() && hunk.lines(side).start == line)
+        .map(|_| index)
 }
 
 /// The old version of a diff (the left side): its text, the title of its buffer, and a file

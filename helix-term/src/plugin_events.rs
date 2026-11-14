@@ -280,6 +280,35 @@ pub(crate) fn register_hooks() {
     });
 }
 
+/// What [`Watch`] remembers of a diff.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct DiffState {
+    left_view: ViewId,
+    left_doc: DocumentId,
+    right_doc: DocumentId,
+    changes: usize,
+}
+
+impl DiffState {
+    fn of(session: &helix_view::diff_view::DiffSession) -> Self {
+        DiffState {
+            left_view: session.left_view,
+            left_doc: session.left_doc,
+            right_doc: session.right_doc,
+            changes: std::sync::Arc::as_ptr(&session.hunks) as *const () as usize,
+        }
+    }
+
+    fn fields(self, right_view: ViewId) -> Vec<(&'static str, EventValue)> {
+        vec![
+            ("left_window_id", self.left_view.into()),
+            ("right_window_id", right_view.into()),
+            ("left_document_id", self.left_doc.into()),
+            ("right_document_id", self.right_doc.into()),
+        ]
+    }
+}
+
 /// What [`Watch`] remembers of a document.
 #[derive(Debug, Clone, PartialEq)]
 struct DocState {
@@ -300,6 +329,9 @@ pub(crate) struct Watch {
     cwd: PathBuf,
     /// The path under the explorer's cursor.
     explorer_selected: Option<PathBuf>,
+    /// The diffs shown, by their right window: their left window, their documents, and their
+    /// changes (by address: they are replaced, not changed, when worked out again).
+    diffs: HashMap<ViewId, DiffState>,
     /// Whether the snapshot is out of date (nobody listened at the last frame): the next
     /// frame takes one without events.
     stale: bool,
@@ -318,6 +350,9 @@ const WATCHED: &[EventType] = &[
     EventType::OnLspAttach,
     EventType::OnLspDetach,
     EventType::OnExplorerSelect,
+    EventType::OnDiffOpen,
+    EventType::OnDiffUpdate,
+    EventType::OnDiffClose,
 ];
 
 impl Watch {
@@ -334,6 +369,14 @@ impl Watch {
             language: doc.language_name().map(String::from),
             servers: doc.language_servers().map(|ls| ls.id()).collect(),
         }
+    }
+
+    fn diffs(editor: &Editor) -> HashMap<ViewId, DiffState> {
+        editor
+            .diff_sessions
+            .iter()
+            .map(|session| (session.right_view, DiffState::of(session)))
+            .collect()
     }
 
     fn snapshot(&mut self, editor: &Editor) {
@@ -356,6 +399,7 @@ impl Watch {
         self.theme = editor.theme.name().to_string();
         self.cwd = helix_stdx::env::current_working_dir();
         self.explorer_selected = editor.plugin_explorer.selected.clone();
+        self.diffs = Self::diffs(editor);
         self.stale = false;
     }
 
@@ -514,6 +558,37 @@ impl Watch {
             }
             self.explorer_selected = selected.clone();
         }
+
+        // diffs: opened, changes worked out again, closed
+        let diffs = Self::diffs(editor);
+        for session in &editor.diff_sessions {
+            let right_view = session.right_view;
+            let state = diffs[&right_view];
+            match self.diffs.get(&right_view) {
+                Some(old) if old.left_doc == state.left_doc => {
+                    if old.changes != state.changes {
+                        push(EventType::OnDiffUpdate, state.fields(right_view));
+                    }
+                }
+                // a diff in the window (another one replaced it: closed, then opened)
+                Some(old) => {
+                    push(EventType::OnDiffClose, old.fields(right_view));
+                    push(EventType::OnDiffOpen, state.fields(right_view));
+                }
+                None => push(EventType::OnDiffOpen, state.fields(right_view)),
+            }
+        }
+        let mut closed: Vec<_> = self
+            .diffs
+            .iter()
+            .filter(|(view, _)| !diffs.contains_key(view))
+            .map(|(view, state)| (*view, *state))
+            .collect();
+        closed.sort_by_key(|(view, _)| format!("{view:?}"));
+        for (view, state) in closed {
+            push(EventType::OnDiffClose, state.fields(view));
+        }
+        self.diffs = diffs;
 
         events
     }

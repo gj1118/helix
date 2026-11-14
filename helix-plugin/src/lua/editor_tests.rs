@@ -1193,7 +1193,7 @@ fn the_explorer_is_asked_and_decorated() {
     assert_eq!(result, "nil|false|rrggbb");
     let decorations = editor.plugin_explorer.decorations.clone();
     assert_eq!(decorations.len(), 1);
-    let decoration = &decorations[&helix_stdx::path::canonicalize(&file)];
+    let decoration = &decorations[&helix_stdx::path::canonicalize(&file)][0];
     let (text, fg, plugin): (&str, Option<&str>, &str) = (
         &decoration.text,
         decoration.fg.as_deref(),
@@ -1918,4 +1918,406 @@ fn the_find_all_example_of_the_book_works() {
     run(&engine, &mut editor, example).unwrap();
     let doc = helix_view::doc!(editor);
     assert_eq!(doc.text().to_string(), "one two\nTwo\n");
+}
+
+#[test]
+fn explorer_decorations_of_plugins_are_kept_apart() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let mut engine = engine();
+    engine
+        .add_state("q", crate::permissions::Permissions::all())
+        .unwrap();
+    let path = "/tmp/a.txt";
+    run(
+        &engine,
+        &mut editor,
+        &format!(
+            r##"helix.explorer.decorate({path:?}, {{ text = "12 KB", style = "comment",
+                name = {{ fg = "#00ff00" }}, after = {{ text = "(3)", fg = "#0000ff" }} }})"##
+        ),
+    )
+    .unwrap();
+    engine
+        .run_as(
+            "q",
+            &mut editor,
+            &format!(r#"helix.explorer.decorate({path:?}, {{ text = "★" }})"#),
+        )
+        .unwrap();
+    let decorations: Vec<helix_view::explorer::ExplorerDecoration> =
+        editor.plugin_explorer.decorations[&std::path::PathBuf::from(path)].clone();
+    assert_eq!(decorations.len(), 2);
+    let first = &decorations[0];
+    let (plugin, text, style): (&str, &str, Option<&str>) =
+        (&first.plugin, &first.text, first.style.as_deref());
+    assert_eq!((plugin, text, style), ("p", "12 KB", Some("comment")));
+    let name_fg: Option<&str> = first.name_fg.as_deref();
+    assert_eq!(name_fg, Some("#00ff00"));
+    let (after, after_fg): (&str, Option<&str>) = (&first.after, first.after_fg.as_deref());
+    assert_eq!((after, after_fg), ("(3)", Some("#0000ff")));
+    let second: (&str, &str) = (&decorations[1].plugin, &decorations[1].text);
+    assert_eq!(second, ("q", "★"));
+
+    // a plugin's `nil` and clear only take its own away
+    run(
+        &engine,
+        &mut editor,
+        &format!("helix.explorer.decorate({path:?}, nil)"),
+    )
+    .unwrap();
+    let left: Vec<String> = editor.plugin_explorer.decorations[&std::path::PathBuf::from(path)]
+        .iter()
+        .map(|d| d.plugin.clone())
+        .collect();
+    assert_eq!(left, vec!["q".to_string()]);
+    engine
+        .run_as("q", &mut editor, "helix.explorer.clear_decorations()")
+        .unwrap();
+    let empty: bool = editor.plugin_explorer.decorations.is_empty();
+    assert!(empty);
+
+    // a bad color in `name` is refused
+    let error: String = run(
+        &engine,
+        &mut editor,
+        &format!(r#"helix.explorer.decorate({path:?}, {{ name = {{ fg = "green" }} }})"#),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("rrggbb"), "{error}");
+}
+
+/// The id of the action of `keys` in `place`.
+fn action_id(editor: &Editor, place: helix_view::plugin_ui::ActionPlace, keys: &str) -> u64 {
+    let keys = helix_view::input::parse_macro(keys).unwrap();
+    match editor.plugin_actions.matching(place, &keys) {
+        helix_view::plugin_ui::ActionMatch::Action(id) => id,
+        other => panic!("no action of {keys:?}: {other:?}"),
+    }
+}
+
+#[test]
+fn explorer_actions_run_with_the_entry() {
+    use helix_view::plugin_ui::{ActionContext, ActionPlace};
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    run(
+        &engine,
+        &mut editor,
+        r#"
+        helix.explorer.add_action({ key = "y", desc = "Copy the path", run = function(entry)
+            result = entry.path .. "|" .. tostring(entry.is_dir) .. "|" .. type(entry.is_dir)
+        end })
+        local list = helix.explorer.list_actions()
+        listed = #list .. "|" .. list[1].key .. "|" .. list[1].desc .. "|" .. list[1].plugin
+        "#,
+    )
+    .unwrap();
+    let listed: String = lua(&engine).globals().get("listed").unwrap();
+    assert_eq!(listed, "1|y|Copy the path|p");
+    let description: String = editor
+        .plugin_actions
+        .of(ActionPlace::Explorer)
+        .next()
+        .unwrap()
+        .description
+        .clone();
+    assert_eq!(description, "Copy the path");
+
+    let id: u64 = action_id(&editor, ActionPlace::Explorer, "y");
+    engine
+        .run_action(
+            &mut editor,
+            "p",
+            id,
+            &ActionContext::Explorer {
+                path: "/tmp/src".into(),
+                is_dir: true,
+            },
+        )
+        .unwrap();
+    let result: String = lua(&engine).globals().get("result").unwrap();
+    assert_eq!(result, "/tmp/src|true|boolean");
+
+    // the panel's keys are one key; an action needs a function
+    let error: String = run(
+        &engine,
+        &mut editor,
+        r#"helix.explorer.add_action({ key = "<space>y", run = function() end })"#,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("one key"), "{error}");
+    let error: String = run(
+        &engine,
+        &mut editor,
+        r#"helix.explorer.add_action({ key = "z", run = "no" })"#,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("function `run`"), "{error}");
+
+    // removed: the key is free again, the action gone
+    run(
+        &engine,
+        &mut editor,
+        r#"removed = helix.explorer.remove_action("y")"#,
+    )
+    .unwrap();
+    let removed: bool = lua(&engine).globals().get("removed").unwrap();
+    assert!(removed);
+    let empty: bool = editor.plugin_actions.is_empty(ActionPlace::Explorer);
+    assert!(empty);
+    let gone: Option<LuaFunction> = crate::lua::api::actions::function(lua(&engine), id).unwrap();
+    assert!(gone.is_none());
+    // a gone action does nothing
+    let ran: bool = engine
+        .run_action(
+            &mut editor,
+            "p",
+            id,
+            &ActionContext::Explorer {
+                path: "/tmp".into(),
+                is_dir: true,
+            },
+        )
+        .is_ok();
+    assert!(ran);
+}
+
+#[test]
+fn actions_need_their_permission() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let mut engine = LuaEngine::new().unwrap();
+    engine
+        .add_state("p", crate::permissions::Permissions::DEFAULT)
+        .unwrap();
+    for (code, permission) in [
+        (
+            r#"helix.explorer.add_action({ key = "y", run = function() end })"#,
+            "'explorer' permission",
+        ),
+        (
+            r#"helix.quickfix.add_action({ key = "y", run = function() end })"#,
+            "'quickfix' permission",
+        ),
+        (
+            r#"helix.diff.add_action({ key = "y", run = function() end })"#,
+            "'diff' permission",
+        ),
+        (
+            r#"helix.quickfix.decorate({ path = "/a", line = 1, text = "x" })"#,
+            "'quickfix' permission",
+        ),
+        ("helix.diff.get()", "'diff' permission"),
+    ] {
+        let error: String = engine
+            .run_as("p", &mut editor, code)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(permission), "{code}: {error}");
+    }
+    // listing them is reading
+    engine
+        .run_as(
+            "p",
+            &mut editor,
+            "count = #helix.explorer.list_actions() + #helix.quickfix.list_actions()",
+        )
+        .unwrap();
+    let count: i64 = engine.state("p").unwrap().globals().get("count").unwrap();
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn quickfix_marks_and_actions() {
+    use helix_view::plugin_ui::{ActionContext, ActionPlace};
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    run(
+        &engine,
+        &mut editor,
+        r##"
+        helix.quickfix.decorate({ path = "/tmp/a.rs", line = 3, text = "●", fg = "#ff0000" })
+        helix.quickfix.decorate({ path = "/tmp/a.rs", line = 4, text = "x" })
+        helix.quickfix.decorate({ path = "/tmp/a.rs", line = 4 })
+        helix.quickfix.add_action({ key = "x", run = function(entry)
+            result = tostring(entry.path) .. "|" .. tostring(entry.buffer ~= nil) .. "|"
+                .. entry.line .. "|" .. entry.end_line .. "|" .. math.type(entry.line) .. "|"
+                .. entry.text
+        end })
+        "##,
+    )
+    .unwrap();
+    let path = std::path::Path::new("/tmp/a.rs");
+    let marks: Vec<(String, Option<String>)> = editor
+        .plugin_quickfix_marks
+        .get(path, 2)
+        .iter()
+        .map(|m| (m.text.clone(), m.fg.clone()))
+        .collect();
+    assert_eq!(marks, vec![("●".to_string(), Some("#ff0000".to_string()))]);
+    let removed: usize = editor.plugin_quickfix_marks.get(path, 3).len();
+    assert_eq!(removed, 0);
+
+    let id: u64 = action_id(&editor, ActionPlace::Quickfix, "x");
+    engine
+        .run_action(
+            &mut editor,
+            "p",
+            id,
+            &ActionContext::Quickfix {
+                target: helix_view::quicklist::Target::Path(path.to_path_buf()),
+                start_line: 2,
+                end_line: 4,
+                text: "a.rs:3 fn main".into(),
+            },
+        )
+        .unwrap();
+    let result: String = lua(&engine).globals().get("result").unwrap();
+    assert_eq!(result, "/tmp/a.rs|false|3|5|integer|a.rs:3 fn main");
+
+    // an entry of a buffer without a file
+    let doc = editor.tree.get(editor.tree.focus).doc;
+    engine
+        .run_action(
+            &mut editor,
+            "p",
+            id,
+            &ActionContext::Quickfix {
+                target: helix_view::quicklist::Target::Doc(doc),
+                start_line: 0,
+                end_line: 0,
+                text: String::new(),
+            },
+        )
+        .unwrap();
+    let result: String = lua(&engine).globals().get("result").unwrap();
+    assert_eq!(result, "nil|true|1|1|integer|");
+
+    run(&engine, &mut editor, "helix.quickfix.clear_decorations()").unwrap();
+    let empty: bool = editor.plugin_quickfix_marks.is_empty();
+    assert!(empty);
+}
+
+#[test]
+fn diffs_are_opened_read_marked_and_closed() {
+    use helix_view::plugin_ui::{ActionContext, ActionPlace};
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    // the buffer: "a\nB\nc\nd\n", against "a\nb\nc\n": line 2 changed, line 4 added
+    run(
+        &engine,
+        &mut editor,
+        r#"
+        local buffer = helix.buffer.get_current()
+        buffer:set_text("a\nB\nc\nd\n")
+        local diff = helix.diff.open({ buffer = buffer, text = "a\nb\nc\n", title = "suggested" })
+        opened = diff.title .. "|" .. #diff.changes .. "|" .. tostring(diff.git) .. "|"
+            .. tostring(diff.right:id() == buffer:id()) .. "|" .. diff.left:get_text()
+        "#,
+    )
+    .unwrap();
+    let opened: String = lua(&engine).globals().get("opened").unwrap();
+    assert_eq!(opened, "suggested|2|nil|true|a\nb\nc\n");
+    let sessions: usize = editor.diff_sessions.len();
+    assert_eq!(sessions, 1);
+
+    run(
+        &engine,
+        &mut editor,
+        r#"
+        local diff = helix.diff.get()
+        local c = diff.changes
+        changes = ""
+        for _, change in ipairs(c) do
+            changes = changes .. change.index .. ":" .. change.kind .. ":" .. change.left_line
+                .. "+" .. change.left_count .. ":" .. change.right_line .. "+"
+                .. change.right_count .. ":" .. math.type(change.right_line) .. ";"
+        end
+        listed = #helix.diff.list()
+        "#,
+    )
+    .unwrap();
+    let changes: String = lua(&engine).globals().get("changes").unwrap();
+    assert_eq!(
+        changes,
+        "1:changed:2+1:2+1:integer;2:added:4+0:4+1:integer;"
+    );
+    let listed: i64 = lua(&engine).globals().get("listed").unwrap();
+    assert_eq!(listed, 1);
+
+    // the change under the cursor: on line 4 (the added one)
+    let view = editor.tree.focus;
+    let doc_id = editor.tree.get(view).doc;
+    let doc = editor.documents.get_mut(&doc_id).unwrap();
+    let line_start = doc.text().line_to_char(3);
+    doc.set_selection(view, helix_core::Selection::point(line_start));
+    run(
+        &engine,
+        &mut editor,
+        r#"
+        local change = helix.diff.change()
+        under = change.index .. "|" .. change.kind
+        helix.diff.mark(change.index, { text = "AI", style = "info" })
+        local ok, err = pcall(helix.diff.mark, 9, { text = "x" })
+        bad = tostring(err):match("no change 9") or tostring(err)
+        "#,
+    )
+    .unwrap();
+    let under: String = lua(&engine).globals().get("under").unwrap();
+    assert_eq!(under, "2|added");
+    let bad: String = lua(&engine).globals().get("bad").unwrap();
+    assert_eq!(bad, "no change 9");
+    let marks: Vec<(usize, String, Option<String>)> = editor.diff_sessions[0]
+        .plugin_marks
+        .iter()
+        .map(|m| (m.change, m.mark.text.clone(), m.mark.style.clone()))
+        .collect();
+    assert_eq!(marks, vec![(1, "AI".to_string(), Some("info".to_string()))]);
+
+    // an action of the diff views gets the diff and its change under the cursor
+    run(
+        &engine,
+        &mut editor,
+        r#"helix.diff.add_action({ key = "<space>e", run = function(diff)
+            ran = diff.title .. "|" .. diff.change.index .. "|" .. diff.change.kind
+        end })"#,
+    )
+    .unwrap();
+    let id: u64 = action_id(&editor, ActionPlace::Diff, "<space>e");
+    engine
+        .run_action(&mut editor, "p", id, &ActionContext::Diff { view })
+        .unwrap();
+    let ran: String = lua(&engine).globals().get("ran").unwrap();
+    assert_eq!(ran, "suggested|2|added");
+
+    // a window id (of the events) works as the window
+    run(
+        &engine,
+        &mut editor,
+        r#"
+        local id = helix.window.get_current():id()
+        by_id = #helix.diff.get(id).changes
+        helix.diff.clear_marks(id)
+        closed = tostring(helix.diff.close()) .. "|" .. tostring(helix.diff.get())
+        "#,
+    )
+    .unwrap();
+    let by_id: i64 = lua(&engine).globals().get("by_id").unwrap();
+    assert_eq!(by_id, 2);
+    let closed: String = lua(&engine).globals().get("closed").unwrap();
+    assert_eq!(closed, "true|nil");
+    let sessions: usize = editor.diff_sessions.len();
+    assert_eq!(sessions, 0);
 }

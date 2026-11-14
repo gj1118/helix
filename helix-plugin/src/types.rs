@@ -117,6 +117,14 @@ event_types! {
     OnFileDelete => "file_delete",
     /// The cursor of the explorer moved to another path.
     OnExplorerSelect => "explorer_select",
+    /// A file was opened from the explorer.
+    OnExplorerOpen => "explorer_open",
+    /// A side-by-side diff opened.
+    OnDiffOpen => "diff_open",
+    /// The changes of a side-by-side diff were worked out again.
+    OnDiffUpdate => "diff_update",
+    /// A side-by-side diff closed.
+    OnDiffClose => "diff_close",
     /// A prompt opened (the command line, search, select, a plugin's prompt...).
     OnPromptOpen => "prompt_open",
     /// The text of a prompt changed (a key typed, deleted, pasted, a history entry...).

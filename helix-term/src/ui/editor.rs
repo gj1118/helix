@@ -28,6 +28,7 @@ use helix_core::{
 };
 use helix_loader::VERSION_AND_GIT_HASH;
 use helix_lsp::lsp::SymbolKind;
+use helix_view::plugin_ui::{ActionContext, ActionMatch, ActionPlace};
 use helix_view::{
     // annotations::diagnostics::DiagnosticFilter,
     document::{Mode, SCRATCH_BUFFER_NAME},
@@ -2090,8 +2091,16 @@ impl EditorView {
         } else {
             commands::diff::match_keys(&config.diff, &self.diff_pending, reviewing)
         };
-        match matched {
-            commands::diff::KeyMatch::Action(action) => {
+        // then the keys plugins added to the diff views (not to the merge resolver)
+        let plugin = if in_merge {
+            ActionMatch::None
+        } else {
+            cxt.editor
+                .plugin_actions
+                .matching(ActionPlace::Diff, &self.diff_pending)
+        };
+        match (matched, plugin) {
+            (commands::diff::KeyMatch::Action(action), _) => {
                 self.diff_pending.clear();
                 drop(config);
                 // the count typed before the keys (`3]c`), as the keymap's commands get it
@@ -2099,8 +2108,19 @@ impl EditorView {
                 action(cxt);
                 cxt.editor.count = None;
             }
-            commands::diff::KeyMatch::Prefix => {}
-            commands::diff::KeyMatch::None => {
+            (_, ActionMatch::Action(id)) => {
+                self.diff_pending.clear();
+                drop(config);
+                cxt.editor.count = None;
+                commands::run_plugin_action(
+                    cxt.editor,
+                    cxt.plugin_manager.as_deref(),
+                    id,
+                    ActionContext::Diff { view: focus },
+                );
+            }
+            (commands::diff::KeyMatch::Prefix, _) | (_, ActionMatch::Prefix) => {}
+            (commands::diff::KeyMatch::None, ActionMatch::None) => {
                 drop(config);
                 for key in std::mem::take(&mut self.diff_pending) {
                     self.command_mode(mode, cxt, key);

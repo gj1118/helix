@@ -684,6 +684,7 @@ impl LuaEngine {
         api::register_lsp_api(&lua, &helix)?;
         api::register_quickfix_api(&lua, &helix)?;
         api::register_explorer_api(&lua, &helix)?;
+        api::register_diff_api(&lua, &helix)?;
         api::register_fs_api(&lua, &helix)?;
         api::register_statusline_api(&lua, &helix)?;
         api::register_process_api(&lua, &helix)?;
@@ -1070,6 +1071,30 @@ impl LuaEngine {
         })
     }
 
+    /// Runs action `id` of `plugin` (a key it added to the diff viewer, the explorer or the
+    /// quickfix panel) with `context`, what is under the cursor there. An action that is gone
+    /// does nothing.
+    pub fn run_action(
+        &self,
+        editor: &mut Editor,
+        plugin: &str,
+        id: u64,
+        context: &helix_view::plugin_ui::ActionContext,
+    ) -> Result<()> {
+        let lua = self.plugin_lua(plugin)?;
+        let Some(function) = api::actions::function(lua, id).map_err(PluginError::LuaError)? else {
+            return Ok(());
+        };
+        with_plugin(&Arc::from(plugin), || {
+            with_editor_context(editor, || {
+                let context =
+                    with_editor(|editor| api::actions::context_table(lua, editor, context))?;
+                function.call::<()>(context)
+            })
+            .map_err(PluginError::LuaError)
+        })
+    }
+
     /// Get all registered commands metadata (but the hidden ones of key bindings)
     pub fn get_commands(&self) -> Vec<crate::types::CommandMetadata> {
         self.commands
@@ -1342,7 +1367,7 @@ fn mode_name(mode: helix_view::document::Mode) -> &'static str {
 
 /// The keys of `helix.keymap`: like a macro, `"<space>z"`, `"gx"`, `"<C-s>"`; a single
 /// named key may leave out the brackets (`"C-s"`, `"space"`).
-fn parse_keys(keys: &str) -> LuaResult<Vec<helix_view::input::KeyEvent>> {
+pub(crate) fn parse_keys(keys: &str) -> LuaResult<Vec<helix_view::input::KeyEvent>> {
     let single = keys.parse::<helix_view::input::KeyEvent>();
     let parsed = match single {
         Ok(key) if keys.chars().count() > 1 && !keys.contains('<') => Ok(vec![key]),

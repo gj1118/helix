@@ -2310,6 +2310,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             return;
         }
         self.render_picker(panel, surface, cx);
+        self.render_docked_marks(panel, surface, cx.editor);
 
         // With the focus, the selected location over the code.
         let config = cx.editor.config();
@@ -2589,9 +2590,106 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             // The command line, from the list too; and the space menu, so that its
             // `quickfix` (`<space>Q`) hides the panel from the panel too.
             key!(':') | key!(' ') => return EventResult::Ignored(None),
-            _ => {}
+            _ => return self.docked_plugin_action(key_event, cx),
         }
         EventResult::Consumed(None)
+    }
+
+    /// A key a plugin added to the quickfix panel (`helix.quickfix.add_action`): runs its
+    /// action with the location under the cursor. Other keys do nothing.
+    fn docked_plugin_action(&mut self, key: KeyEvent, cx: &mut Context) -> EventResult {
+        use helix_view::plugin_ui::{ActionContext, ActionMatch, ActionPlace};
+        let ActionMatch::Action(id) = cx
+            .editor
+            .plugin_actions
+            .matching(ActionPlace::Quickfix, &[key])
+        else {
+            return EventResult::Consumed(None);
+        };
+        let context = self.selection().and_then(|item| {
+            let (target, range) = (self.file_fn.as_ref()?)(cx.editor, item)?;
+            let target = match target {
+                PathOrId::Path(path) => {
+                    helix_view::quicklist::Target::Path(helix_stdx::path::canonicalize(path))
+                }
+                PathOrId::Id(id) => helix_view::quicklist::Target::Doc(id),
+            };
+            let (start_line, end_line) = range.unwrap_or((0, 0));
+            let text = self
+                .columns
+                .iter()
+                .filter(|column| !column.hidden)
+                .map(|column| column.format_text(item, &self.editor_data))
+                .collect::<Vec<_>>()
+                .join(" ");
+            Some(ActionContext::Quickfix {
+                target,
+                start_line,
+                end_line: end_line.max(start_line),
+                text,
+            })
+        });
+        match context {
+            Some(context) => crate::commands::run_plugin_action(
+                cx.editor,
+                cx.plugin_manager.as_deref(),
+                id,
+                context,
+            ),
+            None => cx.editor.set_status("No location under the cursor"),
+        }
+        EventResult::Consumed(None)
+    }
+
+    /// The plugins' marks (`helix.quickfix.decorate`) at the right of the rows of the list in
+    /// the panel `area` whose locations have some.
+    fn render_docked_marks(&self, area: Rect, surface: &mut Surface, editor: &Editor) {
+        use helix_core::unicode::width::UnicodeWidthStr;
+        if editor.plugin_quickfix_marks.is_empty() {
+            return;
+        }
+        let Some(file_fn) = &self.file_fn else {
+            return;
+        };
+        let (list, first) = self.docked_list(area);
+        let snapshot = self.matcher.snapshot();
+        let end = first
+            .saturating_add(list.height as u32)
+            .min(snapshot.matched_item_count());
+        if first >= end {
+            return;
+        }
+        for (row, item) in snapshot.matched_items(first..end).enumerate() {
+            let Some((target, range)) = file_fn(editor, item.data) else {
+                continue;
+            };
+            let path = match target {
+                PathOrId::Path(path) => helix_stdx::path::canonicalize(path),
+                PathOrId::Id(id) => match editor.document(id).and_then(|doc| doc.path()) {
+                    Some(path) => path.to_path_buf(),
+                    None => continue,
+                },
+            };
+            let marks = editor
+                .plugin_quickfix_marks
+                .get(&path, range.map_or(0, |(start, _)| start));
+            if marks.is_empty() {
+                continue;
+            }
+            let width: usize = marks.iter().map(|mark| mark.text.width() + 1).sum();
+            // not over the whole row
+            if width + 8 > list.width as usize {
+                continue;
+            }
+            let y = list.y + row as u16;
+            let mut x = list.right() - width as u16;
+            for mark in marks {
+                let style = mark.style(&editor.theme);
+                surface.set_string(x, y, " ", Style::default());
+                surface.set_string(x + 1, y, &mark.text, style);
+                x += mark.text.width() as u16 + 1;
+            }
+        }
     }
 }
 

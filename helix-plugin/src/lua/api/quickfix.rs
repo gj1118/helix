@@ -2,6 +2,7 @@
 
 use crate::error::Result;
 use crate::permissions::{require, Permission};
+use helix_view::plugin_ui::{ActionPlace, Mark};
 use helix_view::quicklist::{Entry, Position, Target};
 use mlua::prelude::*;
 use std::sync::Arc;
@@ -144,6 +145,60 @@ pub fn register_quickfix_api(lua: &Lua, helix: &LuaTable) -> Result<()> {
         crate::lua::with_editor(|editor| Ok(editor.quickfix_panel.visible))
     })?;
     quickfix.set("is_open", is_open)?;
+
+    // helix.quickfix.decorate({ path, line, text, fg, style }) - A mark of the calling plugin
+    // at the right of the panel's rows pointing at `line` (1-based) of `path`, whatever list
+    // it shows (an empty or no `text`: none)
+    let decorate = lua.create_function(|lua, mark: LuaTable| {
+        require(lua, Permission::Quickfix, "helix.quickfix.decorate")?;
+        let path: String = mark.raw_get::<Option<String>>("path")?.ok_or_else(|| {
+            LuaError::RuntimeError("helix.quickfix.decorate needs a `path`".into())
+        })?;
+        let path = helix_stdx::path::canonicalize(path);
+        let line: usize = mark.raw_get::<Option<usize>>("line")?.unwrap_or(1);
+        let line = line.saturating_sub(1);
+        let text: String = mark.raw_get::<Option<String>>("text")?.unwrap_or_default();
+        let (fg, style) = super::explorer::read_color(&mark)?;
+        let plugin = crate::lua::current_plugin_name().to_string();
+        crate::lua::with_editor(|editor| {
+            if text.is_empty() {
+                editor.plugin_quickfix_marks.remove(&plugin, path, line);
+            } else {
+                editor.plugin_quickfix_marks.set(
+                    path,
+                    line,
+                    Mark {
+                        plugin,
+                        text,
+                        fg,
+                        style,
+                    },
+                );
+            }
+            Ok(())
+        })
+    })?;
+    quickfix.set("decorate", decorate)?;
+
+    // helix.quickfix.clear_decorations() - Remove the calling plugin's marks
+    let clear_decorations = lua.create_function(|lua, ()| {
+        require(
+            lua,
+            Permission::Quickfix,
+            "helix.quickfix.clear_decorations",
+        )?;
+        let plugin = crate::lua::current_plugin_name();
+        crate::lua::with_editor(|editor| {
+            editor.plugin_quickfix_marks.clear_plugin(&plugin);
+            Ok(())
+        })
+    })?;
+    quickfix.set("clear_decorations", clear_decorations)?;
+
+    // helix.quickfix.add_action({ key, desc, run }) / remove_action(key) / list_actions() -
+    // A key of the quickfix panel running `run({ path | buffer, line, end_line, text })` with
+    // the entry under the cursor
+    super::actions::register(lua, &quickfix, ActionPlace::Quickfix, Permission::Quickfix)?;
 
     helix.set("quickfix", quickfix)?;
     Ok(())

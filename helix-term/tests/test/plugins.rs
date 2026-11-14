@@ -600,7 +600,7 @@ async fn plugins_bind_keys() -> anyhow::Result<()> {
         refused,
         [concat!(
             "'shell',",
-            "'windows' and 'files' and 'config' and 'explorer' and 'shell',",
+            "'windows' and 'files' and 'config' and 'explorer' and 'diff' and 'quickfix' and 'shell',",
             "No command 'nope',",
             "'files'"
         )]
@@ -1352,5 +1352,248 @@ async fn annotations_align_to_the_right_edge() -> anyhow::Result<()> {
     // an "eol" one in a narrow window drops to a row of its own below its line, as before
     assert!(rows[2].ends_with("end"), "{rows:#?}");
     assert_eq!(rows[3].trim(), "PLAIN", "{rows:#?}");
+    Ok(())
+}
+
+/// Plugins add keys to the explorer, run with the entry under the cursor; color names, put
+/// text after them and at the right of rows (several plugins on one row); hear of the files
+/// opened from the tree.
+#[tokio::test(flavor = "multi_thread")]
+async fn plugins_add_keys_and_texts_to_the_explorer() -> anyhow::Result<()> {
+    use helix_term::ui::explorer::{Explorer, EXPLORER_ID};
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().canonicalize()?;
+    std::fs::create_dir(root.join("sub"))?;
+    std::fs::write(root.join("a.txt"), "a\n")?;
+    let init = format!(
+        r##"
+        local seen = {{}}
+        local function record(entry)
+            seen[#seen + 1] = entry
+            helix.editor.set_register("z", {{ table.concat(seen, "|") }})
+        end
+        local function base(path) return path:match("[^/\\]+$") end
+        helix.explorer.add_action({{ key = "y", desc = "Note the entry", run = function(entry)
+            record("action:" .. base(entry.path) .. ":" .. tostring(entry.is_dir))
+        end }})
+        helix.on("explorer_open", function(e) record("open:" .. base(e.path) .. ":" .. e.how) end)
+        helix.explorer.decorate({root:?} .. "/a.txt", {{ text = "3 KB",
+            name = {{ fg = "#ff0000" }}, after = {{ text = "(2)", fg = "#00ff00" }} }})
+        "##,
+        root = root.to_string_lossy()
+    );
+    let other = format!(
+        r#"helix.explorer.decorate({root:?} .. "/a.txt", {{ text = "★" }})"#,
+        root = root.to_string_lossy()
+    );
+    let plugins = plugin_dir(&[("tree", &init, None), ("star", &other, None)])?;
+    let config = plugin_config(
+        plugins.path(),
+        r#"
+        [[plugins]]
+        name = "tree"
+        permissions = ["edit", "explorer"]
+        "#,
+    )?;
+    let mut app = helpers::AppBuilder::new().with_config(config).build()?;
+    app.editor.explorer_panel.visible = true;
+    app.editor.explorer_panel.focused = true;
+    let explorer = Explorer::new(&root, &app.editor)?;
+    app.compositor.push(Box::new(explorer));
+    if let Some(explorer) = app.compositor.find_id::<Explorer>(EXPLORER_ID) {
+        explorer.wait_for_scan(&app.editor);
+    }
+    // (the tree: the root, sub/, a.txt; the cursor on the root)
+    send_keys(&mut app, "jy").await?;
+    let seen: Vec<String> = register(&app, 'z');
+    assert_eq!(seen, ["action:sub:true"]);
+
+    // the row of a.txt: its name in red, "(2)" after it, both plugins' texts at its right
+    let rows = app.rendered_rows();
+    let (y, row) = rows
+        .iter()
+        .enumerate()
+        .find(|(_, row)| row.contains("a.txt"))
+        .expect("a row of a.txt");
+    assert!(row.contains("a.txt (2)"), "{row:?}");
+    assert!(row.contains("3 KB ★"), "{row:?}");
+    let x: u16 = cell_column(row, "a.txt").unwrap();
+    let name_fg: helix_view::graphics::Color = app.rendered_cell(x, y as u16).fg;
+    assert_eq!(name_fg, helix_view::graphics::Color::Rgb(255, 0, 0));
+    let x: u16 = cell_column(row, "(2)").unwrap();
+    let after_fg: helix_view::graphics::Color = app.rendered_cell(x, y as u16).fg;
+    assert_eq!(after_fg, helix_view::graphics::Color::Rgb(0, 255, 0));
+
+    // on a.txt: the action, then the file opened from the tree
+    send_keys(&mut app, "jyl").await?;
+    let seen: Vec<String> = register(&app, 'z');
+    assert_eq!(
+        seen,
+        [
+            "action:sub:true",
+            "action:a.txt:false",
+            "open:a.txt:replace"
+        ]
+    );
+    let descriptions: Vec<String> = app
+        .editor
+        .plugin_actions
+        .of(helix_view::plugin_ui::ActionPlace::Explorer)
+        .map(|action| action.description.clone())
+        .collect();
+    assert_eq!(descriptions, ["Note the entry"]);
+    Ok(())
+}
+
+/// Plugins add keys to the quickfix panel, run with the location under the cursor, and marks
+/// at the right of the rows of a location.
+#[tokio::test(flavor = "multi_thread")]
+async fn plugins_add_keys_and_marks_to_the_quickfix_panel() -> anyhow::Result<()> {
+    let a = helpers::temp_file_with_contents("alpha\nbeta\n")?;
+    let b = helpers::temp_file_with_contents("gamma\n")?;
+    let init = format!(
+        r#"
+        helix.register_command{{ name = "qf", handler = function()
+            helix.quickfix.set({{
+                {{ path = {a:?}, line = 2, text = "beta line" }},
+                {{ path = {b:?}, line = 1, text = "gamma line" }},
+            }}, true)
+            helix.quickfix.decorate({{ path = {a:?}, line = 2, text = "FAIL", style = "error" }})
+        end }}
+        helix.quickfix.add_action({{ key = "x", run = function(entry)
+            local old = helix.editor.get_register("z") or {{}}
+            helix.editor.set_register("z", {{ (old[1] and old[1] .. "|" or "")
+                .. entry.path:match("[^/\\]+$") .. ":" .. entry.line .. ":"
+                .. math.type(entry.line) .. ":" .. tostring(entry.text:find("line") ~= nil) }})
+        end }})
+        "#,
+        a = a.path().to_string_lossy(),
+        b = b.path().to_string_lossy(),
+    );
+    let dir = plugin_dir(&[("qf", &init, None)])?;
+    let config = plugin_config(
+        dir.path(),
+        r#"
+        [[plugins]]
+        name = "qf"
+        permissions = ["edit", "commands", "quickfix"]
+        "#,
+    )?;
+    let mut app = helpers::AppBuilder::new().with_config(config).build()?;
+    send_keys(&mut app, ":qf<ret>").await?;
+    let rows = app.rendered_rows();
+    let beta = rows
+        .iter()
+        .find(|row| row.contains("beta line"))
+        .expect("the row of beta");
+    assert!(beta.trim_end().ends_with("FAIL"), "{beta:?}");
+    let gamma = rows
+        .iter()
+        .find(|row| row.contains("gamma line"))
+        .expect("the row of gamma");
+    assert!(!gamma.contains("FAIL"), "{gamma:?}");
+
+    // the panel has the focus: `x` on the first row, then on the second
+    send_keys(&mut app, "xjx").await?;
+    let (a_name, b_name) = (
+        a.path().file_name().unwrap().to_string_lossy().into_owned(),
+        b.path().file_name().unwrap().to_string_lossy().into_owned(),
+    );
+    let seen: Vec<String> = register(&app, 'z');
+    assert_eq!(
+        seen,
+        [
+            format!("{a_name}:2:integer:true"),
+            format!("{b_name}:1:integer:true")
+        ]
+    );
+    Ok(())
+}
+
+/// Plugins open diffs against a text of theirs, hear of them opening, changing and closing,
+/// mark their changes and add keys to them, run with the change under the cursor.
+#[tokio::test(flavor = "multi_thread")]
+async fn plugins_open_follow_mark_and_add_keys_to_diffs() -> anyhow::Result<()> {
+    let file = helpers::temp_file_with_contents("a\nB\nc\nd\n")?;
+    let init = r##"
+        local seen = {}
+        local function record(entry)
+            seen[#seen + 1] = entry
+            helix.editor.set_register("z", { table.concat(seen, "|") })
+        end
+        local function mark_all(e)
+            local diff = helix.diff.get(e.right_window_id)
+            for _, change in ipairs(diff.changes) do
+                helix.diff.mark(change.index, { text = "AI", fg = "#ff0000" }, e.right_window_id)
+            end
+            return #diff.changes
+        end
+        helix.on("diff_open", function(e) record("open:" .. mark_all(e)) end)
+        helix.on("diff_update", function(e) record("update:" .. mark_all(e)) end)
+        helix.on("diff_close", function(e) record("close") end)
+        helix.register_command{ name = "suggest", handler = function()
+            helix.diff.open({ text = "a\nb\nc\n", title = "suggested" })
+        end }
+        helix.diff.add_action({ key = "<space>e", desc = "Explain", run = function(diff)
+            record("explain:" .. diff.title .. ":" .. diff.change.index .. ":" .. diff.change.kind)
+        end })
+    "##;
+    let dir = plugin_dir(&[("ai", init, None)])?;
+    let config = plugin_config(
+        dir.path(),
+        r#"
+        [[plugins]]
+        name = "ai"
+        permissions = ["edit", "commands", "diff"]
+        "#,
+    )?;
+    let mut app = helpers::AppBuilder::new()
+        .with_file(file.path(), None)
+        .with_config(config)
+        .build()?;
+    send_keys(&mut app, ":suggest<ret>").await?;
+    let sessions: usize = app.editor.diff_sessions.len();
+    assert_eq!(sessions, 1);
+    let seen: Vec<String> = register(&app, 'z');
+    assert_eq!(seen.first().map(String::as_str), Some("open:2"), "{seen:?}");
+
+    // the marks at the left edge of the connector, on the rows of the two changes
+    let session = &app.editor.diff_sessions[0];
+    let x = app.editor.tree.get(session.right_view).area.x;
+    let rows = app.rendered_rows();
+    let marked: Vec<usize> = rows
+        .iter()
+        .enumerate()
+        .filter(|(y, _)| {
+            app.rendered_cell(x, *y as u16).symbol.as_str() == "A"
+                && app.rendered_cell(x + 1, *y as u16).symbol.as_str() == "I"
+        })
+        .map(|(y, _)| y)
+        .collect();
+    assert_eq!(marked.len(), 2, "{rows:#?}");
+    let fg: helix_view::graphics::Color = app.rendered_cell(x, marked[0] as u16).fg;
+    assert_eq!(fg, helix_view::graphics::Color::Rgb(255, 0, 0));
+
+    // the cursor on line 2 (the changed one): the plugin's keys of the diff views
+    send_keys(&mut app, "ggj<space>e").await?;
+    let seen: Vec<String> = register(&app, 'z');
+    assert_eq!(
+        seen.last().map(String::as_str),
+        Some("explain:suggested:1:changed"),
+        "{seen:?}"
+    );
+
+    // an edit works the changes out again; closing the diff
+    send_keys(&mut app, "Gox<esc>").await?;
+    let seen: Vec<String> = register(&app, 'z');
+    assert!(
+        seen.iter().any(|entry| entry.starts_with("update:")),
+        "{seen:?}"
+    );
+    send_keys(&mut app, ":diff-close<ret>").await?;
+    let seen: Vec<String> = register(&app, 'z');
+    assert_eq!(seen.last().map(String::as_str), Some("close"), "{seen:?}");
+    let sessions: usize = app.editor.diff_sessions.len();
+    assert_eq!(sessions, 0);
     Ok(())
 }

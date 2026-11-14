@@ -133,6 +133,29 @@ pub struct Context<'a> {
     pub plugin_manager: Option<std::sync::Arc<PluginManager>>,
 }
 
+/// Runs plugin action `id` (a key a plugin added to the diff viewer, the explorer or the
+/// quickfix panel) with `context`; an error is shown.
+pub fn run_plugin_action(
+    editor: &mut Editor,
+    plugin_manager: Option<&PluginManager>,
+    id: u64,
+    context: helix_view::plugin_ui::ActionContext,
+) {
+    let Some(plugin) = editor
+        .plugin_actions
+        .get(id)
+        .map(|action| action.plugin.clone())
+    else {
+        return;
+    };
+    let Some(plugin_manager) = plugin_manager else {
+        return;
+    };
+    if let Err(err) = plugin_manager.run_action(editor, &plugin, id, &context) {
+        editor.set_error(format!("{plugin}: {err}"));
+    }
+}
+
 impl Context<'_> {
     /// Push a new component onto the compositor.
     pub fn push_layer(&mut self, component: Box<dyn Component>) {

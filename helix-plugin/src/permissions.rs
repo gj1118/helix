@@ -37,15 +37,20 @@ pub enum Permission {
     Config,
     /// Change key bindings.
     Keymaps,
-    /// Control the file explorer.
+    /// Control the file explorer, and add keys to it.
     Explorer,
+    /// Read the side-by-side diffs, draw on their changes, add keys to them, open and close
+    /// them.
+    Diff,
+    /// Add keys and marks to the quickfix panel.
+    Quickfix,
     /// Run programs: shell commands (`:sh`, `:pipe`...), debug adapters, and the settings
     /// that run programs (`shell`, `clipboard-provider`, workspace trust).
     Shell,
 }
 
 impl Permission {
-    pub const ALL: [Permission; 10] = [
+    pub const ALL: [Permission; 12] = [
         Permission::Read,
         Permission::Ui,
         Permission::Edit,
@@ -55,6 +60,8 @@ impl Permission {
         Permission::Config,
         Permission::Keymaps,
         Permission::Explorer,
+        Permission::Diff,
+        Permission::Quickfix,
         Permission::Shell,
     ];
 
@@ -70,6 +77,8 @@ impl Permission {
             Permission::Config => "config",
             Permission::Keymaps => "keymaps",
             Permission::Explorer => "explorer",
+            Permission::Diff => "diff",
+            Permission::Quickfix => "quickfix",
             Permission::Shell => "shell",
         }
     }

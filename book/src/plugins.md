@@ -128,7 +128,9 @@ permissions = ["edit", "files"]
 | `commands` | Registering `:` commands, and running Helix's own with `helix.editor.execute_command` | |
 | `config` | Changing settings: `:set`, `:toggle`, `:config-reload`, `:lang`, `:cd`, `:lsp-restart`... | |
 | `keymaps` | Changing key bindings | |
-| `explorer` | Controlling the file explorer | |
+| `explorer` | Controlling the file explorer, and adding keys to it (`helix.explorer.add_action`) | |
+| `diff` | The side-by-side diffs: reading them, marking their changes, adding keys to them, opening and closing them (`helix.diff`) | |
+| `quickfix` | Adding keys and marks to the quickfix panel (`helix.quickfix.add_action`, `decorate`) | |
 | `shell` | Running programs: `helix.process`, `:sh`, `:pipe`, `:insert-output`, debug adapters, `:lsp-workspace-command`, `:workspace-trust`, the settings that run programs (`:set shell`, `clipboard-provider`), and the language server requests that are not only reads (`workspace/executeCommand`, a server's own methods, notifications) | |
 
 `"all"` grants everything. An unknown name is a config error.
@@ -231,6 +233,10 @@ error. The `event` table has a `type` field (the event name) and, depending on t
 | `file_rename` | `path`, `old_path` | when the file explorer renamed or moved (cut and paste) a file or folder |
 | `file_copy` | `path`, `source` | when the file explorer copied a file or folder |
 | `file_delete` | `path`, `is_dir` | when the file explorer deleted a file or folder |
+| `explorer_open` | `path`, `how` (`"replace"`, `"vsplit"`, `"hsplit"`) | when a file is opened from the file explorer |
+| `diff_open` | `left_window_id`, `right_window_id`, `left_document_id`, `right_document_id` | when a side-by-side diff opens |
+| `diff_update` | the same | when the changes of a diff are worked out again (an edit, a save, staging) |
+| `diff_close` | the same | when a diff closes |
 | `prompt_open` | `prompt`, `kind`, `text`, `register` | when a prompt opens: the command line, a search, select, a plugin's prompt... (not a picker's filter). `prompt` is its label, `kind` one of `search` (both directions), `command`, `select`, `split`, `keep`, `remove`, `replace`, `shell` or `other`, `register` its history register, if any |
 | `prompt_change` | `prompt`, `kind`, `text`, `register` | when its text changes: a key typed or deleted, a paste, a history entry, a completion |
 | `prompt_close` | `prompt`, `kind`, `text`, `register`, `accepted` | when it closes: `accepted` is `true` for Enter (`text` is then what runs, the last entry for an empty search), `false` for Esc or when something else closed it |
@@ -546,18 +552,104 @@ The quicklist, shown in the quickfix panel at the bottom (`:copen`, see
 
 A plugin's own list can also go in the panel: `helix.ui.picker{ ..., dock = true }`.
 
+What a plugin adds to the panel itself, whatever list it shows (a search, diagnostics,
+references, the quicklist), needs the `quickfix` permission:
+
+- `add_action{ key, desc, run }`: `key` (one key, `"x"`, `"C-y"`), while the panel has the
+  focus, runs `run(entry)` with the row under the cursor: `{ path | buffer, line, end_line,
+  text }` (lines 1-based, `text` the row as shown). The panel's own keys (`j`, `k`, `g`, `G`,
+  `Enter`, `o`, `/`, `q`, `Esc`, `C-s`, `C-v`, `C-t`, `C-q`, `C-w`, `C-h`, `C-l`, `:`,
+  `Space`) keep their meaning. `remove_action(key)` removes the calling plugin's;
+  `list_actions()` lists all plugins' as `{ key, desc, plugin }` (`read`).
+- `decorate{ path, line, text, fg, style }`: a mark at the right of the rows pointing at
+  `line` (1-based) of `path`, in `fg` (`"#rrggbb"`) or the theme key `style`; without `text`
+  the calling plugin's mark there goes. `clear_decorations()` removes the calling plugin's.
+
+```lua
+-- `x` on a row: its location in the status line
+helix.quickfix.add_action({ key = "x", desc = "Show the location", run = function(entry)
+  helix.ui.notify(tostring(entry.path) .. ":" .. entry.line)
+end })
+helix.quickfix.decorate({ path = "/src/lib.rs", line = 12, text = "FAIL", style = "error" })
+```
+
 ### `helix.explorer`
 
 - `is_open()`, `is_focused()`, `get_root()`, `get_selected()` (the path under the cursor;
   `nil` until the explorer was shown) (`read`).
 - `open()`, `close()`, `focus()`, `refresh()` (reads the folders again), `reveal(path)` (shows
   the explorer with the cursor on `path`, the folders above it expanded) (`explorer`).
-- `decorate(path, { text, fg, style })`: a text at the right of the row of `path`, left of the
-  git marker, in `fg` (`"#rrggbb"`) or the theme key `style`; `decorate(path, nil)` removes it;
-  `clear_decorations()` removes the calling plugin's (`ui`).
+- `decorate(path, { text, fg, style, name = { fg, style }, after = { text, fg, style } })`:
+  what the calling plugin shows on the row of `path`: `text` at its right, left of the git
+  marker; a color for the name (`name`); a text right after the name (`after`). Colors are
+  `fg` (`"#rrggbb"`) or the theme key `style`. Each plugin's decoration is its own: the texts
+  of several plugins are all shown (at the right, the first ones that fit), the name takes the
+  color of the last one that set one. `decorate(path, nil)` removes the calling plugin's;
+  `clear_decorations()` all of them (`ui`).
+- `add_action{ key, desc, run }`: `key` (one key) in the explorer, while it has the focus,
+  runs `run(entry)` with the entry under the cursor, `{ path, is_dir }` (`explorer`). The
+  tree's own keys keep their meaning; an action takes a key the tree leaves to the editor's
+  keymap (so binding `j` or `k` would take them from moving in the tree).
+  `remove_action(key)`, `list_actions()` as for the quickfix panel.
 
 What the explorer does to files is heard of with the `file_create`, `file_rename`,
-`file_copy` and `file_delete` events, and its cursor with `explorer_select`.
+`file_copy` and `file_delete` events, its cursor with `explorer_select`, and the files opened
+from it with `explorer_open`.
+
+```lua
+helix.explorer.add_action({ key = "y", desc = "Copy the path", run = function(entry)
+  helix.editor.set_register("+", { entry.path })
+end })
+helix.explorer.decorate("/src/main.rs", {
+  name = { style = "warning" }, after = { text = "(3)", style = "comment" }, text = "12 KB",
+})
+```
+
+### `helix.diff`
+
+The side-by-side diffs (see [Diffs](./diff.md)). Everything needs the `diff` permission.
+
+- `get(window)`: the diff `window` is a side of (default: the focused window), or `nil`:
+  `{ left, right, left_window, right_window, title, path, git, changes }`. `left` and
+  `right` are buffers (the left one, the old version, is read-only), `title` the left side's
+  (`"HEAD"`, `"suggested"`...), `path` the right side's file, `git` `"HEAD"` or `"index"` for a
+  diff against git (`nil` otherwise). Each change is `{ index, kind, left_line, left_count,
+  right_line, right_count, stage }`: `kind` is `"added"`, `"removed"` or `"changed"`, lines
+  1-based (a side with no lines has its count 0 and its line where they would be), `stage`
+  `"staged"`, `"unstaged"` or `"partly"` against `HEAD`. `window` is a window or a window id
+  (the `*_window_id` of the events).
+- `list()`: all the diffs shown. `change(window)`: the change under the cursor, or `nil`.
+- `mark(index, { text, fg, style }, window)`: a mark of the calling plugin on change `index`,
+  at the left edge of the connector on the change's first row (the stage marks are at its
+  right edge). Marks last until the changes are worked out again: set them again on
+  `diff_update`. `mark(index, nil)` removes it, `clear_marks(window)` removes the calling
+  plugin's (of every diff without `window`).
+- `add_action{ keys, desc, run }`: keys (a sequence: `"<space>e"`) of the diff views in
+  normal mode, after [`[editor.diff.keys]`](./diff.md); `run(diff)` gets `get()` of the
+  focused diff with `diff.change`, the change under the cursor. `remove_action(keys)`,
+  `list_actions()` as for the quickfix panel.
+- `open{ buffer, text, title }`: shows `buffer` (default: the focused one) beside `text`, on
+  the left, read-only, titled `title`; returns the diff. `>>` (`apply-left-to-right`) then
+  copies a change of `text` into the buffer: a plugin can offer an edit to take change by
+  change. `close(window)` closes a diff; returns whether there was one.
+
+The two sides are ordinary buffers: `set_highlights`, `set_signs` and annotations draw on
+either side's lines, the old one too.
+
+```lua
+helix.on("diff_update", function(e)
+  local diff = helix.diff.get(e.right_window_id)
+  for _, change in ipairs(diff.changes) do
+    if change.right_count > 20 then
+      helix.diff.mark(change.index, { text = "!!", style = "warning" }, e.right_window_id)
+    end
+  end
+end)
+helix.diff.add_action({ keys = "<space>e", desc = "Explain the change", run = function(diff)
+  local lines = diff.right:get_text() -- ...
+  helix.ui.notify(diff.change.kind .. " at line " .. diff.change.right_line)
+end })
+```
 
 ### `helix.fs`
 

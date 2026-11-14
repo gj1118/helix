@@ -3,8 +3,54 @@
 use crate::error::Result;
 use crate::permissions::{require, Permission};
 use helix_view::explorer::{ExplorerDecoration, ExplorerRequest};
+use helix_view::plugin_ui::ActionPlace;
 use mlua::prelude::*;
 use std::path::PathBuf;
+
+/// A `"#rrggbb"` color (`fg`) and a theme key (`style`) of `table`, checked.
+pub(crate) fn read_color(table: &LuaTable) -> LuaResult<(Option<String>, Option<String>)> {
+    let fg: Option<String> = table.raw_get("fg")?;
+    if let Some(fg) = &fg {
+        let valid =
+            fg.len() == 7 && fg.starts_with('#') && fg[1..].chars().all(|c| c.is_ascii_hexdigit());
+        if !valid {
+            return Err(LuaError::RuntimeError(format!(
+                "fg must be \"#rrggbb\", not {fg:?}"
+            )));
+        }
+    }
+    Ok((fg, table.raw_get("style")?))
+}
+
+/// A decoration from a plugin's `{ text, fg, style, name = { fg, style }, after = { text, fg,
+/// style } }`, read without running metamethods.
+fn read_decoration(table: &LuaTable, plugin: String) -> LuaResult<ExplorerDecoration> {
+    let text: String = table.raw_get::<Option<String>>("text")?.unwrap_or_default();
+    let (fg, style) = read_color(table)?;
+    let (name_fg, name_style) = match table.raw_get::<Option<LuaTable>>("name")? {
+        Some(name) => read_color(&name)?,
+        None => (None, None),
+    };
+    let (after, after_fg, after_style) = match table.raw_get::<Option<LuaTable>>("after")? {
+        Some(after) => {
+            let text: String = after.raw_get::<Option<String>>("text")?.unwrap_or_default();
+            let (fg, style) = read_color(&after)?;
+            (text, fg, style)
+        }
+        None => (String::new(), None, None),
+    };
+    Ok(ExplorerDecoration {
+        plugin,
+        text,
+        fg,
+        style,
+        name_fg,
+        name_style,
+        after,
+        after_fg,
+        after_style,
+    })
+}
 
 fn path_string(path: Option<PathBuf>) -> Option<String> {
     path.map(|p| p.to_string_lossy().into_owned())
@@ -93,43 +139,22 @@ pub fn register_explorer_api(lua: &Lua, helix: &LuaTable) -> Result<()> {
     })?;
     explorer.set("reveal", reveal)?;
 
-    // helix.explorer.decorate(path, { text, fg, style }) - A text at the right of the row of
-    // `path` (`nil`: none)
+    // helix.explorer.decorate(path, { text, fg, style, name = { fg, style }, after = { text,
+    // fg, style } }) - What the calling plugin shows on the row of `path`: `text` at its right,
+    // a color for the name, a text right after the name (`nil`: nothing). Colors are
+    // `"#rrggbb"` (`fg`) or a theme key (`style`).
     let decorate = lua.create_function(|lua, (path, decoration): (String, Option<LuaTable>)| {
         require(lua, Permission::Ui, "helix.explorer.decorate")?;
         let path = helix_stdx::path::canonicalize(path);
+        let plugin = crate::lua::current_plugin_name().to_string();
         let decoration = match decoration {
-            Some(table) => {
-                let text: String = table.raw_get::<Option<String>>("text")?.unwrap_or_default();
-                let fg: Option<String> = table.raw_get("fg")?;
-                if let Some(fg) = &fg {
-                    let valid = fg.len() == 7
-                        && fg.starts_with('#')
-                        && fg[1..].chars().all(|c| c.is_ascii_hexdigit());
-                    if !valid {
-                        return Err(LuaError::RuntimeError(format!(
-                            "fg must be \"#rrggbb\", not {fg:?}"
-                        )));
-                    }
-                }
-                Some(ExplorerDecoration {
-                    plugin: crate::lua::current_plugin_name().to_string(),
-                    text,
-                    fg,
-                    style: table.raw_get("style")?,
-                })
-            }
+            Some(table) => Some(read_decoration(&table, plugin.clone())?),
             None => None,
         };
         crate::lua::with_editor(|editor| {
-            let decorations = &mut editor.plugin_explorer.decorations;
             match decoration {
-                Some(decoration) => {
-                    decorations.insert(path, decoration);
-                }
-                None => {
-                    decorations.remove(&path);
-                }
+                Some(decoration) => editor.plugin_explorer.decorate(path, decoration),
+                None => editor.plugin_explorer.undecorate(&plugin, &path),
             }
             Ok(())
         })
@@ -141,14 +166,15 @@ pub fn register_explorer_api(lua: &Lua, helix: &LuaTable) -> Result<()> {
         require(lua, Permission::Ui, "helix.explorer.clear_decorations")?;
         let plugin = crate::lua::current_plugin_name();
         crate::lua::with_editor(|editor| {
-            editor
-                .plugin_explorer
-                .decorations
-                .retain(|_, decoration| *decoration.plugin != *plugin);
+            editor.plugin_explorer.clear_plugin(&plugin);
             Ok(())
         })
     })?;
     explorer.set("clear_decorations", clear)?;
+
+    // helix.explorer.add_action({ key, desc, run }) / remove_action(key) - A key of the
+    // explorer panel running `run({ path, is_dir })` with the entry under the cursor
+    super::actions::register(lua, &explorer, ActionPlace::Explorer, Permission::Explorer)?;
 
     helix.set("explorer", explorer)?;
     Ok(())

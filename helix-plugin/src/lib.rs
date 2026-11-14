@@ -134,6 +134,11 @@ impl PluginManager {
         editor.plugin_keymaps.clear();
         editor.plugin_statusline.clear();
         editor.plugin_explorer.decorations.clear();
+        editor.plugin_actions.clear();
+        editor.plugin_quickfix_marks.clear();
+        for session in &mut editor.diff_sessions {
+            session.plugin_marks.clear();
+        }
         for doc in editor.documents.values_mut() {
             doc.plugin_signs.clear();
             doc.plugin_highlights.clear();
@@ -193,6 +198,17 @@ impl PluginManager {
     /// Get the Lua engine (for advanced operations)
     pub fn engine(&self) -> Arc<RwLock<LuaEngine>> {
         Arc::clone(&self.engine)
+    }
+
+    /// Runs action `id` of `plugin` with `context` (see [`LuaEngine::run_action`]).
+    pub fn run_action(
+        &self,
+        editor: &mut Editor,
+        plugin: &str,
+        id: u64,
+        context: &helix_view::plugin_ui::ActionContext,
+    ) -> Result<()> {
+        self.engine.read().run_action(editor, plugin, id, context)
     }
 
     /// Get registered commands

@@ -28,6 +28,7 @@ use helix_core::Position;
 use helix_view::graphics::CursorKind;
 use helix_view::icons::ICONS;
 use helix_view::input::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use helix_view::plugin_ui::{color_style, ActionContext, ActionMatch, ActionPlace};
 use helix_view::{
     document::Mode,
     editor::{Action, CmdlineStyle, GradientBorderConfig, PointerShape},
@@ -954,6 +955,34 @@ impl Explorer {
     // Key handling
     // --------------------------------------------------------------------
 
+    /// A key a plugin added to the explorer (`helix.explorer.add_action`): runs its action with
+    /// the entry under the cursor.
+    fn on_plugin_action(&mut self, key: KeyEvent, cx: &mut Context) -> EventResult {
+        let id = match cx
+            .editor
+            .plugin_actions
+            .matching(ActionPlace::Explorer, &[key])
+        {
+            ActionMatch::Action(id) => id,
+            _ => return EventResult::Ignored(None),
+        };
+        let Some(entry) = self.entry_cloned() else {
+            return EventResult::Consumed(None);
+        };
+        crate::commands::run_plugin_action(
+            cx.editor,
+            cx.plugin_manager.as_deref(),
+            id,
+            ActionContext::Explorer {
+                path: entry.path,
+                is_dir: entry.is_dir,
+            },
+        );
+        // what the action changed of the tree (decorations, a refresh...) shows now
+        self.plugin_requests(cx.editor);
+        EventResult::Consumed(None)
+    }
+
     fn on_nav_key(&mut self, key: KeyEvent, cx: &mut Context) -> EventResult {
         if key.modifiers != KeyModifiers::NONE {
             return EventResult::Ignored(None);
@@ -1125,6 +1154,7 @@ impl Explorer {
                     .or_else(|| cx.editor.tree.views().find(|(view, _)| view.doc == doc_id))
                     .map(|(view, _)| view.id);
                 if let Some(view_id) = view_id {
+                    opened_event(&path, action);
                     cx.editor.focus(view_id);
                     // Hand keyboard focus back to the editor; the tree stays open.
                     cx.editor.explorer_panel.focused = false;
@@ -1138,6 +1168,7 @@ impl Explorer {
 
         match cx.editor.open(&path, action) {
             Ok(_) => {
+                opened_event(&path, action);
                 // Hand keyboard focus back to the editor; the tree stays open.
                 cx.editor.explorer_panel.focused = false;
                 if floating {
@@ -1841,6 +1872,16 @@ fn paste_now(cx: &mut Context, clip: &ExplorerClipboard, dest: &Path) {
 }
 
 /// Queues a plugin event about a file the explorer changed: its `path` and `extra`.
+/// The `explorer_open` event of opening `path` from the tree, in a window replaced or split.
+fn opened_event(path: &Path, action: Action) {
+    let how = match action {
+        Action::VerticalSplit => "vsplit",
+        Action::HorizontalSplit => "hsplit",
+        _ => "replace",
+    };
+    file_event(EventType::OnExplorerOpen, path, ("how", how.into()));
+}
+
 fn file_event(event: EventType, path: &Path, extra: (&'static str, EventValue)) {
     crate::plugin_events::queue_fields(
         event,
@@ -1940,7 +1981,11 @@ impl Explorer {
             return self.on_filter_key(*key, cx);
         }
 
-        let result = self.on_nav_key(*key, cx);
+        let mut result = self.on_nav_key(*key, cx);
+        // a key the tree leaves to the editor's keymap: a plugin's action first
+        if matches!(result, EventResult::Ignored(_)) {
+            result = self.on_plugin_action(*key, cx);
+        }
         // A count typed before one of the tree's own keys (`3d`) applies to nothing:
         // drop it, so it doesn't carry over to the next key. Digits and movement keys
         // are not the tree's: the editor's keymap counts them (`5j`, `10gg`).
@@ -2299,7 +2344,33 @@ impl Component for Explorer {
                 }
                 _ => false,
             };
+            // What plugins show on the row (`helix.explorer.decorate`), not on `..`.
+            let decorations: &[helix_view::explorer::ExplorerDecoration] = if entry.is_parent {
+                &[]
+            } else {
+                cx.editor
+                    .plugin_explorer
+                    .decorations
+                    .get(&entry.path)
+                    .map_or(&[], Vec::as_slice)
+            };
+            // the name's color: the last plugin's that set one
+            let name_color = decorations
+                .iter()
+                .rev()
+                .find(|d| d.name_fg.is_some() || d.name_style.is_some())
+                .map(|d| {
+                    color_style(
+                        &cx.editor.theme,
+                        d.name_fg.as_deref(),
+                        d.name_style.as_deref(),
+                    )
+                });
             let name_spans = |base: Style| -> Vec<Span<'static>> {
+                let base = match name_color {
+                    Some(color) => base.patch(color),
+                    None => base,
+                };
                 if highlight {
                     highlighted_name(&entry.name, &indices, base, match_style)
                 } else {
@@ -2354,6 +2425,17 @@ impl Component for Explorer {
             } else {
                 spans.extend(name_spans(text_style));
             }
+            // the plugins' texts right after the name
+            for decoration in decorations.iter().filter(|d| !d.after.is_empty()) {
+                spans.push(Span::styled(
+                    format!(" {}", decoration.after),
+                    color_style(
+                        &cx.editor.theme,
+                        decoration.after_fg.as_deref(),
+                        decoration.after_style.as_deref(),
+                    ),
+                ));
+            }
 
             // Changed files are marked at the right edge, outside of what the name may take.
             let marker = if !show_git || entry.is_parent || entry.depth == 0 {
@@ -2370,21 +2452,29 @@ impl Component for Explorer {
             // Not for a panel so narrow that the marker would be all there is.
             .filter(|(text, _)| rows_area.width as usize > text.width() + 6);
             let marker_width = marker.as_ref().map_or(0, |(text, _)| text.width() + 1);
-            // A plugin's text for the row (`helix.explorer.decorate`), left of the marker.
-            let decoration = cx
-                .editor
-                .plugin_explorer
-                .decorations
-                .get(&entry.path)
-                .filter(|_| !entry.is_parent)
-                .map(|d| (d.text.clone(), decoration_style(&cx.editor.theme, d)))
-                .filter(|(text, _)| {
-                    !text.is_empty() && rows_area.width as usize > text.width() + marker_width + 6
-                });
-            let decoration_width = decoration.as_ref().map_or(0, |(text, _)| text.width() + 1);
-            let name_width = match (&marker, &decoration) {
-                (None, None) => rows_area.width as usize,
-                _ => rows_area.width as usize - marker_width - decoration_width - 1,
+            // The plugins' texts at the right of the row, left of the marker; the first
+            // ones that fit.
+            let mut right_texts: Vec<(String, Style)> = Vec::new();
+            let mut right_width = 0;
+            for decoration in decorations.iter().filter(|d| !d.text.is_empty()) {
+                let width = decoration.text.width() + 1;
+                if rows_area.width as usize <= right_width + width + marker_width + 6 {
+                    break;
+                }
+                right_width += width;
+                right_texts.push((
+                    decoration.text.clone(),
+                    color_style(
+                        &cx.editor.theme,
+                        decoration.fg.as_deref(),
+                        decoration.style.as_deref(),
+                    ),
+                ));
+            }
+            let name_width = if marker.is_none() && right_texts.is_empty() {
+                rows_area.width as usize
+            } else {
+                rows_area.width as usize - marker_width - right_width - 1
             };
 
             let mut x = rows_area.x;
@@ -2392,9 +2482,10 @@ impl Component for Explorer {
                 surface.set_string(x, y, &span.content, span.style);
                 x += span.content.width() as u16;
             }
-            if let Some((text, style)) = decoration {
-                let x = rows_area.right() - marker_width as u16 - text.width() as u16 - 1;
+            let mut x = rows_area.right() - marker_width as u16 - right_width as u16;
+            for (text, style) in right_texts {
                 surface.set_string(x, y, &text, style);
+                x += text.width() as u16 + 1;
             }
             if let Some((text, style)) = marker {
                 let marker_x = rows_area.right() - text.width() as u16 - 1;
@@ -2436,30 +2527,6 @@ fn explorer_border_style(
 /// The style of a git status marker: only the foreground of the change's `diff.*` style.
 /// Many themes give those a background for diff views, which would paint a block behind
 /// the marker instead of keeping the row's own background (and the selection highlight).
-/// The style of a plugin's text on a row: its color, or its theme key (the row's background
-/// stays either way).
-fn decoration_style(
-    theme: &helix_view::Theme,
-    decoration: &helix_view::explorer::ExplorerDecoration,
-) -> Style {
-    let rgb = decoration.fg.as_deref().and_then(|hex| {
-        let hex = hex.strip_prefix('#')?;
-        if hex.len() != 6 {
-            return None;
-        }
-        let channel = |i: usize| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok();
-        Some(Color::Rgb(channel(0)?, channel(2)?, channel(4)?))
-    });
-    match (rgb, decoration.style.as_deref()) {
-        (Some(color), _) => Style::default().fg(color),
-        (None, Some(key)) => {
-            let style = theme.get(key);
-            Style { bg: None, ..style }
-        }
-        (None, None) => Style::default(),
-    }
-}
-
 fn marker_style(theme: &helix_view::Theme, kind: ChangeKind) -> Style {
     let style = change_style(theme, kind);
     match style.fg {

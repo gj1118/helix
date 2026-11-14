@@ -932,14 +932,7 @@ fn hunk_under_cursor(
     hunks: &[DiffHunk],
 ) -> Option<usize> {
     let (line, _) = cursor_line_and_row(editor, view);
-    let (index, inside) = hunk_at(hunks, line, side);
-    if inside {
-        return Some(index);
-    }
-    hunks
-        .get(index)
-        .filter(|hunk| hunk.lines(side).is_empty() && hunk.lines(side).start == line)
-        .map(|_| index)
+    helix_view::diff_view::change_at_line(hunks, line, side)
 }
 
 /// Stages the change under the cursor of a diff against git, or unstages it when it is
