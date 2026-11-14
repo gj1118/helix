@@ -1037,6 +1037,10 @@ async fn changes_are_staged_and_unstaged() -> anyhow::Result<()> {
     app.resize_terminal(100, 14).await;
     send_keys(&mut app, ":diff-review<ret>").await?;
     wait_for_diff(&mut app, "HEAD:f.rs").await;
+    // the diff comes from a job: the frame that shows it is drawn on a later turn of the
+    // event loop
+    let drawn = until(&mut app, |app| !stage_marks(app).is_empty()).await;
+    assert!(drawn, "no stage marks drawn: {:#?}", app.rendered_rows());
     let marks: Vec<(u16, String)> = stage_marks(&app);
     assert_eq!(marks, [(1, "□".to_string()), (6, "□".to_string())]);
 
