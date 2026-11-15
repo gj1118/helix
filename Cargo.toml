@@ -17,6 +17,8 @@ members = [
   "helix-plugin",
   "xtask",
 ]
+# third-party crates patched for this fork (see `[patch.crates-io]`)
+exclude = ["vendor"]
 
 default-members = [
   "helix-term"
@@ -75,3 +77,9 @@ repository = "https://github.com/helix-editor/helix"
 homepage = "https://helix-editor.com"
 license = "MPL-2.0"
 rust-version = "1.90"
+
+# termina 0.3.3 with its input parser patched: an `Esc ]` or `Esc P` that cannot be a
+# terminal's reply is keys again, instead of holding every key after it (see
+# vendor/termina/PATCHES.md).
+[patch.crates-io]
+termina = { path = "vendor/termina" }
