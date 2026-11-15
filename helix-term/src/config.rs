@@ -352,19 +352,19 @@ mod tests {
 
     #[test]
     fn deprecated_insecure_maps_to_workspace_trust() {
-        use helix_view::editor::ImplicitTrustLevelConfig;
+        use helix_loader::workspace_trust::ImplicitTrustLevel;
 
         let config = Config::load_test("[editor]\ninsecure = true\n");
         assert_eq!(
             config.editor.workspace_trust.level,
-            ImplicitTrustLevelConfig::Insecure
+            ImplicitTrustLevel::Insecure
         );
         assert!(!config.editor.insecure);
 
         let config = Config::load_test("[editor]\ninsecure = false\n");
         assert_eq!(
             config.editor.workspace_trust.level,
-            ImplicitTrustLevelConfig::default()
+            ImplicitTrustLevel::default()
         );
     }
 

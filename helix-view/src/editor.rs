@@ -18,7 +18,7 @@ use crate::{
     snippets::Snippets,
     theme::{self, Theme},
     tree::{self, Dimension, Resize, Tree},
-    view::ViewPosition,
+    view::{Jump, ViewPosition},
     Document, DocumentId, View, ViewId,
 };
 use helix_event::dispatch;
@@ -648,8 +648,8 @@ pub struct Config {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
 #[serde(default, rename_all = "kebab-case", deny_unknown_fields)]
 pub struct WorkspaceTrustConfig {
-    /// What to trust implicitly without an explicit grant. See [`ImplicitTrustLevelConfig`].
-    pub level: ImplicitTrustLevelConfig,
+    /// What to trust implicitly without an explicit grant.
+    pub level: ImplicitTrustLevel,
     /// Whether opening a file in an untrusted workspace surfaces the trust modal. The statusline
     /// `[⚠]` indicator is always shown either way; disabling the prompt is for users who would
     /// rather act explicitly via `:workspace-trust` than be interrupted. Defaults to `true`.
@@ -661,34 +661,9 @@ pub struct WorkspaceTrustConfig {
 impl Default for WorkspaceTrustConfig {
     fn default() -> Self {
         Self {
-            level: ImplicitTrustLevelConfig::default(),
+            level: ImplicitTrustLevel::default(),
             prompt: true,
             trusted: Vec::new(),
-        }
-    }
-}
-
-#[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize, Clone, Copy)]
-#[serde(rename_all = "kebab-case")]
-pub enum ImplicitTrustLevelConfig {
-    /// Don't trust anything implicitly — prompt for every new workspace.
-    None,
-    /// Trust Helix-launched server processes (LSP and DAP) implicitly. Workspace-local config and
-    /// git full-trust still require explicit `:workspace-trust`. This is the default — language
-    /// servers are configured globally, so auto-starting them in fresh workspaces matches user
-    /// expectations while the workspace-controlled `.helix/` config still requires opt-in.
-    #[default]
-    Servers,
-    /// Trust everything implicitly. Explicit excludes still win.
-    Insecure,
-}
-
-impl From<ImplicitTrustLevelConfig> for ImplicitTrustLevel {
-    fn from(v: ImplicitTrustLevelConfig) -> Self {
-        match v {
-            ImplicitTrustLevelConfig::None => ImplicitTrustLevel::None,
-            ImplicitTrustLevelConfig::Servers => ImplicitTrustLevel::Servers,
-            ImplicitTrustLevelConfig::Insecure => ImplicitTrustLevel::Insecure,
         }
     }
 }
@@ -696,7 +671,7 @@ impl From<ImplicitTrustLevelConfig> for ImplicitTrustLevel {
 impl From<&WorkspaceTrustConfig> for helix_loader::workspace_trust::Config {
     fn from(v: &WorkspaceTrustConfig) -> Self {
         Self {
-            level: v.level.into(),
+            level: v.level,
             prompt: v.prompt,
             trusted_globs: helix_loader::workspace_trust::build_trusted_globs(&v.trusted),
         }
@@ -709,7 +684,7 @@ impl Config {
     pub fn apply_deprecated_options(&mut self) -> Vec<&'static str> {
         let mut warnings = Vec::new();
         if std::mem::take(&mut self.insecure) {
-            self.workspace_trust.level = ImplicitTrustLevelConfig::Insecure;
+            self.workspace_trust.level = ImplicitTrustLevel::Insecure;
             warnings.push(
                 "`[editor] insecure` is deprecated, use `[editor.workspace-trust] level = \"insecure\"`",
             );
@@ -3609,7 +3584,6 @@ impl Editor {
 
         for (view, _) in self.tree.views_mut() {
             let doc = doc_mut!(self, &view.doc);
-            view.sync_changes(doc);
             view.gutters = config.gutters.clone();
             view.ensure_cursor_in_view(doc, config.scrolloff)
         }
@@ -3625,7 +3599,6 @@ impl Editor {
         let doc = doc_mut!(self, &doc_id);
 
         doc.ensure_view_init(view.id);
-        view.sync_changes(doc);
         doc.mark_as_focused();
 
         view.ensure_cursor_in_view(doc, scrolloff)
@@ -3679,8 +3652,7 @@ impl Editor {
                         view.remove_document(&id);
                     }
                 } else {
-                    let jump = (view.doc, doc.selection(view.id).clone());
-                    view.push_jump(doc, jump);
+                    view.push_jump(doc);
                     // Set last accessed doc if it is a different document
                     if doc.id != id {
                         view.add_to_history(view.doc);
@@ -4180,11 +4152,6 @@ impl Editor {
         let (view, doc) = current!(self);
         doc.append_changes_to_history(view);
         self.ensure_cursor_in_view(view_id);
-        // Update jumplist selections with new document changes.
-        for (view, _focused) in self.tree.views_mut() {
-            let doc = doc_mut!(self, &view.doc);
-            view.sync_changes(doc);
-        }
 
         let prev_id = std::mem::replace(&mut self.tree.focus, view_id);
         doc_mut!(self).mark_as_focused();
@@ -4477,24 +4444,15 @@ impl Editor {
         self.debug_adapters.current_stack_frame()
     }
 
-    /// Returns the id of a view that this doc contains a selection for,
-    /// making sure it is synced with the current changes
-    /// if possible or there are no selections returns current_view
-    /// otherwise uses an arbitrary view
+    /// Returns the id of a view that this doc contains a selection for, preferring the current
+    /// view. If there are no selections the current view is initialized for the doc.
     pub fn get_synced_view_id(&mut self, id: DocumentId) -> ViewId {
         let current_view = view_mut!(self);
         let doc = self.documents.get_mut(&id).unwrap();
         if doc.selections().contains_key(&current_view.id) {
-            // only need to sync current view if this is not the current doc
-            if current_view.doc != id {
-                current_view.sync_changes(doc);
-            }
             current_view.id
         } else if let Some(view_id) = doc.selections().keys().next() {
-            let view_id = *view_id;
-            let view = self.tree.get_mut(view_id);
-            view.sync_changes(doc);
-            view_id
+            *view_id
         } else {
             doc.ensure_view_init(current_view.id);
             current_view.id
@@ -4512,34 +4470,26 @@ impl Editor {
     }
 
     pub fn jump_forward(&mut self, view_id: ViewId, count: usize) {
-        if let Some((doc_id, selection)) = view_mut!(self, view_id).jumps.forward(count).cloned() {
-            self.jump_to(view_id, doc_id, selection);
+        if let Some(jump) = view_mut!(self, view_id).jumps.forward(count).cloned() {
+            self.jump_to(view_id, jump);
         }
     }
 
     pub fn jump_backward(&mut self, view_id: ViewId, count: usize) {
         let view = view_mut!(self, view_id);
         let doc = doc_mut!(self, &view.doc);
-        // `backward` may push the current selection (valid at the document's
-        // current revision) onto the jumplist. Sync first so the view's
-        // `doc_revisions` matches, otherwise that entry would be left ahead of
-        // it and a later sync would map it out of bounds.
-        view.sync_changes(doc);
-        if let Some((doc_id, selection)) = view.jumps.backward(view_id, doc, count).cloned() {
-            self.jump_to(view_id, doc_id, selection);
+        // `backward` may add the current selection, which refers to the current revision.
+        doc.append_changes_to_history(view);
+        if let Some(jump) = view.jumps.backward(view_id, doc, count).cloned() {
+            self.jump_to(view_id, jump);
         }
     }
 
-    fn jump_to(&mut self, view_id: ViewId, dest_doc_id: DocumentId, mut selection: Selection) {
-        let view = view_mut!(self, view_id);
-        let old_doc_id = view.doc;
-        if old_doc_id != dest_doc_id {
-            let new_doc = doc_mut!(self, &dest_doc_id);
-            if let Some(transaction) = view.changes_to_sync(new_doc) {
-                let text = new_doc.text().slice(..);
-                selection = selection.map(transaction.changes()).ensure_invariants(text);
-            }
-            self.replace_document_in_view(view_id, dest_doc_id);
+    fn jump_to(&mut self, view_id: ViewId, jump: Jump) {
+        let selection = jump.selection(doc!(self, &jump.doc_id));
+        let old_doc_id = view!(self, view_id).doc;
+        if old_doc_id != jump.doc_id {
+            self.replace_document_in_view(view_id, jump.doc_id);
             dispatch(DocumentFocusLost {
                 editor: self,
                 doc: old_doc_id,

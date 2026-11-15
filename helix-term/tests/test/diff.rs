@@ -1730,10 +1730,11 @@ async fn the_connector_is_an_iterm2_image_or_kitty_when_the_terminal_says() -> a
 /// The tests' config, in a workspace not trusted (the default level: only language servers
 /// trusted), the trust prompt off.
 fn untrusted_config() -> Config {
-    use helix_view::editor::{ImplicitTrustLevelConfig, WorkspaceTrustConfig};
+    use helix_loader::workspace_trust::ImplicitTrustLevel;
+    use helix_view::editor::WorkspaceTrustConfig;
     let mut config = helpers::test_config();
     config.editor.workspace_trust = WorkspaceTrustConfig {
-        level: ImplicitTrustLevelConfig::Servers,
+        level: ImplicitTrustLevel::Servers,
         prompt: false,
         ..Default::default()
     };

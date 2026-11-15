@@ -248,7 +248,7 @@ pub fn raw_regex_prompt(
                                     doc.set_selection(view.id, snapshot.clone());
 
                                     if event == PromptEvent::Validate {
-                                        view.push_jump(doc, (doc_id, snapshot.clone()));
+                                        view.push_jump_to(doc, snapshot.clone());
                                     }
 
                                     fun(cx, regex, input, event);
@@ -334,7 +334,7 @@ pub fn raw_regex_prompt(
                                     doc.set_selection(view.id, snapshot.clone());
 
                                     if event == PromptEvent::Validate {
-                                        view.push_jump(doc, (doc_id, snapshot.clone()));
+                                        view.push_jump_to(doc, snapshot.clone());
                                     }
 
                                     fun(cx, regex, input, event);

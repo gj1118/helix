@@ -81,7 +81,7 @@ use helix_view::{
     persistence,
     theme::Style,
     tree::{self, Dimension, Resize},
-    view::View,
+    view::{Jump, View},
     Document, DocumentId, Editor, ViewId,
 };
 
@@ -3299,12 +3299,8 @@ fn global_replace(
         }
         let transaction = Transaction::change(doc.text(), changes.into_iter());
         doc.apply(&transaction, view_id);
+        // (jumps keep their revision: mapped to the new text when used)
         doc.append_changes_to_history(view_mut!(cx.editor, view_id));
-        for (view, _) in cx.editor.tree.views_mut() {
-            if view.doc == doc_id {
-                view.sync_changes(doc);
-            }
-        }
         total += file_matches;
         changed_files += 1;
     }
@@ -4597,15 +4593,10 @@ fn jumplist_picker(cx: &mut Context) {
         is_current: bool,
     }
 
-    for (view, _) in cx.editor.tree.views_mut() {
-        for doc_id in view.jumps.iter().map(|e| e.0).collect::<Vec<_>>().iter() {
-            let doc = doc_mut!(cx.editor, doc_id);
-            view.sync_changes(doc);
-        }
-    }
-
-    let new_meta = |view: &View, doc_id: DocumentId, selection: Selection| {
+    let new_meta = |view: &View, jump: &Jump| {
+        let doc_id = jump.doc_id;
         let doc = doc!(cx.editor, &doc_id);
+        let selection = jump.selection(doc);
         let text = doc.text().slice(..);
         let contents = selection
             .fragments(text)
@@ -4673,12 +4664,10 @@ fn jumplist_picker(cx: &mut Context) {
     let picker = Picker::new(
         columns,
         1, // path
-        cx.editor.tree.views().flat_map(|(view, _)| {
-            view.jumps
-                .iter()
-                .rev()
-                .map(|(doc_id, selection)| new_meta(view, *doc_id, selection.clone()))
-        }),
+        cx.editor
+            .tree
+            .views()
+            .flat_map(|(view, _)| view.jumps.iter().rev().map(|jump| new_meta(view, jump))),
         PathStyleConfig::new(&cx.editor.theme),
         |cx, meta, action| {
             cx.editor.switch(meta.id, action);
@@ -5414,9 +5403,7 @@ pub(crate) fn normal_mode(cx: &mut Context) {
 
 // Store a jump on the jumplist.
 fn push_jump(view: &mut View, doc: &mut Document) {
-    doc.append_changes_to_history(view);
-    let jump = (doc.id(), doc.selection(view.id).clone());
-    view.push_jump(doc, jump);
+    view.push_jump(doc);
 }
 
 fn goto_line(cx: &mut Context) {

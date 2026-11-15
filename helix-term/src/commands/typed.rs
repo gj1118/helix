@@ -657,11 +657,7 @@ fn write_impl(
     let tail = (auto_format || run_code_actions).then(|| {
         let path = path.clone();
         let callback = Callback::Followup(Box::new(move |editor| {
-            // The document could have been closed mid-chain
-            if !editor.documents.contains_key(&doc_id) {
-                return None;
-            }
-            let doc = doc!(editor, &doc_id);
+            let doc = editor.documents.get(&doc_id)?;
             let fmt_job = auto_format
                 .then(|| doc.auto_format(editor))
                 .flatten()
@@ -1171,11 +1167,7 @@ pub fn write_all_impl(
         // built when there is pre-save work; otherwise a synchronous save below.
         let tail = (auto_format || run_code_actions).then(|| {
             let callback: job::Callback = Callback::Followup(Box::new(move |editor| {
-                // The document could have been closed mid-chain
-                if !editor.documents.contains_key(&doc_id) {
-                    return None;
-                }
-                let doc = doc!(editor, &doc_id);
+                let doc = editor.documents.get(&doc_id)?;
                 let fmt_job = auto_format
                     .then(|| doc.auto_format(editor))
                     .flatten()
@@ -1884,9 +1876,6 @@ pub fn reload_documents(
         // Every doc is guaranteed to have at least 1 view at this point.
         let view = view_mut!(cx.editor, view_ids[0]);
 
-        // Ensure that the view is synced with the document's history.
-        view.sync_changes(doc);
-
         // Per-document trust: each doc's workspace may differ.
         let trust_full = cx
             .editor
@@ -1911,13 +1900,6 @@ pub fn reload_documents(
         for view_id in view_ids {
             let view = view_mut!(cx.editor, view_id);
             if view.doc.eq(&doc_id) {
-                // Reloading commits the diff against disk through the first view
-                // only (above). Any other view onto this document is left
-                // pointing at the pre-reload revision, so sync it now; otherwise
-                // its jumplist entries keep referencing the old (e.g. larger)
-                // text and a later commit panics when mapping them through a
-                // changeset whose pre-image no longer contains them.
-                view.sync_changes(doc);
                 view.ensure_cursor_in_view(doc, scrolloff);
             }
         }
@@ -2553,7 +2535,7 @@ pub(super) fn goto_line_number(
                 .expect("update_goto_line_number_preview should always set last_selection");
 
             let (view, doc) = current!(cx.editor);
-            view.push_jump(doc, (doc.id(), last_selection));
+            view.push_jump_to(doc, last_selection);
         }
 
         // When a user hits backspace and there are no numbers left,
@@ -2908,14 +2890,24 @@ fn reflow(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
         .unwrap_or_else(|| doc.text_width());
 
     let rope = doc.text();
+    let comment_tokens: Vec<&str> = doc
+        .language_config()
+        .and_then(|config| config.comment_tokens.as_deref())
+        .map(|tokens| tokens.iter().map(String::as_str).collect())
+        .unwrap_or_default();
+    let options = helix_core::wrap::ReflowOptions {
+        text_width,
+        tab_width: doc.tab_width(),
+        line_ending: doc.line_ending.as_str(),
+        comment_tokens: &comment_tokens,
+    };
 
-    let selection = doc.selection(view.id);
-    let transaction = Transaction::change_by_selection(rope, selection, |range| {
-        let fragment = range.fragment(rope.slice(..));
-        let reflowed_text = helix_core::wrap::reflow_hard_wrap(&fragment, text_width);
-
-        (range.from(), range.to(), Some(reflowed_text))
-    });
+    let changes: Vec<_> = doc
+        .selection(view.id)
+        .line_ranges(rope.slice(..))
+        .flat_map(|(start, end)| helix_core::wrap::reflow(rope.slice(..), start, end, &options))
+        .collect();
+    let transaction = Transaction::change(rope, changes.into_iter());
 
     doc.apply(&transaction, view.id);
     doc.append_changes_to_history(view);

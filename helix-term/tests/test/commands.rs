@@ -1577,3 +1577,22 @@ async fn settings_changed_in_a_row_all_apply() -> anyhow::Result<()> {
     assert!(app.editor.pending_config.is_none());
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_reflow_selections_in_one_paragraph() -> anyhow::Result<()> {
+    test((
+        indoc! {"\
+            #[a|]# b c d e
+            f #(g|)# h
+        "},
+        ":reflow 5<ret>",
+        indoc! {"\
+            #[a|]# b c
+            d e f
+            #(g|)# h
+        "},
+    ))
+    .await?;
+
+    Ok(())
+}
