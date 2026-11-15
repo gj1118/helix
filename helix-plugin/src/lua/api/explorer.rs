@@ -7,13 +7,11 @@ use helix_view::plugin_ui::ActionPlace;
 use mlua::prelude::*;
 use std::path::PathBuf;
 
-/// A `"#rrggbb"` color (`fg`) and a theme key (`style`) of `table`, checked.
+/// A `"#rrggbb"` (or `"#rgb"`) color (`fg`) and a theme key (`style`) of `table`, checked.
 pub(crate) fn read_color(table: &LuaTable) -> LuaResult<(Option<String>, Option<String>)> {
     let fg: Option<String> = table.raw_get("fg")?;
     if let Some(fg) = &fg {
-        let valid =
-            fg.len() == 7 && fg.starts_with('#') && fg[1..].chars().all(|c| c.is_ascii_hexdigit());
-        if !valid {
+        if helix_view::graphics::Color::from_hex(fg).is_err() {
             return Err(LuaError::RuntimeError(format!(
                 "fg must be \"#rrggbb\", not {fg:?}"
             )));

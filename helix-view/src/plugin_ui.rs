@@ -207,7 +207,7 @@ impl Mark {
     }
 }
 
-/// The style of a plugin's text: its `"#rrggbb"` color, or its theme key, without the key's
+/// The style of a plugin's text: its `"#rrggbb"` (or `"#rgb"`) color, or its theme key, without the key's
 /// background (the row's own stays: a selection, the line's).
 pub fn color_style(
     theme: &crate::Theme,
@@ -215,7 +215,10 @@ pub fn color_style(
     key: Option<&str>,
 ) -> crate::graphics::Style {
     use crate::graphics::Style;
-    match (fg.and_then(rgb), key) {
+    match (
+        fg.and_then(|fg| crate::graphics::Color::from_hex(fg).ok()),
+        key,
+    ) {
         (Some(color), _) => Style::default().fg(color),
         (None, Some(key)) => Style {
             bg: None,
@@ -223,20 +226,6 @@ pub fn color_style(
         },
         (None, None) => Style::default(),
     }
-}
-
-/// The color of `"#rrggbb"`.
-pub fn rgb(hex: &str) -> Option<crate::graphics::Color> {
-    let hex = hex.strip_prefix('#')?;
-    if hex.len() != 6 || !hex.is_ascii() {
-        return None;
-    }
-    let channel = |i: usize| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok();
-    Some(crate::graphics::Color::Rgb(
-        channel(0)?,
-        channel(2)?,
-        channel(4)?,
-    ))
 }
 
 /// A mark a plugin shows on a change of a diff, at the left edge of the connector.
@@ -308,22 +297,6 @@ mod tests {
         assert_eq!(removed, Some(3));
         let empty: bool = actions.is_empty(ActionPlace::Explorer);
         assert!(empty);
-    }
-
-    #[test]
-    fn colors_are_read_from_hex() {
-        use crate::graphics::Color;
-        let color: Option<Color> = rgb("#ff8000");
-        assert_eq!(color, Some(Color::Rgb(255, 128, 0)));
-        let no_hash: Option<Color> = rgb("ff8000");
-        assert_eq!(no_hash, None);
-        let short: Option<Color> = rgb("#fff");
-        assert_eq!(short, None);
-        let not_hex: Option<Color> = rgb("#gg0000");
-        assert_eq!(not_hex, None);
-        // multi-byte text of the right length is no color, and doesn't panic
-        let wide: Option<Color> = rgb("#ééé");
-        assert_eq!(wide, None);
     }
 
     #[test]

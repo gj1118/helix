@@ -75,7 +75,9 @@ fn request_inline_completion(
     let Some(document) = editor.documents.get_mut(&doc) else {
         return;
     };
-    let selection = document.selection(view);
+    let Some(selection) = document.selections().get(&view) else {
+        return;
+    };
     // Only a single cursor is supported.
     if selection.len() != 1 {
         return;
@@ -147,7 +149,9 @@ fn attach(
         return;
     };
     // Typing or moving since the request makes the answer stale.
-    let selection = document.selection(view);
+    let Some(selection) = document.selections().get(&view) else {
+        return;
+    };
     if document.version() != version
         || selection.len() != 1
         || selection.primary().cursor(document.text().slice(..)) != cursor

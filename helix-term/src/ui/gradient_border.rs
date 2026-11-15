@@ -92,21 +92,12 @@ impl GradientBorder {
         self.config.animation_speed = 0;
     }
 
-    /// Parse hex color string to RGB
+    /// The RGB of a `"#rrggbb"` (or `"#rgb"`) color.
     fn parse_hex_color(hex: &str) -> Option<Rgb> {
-        // Require exactly `#` + six ASCII hex digits. Checking the bytes first
-        // keeps the slicing below on char boundaries (e.g. "#fé0ff" is 7 bytes)
-        // and rejects signs that `from_str_radix` would otherwise accept.
-        let digits = hex.strip_prefix('#')?;
-        if digits.len() != 6 || !digits.bytes().all(|b| b.is_ascii_hexdigit()) {
-            return None;
+        match helix_view::graphics::Color::from_hex(hex) {
+            Ok(helix_view::graphics::Color::Rgb(r, g, b)) => Some((r, g, b)),
+            _ => None,
         }
-
-        let r = u8::from_str_radix(&hex[1..3], 16).ok()?;
-        let g = u8::from_str_radix(&hex[3..5], 16).ok()?;
-        let b = u8::from_str_radix(&hex[5..7], 16).ok()?;
-
-        Some((r, g, b))
     }
 
     /// Compute cached RGB values from config (with sensible fallbacks)

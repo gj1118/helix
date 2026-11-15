@@ -173,9 +173,11 @@ pub fn load_scaled(path: &Path, max_side: u32) -> Result<Image, String> {
     if u64::from(width) * u64::from(height) > MAX_PIXELS {
         return Err(format!("{width}x{height} pixels is too large to preview"));
     }
-    let mut decoded = reader(path)
-        .map_err(|err| err.to_string())?
-        .decode()
+    let reader = reader(path).map_err(|err| err.to_string())?;
+    // A decoder that panics on a malformed file fails this preview, not the editor (small
+    // images are decoded on its thread) or the thread that decodes the large ones.
+    let mut decoded = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| reader.decode()))
+        .map_err(|_| "the image could not be decoded".to_string())?
         .map_err(|err| err.to_string())?;
     let max_side = max_side.max(1);
     if decoded.width() > max_side || decoded.height() > max_side {

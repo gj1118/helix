@@ -130,6 +130,21 @@ fn setup_integration_logging() {
     crate::logging::init_stdout(level);
 }
 
+/// Whether an input event a layer `consumed` needs a new frame. A plain mouse move changes
+/// nothing that is drawn (the pointer's shape is sent on its own): no frame for each of the
+/// many moves the terminal reports, which panels, pickers and prompts consume.
+fn needs_frame(event: &helix_view::input::Event, consumed: bool) -> bool {
+    use helix_view::input::{Event, MouseEvent, MouseEventKind};
+    let moved = matches!(
+        event,
+        Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Moved,
+            ..
+        })
+    );
+    consumed && !moved
+}
+
 impl Application {
     pub fn new(
         args: Args,
@@ -1510,7 +1525,8 @@ impl Application {
                     // Components over a resize handle ask for another shape.
                     cx.editor.pointer_shape = helix_view::editor::PointerShape::Default;
                 }
-                self.compositor.handle_event(&event, &mut cx)
+                let consumed = self.compositor.handle_event(&event, &mut cx);
+                needs_frame(&event, consumed)
             }
         };
 
@@ -2260,5 +2276,39 @@ impl ui::menu::Item for lsp::MessageActionItem {
     type Data = ();
     fn format(&self, _data: &Self::Data) -> tui::widgets::Row<'_> {
         self.title.as_str().into()
+    }
+}
+
+#[cfg(test)]
+mod frame_tests {
+    use super::needs_frame;
+    use helix_view::input::{Event, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+    use helix_view::keyboard::KeyModifiers;
+
+    fn mouse(kind: MouseEventKind) -> Event {
+        Event::Mouse(MouseEvent {
+            kind,
+            column: 3,
+            row: 4,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    #[test]
+    fn plain_mouse_moves_draw_no_frame() {
+        let moved: bool = needs_frame(&mouse(MouseEventKind::Moved), true);
+        assert!(!moved);
+        // what changes things still draws, when consumed
+        let click: bool = needs_frame(&mouse(MouseEventKind::Down(MouseButton::Left)), true);
+        assert!(click);
+        let drag: bool = needs_frame(&mouse(MouseEventKind::Drag(MouseButton::Left)), true);
+        assert!(drag);
+        let scroll: bool = needs_frame(&mouse(MouseEventKind::ScrollDown), true);
+        assert!(scroll);
+        let key: bool = needs_frame(&Event::Key("j".parse::<KeyEvent>().unwrap()), true);
+        assert!(key);
+        // ignored by every layer: nothing to draw
+        let ignored: bool = needs_frame(&mouse(MouseEventKind::Down(MouseButton::Left)), false);
+        assert!(!ignored);
     }
 }

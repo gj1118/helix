@@ -8,7 +8,6 @@
 //! left for the text, the panel goes under the line instead, from the left edge of the view.
 //! The layout is computed afresh for every frame, so it follows resizes and edits at once.
 
-use helix_core::unicode::segmentation::UnicodeSegmentation;
 use helix_core::unicode::width::UnicodeWidthStr;
 
 /// A panel a plugin attached to a line of a document in a view.
@@ -202,36 +201,13 @@ pub fn layout(
     rows
 }
 
-/// `text` broken into lines at most `max_width` columns wide: at its line breaks, between
-/// words where possible, within a word longer than a line. Tabs become spaces.
+/// `text` broken into lines at most `max_width` columns wide (see
+/// [`helix_core::wrap::wrap_words`]), without its blank lines.
 fn wrap(text: &str, max_width: usize) -> Vec<String> {
-    let mut lines = Vec::new();
-    for paragraph in text.replace('\t', "    ").lines() {
-        let mut line = String::new();
-        for word in paragraph.split_whitespace() {
-            let sep = usize::from(!line.is_empty());
-            if width(&line) + sep + width(word) <= max_width {
-                if sep == 1 {
-                    line.push(' ');
-                }
-                line.push_str(word);
-                continue;
-            }
-            if !line.is_empty() {
-                lines.push(std::mem::take(&mut line));
-            }
-            // A word longer than a line is cut where the line is full.
-            for grapheme in word.graphemes(true) {
-                if width(&line) + width(grapheme) > max_width && !line.is_empty() {
-                    lines.push(std::mem::take(&mut line));
-                }
-                line.push_str(grapheme);
-            }
-        }
-        if !line.is_empty() {
-            lines.push(line);
-        }
-    }
+    let mut lines: Vec<String> = helix_core::wrap::wrap_words(text, max_width, max_width)
+        .into_iter()
+        .filter(|line| !line.is_empty())
+        .collect();
     if lines.is_empty() {
         lines.push(String::new());
     }

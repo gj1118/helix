@@ -187,7 +187,7 @@ impl NotificationPopup {
             .filter(|prefix| prefix.width() < text_width);
         let prefix_width = prefix.as_deref().map_or(0, UnicodeWidthStr::width);
 
-        let mut lines = wrap(
+        let mut lines = helix_core::wrap::wrap_words(
             &notification.message,
             text_width.saturating_sub(prefix_width).max(1),
             text_width.max(1),
@@ -454,49 +454,6 @@ fn severity_prefix(config: &NotificationConfig, severity: Severity) -> Option<&s
         return None;
     };
     (!prefix.is_empty()).then_some(prefix)
-}
-
-/// `text` wrapped at word boundaries: the first line to `first_width` columns, the others to
-/// `width`. A word longer than a line is broken (nothing is dropped); tabs are spaces, and
-/// each line of `text` starts a new line.
-fn wrap(text: &str, first_width: usize, width: usize) -> Vec<String> {
-    let mut lines: Vec<String> = Vec::new();
-    let line_width = |lines: &Vec<String>| if lines.is_empty() { first_width } else { width };
-    for paragraph in text.replace('\t', "    ").lines() {
-        let mut current = String::new();
-        let mut current_width = 0;
-        for word in paragraph.split_whitespace() {
-            let word_width = word.width();
-            let gap = usize::from(!current.is_empty());
-            if current_width + gap + word_width <= line_width(&lines) {
-                if gap == 1 {
-                    current.push(' ');
-                }
-                current.push_str(word);
-                current_width += gap + word_width;
-                continue;
-            }
-            if !current.is_empty() {
-                lines.push(std::mem::take(&mut current));
-                current_width = 0;
-            }
-            // the word alone, broken over lines when longer than one
-            for grapheme in word.graphemes(true) {
-                let grapheme_width = grapheme.width();
-                if current_width + grapheme_width > line_width(&lines) && !current.is_empty() {
-                    lines.push(std::mem::take(&mut current));
-                    current_width = 0;
-                }
-                current.push_str(grapheme);
-                current_width += grapheme_width;
-            }
-        }
-        lines.push(current);
-    }
-    if lines.is_empty() {
-        lines.push(String::new());
-    }
-    lines
 }
 
 /// `line` ending in `…`, within `width` columns: what was cut is more than the card shows.
@@ -794,7 +751,7 @@ mod tests {
             ("a\n\nb\tc", 20, 20, &["a", "", "b c"]),
         ];
         for (text, first, rest, expected) in cases {
-            let lines: Vec<String> = wrap(text, first, rest);
+            let lines: Vec<String> = helix_core::wrap::wrap_words(text, first, rest);
             assert_eq!(lines, expected, "{text:?}");
             for (i, line) in lines.iter().enumerate() {
                 let limit = if i == 0 { first } else { rest };
@@ -804,7 +761,7 @@ mod tests {
         }
         // nothing is lost
         let text = "a fairly long notification message with averyveryverylongword in it";
-        let lines = wrap(text, 8, 12);
+        let lines = helix_core::wrap::wrap_words(text, 8, 12);
         let joined: String = lines.concat().replace(' ', "");
         assert_eq!(joined, text.replace(' ', ""));
     }

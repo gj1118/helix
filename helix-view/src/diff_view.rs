@@ -992,7 +992,7 @@ impl Editor {
         let side = session.side_of(view)?;
         let doc = self.documents.get(&session.doc(side))?;
         let text = doc.text().slice(..);
-        let line = text.char_to_line(doc.selection(view).primary().cursor(text));
+        let line = text.char_to_line(doc.selections().get(&view)?.primary().cursor(text));
         change_at_line(&session.hunks, line, side)
     }
 
@@ -1265,7 +1265,7 @@ impl Editor {
         let (view, doc) = (self.tree.try_get(view_id)?, self.documents.get(&doc_id)?);
         let text = doc.text().slice(..);
         let height = view.inner_height(doc);
-        let cursor = doc.selection(view_id).primary().cursor(text);
+        let cursor = doc.selections().get(&view_id)?.primary().cursor(text);
         Some(match view.screen_coords_at_pos(doc, text, cursor) {
             Some(pos) if pos.row < height => (text.char_to_line(cursor), pos.row),
             _ => {
