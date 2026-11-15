@@ -434,6 +434,7 @@ children are read from disk on first expansion only.
 |`floating-x`, `floating-y` | No longer used: the floating window is always centered. Still accepted, so older configs keep loading | unset |
 |`icons` | Show per-file-type icons (honors the global `[icons.mime]` settings) | `true` |
 |`auto-reveal` | Select the current buffer's file when the panel opens | `false` |
+|`open-on-directory` | Open the explorer on the directory given on the command line (`hx .`, `hx some/dir`), with the keyboard in the tree. `false` (the default) opens a file picker on it, as Helix does | `false` |
 |`show-hidden` | Show dotfiles (hidden files) | `false` |
 |`directories-first` | Sort directories before files in directory listings | `true` |
 |`git-status` | Mark changed files, and the folders that contain them, with their git status (see [Git status](#git-status-in-the-tree)) | `true` |

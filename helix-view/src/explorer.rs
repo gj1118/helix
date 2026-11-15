@@ -62,6 +62,9 @@ pub struct ExplorerConfig {
     /// Select the current buffer's file whenever the panel is opened.
     /// Defaults to `false`.
     pub auto_reveal: bool,
+    /// Open the explorer on the directory given on the command line (`hx .`), with the
+    /// keyboard in the tree, instead of a file picker. Defaults to `false` (the picker).
+    pub open_on_directory: bool,
     /// Show dotfiles. Defaults to `false`.
     pub show_hidden: bool,
     /// Sort directories before files. Defaults to `true`.
@@ -85,6 +88,7 @@ impl Default for ExplorerConfig {
             floating_y: None,
             icons: true,
             auto_reveal: false,
+            open_on_directory: false,
             show_hidden: false,
             directories_first: true,
             git_status: true,

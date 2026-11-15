@@ -1093,3 +1093,90 @@ async fn the_focus_keys_can_be_rebound() -> anyhow::Result<()> {
     .await?;
     Ok(())
 }
+
+/// The app as `hx <dir>` starts it, with `explorer` as the `[editor.explorer]` settings. (The
+/// test builder refuses a directory: `main` makes it the working directory, which a test can't.)
+fn app_on_directory(dir: &std::path::Path, explorer: &str) -> anyhow::Result<Application> {
+    let mut args = helix_term::args::Args::default();
+    args.files.insert(dir.to_path_buf(), None);
+    let mut config = config(explorer);
+    config.keys = helix_term::keymap::default();
+    config.editor.lsp.enable = false;
+    config.editor.recent_picker.enable = false;
+    Application::new(
+        args,
+        config,
+        helpers::test_syntax_loader(None),
+        helix_loader::workspace_trust::WorkspaceTrust::fully_trusted(),
+    )
+}
+
+/// `hx <dir>` opens a file picker on it, as Helix does, when `open-on-directory` isn't set or
+/// is `false`.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_directory_argument_opens_the_picker_by_default() -> anyhow::Result<()> {
+    let (_dir, root) = many_files()?;
+    for settings in ["", "open-on-directory = false"] {
+        let mut app = app_on_directory(&root, settings)?;
+        test_key_sequences(
+            &mut app,
+            vec![(
+                None,
+                Some(&|app| {
+                    assert!(app.compositor.has_id(helix_term::ui::picker::ID));
+                    assert!(app.compositor.get_id::<Explorer>(EXPLORER_ID).is_none());
+                    assert!(!app.editor.explorer_panel.visible);
+                }),
+            )],
+            false,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// With `open-on-directory = true`, `hx <dir>` opens the explorer on that directory instead,
+/// with the keyboard in the tree.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_directory_argument_opens_the_explorer_when_set() -> anyhow::Result<()> {
+    let (_dir, root) = many_files()?;
+    let mut app = app_on_directory(&root, "open-on-directory = true")?;
+    let expected_root = root.clone();
+    test_key_sequences(
+        &mut app,
+        vec![
+            (
+                None,
+                Some(&|app| {
+                    assert!(!app.compositor.has_id(helix_term::ui::picker::ID));
+                    let explorer = app
+                        .compositor
+                        .get_id::<Explorer>(EXPLORER_ID)
+                        .expect("the explorer is open");
+                    assert_eq!(explorer.root(), expected_root.as_path());
+                    // the root's `...` row, then the root, then its 30 files
+                    assert!(explorer.row_count() >= 30usize, "{}", explorer.row_count());
+                    assert!(app.editor.explorer_panel.visible);
+                    assert!(app.editor.explorer_panel.focused);
+                    // the buffer beside it is a new, empty one
+                    assert_eq!(app.editor.documents().count(), 1usize);
+                    assert_eq!(helix_view::doc!(app.editor).path(), None);
+                }),
+            ),
+            // the keyboard is in the tree: `j` moves its cursor
+            (
+                Some("j"),
+                Some(&|app| {
+                    let explorer = app
+                        .compositor
+                        .get_id::<Explorer>(EXPLORER_ID)
+                        .expect("the explorer is open");
+                    assert_eq!(explorer.cursor_row(), 2usize);
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}

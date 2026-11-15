@@ -283,13 +283,31 @@ impl Application {
         } else if !args.files.is_empty() {
             let mut files_it = args.files.into_iter().peekable();
 
-            // If the first file is a directory, skip it and open a picker
+            // If the first file is a directory, skip it and open the explorer on it, with the
+            // keyboard in the tree (`[editor.explorer] open-on-directory`), or a file picker
             if let Some((first, _)) = files_it.next_if(|(p, _)| p.is_dir()) {
-                let picker = ui::file_picker(&editor, first);
-                compositor.push(Box::new(overlaid(
-                    picker,
-                    editor.config().fullscreen_overlay,
-                )));
+                let explorer = editor
+                    .config()
+                    .explorer
+                    .open_on_directory
+                    .then(|| ui::explorer::Explorer::new(&first, &editor));
+                match explorer {
+                    Some(Ok(explorer)) => {
+                        editor.explorer_panel.visible = true;
+                        editor.explorer_panel.focused = true;
+                        compositor.push(Box::new(explorer));
+                    }
+                    explorer => {
+                        if let Some(Err(err)) = explorer {
+                            editor.set_error(format!("Failed to open explorer: {err}"));
+                        }
+                        let picker = ui::file_picker(&editor, first);
+                        compositor.push(Box::new(overlaid(
+                            picker,
+                            editor.config().fullscreen_overlay,
+                        )));
+                    }
+                }
             }
 
             // If there are any more files specified, open them
