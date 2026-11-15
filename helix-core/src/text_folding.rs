@@ -804,6 +804,20 @@ impl<'a> FoldAnnotations<'a> {
         self.current_index.set(new_index as isize);
     }
 
+    /// The char where the next fold starts (`usize::MAX`: none), without consuming it.
+    pub fn next_start(&self) -> usize {
+        let Some(container) = self.container() else {
+            return usize::MAX;
+        };
+        let Ok(current_index) = usize::try_from(self.current_index.get()) else {
+            return usize::MAX;
+        };
+        container
+            .start_points
+            .get(current_index)
+            .map_or(usize::MAX, |sfp| sfp.fold(container).start.char)
+    }
+
     /// Returns the next fold if `idx` is equal to `get_idx(fold)`.
     pub fn consume_next(
         &self,

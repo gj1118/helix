@@ -98,9 +98,24 @@ pub fn coords_at_pos(text: RopeSlice, pos: usize) -> Position {
 
     let line_start = text.line_to_char(line);
     let pos = ensure_grapheme_boundary_prev(text, pos);
-    let col = text.slice(line_start..pos).graphemes().count();
+    let col = grapheme_count(text.slice(line_start..pos));
 
     Position::new(line, col)
+}
+
+/// The number of graphemes of `text`: of chars, when it is printable ASCII and tabs (a long
+/// line counted without segmenting it).
+fn grapheme_count(text: RopeSlice) -> usize {
+    let plain = text.chunks().all(|chunk| {
+        chunk
+            .bytes()
+            .all(|byte| (0x20..=0x7E).contains(&byte) || byte == b'\t')
+    });
+    if plain {
+        text.len_chars()
+    } else {
+        text.graphemes().count()
+    }
 }
 
 /// Convert a character index to (line, column) coordinates visually.
@@ -158,7 +173,12 @@ pub fn visual_offset_from_block(
         DocumentFormatter::new_at_prev_checkpoint(text, text_fmt, annotations, anchor);
     let block_start = formatter.next_char_pos();
 
-    while let Some(grapheme) = formatter.next() {
+    loop {
+        // the plain text before `pos` (a long line), without looking at each grapheme
+        formatter.skip_plain_text(pos, usize::MAX);
+        let Some(grapheme) = formatter.next() else {
+            break;
+        };
         last_pos = grapheme.visual_pos;
         if formatter.next_char_pos() > pos {
             return (grapheme.visual_pos, block_start);
@@ -206,7 +226,20 @@ pub fn visual_offset_from_anchor(
         return Err(VisualOffsetError::PosBeforeAnchorRow);
     }
 
-    while let Some(grapheme) = formatter.next() {
+    loop {
+        // the plain text before the anchor, then before `pos` (a long line), without looking at
+        // each grapheme
+        let skip_to = if anchor_line.is_none() && found_pos.is_none() {
+            anchor.min(pos)
+        } else if found_pos.is_none() {
+            pos
+        } else {
+            anchor
+        };
+        formatter.skip_plain_text(skip_to, usize::MAX);
+        let Some(grapheme) = formatter.next() else {
+            break;
+        };
         last_pos = grapheme.visual_pos;
 
         if formatter.next_char_pos() > pos {
@@ -421,7 +454,26 @@ pub fn char_idx_at_visual_block_offset(
     let mut last_char_idx = formatter.next_char_pos();
     let mut found_non_virtual_on_row = false;
     let mut last_row = 0;
-    for grapheme in &mut formatter {
+    loop {
+        // the plain text of rows before `row` and before `column` on it (a long line), without
+        // looking at each grapheme: as if its graphemes (real ones) had been looked at
+        let visual_pos = formatter.next_visual_pos();
+        let col_limit = match visual_pos.row.cmp(&row) {
+            Ordering::Less => usize::MAX,
+            Ordering::Equal => column,
+            Ordering::Greater => 0,
+        };
+        if formatter.skip_plain_text(usize::MAX, col_limit) > 0 {
+            last_char_idx = formatter.next_char_pos() - 1;
+            if visual_pos.row == row {
+                found_non_virtual_on_row = true;
+            } else {
+                last_row = visual_pos.row;
+            }
+        }
+        let Some(grapheme) = formatter.next() else {
+            break;
+        };
         match grapheme.visual_pos.row.cmp(&row) {
             Ordering::Equal => {
                 if grapheme.visual_pos.col + grapheme.width() > column {

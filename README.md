@@ -1187,6 +1187,25 @@ You can choose to hide the file preview in the file picker to save screen space 
 hide-preview = true
 ```
 
+## Very long lines
+
+Files with very long lines (minified JSON or JavaScript, one-line logs) stay responsive:
+
+- Without soft wrap, the plain text left and right of the view, and before a position looked
+  for (the cursor, a click, a column), is moved past without formatting each character: a key
+  on the 8 MB line of a minified file takes a few milliseconds, at its start or its end, instead
+  of seconds.
+- With soft wrap, a line longer than 16K characters is formatted in blocks of 16K characters,
+  each starting a new visual line (a slightly shorter visual line every 16K characters): what
+  is shown deep in such a line is found from its block, not from the line's start.
+
+## Keys after Esc, read together
+
+The terminal input parser (the `termina` crate, patched in `vendor/termina`) no longer holds
+every key after an `Esc ]` or `Esc P` that isn't a terminal's reply: Esc then `]d`, or Esc then
+`P`, read together (a busy moment, a slow SSH connection) used to freeze the keyboard until a
+terminator the keyboard never sends. They are keys again (`Alt-]`, `Alt-P`, then the rest).
+
 ## Code Folding
 
 **Code Folding Commands:**

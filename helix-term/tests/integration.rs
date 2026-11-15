@@ -35,6 +35,7 @@ mod test {
     mod hlslens;
     mod image_preview;
     mod inline_completion;
+    mod long_lines;
     mod lsp_data;
     mod movement;
     mod multi_cursor;

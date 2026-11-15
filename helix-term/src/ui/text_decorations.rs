@@ -116,6 +116,16 @@ impl<'a> DecorationManager<'a> {
         }
     }
 
+    /// The first char a decoration is waiting for (`usize::MAX`: none): what is before it can be
+    /// skipped without telling them.
+    pub fn next_anchor(&self) -> usize {
+        self.decorations
+            .iter()
+            .map(|(_, next)| *next)
+            .min()
+            .unwrap_or(usize::MAX)
+    }
+
     pub fn decorate_grapheme(&mut self, renderer: &mut TextRenderer, grapheme: &FormattedGrapheme) {
         for (decoration, hook_char_idx) in &mut self.decorations {
             loop {

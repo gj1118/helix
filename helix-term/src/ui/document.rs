@@ -94,7 +94,27 @@ pub fn render_text(
     let mut last_line_indent_level = 0;
     let mut reached_view_top = false;
 
+    // the columns drawn (without soft wrap, lines go past them on both sides)
+    let first_col = renderer.offset.col;
+    let end_col = first_col.saturating_add(renderer.viewport.width as usize);
+
     loop {
+        // Without soft wrap, the plain text left of the view and right of it (a long line) is
+        // moved past without being drawn grapheme by grapheme: to the first column drawn, or to
+        // the end of the line. It stops before what decorations wait for.
+        if reached_view_top && !text_fmt.soft_wrap {
+            let col = formatter.next_visual_pos().col;
+            let col_limit = if col < first_col {
+                first_col
+            } else if col >= end_col {
+                usize::MAX
+            } else {
+                0
+            };
+            if col_limit > col {
+                formatter.skip_plain_text(decorations.next_anchor(), col_limit);
+            }
+        }
         let Some(mut grapheme) = formatter.next() else {
             break;
         };

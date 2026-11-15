@@ -306,16 +306,36 @@ impl<'a> TextAnnotations<'a> {
 
     // OPTIMIZE: skip folded highlights
     pub fn collect_overlay_highlights(&self, char_range: Range<usize>) -> OverlayHighlights {
-        let mut highlights = Vec::new();
-        self.reset_pos(char_range.start);
-        for char_idx in char_range {
-            if let Some((_, Some(highlight))) = self.overlay_at(char_idx) {
+        // At each char with overlays, the highlight of the last layer's overlay there (the
+        // overlay shown), if it has one: from the overlays in the range, not from each char of
+        // it (a long line).
+        let mut shown: Vec<(usize, usize, Option<Highlight>)> = Vec::new();
+        for (layer_index, layer) in self.overlays.iter().enumerate() {
+            let first = layer
+                .annotations
+                .partition_point(|overlay| overlay.char_idx < char_range.start);
+            for overlay in layer.annotations[first..]
+                .iter()
+                .take_while(|overlay| overlay.char_idx < char_range.end)
+            {
+                shown.push((overlay.char_idx, layer_index, layer.metadata));
+            }
+        }
+        // by char, the last layer's last
+        shown.sort_by_key(|&(char_idx, layer_index, _)| (char_idx, layer_index));
+        let mut highlights: Vec<(Highlight, Range<usize>)> = Vec::new();
+        for (i, &(char_idx, _, highlight)) in shown.iter().enumerate() {
+            let last_at_char = shown
+                .get(i + 1)
+                .is_none_or(|&(next_char, _, _)| next_char != char_idx);
+            if let (true, Some(highlight)) = (last_at_char, highlight) {
                 // we don't know the number of chars the original grapheme takes
                 // however it doesn't matter as highlight boundaries are automatically
                 // aligned to grapheme boundaries in the rendering code
                 highlights.push((highlight, char_idx..char_idx + 1));
             }
         }
+        self.reset_pos(char_range.start);
 
         OverlayHighlights::Heterogenous { highlights }
     }
@@ -400,6 +420,30 @@ impl<'a> TextAnnotations<'a> {
             }
         }
         overlay
+    }
+
+    /// The first char at or after the position of the iteration where something is anchored:
+    /// an inline annotation, an overlay, a fold, a line annotation's anchor (`usize::MAX`:
+    /// none). The text before it can be moved past without looking at each grapheme.
+    pub(crate) fn next_anchor(&self) -> usize {
+        fn next<A>(layers: &[Layer<A, Option<Highlight>>], get: impl Fn(&A) -> usize) -> usize {
+            layers
+                .iter()
+                .filter_map(|layer| layer.annotations.get(layer.current_index.get()))
+                .map(get)
+                .min()
+                .unwrap_or(usize::MAX)
+        }
+        let line_anchors = self
+            .line_annotations
+            .iter()
+            .map(|(next_anchor, _)| next_anchor.get())
+            .min()
+            .unwrap_or(usize::MAX);
+        next(&self.inline_annotations, |annot| annot.char_idx)
+            .min(next(&self.overlays, |annot| annot.char_idx))
+            .min(self.folds.next_start())
+            .min(line_anchors)
     }
 
     pub(crate) fn process_virtual_text_anchors(&self, grapheme: &FormattedGrapheme) {

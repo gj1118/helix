@@ -167,6 +167,77 @@ impl Default for TextFormat {
     }
 }
 
+/// Whether `bytes` are all printable ASCII (`0x20..=0x7E`), checked without branching on each.
+fn is_plain(bytes: &[u8]) -> bool {
+    bytes.iter().fold(true, |plain, &byte| {
+        plain & (byte.wrapping_sub(0x20) < 0x5F)
+    })
+}
+
+/// With soft wrap, a line longer than this is formatted in blocks of this many chars: each
+/// block starts a new visual line, so that what is in a block is found from the block's start,
+/// not from the line's (the formatting of a long line used to be walked from its start for each
+/// render and each position, deep in a long line the editor slowed to seconds per key).
+pub const SOFT_WRAP_BLOCK: usize = 16 * 1024;
+
+/// The start of the block of `line` that `char_idx` is in: the line's start, or a block of a
+/// long line formatted with soft wrap (see [`SOFT_WRAP_BLOCK`]).
+fn block_start(text: RopeSlice, text_fmt: &TextFormat, line: usize, char_idx: usize) -> usize {
+    let line_start = text.line_to_char(line);
+    if !text_fmt.soft_wrap || text.line(line).len_chars() <= SOFT_WRAP_BLOCK {
+        return line_start;
+    }
+    let block = (char_idx.saturating_sub(line_start)) / SOFT_WRAP_BLOCK;
+    (1..=block)
+        .rev()
+        .map(|block| block_boundary(text, line_start, block))
+        .find(|&start| start > line_start && start <= char_idx)
+        .unwrap_or(line_start)
+}
+
+/// The start of block `block` of the long line starting at `line_start`: at a grapheme boundary,
+/// past spaces and tabs there (a block starting with them would indent its visual lines).
+fn block_boundary(text: RopeSlice, line_start: usize, block: usize) -> usize {
+    let start = crate::graphemes::ensure_grapheme_boundary_prev(
+        text,
+        (line_start + block * SOFT_WRAP_BLOCK).min(text.len_chars()),
+    );
+    let blanks = text
+        .chars_at(start)
+        .take(64)
+        .take_while(|c| matches!(c, ' ' | '\t'))
+        .count();
+    start + blanks
+}
+
+/// The start of the next block of `line` after `char_pos` (`usize::MAX`: none, the line is not
+/// formatted in blocks or this is its last one).
+fn next_block_start(text: RopeSlice, text_fmt: &TextFormat, line: usize, char_pos: usize) -> usize {
+    if !text_fmt.soft_wrap || line >= text.len_lines() {
+        return usize::MAX;
+    }
+    let line_slice = text.line(line);
+    let line_len = line_slice.len_chars();
+    if line_len <= SOFT_WRAP_BLOCK {
+        return usize::MAX;
+    }
+    let line_start = text.line_to_char(line);
+    // not the line ending: the line goes on to it (an empty last row otherwise)
+    let line_end = line_start + line_len
+        - crate::line_ending::get_line_ending(&line_slice).map_or(0, |ending| ending.len_chars());
+    let mut block = char_pos.saturating_sub(line_start) / SOFT_WRAP_BLOCK + 1;
+    loop {
+        let start = block_boundary(text, line_start, block);
+        if start >= line_end {
+            return usize::MAX;
+        }
+        if start > char_pos {
+            return start;
+        }
+        block += 1;
+    }
+}
+
 #[derive(Debug)]
 pub struct DocumentFormatter<'t> {
     text: RopeSlice<'t>,
@@ -184,6 +255,12 @@ pub struct DocumentFormatter<'t> {
     exhausted: bool,
 
     inline_annotation_graphemes: Option<(Graphemes<'t>, Option<Highlight>)>,
+    /// With soft wrap, the start of the next block of a long line (see [`SOFT_WRAP_BLOCK`]),
+    /// where a new visual line starts: `usize::MAX` for none.
+    block_end: usize,
+    /// After a [`Self::skip_plain_text`] that found nothing to skip: the char before which it
+    /// doesn't look again (looking costs more than walking a few graphemes).
+    skip_retry_at: usize,
 
     // softwrap specific
     /// The indentation of the current line
@@ -219,9 +296,9 @@ impl<'t> DocumentFormatter<'t> {
             char_idx = fold.start.char
         }
 
-        // TODO divide long lines into blocks to avoid bad performance for long lines
+        // a line, or a block of a long line with soft wrap
         let block_line_idx = text.char_to_line(char_idx.min(text.len_chars()));
-        let block_char_idx = text.line_to_char(block_line_idx);
+        let block_char_idx = block_start(text, text_fmt, block_line_idx, char_idx);
         annotations.reset_pos(block_char_idx);
 
         DocumentFormatter {
@@ -238,7 +315,21 @@ impl<'t> DocumentFormatter<'t> {
             word_i: 0,
             line_pos: block_line_idx,
             inline_annotation_graphemes: None,
+            skip_retry_at: 0,
+            block_end: next_block_start(text, text_fmt, block_line_idx, block_char_idx),
         }
+    }
+
+    /// With soft wrap, at the start of a block of a long line: a new visual line, as a new
+    /// formatter starting there would begin (see [`SOFT_WRAP_BLOCK`]).
+    fn start_block(&mut self) {
+        let virtual_lines =
+            self.annotations
+                .virtual_lines_at(self.char_pos, self.visual_pos, self.line_pos);
+        self.visual_pos.row += 1 + virtual_lines;
+        self.visual_pos.col = 0;
+        self.indent_level = None;
+        self.block_end = next_block_start(self.text, self.text_fmt, self.line_pos, self.char_pos);
     }
 
     fn next_inline_annotation_grapheme(
@@ -393,6 +484,10 @@ impl<'t> DocumentFormatter<'t> {
         loop {
             let mut col = self.visual_pos.col + word_width;
             let char_pos = self.char_pos + word_chars;
+            // a block of a long line starts here: the word ends before it
+            if char_pos >= self.block_end && !self.word_buf.is_empty() {
+                return;
+            }
             match col.cmp(&(self.text_fmt.viewport_width as usize)) {
                 // The EOF char and newline chars are always selectable in helix. That means
                 // that wrapping happens "too-early" if a word fits a line perfectly. This
@@ -444,6 +539,75 @@ impl<'t> DocumentFormatter<'t> {
         }
     }
 
+    /// Without soft wrap: moves past the document text before `char_limit` and before the
+    /// visual column `col_limit` without yielding it, where that can be done without looking at
+    /// each grapheme: plain text (printable ASCII: a grapheme, a char and a column each) with no
+    /// annotation, overlay, fold or line annotation anchor in it. It stops before anything else
+    /// (a tab, a line break, a non-ASCII char and the ASCII char before it, which may combine
+    /// with it), from where the iteration goes on one grapheme at a time, as it would have.
+    /// Returns the number of chars moved past.
+    ///
+    /// Long lines are walked from their start (they are a single block), on every
+    /// render and every position computed in them: this makes it cheap for the text that is
+    /// not drawn or not looked at (left of the view, right of it, before a position).
+    pub fn skip_plain_text(&mut self, char_limit: usize, col_limit: usize) -> usize {
+        if self.text_fmt.soft_wrap
+            || self.exhausted
+            || self.peeked_grapheme.is_some()
+            || self.char_pos < self.skip_retry_at
+        {
+            return 0;
+        }
+        // in the middle of an inline annotation's text
+        if self
+            .inline_annotation_graphemes
+            .as_ref()
+            .is_some_and(|(graphemes, _)| graphemes.clone().next().is_some())
+        {
+            return 0;
+        }
+        let start = self.char_pos;
+        let limit = char_limit
+            .min(self.annotations.next_anchor())
+            .min(start.saturating_add(col_limit.saturating_sub(self.visual_pos.col)))
+            .min(self.text.len_chars());
+        let Some(max) = limit.checked_sub(start).filter(|&max| max > 0) else {
+            return 0;
+        };
+        // the plain chars, and the byte after them
+        let mut skipped = 0;
+        let mut next_byte = None;
+        'chunks: for chunk in self.text.slice(start..).chunks() {
+            let bytes = chunk.as_bytes();
+            // a whole chunk at once (no early exit: vectorized), then byte by byte where
+            // the plain text or the limit ends
+            if bytes.len() < max - skipped && is_plain(bytes) {
+                skipped += bytes.len();
+                continue;
+            }
+            for &byte in bytes {
+                if skipped == max || !(0x20..=0x7E).contains(&byte) {
+                    next_byte = Some(byte);
+                    break 'chunks;
+                }
+                skipped += 1;
+            }
+        }
+        // a non-ASCII char may combine with the char before it into one grapheme
+        if next_byte.is_some_and(|byte| byte >= 0x80) {
+            skipped = skipped.saturating_sub(1);
+        }
+        if skipped == 0 {
+            // not plain text here: walk a few graphemes before looking again
+            self.skip_retry_at = start + 32;
+            return 0;
+        }
+        self.char_pos += skipped;
+        self.visual_pos.col += skipped;
+        self.graphemes = self.text.slice(self.char_pos..).graphemes();
+        skipped
+    }
+
     /// returns the char index at the end of the last yielded grapheme
     pub fn next_char_pos(&self) -> usize {
         self.char_pos
@@ -460,6 +624,9 @@ impl<'t> Iterator for DocumentFormatter<'t> {
     fn next(&mut self) -> Option<Self::Item> {
         let grapheme = if self.text_fmt.soft_wrap {
             if self.word_i >= self.word_buf.len() {
+                if self.char_pos >= self.block_end && self.peeked_grapheme.is_none() {
+                    self.start_block();
+                }
                 self.advance_to_next_word();
                 self.word_i = 0;
             }
@@ -495,6 +662,8 @@ impl<'t> Iterator for DocumentFormatter<'t> {
             self.visual_pos.col = 0;
             if !grapheme.is_virtual() {
                 self.line_pos += 1;
+                self.block_end =
+                    next_block_start(self.text, self.text_fmt, self.line_pos, self.char_pos);
             }
         } else {
             self.visual_pos.col += grapheme.width();
