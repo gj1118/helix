@@ -40,6 +40,7 @@ directory-open = " "  # expanded folder icon (default: open-folder glyph, or 
 7. Lua plugins — event handlers, commands, buffer edits, annotations, overlay panels, prompts and pickers (see [Plugins](#plugins) below)
 8. Live-updating pickers — the file picker, global search, changed files, buffers, diagnostics and quicklist pickers follow changes while open; big previews load in the background
 9. EditorConfig — `.editorconfig` files applied when a file opens and again as soon as one is saved (see [EditorConfig](#editorconfig) below)
+10. Rounded cursors, like 4coder's `cursor_roundness` — `cursor-roundness = 0..50` in `[editor]` (the corner radius as a percentage of the cursor's width; `0`, the default, keeps the square cursor). Block cursors are drawn as images with the kitty graphics protocol (kitty, Ghostty) in the theme's `ui.cursor` colors; in other terminals, with bar or underline cursors, or with cursor colors from the terminal's palette rather than hex, they stay square
 
 
    

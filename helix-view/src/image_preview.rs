@@ -16,7 +16,7 @@ use std::io;
 use std::path::Path;
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
-use image::{imageops::FilterType, ImageEncoder, Rgb, RgbImage, RgbaImage};
+use image::{imageops::FilterType, ImageEncoder, Rgb, RgbImage, Rgba, RgbaImage};
 use serde::{Deserialize, Serialize};
 
 /// The `protocol` option of `[editor.image-preview]`.
@@ -316,6 +316,24 @@ pub fn png_bytes(image: &RgbaImage) -> Vec<u8> {
     bytes
 }
 
+/// A `width` x `height` rectangle in `color` whose corners are rounded with `radius` pixels
+/// (at most half the width and the height), anti-aliased; transparent around it.
+pub fn rounded_rect(width: u32, height: u32, radius: f32, color: [u8; 3]) -> RgbaImage {
+    let radius = radius.clamp(0.0, width.min(height) as f32 / 2.0);
+    let (half_w, half_h) = (width as f32 / 2.0, height as f32 / 2.0);
+    let [r, g, b] = color;
+    RgbaImage::from_fn(width, height, |x, y| {
+        // the signed distance from the pixel's centre to the edge (negative inside)
+        let dx = (x as f32 + 0.5 - half_w).abs() - (half_w - radius);
+        let dy = (y as f32 + 0.5 - half_h).abs() - (half_h - radius);
+        let outside = dx.max(0.0).hypot(dy.max(0.0));
+        let inside = dx.max(dy).min(0.0);
+        let distance = outside + inside - radius;
+        let alpha = (0.5 - distance).clamp(0.0, 1.0);
+        Rgba([r, g, b, (alpha * 255.0).round() as u8])
+    })
+}
+
 /// The Kitty graphics protocol: the PNG is sent in chunks and shown over the cells, below the text
 /// (`z=-1`), without moving the cursor.
 pub fn kitty(png: &[u8], placement: &Placement, id: u32) -> Encoded {
@@ -461,6 +479,47 @@ fn push_runs(out: &mut String, bits: &[u8]) {
 
 #[cfg(test)]
 mod tests {
+    fn alpha(image: &RgbaImage, x: u32, y: u32) -> u8 {
+        image.get_pixel(x, y).0[3]
+    }
+
+    #[test]
+    fn rounded_rect_square_without_roundness() {
+        let image = rounded_rect(10, 20, 0.0, [1, 2, 3]);
+        assert_eq!((image.width(), image.height()), (10u32, 20u32));
+        for (x, y) in [(0u32, 0u32), (9, 0), (0, 19), (9, 19), (5, 10)] {
+            assert_eq!(image.get_pixel(x, y).0, [1u8, 2, 3, 255], "at {x},{y}");
+        }
+    }
+
+    #[test]
+    fn rounded_corners_are_transparent_and_the_middle_is_filled() {
+        let image = rounded_rect(10, 20, 4.0, [200, 100, 50]);
+        for (x, y) in [(0u32, 0u32), (9, 0), (0, 19), (9, 19)] {
+            assert_eq!(alpha(&image, x, y), 0u8, "corner {x},{y}");
+        }
+        assert_eq!(image.get_pixel(5, 10).0, [200u8, 100, 50, 255]);
+        // the straight sides are filled
+        assert_eq!(alpha(&image, 0, 10), 255u8);
+        assert_eq!(alpha(&image, 5, 0), 255u8);
+        // anti-aliased: partly covered pixels on the curve
+        let partial = (0..4u32)
+            .flat_map(|x| (0..4u32).map(move |y| (x, y)))
+            .filter(|&(x, y)| (1..255).contains(&alpha(&image, x, y)))
+            .count();
+        assert!(partial > 0, "no anti-aliased pixel in the corner");
+    }
+
+    #[test]
+    fn the_radius_is_at_most_half_the_width() {
+        // 50: the left and right ends are half circles
+        let image = rounded_rect(10, 20, 100.0, [0, 0, 0]);
+        assert_eq!(alpha(&image, 0, 0), 0u8);
+        assert_eq!(alpha(&image, 0, 1), 0u8);
+        assert_eq!(alpha(&image, 0, 10), 255u8);
+        assert_eq!(alpha(&image, 5, 10), 255u8);
+    }
+
     use super::*;
 
     fn env(vars: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {

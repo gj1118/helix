@@ -48,6 +48,7 @@ mod test {
     mod quickfix;
     mod quicklist;
     mod recent_files;
+    mod rounded_cursor;
     mod snippets;
     mod splits;
     mod todos;

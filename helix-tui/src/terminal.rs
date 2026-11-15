@@ -26,7 +26,8 @@ pub struct Config {
     pub enable_mouse_capture: bool,
     pub force_enable_extended_underlines: bool,
     pub kitty_keyboard_protocol: KittyKeyboardProtocolConfig,
-    /// Ask the terminal whether it has the kitty graphics protocol (for the diff connector).
+    /// Ask the terminal whether it has the kitty graphics protocol (for the diff connector and
+    /// rounded cursors).
     pub query_kitty_graphics: bool,
 }
 
@@ -36,8 +37,9 @@ impl From<&EditorConfig> for Config {
             enable_mouse_capture: config.mouse,
             force_enable_extended_underlines: config.undercurl,
             kitty_keyboard_protocol: config.kitty_keyboard_protocol,
-            query_kitty_graphics: config.diff.connector_graphics
+            query_kitty_graphics: (config.diff.connector_graphics
                 == helix_view::diff_view::ConnectorGraphics::Auto
+                || config.cursor_roundness > 0)
                 && helix_view::image_preview::kitty_graphics_unknown(|name| {
                     std::env::var(name).ok()
                 }),

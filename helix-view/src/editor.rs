@@ -443,6 +443,11 @@ pub struct Config {
     pub cursorline: bool,
     /// Highlight the columns cursors are currently on. Defaults to false.
     pub cursorcolumn: bool,
+    /// How round the corners of block cursors are, as in 4coder's `cursor_roundness`: the
+    /// radius as a percentage of the cursor's width, from 0 (square, as the terminal draws
+    /// it) to 50 (the left and right ends are half circles). Drawn as an image with the kitty
+    /// graphics protocol; where the terminal doesn't have it, block cursors stay square.
+    pub cursor_roundness: u8,
     #[serde(deserialize_with = "deserialize_gutter_seq_or_struct")]
     pub gutters: GutterConfig,
     /// Middle click paste support. Defaults to true.
@@ -2116,6 +2121,7 @@ impl Default for Config {
             picker_symbol: ">".to_string(),
             cursorline: false,
             cursorcolumn: false,
+            cursor_roundness: 0,
             gutters: GutterConfig::default(),
             middle_click_paste: true,
             auto_pairs: AutoPairConfig::default(),

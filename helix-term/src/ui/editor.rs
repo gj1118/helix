@@ -515,6 +515,22 @@ impl EditorView {
         // Draw rulers after document. Skip cells that already have content.
         Self::render_rulers(editor, doc, view, inner, surface, theme);
 
+        // Rounded cursors (`cursor-roundness`): after the text, under what goes over it.
+        if is_focused {
+            if let Some(roundness) = crate::ui::rounded_cursor::roundness(editor) {
+                let (primary, secondary) = Self::cursor_scopes(theme, editor.mode());
+                crate::ui::rounded_cursor::draw(
+                    editor,
+                    doc,
+                    view,
+                    surface,
+                    roundness,
+                    theme.highlight(primary),
+                    theme.highlight(secondary),
+                );
+            }
+        }
+
         // if we're not at the edge of the screen, draw a right border
         if viewport.right() != view.area.right() {
             let x = area.right();
@@ -1129,6 +1145,34 @@ impl EditorView {
         Some(OverlayHighlights::Homogeneous { highlight, ranges })
     }
 
+    /// The theme's scopes of the primary cursor and of the others in `mode`.
+    fn cursor_scopes(theme: &Theme, mode: Mode) -> (syntax::Highlight, syntax::Highlight) {
+        let selection_scope = theme
+            .find_highlight_exact("ui.selection")
+            .expect("could not find `ui.selection` scope in the theme!");
+        let base_cursor_scope = theme
+            .find_highlight_exact("ui.cursor")
+            .unwrap_or(selection_scope);
+        let base_primary_cursor_scope = theme
+            .find_highlight("ui.cursor.primary")
+            .unwrap_or(base_cursor_scope);
+
+        let cursor_scope = match mode {
+            Mode::Insert => theme.find_highlight_exact("ui.cursor.insert"),
+            Mode::Select => theme.find_highlight_exact("ui.cursor.select"),
+            Mode::Normal => theme.find_highlight_exact("ui.cursor.normal"),
+        }
+        .unwrap_or(base_cursor_scope);
+
+        let primary_cursor_scope = match mode {
+            Mode::Insert => theme.find_highlight_exact("ui.cursor.primary.insert"),
+            Mode::Select => theme.find_highlight_exact("ui.cursor.primary.select"),
+            Mode::Normal => theme.find_highlight_exact("ui.cursor.primary.normal"),
+        }
+        .unwrap_or(base_primary_cursor_scope);
+        (primary_cursor_scope, cursor_scope)
+    }
+
     /// Get highlight spans for selections in a document view.
     fn doc_selection_highlights(
         &self,
@@ -1155,26 +1199,10 @@ impl EditorView {
             .find_highlight_exact("ui.selection.primary")
             .unwrap_or(selection_scope);
 
-        let base_cursor_scope = theme
-            .find_highlight_exact("ui.cursor")
-            .unwrap_or(selection_scope);
-        let base_primary_cursor_scope = theme
-            .find_highlight("ui.cursor.primary")
-            .unwrap_or(base_cursor_scope);
-
-        let cursor_scope = match mode {
-            Mode::Insert => theme.find_highlight_exact("ui.cursor.insert"),
-            Mode::Select => theme.find_highlight_exact("ui.cursor.select"),
-            Mode::Normal => theme.find_highlight_exact("ui.cursor.normal"),
-        }
-        .unwrap_or(base_cursor_scope);
-
-        let primary_cursor_scope = match mode {
-            Mode::Insert => theme.find_highlight_exact("ui.cursor.primary.insert"),
-            Mode::Select => theme.find_highlight_exact("ui.cursor.primary.select"),
-            Mode::Normal => theme.find_highlight_exact("ui.cursor.primary.normal"),
-        }
-        .unwrap_or(base_primary_cursor_scope);
+        let (primary_cursor_scope, cursor_scope) = Self::cursor_scopes(theme, mode);
+        // Rounded cursors are drawn after the text (`rounded_cursor::draw`), over the cells
+        // as they are without a cursor.
+        let rounded = crate::ui::rounded_cursor::roundness(editor).is_some();
 
         let mut spans = Vec::new();
         for (i, range) in selection.iter().enumerate() {
@@ -1190,6 +1218,7 @@ impl EditorView {
                     terminal_draws_secondary_cursors,
                 )
             };
+            let draw_cursor = draw_cursor && !rounded;
             let (cursor_scope, selection_scope) = if selection_is_primary {
                 (primary_cursor_scope, primary_selection_scope)
             } else {
@@ -3008,6 +3037,11 @@ impl Component for EditorView {
     fn cursor(&self, _area: Rect, editor: &Editor) -> (Option<Position>, CursorKind) {
         let (pos, kind) = editor.cursor();
         if self.terminal_focused {
+            // A rounded cursor is drawn by the editor: the terminal's one is hidden there (its
+            // position kept, for input methods).
+            if crate::ui::rounded_cursor::roundness(editor).is_some() {
+                return (pos, CursorKind::Hidden);
+            }
             (pos, kind)
         } else {
             // use underline cursor when terminal loses focus for visibility

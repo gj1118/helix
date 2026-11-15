@@ -20,6 +20,7 @@ pub mod picker;
 pub mod popup;
 pub mod prompt;
 pub mod quickfix;
+pub mod rounded_cursor;
 mod select;
 mod spinner;
 mod statusline;
