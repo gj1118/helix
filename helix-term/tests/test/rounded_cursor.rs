@@ -2,10 +2,9 @@ use super::*;
 
 use helix_term::application::Application;
 use helix_term::config::{Config, ConfigLoadError};
-use helix_view::graphics::{Color, CursorKind, Modifier};
+use std::collections::HashMap;
 
-/// The kitty image id of the first rounded cursor (`ui::rounded_cursor`).
-const FIRST_ID: u32 = 4_820_000;
+use helix_view::graphics::{Color, CursorKind, Modifier};
 
 fn config(toml: &str) -> Config {
     // the image previews' protocol is set: the terminal running the tests doesn't count
@@ -35,35 +34,49 @@ fn app_with_theme(toml: &str, text: &str, kitty: bool, theme: &str) -> anyhow::R
     Ok(app)
 }
 
-/// The images of rounded cursors sent so far: where, and their kitty id.
-fn cursor_images(app: &Application) -> Vec<(u16, u16, u32)> {
+/// The kitty graphics commands sent so far whose control data starts with `action`, with
+/// where they were sent and their keys.
+fn kitty_commands(app: &Application, action: &str) -> Vec<(u16, u16, HashMap<String, u32>)> {
     app.raw_output()
         .iter()
         .filter_map(|(x, y, bytes)| {
             let text = String::from_utf8_lossy(bytes);
-            let rest = text.strip_prefix("\x1b_Ga=T,")?;
-            let id: u32 = rest.split(",i=").nth(1)?.split(',').next()?.parse().ok()?;
-            (FIRST_ID..FIRST_ID + 64)
-                .contains(&id)
-                .then_some((*x, *y, id))
+            let control = text.strip_prefix("\x1b_G")?.split([';', '\x1b']).next()?;
+            control.starts_with(action).then(|| {
+                let keys = control
+                    .split(',')
+                    .filter_map(|pair| {
+                        let (key, value) = pair.split_once('=')?;
+                        Some((key.to_string(), value.parse().ok()?))
+                    })
+                    .collect();
+                (*x, *y, keys)
+            })
         })
         .collect()
 }
 
-/// The kitty ids of the rounded cursors deleted so far.
-fn deleted_cursor_images(app: &Application) -> Vec<u32> {
-    app.raw_output()
-        .iter()
-        .filter_map(|(_, _, bytes)| {
-            let text = String::from_utf8_lossy(bytes);
-            let id: u32 = text
-                .strip_prefix("\x1b_Ga=d,d=I,i=")?
-                .split(',')
-                .next()?
-                .parse()
-                .ok()?;
-            (FIRST_ID..FIRST_ID + 64).contains(&id).then_some(id)
-        })
+/// The cursor images' placements shown so far: where, the image id and the placement id.
+fn placements(app: &Application) -> Vec<(u16, u16, u32, u32)> {
+    kitty_commands(app, "a=p,")
+        .into_iter()
+        .map(|(x, y, keys)| (x, y, keys["i"], keys["p"]))
+        .collect()
+}
+
+/// The ids of the cursor images sent so far.
+fn transmitted(app: &Application) -> Vec<u32> {
+    kitty_commands(app, "a=t,")
+        .into_iter()
+        .map(|(_, _, keys)| keys["i"])
+        .collect()
+}
+
+/// The placements taken away so far: image id and placement id.
+fn unplaced(app: &Application) -> Vec<(u32, u32)> {
+    kitty_commands(app, "a=d,d=i,")
+        .into_iter()
+        .map(|(_, _, keys)| (keys["i"], keys["p"]))
         .collect()
 }
 
@@ -76,7 +89,8 @@ fn symbol(app: &Application, x: u16, y: u16) -> String {
 }
 
 /// The primary cursor is a rounded image under its character, which keeps the cursor's text
-/// color; the terminal's own cursor is hidden. Moving the cursor moves the image.
+/// color; the terminal's own cursor is hidden. The image is sent once: moving the cursor moves
+/// its placement, without taking it away first (no flicker).
 #[tokio::test(flavor = "multi_thread")]
 async fn a_rounded_cursor_is_an_image_under_its_character() -> anyhow::Result<()> {
     let mut app = app("cursor-roundness = 25", "#[h|]#ello\nworld\n", true)?;
@@ -86,10 +100,11 @@ async fn a_rounded_cursor_is_an_image_under_its_character() -> anyhow::Result<()
             (
                 None,
                 Some(&|app| {
-                    let images = cursor_images(app);
-                    assert_eq!(images.len(), 1usize, "{images:?}");
-                    let (x, y, id) = images[0];
-                    assert_eq!(id, FIRST_ID);
+                    let placements = placements(app);
+                    assert_eq!(placements.len(), 1usize, "{placements:?}");
+                    let (x, y, image, placement) = placements[0];
+                    assert_eq!(transmitted(app), vec![image]);
+                    assert_eq!(placement, 1u32);
                     assert_eq!(symbol(app, x, y), "h");
                     // the default theme's cursor is reversed: the text in the background's
                     // color, the cell's own background under the image
@@ -103,16 +118,17 @@ async fn a_rounded_cursor_is_an_image_under_its_character() -> anyhow::Result<()
                 }),
             ),
             (
-                Some("l"),
+                Some("lj"),
                 Some(&|app| {
-                    let images = cursor_images(app);
-                    assert_eq!(images.len(), 2usize, "{images:?}");
-                    let (first_x, first_y, _) = images[0];
-                    let (x, y, id) = images[1];
-                    assert_eq!((x, y, id), (first_x + 1, first_y, FIRST_ID));
-                    assert_eq!(symbol(app, x, y), "e");
-                    // the image where the cursor was is deleted before the new one is sent
-                    assert_eq!(deleted_cursor_images(app), vec![FIRST_ID]);
+                    let placements = placements(app);
+                    let (first_x, first_y, image, _) = placements[0];
+                    let &(x, y, moved_image, placement) = placements.last().unwrap();
+                    assert_eq!((x, y), (first_x + 1, first_y + 1));
+                    assert_eq!((moved_image, placement), (image, 1u32));
+                    assert_eq!(symbol(app, x, y), "o");
+                    // sent once, never taken away
+                    assert_eq!(transmitted(app), vec![image]);
+                    assert_eq!(unplaced(app), Vec::<(u32, u32)>::new());
                 }),
             ),
         ],
@@ -121,7 +137,7 @@ async fn a_rounded_cursor_is_an_image_under_its_character() -> anyhow::Result<()
     .await
 }
 
-/// Each cursor in view is its own image.
+/// Each cursor in view is its own placement of the image.
 #[tokio::test(flavor = "multi_thread")]
 async fn every_cursor_is_rounded() -> anyhow::Result<()> {
     let mut app = app("cursor-roundness = 50", "#[h|]#ello\nworld\n", true)?;
@@ -130,19 +146,20 @@ async fn every_cursor_is_rounded() -> anyhow::Result<()> {
         vec![(
             Some("C"),
             Some(&|app| {
-                let images = cursor_images(app);
-                assert!(images.len() >= 2usize, "{images:?}");
-                // the images sent for the two cursors
-                let last_two = &images[images.len() - 2..];
-                let ids: Vec<u32> = last_two.iter().map(|image| image.2).collect();
-                assert!(ids.contains(&FIRST_ID), "{images:?}");
-                assert!(ids.contains(&(FIRST_ID + 1)), "{images:?}");
-                let symbols: Vec<String> = last_two
+                let placements = placements(app);
+                assert!(placements.len() >= 2usize, "{placements:?}");
+                let last_two = &placements[placements.len() - 2..];
+                let mut ids: Vec<u32> = last_two.iter().map(|placement| placement.3).collect();
+                ids.sort();
+                assert_eq!(ids, vec![1u32, 2]);
+                let mut symbols: Vec<String> = last_two
                     .iter()
-                    .map(|&(x, y, _)| symbol(app, x, y))
+                    .map(|&(x, y, _, _)| symbol(app, x, y))
                     .collect();
-                assert!(symbols.contains(&"h".to_string()), "{symbols:?}");
-                assert!(symbols.contains(&"w".to_string()), "{symbols:?}");
+                symbols.sort();
+                assert_eq!(symbols, vec!["h".to_string(), "w".to_string()]);
+                // one image for both (the secondary cursor's style is the primary's here)
+                assert_eq!(transmitted(app).len(), 1usize);
             }),
         )],
         false,
@@ -159,7 +176,7 @@ async fn no_roundness_leaves_the_cursor_as_it_was() -> anyhow::Result<()> {
         vec![(
             Some("l"),
             Some(&|app| {
-                assert_eq!(cursor_images(app), Vec::<(u16, u16, u32)>::new());
+                assert_eq!(placements(app), Vec::<(u16, u16, u32, u32)>::new());
                 assert_eq!(cursor_kind(app), CursorKind::Block);
             }),
         )],
@@ -177,7 +194,7 @@ async fn without_kitty_graphics_the_cursor_stays_square() -> anyhow::Result<()> 
         vec![(
             Some("l"),
             Some(&|app| {
-                assert_eq!(cursor_images(app), Vec::<(u16, u16, u32)>::new());
+                assert_eq!(placements(app), Vec::<(u16, u16, u32, u32)>::new());
                 assert_eq!(cursor_kind(app), CursorKind::Block);
             }),
         )],
@@ -186,8 +203,8 @@ async fn without_kitty_graphics_the_cursor_stays_square() -> anyhow::Result<()> 
     .await
 }
 
-/// A bar cursor (insert mode here) isn't rounded: the image goes when insert mode starts, and
-/// the terminal draws the bar.
+/// A bar cursor (insert mode here) isn't rounded: the placement goes when insert mode starts,
+/// and the terminal draws the bar.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_bar_cursor_is_not_rounded() -> anyhow::Result<()> {
     let mut app = app(
@@ -201,15 +218,16 @@ async fn a_bar_cursor_is_not_rounded() -> anyhow::Result<()> {
             (
                 None,
                 Some(&|app| {
-                    assert_eq!(cursor_images(app).len(), 1usize);
+                    assert_eq!(placements(app).len(), 1usize);
                     assert_eq!(cursor_kind(app), CursorKind::Hidden);
                 }),
             ),
             (
                 Some("i"),
                 Some(&|app| {
-                    assert_eq!(cursor_images(app).len(), 1usize);
-                    assert_eq!(deleted_cursor_images(app), vec![FIRST_ID]);
+                    let (_, _, image, placement) = placements(app)[0];
+                    assert_eq!(placements(app).len(), 1usize);
+                    assert_eq!(unplaced(app), vec![(image, placement)]);
                     assert_eq!(cursor_kind(app), CursorKind::Bar);
                 }),
             ),
@@ -231,9 +249,9 @@ async fn a_cursor_in_its_own_colors() -> anyhow::Result<()> {
         vec![(
             None,
             Some(&|app| {
-                let images = cursor_images(app);
-                assert_eq!(images.len(), 1usize, "{images:?}");
-                let (x, y, _) = images[0];
+                let placements = placements(app);
+                assert_eq!(placements.len(), 1usize, "{placements:?}");
+                let (x, y, _, _) = placements[0];
                 let cell = app.rendered_cell(x, y);
                 assert_eq!(cell.fg, Color::Rgb(0, 0, 0));
                 assert_eq!(cell.bg, Color::Rgb(0x10, 0x10, 0x10));
@@ -258,7 +276,7 @@ async fn a_cursor_in_palette_colors_is_square() -> anyhow::Result<()> {
         vec![(
             None,
             Some(&|app| {
-                assert_eq!(cursor_images(app), Vec::<(u16, u16, u32)>::new());
+                assert_eq!(placements(app), Vec::<(u16, u16, u32, u32)>::new());
                 let (x, y) = (0..app.compositor.size().width)
                     .flat_map(|x| (0..3u16).map(move |y| (x, y)))
                     .find(|&(x, y)| {

@@ -94,6 +94,9 @@ where
     /// The window title last set, or `None` when the terminal has its own (the one saved on
     /// its title stack when Helix set one).
     sent_title: Option<String>,
+    /// The overlays' resources sent since the screen was last cleared (see
+    /// [`Overlay::resource`](crate::buffer::Overlay)).
+    sent_resources: std::collections::HashSet<u64>,
 }
 
 /// Default terminal size: 80 columns, 24 lines
@@ -139,12 +142,14 @@ where
             sent_secondary_cursors: None,
             title: None,
             sent_title: None,
+            sent_resources: Default::default(),
         })
     }
 
     pub fn claim(&mut self) -> io::Result<()> {
-        // Claiming clears the (alternate) screen, and with it any secondary cursors.
+        // Claiming clears the (alternate) screen, and with it any secondary cursors and images.
         self.sent_secondary_cursors = None;
+        self.sent_resources.clear();
         self.backend.claim()
     }
 
@@ -212,7 +217,13 @@ where
         current_buffer.overlays = overlays;
         let current_buffer = &*current_buffer;
         for overlay in &previous_buffer.overlays {
-            if !current_buffer.overlays.contains(overlay) {
+            // one in the same slot takes its place, as it is sent
+            let replaced = overlay.slot.is_some()
+                && current_buffer
+                    .overlays
+                    .iter()
+                    .any(|current| current.slot == overlay.slot);
+            if !current_buffer.overlays.contains(overlay) && !replaced {
                 if let Some(cleanup) = &overlay.cleanup {
                     self.backend
                         .write_raw(overlay.area.x, overlay.area.y, cleanup)?;
@@ -235,6 +246,12 @@ where
         // The new ones go over the cells.
         for overlay in &current_buffer.overlays {
             if !previous_buffer.overlays.contains(overlay) {
+                if let Some((id, resource)) = &overlay.resource {
+                    if self.sent_resources.insert(*id) {
+                        self.backend
+                            .write_raw(overlay.area.x, overlay.area.y, resource)?;
+                    }
+                }
                 self.backend
                     .write_raw(overlay.area.x, overlay.area.y, &overlay.payload)?;
                 if overlay.text_on_top {
@@ -367,8 +384,9 @@ where
     /// synchronized frame with the repaint.
     pub fn clear(&mut self) -> io::Result<()> {
         self.force_clear = true;
-        // Erasing the display removes the terminal's secondary cursors too.
+        // Erasing the display removes the terminal's secondary cursors too, and its images.
         self.sent_secondary_cursors = None;
+        self.sent_resources.clear();
         // Reset the back buffer to make sure the next update will redraw everything.
         self.buffers[1 - self.current].reset();
         Ok(())
@@ -394,6 +412,8 @@ mod overlay_tests {
             cleanup: Some(Arc::from(format!("delete {key}").into_bytes())),
             text_on_top: false,
             cells: 0,
+            slot: None,
+            resource: None,
         }
     }
 
@@ -438,6 +458,70 @@ mod overlay_tests {
         assert_eq!(raw(&mut terminal), [(3, 2, "delete 2".to_string())]);
         frame(&mut terminal, &[]);
         assert_eq!(raw(&mut terminal), []);
+    }
+
+    /// An overlay in a slot (a kitty placement) that moves replaces itself: the new one is
+    /// sent without taking the old one away first. It is taken away when its slot goes.
+    #[test]
+    fn an_overlay_in_a_slot_moves_without_being_taken_away() {
+        let mut terminal = Terminal::new(TestBackend::new(20, 10)).unwrap();
+        let at = |x| Overlay {
+            slot: Some(7),
+            ..overlay(1, Rect::new(x, 1, 1, 1))
+        };
+
+        frame(&mut terminal, &[at(2)]);
+        assert_eq!(raw(&mut terminal), [(2, 1, "image 1".to_string())]);
+        frame(&mut terminal, &[at(3)]);
+        assert_eq!(raw(&mut terminal), [(3, 1, "image 1".to_string())]);
+        // another slot: the old one is taken away
+        frame(
+            &mut terminal,
+            &[Overlay {
+                slot: Some(8),
+                ..at(4)
+            }],
+        );
+        assert_eq!(
+            raw(&mut terminal),
+            [
+                (3, 1, "delete 1".to_string()),
+                (4, 1, "image 1".to_string())
+            ]
+        );
+        frame(&mut terminal, &[]);
+        assert_eq!(raw(&mut terminal), [(4, 1, "delete 1".to_string())]);
+    }
+
+    /// An overlay's resource (image data) is sent before the first overlay that needs it, and
+    /// again only after the screen was cleared.
+    #[test]
+    fn a_resource_is_sent_once_until_the_screen_is_cleared() {
+        let mut terminal = Terminal::new(TestBackend::new(20, 10)).unwrap();
+        let at = |x| Overlay {
+            resource: Some((5, Arc::from(b"data 5".as_slice()))),
+            ..overlay(1, Rect::new(x, 1, 1, 1))
+        };
+
+        frame(&mut terminal, &[at(2)]);
+        assert_eq!(
+            raw(&mut terminal),
+            [(2, 1, "data 5".to_string()), (2, 1, "image 1".to_string())]
+        );
+        frame(&mut terminal, &[at(3)]);
+        assert_eq!(
+            raw(&mut terminal),
+            [
+                (2, 1, "delete 1".to_string()),
+                (3, 1, "image 1".to_string())
+            ]
+        );
+        terminal.clear().unwrap();
+        frame(&mut terminal, &[at(3)]);
+        assert_eq!(
+            raw(&mut terminal),
+            [(3, 1, "data 5".to_string()), (3, 1, "image 1".to_string())]
+        );
     }
 
     #[test]

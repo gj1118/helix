@@ -293,6 +293,8 @@ impl ImagePreview {
                         cleanup: drawn.cleanup.clone(),
                         text_on_top: false,
                         cells: 0,
+                        slot: None,
+                        resource: None,
                     });
                 }
             }

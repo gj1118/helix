@@ -13,7 +13,9 @@ use std::sync::Arc;
 
 use helix_core::graphemes::{grapheme_width, next_grapheme_boundary};
 use helix_view::graphics::{Color, CursorKind, Modifier, Rect, Style};
-use helix_view::image_preview::{kitty, png_bytes, rounded_rect, Placement, Protocol};
+use helix_view::image_preview::{
+    kitty_place, kitty_transmit, kitty_unplace, png_bytes, rounded_rect, Protocol,
+};
 use helix_view::{Document, Editor, View};
 use tui::buffer::{Buffer as Surface, Overlay};
 
@@ -23,9 +25,14 @@ pub const MAX_ROUNDNESS: u8 = 50;
 /// The cursors drawn rounded in a view at most (the primary one first); the others are square.
 const MAX_CURSORS: usize = 64;
 
-/// The kitty image id of the first cursor in view, the next ones following: apart from the
-/// previews' and the diff connectors' ids.
-const KITTY_CURSOR_ID: u32 = 4_820_000;
+/// The kitty image ids of the cursors' images: this bit and 28 bits of what the image shows,
+/// apart from the previews' and the diff connectors' ids. Each image is sent once, and its
+/// placements show it under the cursors.
+const KITTY_IMAGE_IDS: u32 = 0x4000_0000;
+
+/// How many times the cell's pixels the image has: smooth whether the terminal scales it up
+/// (a cell size in points on a HiDPI screen) or down.
+const OVERSAMPLE: u32 = 2;
 
 /// The cell size when the terminal doesn't tell it: the terminal scales the image to the cell.
 const DEFAULT_CELL: (u16, u16) = (10, 20);
@@ -51,23 +58,32 @@ pub fn roundness(editor: &Editor) -> Option<u8> {
 }
 
 /// A cursor's image: its color, its size in pixels and its radius in tenths of a pixel.
-type PngKey = ([u8; 3], u32, u32, u32);
+type ImageKey = ([u8; 3], u32, u32, u32);
+/// A cursor's image in the terminal: its kitty id, and what transmits it.
+type SentImage = (u32, Arc<[u8]>);
 
 thread_local! {
-    /// The PNGs of the cursors drawn lately: a cursor that moves is sent again, not drawn and
-    /// encoded again.
-    static PNGS: RefCell<HashMap<PngKey, Arc<[u8]>>> = Default::default();
+    /// The cursor images drawn lately.
+    static IMAGES: RefCell<HashMap<ImageKey, SentImage>> = Default::default();
 }
 
-fn png(color: [u8; 3], width: u32, height: u32, radius: f32) -> Arc<[u8]> {
-    PNGS.with(|pngs| {
-        let mut pngs = pngs.borrow_mut();
-        if pngs.len() > 32 {
-            pngs.clear();
+/// The kitty image id of the image of a cursor, and what transmits it.
+fn image(color: [u8; 3], width: u32, height: u32, radius: f32) -> (u32, Arc<[u8]>) {
+    IMAGES.with(|images| {
+        let mut images = images.borrow_mut();
+        if images.len() > 32 {
+            images.clear();
         }
-        let tenths = (radius * 10.0).round() as u32;
-        pngs.entry((color, width, height, tenths))
-            .or_insert_with(|| Arc::from(png_bytes(&rounded_rect(width, height, radius, color))))
+        let key = (color, width, height, (radius * 10.0).round() as u32);
+        images
+            .entry(key)
+            .or_insert_with(|| {
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                key.hash(&mut hasher);
+                let id = KITTY_IMAGE_IDS | (hasher.finish() as u32 & 0x0fff_ffff);
+                let png = png_bytes(&rounded_rect(width, height, radius, color));
+                (id, Arc::from(kitty_transmit(&png, id)))
+            })
             .clone()
     })
 }
@@ -127,9 +143,10 @@ pub fn draw(
         } else {
             secondary
         };
-        let id = KITTY_CURSOR_ID + rounded as u32;
+        // the cursor's placement of its image (not 0)
+        let placement = rounded as u32 + 1;
         if rounded < MAX_CURSORS
-            && draw_rounded(surface, area, style, background, roundness, cell, id)
+            && draw_rounded(surface, area, style, background, roundness, cell, placement)
         {
             rounded += 1;
         } else {
@@ -139,8 +156,9 @@ pub fn draw(
     }
 }
 
-/// Draws the cursor over `area` as a rounded rectangle under its text (kitty image `id`).
-/// `false` when its color isn't known (a terminal color), for it to be drawn square.
+/// Draws the cursor over `area` as a rounded rectangle under its text, as the kitty
+/// `placement` of its image. `false` when its color isn't known (a terminal color), for it to
+/// be drawn square.
 fn draw_rounded(
     surface: &mut Surface,
     area: Rect,
@@ -148,7 +166,7 @@ fn draw_rounded(
     background: Option<Color>,
     roundness: u8,
     cell: (u16, u16),
-    id: u32,
+    placement: u32,
 ) -> bool {
     // the colors of the square cursor: the cursor's style over the cell
     let patched = surface[(area.x, area.y)].style().patch(style);
@@ -186,34 +204,36 @@ fn draw_rounded(
         }
     }
 
-    let (width_px, height_px) = (u32::from(cell.0) * u32::from(area.width), u32::from(cell.1));
-    // 4coder's radius: a share of the width of a character
-    let radius = f32::from(cell.0) * f32::from(roundness) / 100.0;
-    let png = png(fill, width_px, height_px, radius);
-    let placement = Placement {
-        cols: area.width,
-        rows: 1,
-        x: 0,
-        y: 0,
-        width_px,
-        height_px,
-    };
-    let encoded = kitty(&png, &placement, id);
+    let (width_px, height_px, radius) = image_size(cell, area.width, roundness);
+    let (id, transmit) = image(fill, width_px, height_px, radius);
     let key = {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        // the id too: another cursor's image at the same place is another image to delete
-        (fill, width_px, height_px, roundness, id).hash(&mut hasher);
+        (id, placement).hash(&mut hasher);
         hasher.finish()
     };
     surface.add_overlay(Overlay {
         area,
         key,
-        payload: Arc::from(encoded.payload.as_slice()),
-        cleanup: encoded.cleanup.as_deref().map(Arc::from),
+        payload: Arc::from(kitty_place(id, placement, area.width, 1)),
+        cleanup: Some(Arc::from(kitty_unplace(id, placement))),
         text_on_top: false,
         cells: 0,
+        // moved, not taken away and shown again: no flicker
+        slot: Some(u64::from(id) << 32 | u64::from(placement)),
+        resource: Some((u64::from(id), transmit)),
     });
     true
+}
+
+/// The size in pixels of the image of a cursor over `cols` cells of `cell` pixels, and the
+/// radius of its corners: 4coder's, a share of the width of a character.
+fn image_size(cell: (u16, u16), cols: u16, roundness: u8) -> (u32, u32, f32) {
+    let width = u32::from(cell.0) * OVERSAMPLE;
+    (
+        width * u32::from(cols),
+        u32::from(cell.1) * OVERSAMPLE,
+        width as f32 * f32::from(roundness) / 100.0,
+    )
 }
 
 /// Black or white, whichever stands out on `color`.
@@ -229,6 +249,27 @@ fn contrasting([r, g, b]: [u8; 3]) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_image_has_twice_the_cells_pixels() {
+        assert_eq!(image_size((10, 20), 1, 25), (20u32, 40u32, 5.0f32));
+        // a wide character's cursor: two cells, the radius of one character
+        assert_eq!(image_size((10, 20), 2, 50), (40u32, 40u32, 10.0f32));
+        assert_eq!(image_size((10, 20), 1, 0), (20u32, 40u32, 0.0f32));
+    }
+
+    #[test]
+    fn an_image_is_sent_under_an_id_of_its_own() {
+        let (id, transmit) = image([1, 2, 3], 20, 40, 5.0);
+        assert_eq!(id & KITTY_IMAGE_IDS, KITTY_IMAGE_IDS);
+        let transmit = String::from_utf8(transmit.to_vec()).unwrap();
+        let start = format!("\x1b_Ga=t,f=100,t=d,i={id},q=2,m=0;");
+        assert!(transmit.starts_with(&start), "{transmit}");
+        // the same image: the same id; another one: another id
+        assert_eq!(image([1, 2, 3], 20, 40, 5.0).0, id);
+        assert_ne!(image([1, 2, 4], 20, 40, 5.0).0, id);
+        assert_ne!(image([1, 2, 3], 20, 40, 6.0).0, id);
+    }
 
     #[test]
     fn contrasting_text_color() {

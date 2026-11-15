@@ -431,6 +431,8 @@ fn draw_image(
         // iTerm2's images take the place of the text of their cells (the stage markers)
         text_on_top: protocol == Protocol::Iterm2,
         cells: 0,
+        slot: None,
+        resource: None,
     }
 }
 

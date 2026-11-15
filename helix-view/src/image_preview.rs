@@ -337,6 +337,18 @@ pub fn rounded_rect(width: u32, height: u32, radius: f32, color: [u8; 3]) -> Rgb
 /// The Kitty graphics protocol: the PNG is sent in chunks and shown over the cells, below the text
 /// (`z=-1`), without moving the cursor.
 pub fn kitty(png: &[u8], placement: &Placement, id: u32) -> Encoded {
+    let control = format!(
+        "a=T,f=100,t=d,i={id},c={},r={},C=1,z=-1,q=2",
+        placement.cols, placement.rows
+    );
+    Encoded {
+        payload: kitty_chunks(&control, png),
+        cleanup: Some(format!("\x1b_Ga=d,d=I,i={id},q=2\x1b\\").into_bytes()),
+    }
+}
+
+/// The PNG in chunks after the `control` keys of the first one.
+fn kitty_chunks(control: &str, png: &[u8]) -> Vec<u8> {
     const CHUNK: usize = 4096;
     let data = BASE64.encode(png);
     let chunks: Vec<&str> = data
@@ -349,19 +361,30 @@ pub fn kitty(png: &[u8], placement: &Placement, id: u32) -> Encoded {
     for (i, chunk) in chunks.iter().enumerate() {
         let more = u8::from(i + 1 < chunks.len());
         if i == 0 {
-            payload.push_str(&format!(
-                "\x1b_Ga=T,f=100,t=d,i={id},c={},r={},C=1,z=-1,q=2,m={more};{chunk}\x1b\\",
-                placement.cols, placement.rows
-            ));
+            payload.push_str(&format!("\x1b_G{control},m={more};{chunk}\x1b\\"));
         } else {
             payload.push_str(&format!("\x1b_Gm={more};{chunk}\x1b\\"));
         }
     }
+    payload.into_bytes()
+}
 
-    Encoded {
-        payload: payload.into_bytes(),
-        cleanup: Some(format!("\x1b_Ga=d,d=I,i={id},q=2\x1b\\").into_bytes()),
-    }
+/// The Kitty graphics protocol: the PNG kept in the terminal as image `id`, not shown yet
+/// (see [`kitty_place`]). Sending another image with the same id replaces it, and takes its
+/// placements away.
+pub fn kitty_transmit(png: &[u8], id: u32) -> Vec<u8> {
+    kitty_chunks(&format!("a=t,f=100,t=d,i={id},q=2"), png)
+}
+
+/// Shows image `id` over `cols` x `rows` cells from the cursor, below the text (`z=-1`), as its
+/// placement `placement` (not 0). Another one with the same ids moves it, without flicker.
+pub fn kitty_place(id: u32, placement: u32, cols: u16, rows: u16) -> Vec<u8> {
+    format!("\x1b_Ga=p,i={id},p={placement},c={cols},r={rows},C=1,z=-1,q=2\x1b\\").into_bytes()
+}
+
+/// Takes away the placement `placement` of image `id`, keeping the image in the terminal.
+pub fn kitty_unplace(id: u32, placement: u32) -> Vec<u8> {
+    format!("\x1b_Ga=d,d=i,i={id},p={placement},q=2\x1b\\").into_bytes()
 }
 
 /// iTerm2's inline image.
@@ -481,6 +504,23 @@ fn push_runs(out: &mut String, bits: &[u8]) {
 mod tests {
     fn alpha(image: &RgbaImage, x: u32, y: u32) -> u8 {
         image.get_pixel(x, y).0[3]
+    }
+
+    #[test]
+    fn kitty_placements_of_an_image_sent_once() {
+        let transmit = String::from_utf8(kitty_transmit(&[1, 2, 3], 9)).unwrap();
+        assert_eq!(
+            transmit,
+            "\x1b_Ga=t,f=100,t=d,i=9,q=2,m=0;AQID\x1b\\".to_string()
+        );
+        let place = String::from_utf8(kitty_place(9, 2, 1, 1)).unwrap();
+        assert_eq!(
+            place,
+            "\x1b_Ga=p,i=9,p=2,c=1,r=1,C=1,z=-1,q=2\x1b\\".to_string()
+        );
+        // lowercase `i`: the placement goes, the image stays
+        let unplace = String::from_utf8(kitty_unplace(9, 2)).unwrap();
+        assert_eq!(unplace, "\x1b_Ga=d,d=i,i=9,p=2,q=2\x1b\\".to_string());
     }
 
     #[test]

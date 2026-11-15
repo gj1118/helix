@@ -190,6 +190,14 @@ pub struct Overlay {
     pub text_on_top: bool,
     /// The cells below it when it was added (set by [`Buffer::add_overlay`]).
     pub cells: u64,
+    /// Where the overlay is in the terminal's memory (a kitty image placement): an overlay of
+    /// the next frame in the same slot replaces it there, so it isn't taken away (`cleanup`)
+    /// first. A placement moved this way doesn't flicker.
+    pub slot: Option<u64>,
+    /// Bytes that `payload` needs in the terminal (the image data a kitty placement shows), by
+    /// an id: sent once before the first payload that needs them, and again only after the
+    /// screen was cleared.
+    pub resource: Option<(u64, std::sync::Arc<[u8]>)>,
 }
 
 impl PartialEq for Overlay {
