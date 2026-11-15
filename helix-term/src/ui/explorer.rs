@@ -1981,10 +1981,17 @@ impl Explorer {
             return self.on_filter_key(*key, cx);
         }
 
-        let mut result = self.on_nav_key(*key, cx);
+        // A typed uppercase letter arrives with SHIFT (`G` is `Char('G')` + SHIFT). Drop
+        // it, as the editor's `canonicalize_key` does, so `G`, `H`, `R` and `A` reach the
+        // tree and a plugin's action bound to an uppercase key matches.
+        let mut key = *key;
+        if let KeyCode::Char(_) = key.code {
+            key.modifiers.remove(KeyModifiers::SHIFT);
+        }
+        let mut result = self.on_nav_key(key, cx);
         // a key the tree leaves to the editor's keymap: a plugin's action first
         if matches!(result, EventResult::Ignored(_)) {
-            result = self.on_plugin_action(*key, cx);
+            result = self.on_plugin_action(key, cx);
         }
         // A count typed before one of the tree's own keys (`3d`) applies to nothing:
         // drop it, so it doesn't carry over to the next key. Digits and movement keys

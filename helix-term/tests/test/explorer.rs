@@ -531,6 +531,71 @@ async fn helix_motions_move_the_tree() -> anyhow::Result<()> {
 
 /// A count typed before one of the tree's own keys is dropped instead of carrying over to
 /// the next key; with the buffer focused, the motions move the buffer as usual.
+/// A terminal sends a typed uppercase letter with SHIFT set (`G` is `Char('G')` + SHIFT),
+/// unlike `parse_macro("G")`. The tree's uppercase keys work when typed that way.
+#[tokio::test(flavor = "multi_thread")]
+async fn uppercase_keys_typed_with_shift_reach_the_tree() -> anyhow::Result<()> {
+    use helix_view::input::{KeyCode, KeyEvent, KeyModifiers};
+
+    async fn typed(app: &mut Application, keys: &str) -> anyhow::Result<()> {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        for ch in keys.chars() {
+            let modifiers = if ch.is_ascii_uppercase() {
+                KeyModifiers::SHIFT
+            } else {
+                KeyModifiers::NONE
+            };
+            let key = KeyEvent {
+                code: KeyCode::Char(ch),
+                modifiers,
+            };
+            tx.send(Ok(termina::Event::Key(key.into())))?;
+        }
+        let mut stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
+        app.event_loop_until_idle(&mut stream).await;
+        Ok(())
+    }
+
+    let (_dir, root) = many_files()?;
+    std::fs::write(root.join(".hidden"), "h\n")?;
+    let mut app = helpers::AppBuilder::new().with_config(config("")).build()?;
+    open_explorer(&mut app, &root);
+    let rows = tree(&app).1;
+
+    typed(&mut app, "G").await?;
+    assert_row(&app, rows - 1);
+
+    typed(&mut app, "gg5G").await?;
+    assert_row(&app, 4);
+    assert!(app.editor.count.is_none(), "the count was used up");
+
+    let hidden = app.editor.explorer_show_hidden();
+    typed(&mut app, "H").await?;
+    assert_eq!(app.editor.explorer_show_hidden(), !hidden);
+    assert_eq!(tree(&app).1, if hidden { rows - 1 } else { rows + 1 });
+    typed(&mut app, "H").await?;
+    assert_eq!(app.editor.explorer_show_hidden(), hidden);
+    assert_eq!(tree(&app).1, rows);
+
+    typed(&mut app, "R").await?;
+    assert_eq!(
+        app.editor
+            .get_status()
+            .map(|(s, _)| s.to_string())
+            .as_deref(),
+        Some("Explorer refreshed")
+    );
+
+    // the buffer behind the tree did not move
+    let (view, doc) = helix_view::current_ref!(app.editor);
+    let cursor = doc
+        .selection(view.id)
+        .primary()
+        .cursor(doc.text().slice(..));
+    assert_eq!(cursor, 0);
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn counts_do_not_leak_and_the_buffer_keeps_its_motions() -> anyhow::Result<()> {
     let (_dir, root) = many_files()?;
