@@ -39,7 +39,8 @@ pub struct ConfigRaw {
 }
 
 /// The `[keys]` section: a key trie per mode (`normal`, `select`, `insert`) and the action
-/// tables of the UI components (`picker`, `menu`, `popup`, `prompt`), see
+/// tables of the UI components (`picker`, `menu`, `popup`, `prompt`, `explorer`,
+/// `explorer-filter`), see
 /// [`helix_view::component_keys`].
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct KeysRaw {
@@ -60,7 +61,7 @@ impl<'de> Deserialize<'de> for KeysRaw {
             fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
                 write!(
                     f,
-                    "a table with the keymaps of the modes and of the picker, menu, popup and prompt"
+                    "a table with the keymaps of the modes and of the picker, menu, popup, prompt, explorer and explorer-filter"
                 )
             }
 
@@ -75,7 +76,7 @@ impl<'de> Deserialize<'de> for KeysRaw {
                     } else {
                         let mode: Mode = name.parse().map_err(|_| {
                             serde::de::Error::custom(format!(
-                                "unknown key map `{name}`: expected `normal`, `select`, `insert`, `picker`, `menu`, `popup` or `prompt`"
+                                "unknown key map `{name}`: expected `normal`, `select`, `insert`, `picker`, `menu`, `popup`, `prompt`, `explorer` or `explorer-filter`"
                             ))
                         })?;
                         keys.modes.insert(mode, map.next_value()?);

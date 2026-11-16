@@ -1530,3 +1530,128 @@ async fn escape_unmarks_first() -> anyhow::Result<()> {
     assert!(!app.editor.explorer_panel.focused);
     Ok(())
 }
+
+/// A config with the explorer's keys of `tree` and of `filter` (key, action).
+fn remapped(tree: &[(&str, &str)], filter: &[(&str, &str)]) -> Config {
+    use helix_view::component_keys::Component;
+    let table = |pairs: &[(&str, &str)]| -> std::collections::HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(key, action)| (key.to_string(), action.to_string()))
+            .collect()
+    };
+    let mut config = config("");
+    config
+        .editor
+        .component_keys
+        .extend(Component::Explorer, &table(tree))
+        .unwrap();
+    config
+        .editor
+        .component_keys
+        .extend(Component::ExplorerFilter, &table(filter))
+        .unwrap();
+    config
+}
+
+/// `[keys.explorer]` moves the tree's own keys: a key bound to an action does it, `no_op` takes
+/// a key away (it reaches neither the tree nor the buffer), and the hints show the new keys.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_tree_keys_can_be_remapped() -> anyhow::Result<()> {
+    let (_dir, root) = four_files()?;
+    let config = remapped(
+        &[
+            ("space", "toggle_mark"),
+            ("m", "no_op"),
+            ("D", "delete"),
+            ("d", "no_op"),
+            ("C-f", "filter"),
+            ("/", "no_op"),
+        ],
+        &[],
+    );
+    let mut app = helpers::AppBuilder::new().with_config(config).build()?;
+    open_explorer(&mut app, &root);
+    goto(&mut app, "a.txt").await?;
+    {
+        let rows = panel_rows(&app);
+        assert!(
+            rows[1].contains("> C-f to search (*.rs)"),
+            "{}",
+            rows.join("\n")
+        );
+    }
+
+    send_keys(&mut app, "<space>").await?;
+    assert_eq!(marked(&app), vec!["a.txt".to_string()]);
+    assert_eq!(
+        app.editor
+            .get_status()
+            .map(|(s, _)| s.to_string())
+            .as_deref(),
+        Some("Explorer: marked (r rename, D delete, x cut, c copy, u unmark)")
+    );
+
+    // `m` and `d` are taken away: nothing marked, no confirmation, the buffer untouched
+    send_keys(&mut app, "md").await?;
+    assert_eq!(marked(&app), vec!["a.txt".to_string()]);
+    assert!(
+        !app.rendered_rows().join("\n").contains("Delete file"),
+        "d still deletes"
+    );
+    assert!(app.editor.explorer_panel.focused);
+    assert_eq!(app.editor.mode, helix_view::document::Mode::Normal);
+
+    send_keys(&mut app, "D").await?;
+    {
+        let text = app.rendered_rows().join("\n");
+        assert!(text.contains("Delete file a.txt?"), "{text}");
+    }
+    send_keys(&mut app, "y").await?;
+    wait_until(&mut app, "the delete", |_| !root.join("a.txt").exists()).await?;
+
+    // `/` is taken away, `C-f` starts a filter
+    send_keys(&mut app, "/").await?;
+    assert!(!panel_rows(&app)[1].contains("name or *.rs"));
+    send_keys(&mut app, "<C-f>").await?;
+    let rows = panel_rows(&app);
+    assert!(rows[1].contains("> name or *.rs"), "{}", rows.join("\n"));
+    Ok(())
+}
+
+/// `[keys.explorer-filter]` moves the filter box's keys.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_filter_box_keys_can_be_remapped() -> anyhow::Result<()> {
+    let (_dir, root) = four_files()?;
+    let config = remapped(
+        &[],
+        &[
+            ("C-j", "next_result"),
+            ("C-k", "prev_result"),
+            ("C-g", "clear"),
+            ("esc", "no_op"),
+        ],
+    );
+    let mut app = helpers::AppBuilder::new().with_config(config).build()?;
+    open_explorer(&mut app, &root);
+
+    send_keys(&mut app, "/txt").await?;
+    app.compositor
+        .find_id::<Explorer>(EXPLORER_ID)
+        .expect("the explorer")
+        .wait_for_scan(&app.editor);
+    send_keys(&mut app, "<C-j>").await?;
+    let first = explorer(&app).cursor_row();
+    send_keys(&mut app, "<C-j>").await?;
+    assert_eq!(explorer(&app).cursor_row(), first + 1, "C-j moves down");
+    send_keys(&mut app, "<C-k>").await?;
+    assert_eq!(explorer(&app).cursor_row(), first, "C-k moves up");
+
+    // Esc is taken away: still typing the filter
+    send_keys(&mut app, "<esc>").await?;
+    assert!(panel_rows(&app)[1].contains("> txt"));
+    send_keys(&mut app, "<C-g>").await?;
+    let rows = panel_rows(&app);
+    assert!(!rows[1].contains("> txt"), "{}", rows.join("\n"));
+    Ok(())
+}

@@ -221,6 +221,17 @@ tree's own (open, rename, delete, ...) take precedence over the keymap.
 |`q` | Close the panel |
 |`Esc` | Unmark everything first, then clear an active filter; otherwise hand keyboard focus back to the editor (panel keeps its tree; a floating panel closes instead) |
 
+Every key of the tree in this table can be changed in `[keys.explorer]`, and the keys of the
+filter box in `[keys.explorer-filter]`; see
+[Key remapping](book/src/remapping.md#keys-of-pickers-menus-popups-and-prompts) for the action names:
+
+```toml
+[keys.explorer]
+space = "toggle_mark"
+D = "delete"
+d = "no_op"
+```
+
 ### Working on several entries
 
 Mark the entries to work on, consecutive or not, then rename, delete, move or copy them

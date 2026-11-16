@@ -1,9 +1,10 @@
-//! Key bindings of the editor's UI components (pickers, menus, popups and prompts).
+//! Key bindings of the editor's UI components (pickers, menus, popups, prompts and the explorer).
 //!
 //! The keys of the editor itself are a [`KeyTrie`](../../helix_term/keymap/enum.KeyTrie.html)
 //! per mode. The components handle their keys themselves, so their bindings are not commands but
-//! *actions*: a table in `[keys.picker]` (and `menu`, `popup`, `prompt`) maps a key to the name
-//! of an action of that component, for example `"C-j" = "move_down"`.
+//! *actions*: a table in `[keys.picker]` (and `menu`, `popup`, `prompt`, `explorer`,
+//! `explorer-filter`) maps a key to the name of an action of that component, for example
+//! `"C-j" = "move_down"`.
 //!
 //! An action stands for the key the component has always handled it with. A pressed key that has
 //! an entry in the user's table is replaced by that key before the component looks at it, so a
@@ -22,17 +23,23 @@ pub enum Component {
     Menu,
     Popup,
     Prompt,
+    /// The explorer's tree (its own keys; moving up and down goes through the normal keymap).
+    Explorer,
+    /// The explorer's filter box, while it has the keyboard.
+    ExplorerFilter,
 }
 
 /// The name of the action that does nothing, to take a key away from a component.
 pub const NO_OP: &str = "no_op";
 
 impl Component {
-    pub const ALL: [Component; 4] = [
+    pub const ALL: [Component; 6] = [
         Component::Picker,
         Component::Menu,
         Component::Popup,
         Component::Prompt,
+        Component::Explorer,
+        Component::ExplorerFilter,
     ];
 
     /// The name of the table in the `[keys]` section.
@@ -42,6 +49,8 @@ impl Component {
             Component::Menu => "menu",
             Component::Popup => "popup",
             Component::Prompt => "prompt",
+            Component::Explorer => "explorer",
+            Component::ExplorerFilter => "explorer-filter",
         }
     }
 
@@ -106,6 +115,46 @@ impl Component {
                 ("insert_word_under_cursor", "C-s"),
                 ("insert_register", "C-r"),
                 ("exit_selection", "C-q"),
+            ],
+            Component::Explorer => &[
+                ("open", "l"),
+                ("open_vsplit", "v"),
+                ("open_hsplit", "s"),
+                ("collapse", "h"),
+                ("parent_folder", "-"),
+                ("first_row", "home"),
+                ("last_row", "end"),
+                ("reveal_buffer", "."),
+                ("filter", "/"),
+                ("refresh", "R"),
+                ("toggle_hidden", "H"),
+                ("create", "a"),
+                ("create_folder", "A"),
+                ("rename", "r"),
+                ("delete", "d"),
+                ("cut", "x"),
+                ("copy", "c"),
+                ("paste", "p"),
+                ("toggle_mark", "m"),
+                ("mark_range", "M"),
+                ("unmark_all", "u"),
+                ("close", "q"),
+                ("leave", "esc"),
+            ],
+            Component::ExplorerFilter => &[
+                ("accept", "ret"),
+                ("next_result", "down"),
+                ("prev_result", "up"),
+                ("browse_results", "tab"),
+                ("clear", "esc"),
+                ("move_char_back", "left"),
+                ("move_char_forward", "right"),
+                ("move_start", "home"),
+                ("move_end", "end"),
+                ("delete_char_back", "backspace"),
+                ("delete_char_forward", "del"),
+                ("delete_word_back", "C-w"),
+                ("kill_to_start", "C-u"),
             ],
         }
     }
@@ -177,6 +226,28 @@ impl ComponentKeys {
         }
         self.tables.entry(component).or_default().extend(parsed);
         Ok(())
+    }
+
+    /// The key to show for `action` of `component`: the first (in name order) of the keys the
+    /// user bound to it, else its default key, unless that key was given to something else.
+    pub fn key_for(&self, component: Component, action: &str) -> Option<KeyEvent> {
+        let (_, default) = component
+            .actions()
+            .iter()
+            .find(|(name, _)| *name == action)?;
+        let default = KeyEvent::from_str(default).ok()?;
+        let table = self.tables.get(&component);
+        let bound = table.into_iter().flatten().filter_map(|(key, binding)| {
+            (*binding == Binding::Key(default) && *key != default).then_some(*key)
+        });
+        if let Some(key) = bound.min_by_key(|key| key.to_string()) {
+            return Some(key);
+        }
+        match table.and_then(|table| table.get(&default)) {
+            None => Some(default),
+            Some(Binding::Key(key)) if *key == default => Some(default),
+            Some(_) => None,
+        }
     }
 
     pub fn translate(&self, component: Component, key: KeyEvent) -> Translated {
@@ -256,6 +327,61 @@ mod tests {
             .unwrap_err();
         assert!(err.contains("invalid key"), "{err}");
         assert!(keys.is_empty());
+    }
+
+    #[test]
+    fn the_explorer_tables_have_their_own_names_and_actions() {
+        assert_eq!(Component::from_name("explorer"), Some(Component::Explorer));
+        assert_eq!(
+            Component::from_name("explorer-filter"),
+            Some(Component::ExplorerFilter)
+        );
+        let mut keys = ComponentKeys::default();
+        keys.extend(
+            Component::Explorer,
+            &table(&[("space", "toggle_mark"), ("D", "delete"), ("m", "no_op")]),
+        )
+        .unwrap();
+        keys.extend(Component::ExplorerFilter, &table(&[("C-j", "next_result")]))
+            .unwrap();
+        assert_eq!(
+            keys.translate(Component::Explorer, key("space")),
+            Translated::Key(key("m"))
+        );
+        assert_eq!(
+            keys.translate(Component::Explorer, key("D")),
+            Translated::Key(key("d"))
+        );
+        assert_eq!(
+            keys.translate(Component::Explorer, key("m")),
+            Translated::Disabled
+        );
+        assert_eq!(
+            keys.translate(Component::ExplorerFilter, key("C-j")),
+            Translated::Key(key("down"))
+        );
+        // the tree's table is not the filter box's
+        assert_eq!(
+            keys.translate(Component::ExplorerFilter, key("space")),
+            Translated::Unchanged
+        );
+        // what to show for an action: the user's key, else the default one, unless taken away
+        assert_eq!(keys.key_for(Component::Explorer, "delete"), Some(key("D")));
+        assert_eq!(keys.key_for(Component::Explorer, "rename"), Some(key("r")));
+        assert_eq!(
+            keys.key_for(Component::Explorer, "toggle_mark"),
+            Some(key("space"))
+        );
+        keys.extend(Component::Explorer, &table(&[("u", "no_op")]))
+            .unwrap();
+        assert_eq!(keys.key_for(Component::Explorer, "unmark_all"), None);
+        assert_eq!(keys.key_for(Component::Explorer, "jump_around"), None);
+        // an action of the filter box is not one of the tree
+        let err = keys
+            .extend(Component::Explorer, &table(&[("C-j", "next_result")]))
+            .unwrap_err();
+        assert!(err.contains("keys.explorer: unknown action"), "{err}");
+        assert!(err.contains("toggle_mark"), "{err}");
     }
 
     #[test]

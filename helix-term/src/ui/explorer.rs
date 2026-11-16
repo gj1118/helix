@@ -27,6 +27,7 @@ use std::path::{Component as PathComponent, Path, PathBuf};
 use helix_core::unicode::segmentation::UnicodeSegmentation;
 use helix_core::unicode::width::UnicodeWidthStr;
 use helix_core::Position;
+use helix_view::component_keys::Component as ComponentKeys;
 use helix_view::graphics::CursorKind;
 use helix_view::icons::ICONS;
 use helix_view::input::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -117,7 +118,8 @@ const FILTER_PREFIX: &str = "> ";
 const FILTER_BOX_TITLE: &str = "Explorer";
 /// What the empty filter box says, the longest that fits: how to start a filter, and that
 /// wildcards work too.
-const FILTER_PLACEHOLDERS: &[&str] = &["/ to search (*.rs)", "/ search, *.rs", "/ search"];
+/// `{}` is the key of the `filter` action (`/` unless remapped in `[keys.explorer]`).
+const FILTER_PLACEHOLDERS: &[&str] = &["{} to search (*.rs)", "{} search, *.rs", "{} search"];
 /// The same while typing into the empty box.
 const FILTER_EDITING_PLACEHOLDERS: &[&str] = &["name or *.rs", "*.rs"];
 /// The panel height from which the filter is a bordered box (three rows) rather than a line.
@@ -695,7 +697,21 @@ impl Explorer {
     /// the count is in the header.
     fn report_marks(&self, editor: &mut Editor, before: usize) {
         if before == 0 && !self.marks.is_empty() {
-            editor.set_status("Explorer: marked (r rename, d delete, x cut, c copy, u unmark)");
+            let keys = &editor.config().component_keys;
+            let hints: Vec<String> = [
+                ("rename", "rename"),
+                ("delete", "delete"),
+                ("cut", "cut"),
+                ("copy", "copy"),
+                ("unmark_all", "unmark"),
+            ]
+            .into_iter()
+            .filter_map(|(action, word)| {
+                let key = keys.key_for(ComponentKeys::Explorer, action)?;
+                Some(format!("{key} {word}"))
+            })
+            .collect();
+            editor.set_status(format!("Explorer: marked ({})", hints.join(", ")));
         }
     }
 
@@ -908,11 +924,19 @@ impl Explorer {
                 avail,
                 theme.get("ui.text"),
             );
-        } else if let Some(placeholder) = filter_placeholder(self.filter_editing, avail) {
+        } else if let Some(placeholder) = filter_placeholder(
+            self.filter_editing,
+            avail,
+            config
+                .component_keys
+                .key_for(ComponentKeys::Explorer, "filter")
+                .map(|key| key.to_string())
+                .as_deref(),
+        ) {
             surface.set_string(
                 input.x + prefix_width,
                 input.y,
-                placeholder,
+                &placeholder,
                 theme.get("ui.virtual"),
             );
         }
@@ -2416,8 +2440,14 @@ impl Explorer {
             return EventResult::Ignored(None);
         }
 
+        // The user's `[keys.explorer-filter]` and `[keys.explorer]` tables: a key bound to an
+        // action becomes the key the tree handles that action with; `no_op` takes it away.
         if self.filter_editing {
-            return self.on_filter_key(*key, cx);
+            let Some(key) = super::component_key(cx.editor, ComponentKeys::ExplorerFilter, *key)
+            else {
+                return EventResult::Consumed(None);
+            };
+            return self.on_filter_key(key, cx);
         }
 
         // A typed uppercase letter arrives with SHIFT (`G` is `Char('G')` + SHIFT). Drop
@@ -2427,7 +2457,11 @@ impl Explorer {
         if let KeyCode::Char(_) = key.code {
             key.modifiers.remove(KeyModifiers::SHIFT);
         }
-        let mut result = self.on_nav_key(key, cx);
+        let Some(tree_key) = super::component_key(cx.editor, ComponentKeys::Explorer, key) else {
+            cx.editor.count = None;
+            return EventResult::Consumed(None);
+        };
+        let mut result = self.on_nav_key(tree_key, cx);
         // a key the tree leaves to the editor's keymap: a plugin's action first
         if matches!(result, EventResult::Ignored(_)) {
             result = self.on_plugin_action(key, cx);
@@ -3175,15 +3209,21 @@ fn truncate_spans(spans: Vec<Span>, width: usize) -> Vec<Span> {
 /// The folder the panel shows in its top row: relative to the home folder when it is in it, and
 /// cut at the start (`…/src/ui`) when it does not fit `width` columns.
 /// The hint the empty filter box shows in `width` columns, if one fits.
-fn filter_placeholder(editing: bool, width: usize) -> Option<&'static str> {
-    let placeholders = if editing {
-        FILTER_EDITING_PLACEHOLDERS
-    } else {
-        FILTER_PLACEHOLDERS
+/// The hint in the empty filter box that fits in `width`. `key` is the key that starts a
+/// filter, `None` when the user took it away (the hint then only shows the wildcards).
+fn filter_placeholder(editing: bool, width: usize, key: Option<&str>) -> Option<String> {
+    if editing {
+        return FILTER_EDITING_PLACEHOLDERS
+            .iter()
+            .find(|placeholder| placeholder.width() <= width)
+            .map(|placeholder| placeholder.to_string());
+    }
+    let Some(key) = key else {
+        return Some("*.rs".to_string()).filter(|hint| hint.width() <= width);
     };
-    placeholders
+    FILTER_PLACEHOLDERS
         .iter()
-        .copied()
+        .map(|placeholder| placeholder.replace("{}", key))
         .find(|placeholder| placeholder.width() <= width)
 }
 
@@ -3270,13 +3310,30 @@ mod tests {
     #[test]
     fn the_filter_placeholder_is_the_longest_that_fits() {
         // The default panel (30 columns) has 18 for it next to a two-digit count.
-        assert_eq!(filter_placeholder(false, 18), Some("/ to search (*.rs)"));
-        assert_eq!(filter_placeholder(false, 17), Some("/ search, *.rs"));
-        assert_eq!(filter_placeholder(false, 9), Some("/ search"));
-        assert_eq!(filter_placeholder(false, 7), None);
-        assert_eq!(filter_placeholder(true, 18), Some("name or *.rs"));
-        assert_eq!(filter_placeholder(true, 5), Some("*.rs"));
-        assert_eq!(filter_placeholder(true, 3), None);
+        let hint = |editing, width, key| filter_placeholder(editing, width, key);
+        assert_eq!(
+            hint(false, 18, Some("/")),
+            Some("/ to search (*.rs)".to_string())
+        );
+        assert_eq!(
+            hint(false, 17, Some("/")),
+            Some("/ search, *.rs".to_string())
+        );
+        assert_eq!(hint(false, 9, Some("/")), Some("/ search".to_string()));
+        assert_eq!(hint(false, 7, Some("/")), None);
+        assert_eq!(hint(true, 18, Some("/")), Some("name or *.rs".to_string()));
+        assert_eq!(hint(true, 5, Some("/")), Some("*.rs".to_string()));
+        assert_eq!(hint(true, 3, Some("/")), None);
+        // the user's key for `filter`, or none
+        assert_eq!(
+            hint(false, 20, Some("C-f")),
+            Some("C-f to search (*.rs)".to_string())
+        );
+        assert_eq!(
+            hint(false, 19, Some("C-f")),
+            Some("C-f search, *.rs".to_string())
+        );
+        assert_eq!(hint(false, 20, None), Some("*.rs".to_string()));
     }
 
     #[test]

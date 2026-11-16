@@ -72,10 +72,12 @@ t = ":run-shell-command cargo test"
 
 ## Keys of pickers, menus, popups and prompts
 
-The pickers (`Space f`, `Space /`, ...), the completion menu, popups (hover, signature help, ...)
-and the prompts (the `:` command line, the search prompt, ...) handle their keys themselves.
-Their keys are configured in the tables `[keys.picker]`, `[keys.menu]`, `[keys.popup]` and
-`[keys.prompt]`. A table maps a key to the name of an *action* of that component:
+The pickers (`Space f`, `Space /`, ...), the completion menu, popups (hover, signature help, ...),
+the prompts (the `:` command line, the search prompt, ...) and the
+[explorer](./editor.md#editorexplorer-section) handle their keys themselves.
+Their keys are configured in the tables `[keys.picker]`, `[keys.menu]`, `[keys.popup]`,
+`[keys.prompt]`, `[keys.explorer]` (the tree) and `[keys.explorer-filter]` (the explorer's filter
+box, while you type in it). A table maps a key to the name of an *action* of that component:
 
 ```toml
 [keys.picker]
@@ -87,6 +89,16 @@ C-t = "no_op"
 
 [keys.prompt]
 C-o = "delete_word_back"
+
+[keys.explorer]
+space = "toggle_mark"   # mark with Space as well as m
+D = "delete"
+d = "no_op"             # d no longer deletes
+C-f = "filter"
+
+[keys.explorer-filter]
+C-j = "next_result"
+C-k = "prev_result"
 ```
 
 The keys of the default bindings stay bound unless you bind them to another action or to
@@ -102,9 +114,18 @@ the prompt at the top of a picker, but not to the picker's own keys.
 | `picker`  | `move_up` (`Up`), `move_down` (`Down`), `half_page_up` (`C-u`), `half_page_down` (`C-d`), `page_up` (`PageUp`), `page_down` (`PageDown`), `to_start` (`Home`), `to_end` (`End`), `select` (`Enter`), `select_in_background` (`A-Enter`), `select_horizontal` (`C-s`), `select_vertical` (`C-v`), `toggle_preview` (`C-t`), `copy_to_quicklist` (`C-q`), `scroll_preview_up` (`A-k`), `scroll_preview_down` (`A-j`), `close` (`Esc`) |
 | `menu`    | `move_up` (`Up`), `move_down` (`Down`), `half_page_up` (`C-u`), `half_page_down` (`C-d`), `select` (`Enter`), `abort` (`Esc`) |
 | `popup`   | `scroll_half_page_up` (`PageUp`), `scroll_half_page_down` (`PageDown`), `close` (`Esc`) |
+| `explorer` | `open` (`l`, also `Right` and `Enter`), `open_vsplit` (`v`), `open_hsplit` (`s`), `collapse` (`h`, also `Left`), `parent_folder` (`-`), `first_row` (`Home`), `last_row` (`End`, also `G`), `reveal_buffer` (`.`), `filter` (`/`), `refresh` (`R`), `toggle_hidden` (`H`), `create` (`a`), `create_folder` (`A`), `rename` (`r`), `delete` (`d`), `cut` (`x`), `copy` (`c`), `paste` (`p`), `toggle_mark` (`m`), `mark_range` (`M`), `unmark_all` (`u`), `close` (`q`), `leave` (`Esc`) |
+| `explorer-filter` | `accept` (`Enter`), `next_result` (`Down`), `prev_result` (`Up`), `browse_results` (`Tab`), `clear` (`Esc`), `move_char_back` (`Left`), `move_char_forward` (`Right`), `move_start` (`Home`), `move_end` (`End`), `delete_char_back` (`Backspace`), `delete_char_forward` (`Delete`), `delete_word_back` (`C-w`), `kill_to_start` (`C-u`) |
 | `prompt`  | `abort` (`Esc`), `submit` (`Enter`), `move_char_back` (`Left`), `move_char_forward` (`Right`), `move_word_back` (`A-b`), `move_word_forward` (`A-f`), `move_start` (`Home`), `move_end` (`End`), `delete_char_back` (`Backspace`), `delete_char_forward` (`Delete`), `delete_word_back` (`C-w`), `delete_word_forward` (`A-d`), `kill_to_start` (`C-u`), `kill_to_end` (`C-k`), `history_prev` (`Up`), `history_next` (`Down`), `complete_next` (`Tab`), `complete_prev` (`S-Tab`), `insert_word_under_cursor` (`C-s`), `insert_register` (`C-r`), `exit_selection` (`C-q`) |
 
-In all four, `no_op` is also an action. Keys are written as described [below](#special-keys-and-modifiers).
+In all of them, `no_op` is also an action.
+
+Moving up and down the explorer's tree (`j`/`k`, `gg`, `C-d`, ...) is not in `[keys.explorer]`:
+it uses your `[keys.normal]` keymap, so remapping those motions there moves the tree too. Keys
+that `[keys.explorer]` does not take go on to the normal keymap (for example `C-h` /
+`C-l`, `explorer_focus` / `explorer_blur`). A key taken away with `no_op` does nothing while the
+tree has the keyboard: it doesn't go on to the buffer either. The status message after the
+first mark and the hint in the empty filter box show your keys. Keys are written as described [below](#special-keys-and-modifiers).
 
 ## Special keys and modifiers
 

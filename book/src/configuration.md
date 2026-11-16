@@ -41,7 +41,7 @@ Its settings will be merged with the configuration directory and the built-in co
 | `theme` | The [theme](./themes.md) |
 | `[editor]` | Editor settings, see [Editor](./editor.md) |
 | `[keys.normal]`, `[keys.insert]`, `[keys.select]` | Key bindings, see [Key remapping](./remapping.md) |
-| `[keys.picker]`, `[keys.menu]`, `[keys.popup]`, `[keys.prompt]` | Keys of pickers, menus, popups and prompts, see [Key remapping](./remapping.md#keys-of-pickers-menus-popups-and-prompts) |
+| `[keys.picker]`, `[keys.menu]`, `[keys.popup]`, `[keys.prompt]`, `[keys.explorer]`, `[keys.explorer-filter]` | Keys of pickers, menus, popups, prompts and the explorer, see [Key remapping](./remapping.md#keys-of-pickers-menus-popups-and-prompts) |
 | `[commands]` | Your own `:` commands, see [Custom commands](./custom-commands.md) |
 | `[icons]` | Icons of files, symbols, diagnostics, git and breakpoints, see [below](#icons) |
 | `[plugins]` | Lua plugins, see [Plugins](./plugins.md). Read from the global `config.toml` only |
