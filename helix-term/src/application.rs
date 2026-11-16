@@ -699,6 +699,37 @@ impl Application {
         }
     }
 
+    /// Runs the job callbacks that are waiting, a bounded number of them.
+    ///
+    /// Input is handled before anything else (the `biased` select of the event loop), so
+    /// during a long burst of it (text pasted as keys, a held key over a slow frame, mouse
+    /// movement) the callbacks were never run. Their queue filled up, the handlers' tasks
+    /// blocked on it (`dispatch_blocking`) and stopped reading their own queues, and every
+    /// key then waited on those in turn (`send_blocking`): 10 ms and more per event, with
+    /// callbacks dropped. Run before each input event, they can't pile up, and they run in
+    /// the order they would with keys typed one at a time: a callback queued before a key
+    /// (closing the prompts when a view loses focus, say) doesn't act on what that key opens.
+    fn drain_job_callbacks(&mut self) {
+        const MAX_PER_EVENT: usize = 64;
+        let mut ran = false;
+        for _ in 0..MAX_PER_EVENT {
+            let Ok(callback) = self.jobs.callbacks.try_recv() else {
+                break;
+            };
+            if let Some(job) = self.jobs.handle_callback(
+                &mut self.editor,
+                &mut self.compositor,
+                Ok(Some(callback)),
+            ) {
+                self.jobs.add(job);
+            }
+            ran = true;
+        }
+        if ran {
+            helix_event::request_redraw();
+        }
+    }
+
     pub async fn event_loop_until_idle<S>(&mut self, input_stream: &mut S) -> bool
     where
         S: Stream<Item = std::io::Result<TerminalEvent>> + Unpin,
@@ -719,6 +750,9 @@ impl Application {
                     };
                 }
                 Some(event) = input_stream.next() => {
+                    // What was handed to the editor before this event came is done first,
+                    // as it is when the keys come one at a time.
+                    self.drain_job_callbacks();
                     self.handle_terminal_events(event).await;
                 }
                 Some(callback) = self.jobs.callbacks.recv() => {

@@ -43,6 +43,9 @@ pub type DocFn = Box<dyn Fn(&str) -> Option<Cow<str>>>;
 /// longer than this.
 const DEFERRED_COMPLETION_TIMEOUT: Duration = Duration::from_millis(50);
 
+/// The longest line (in bytes) highlighted as its language, see `Prompt::highlight_language`.
+const MAX_HIGHLIGHTED_LINE: usize = 4096;
+
 pub struct Prompt {
     prompt: Cow<'static, str>,
     line: String,
@@ -656,13 +659,23 @@ impl Prompt {
         col
     }
 
+    /// The language the line is highlighted as (`with_language`), `None` for a line too long
+    /// for it: the line is parsed for every frame, and megabytes pasted into the prompt (a
+    /// register, a bracketed paste) took all of the editor's time. Such a line is shown
+    /// plain.
+    fn highlight_language(&self) -> Option<&(&'static str, Arc<ArcSwap<syntax::Loader>>)> {
+        self.language
+            .as_ref()
+            .filter(|_| self.line.len() <= MAX_HIGHLIGHTED_LINE)
+    }
+
     /// The style of each byte of the line, highlighted as its language (`with_language`);
     /// `None` without a language, or when the highlighted text is not the line as it is.
     pub(crate) fn highlighted_line_styles(
         &self,
         editor: &Editor,
     ) -> Option<Vec<helix_view::graphics::Style>> {
-        let (language, loader) = self.language.as_ref()?;
+        let (language, loader) = self.highlight_language()?;
         let text: tui::text::Text = crate::ui::markdown::highlighted_code_block(
             &self.line,
             language,
@@ -886,7 +899,7 @@ impl Prompt {
                     suggestion_color,
                 );
             }
-        } else if let Some((language, loader)) = self.language.as_ref() {
+        } else if let Some((language, loader)) = self.highlight_language() {
             let mut text: ui::text::Text = crate::ui::markdown::highlighted_code_block(
                 &self.line,
                 language,
@@ -1138,6 +1151,23 @@ mod tests {
         let mut prompt = Prompt::new("".into(), None, ui::completers::none, |_, _, _| {});
         prompt.set_line_unchecked(line.to_owned());
         prompt
+    }
+
+    #[test]
+    fn a_very_long_line_is_not_highlighted() {
+        let loader = Arc::new(ArcSwap::from_pointee(
+            helix_core::config::default_lang_loader(),
+        ));
+        let mut prompt = prompt("fn x() {}").with_language("rust", loader);
+        assert!(prompt.highlight_language().is_some());
+        prompt.set_line_unchecked("x".repeat(MAX_HIGHLIGHTED_LINE));
+        assert!(prompt.highlight_language().is_some());
+        // megabytes pasted in: parsed for every frame otherwise
+        prompt.set_line_unchecked("x".repeat(MAX_HIGHLIGHTED_LINE + 1));
+        assert!(prompt.highlight_language().is_none());
+        prompt.set_line_unchecked("(".repeat(4 << 20));
+        assert!(prompt.highlight_language().is_none());
+        assert_eq!(prompt.line().len(), 4usize << 20);
     }
 
     #[test]
