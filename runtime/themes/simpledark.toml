@@ -4,21 +4,21 @@
 # Syntax highlighting
 "attribute" = "gray-7"
 "type" = { fg = "light-1" }
-"type.builtin" = { fg = "light-1", modifiers = ["italic"] }
-"type.parameter" = { fg = "light-0", modifiers = ["italic"] }
+"type.builtin" = { fg = "light-1" }
+"type.parameter" = { fg = "light-0"}
 "type.enum.variant" = "light-0"
 "constructor" = "light-1"
 "constant" = "gray-9"
-"constant.builtin" = { fg = "gray-9", modifiers = ["italic"] }
+"constant.builtin" = { fg = "gray-9"}
 "constant.character.escape" = "light-2"
 "constant.numeric" = "gray-8"
 "string" = "gray-6"
 "string.regexp" = "gray-7"
 "string.special" = "gray-8"
-"comment" = { fg = "gray-8", modifiers = ["italic"] }
-"comment.block.documentation" = { fg = "gray-6", modifiers = ["italic"] }
+"comment" = { fg = "gray-8"}
+"comment.block.documentation" = { fg = "gray-6"}
 "variable" = "fg"
-"variable.builtin" = { fg = "light-0", modifiers = ["italic"] }
+"variable.builtin" = { fg = "light-0"}
 "variable.parameter" = "light-0"
 "variable.other.member" = "gray-9"
 "label" = "gray-7"
@@ -31,7 +31,7 @@
 "keyword.storage.modifier" = "light-2"
 "operator" = "gray-7"
 "function" = "light-2"
-"function.builtin" = { fg = "light-1", modifiers = ["italic"] }
+"function.builtin" = { fg = "light-1"}
 "function.macro" = { fg = "light-0", modifiers = ["bold"] }
 "tag" = "light-1"
 "tag.attribute" = "gray-7"
@@ -49,7 +49,7 @@
 "markup.link.url" = { fg = "gray-7", underline = { style = "line" } }
 "markup.link.text" = "light-2"
 "markup.link.label" = "light-1"
-"markup.quote" = { fg = "gray-6", modifiers = ["italic"] }
+"markup.quote" = { fg = "gray-6"}
 "markup.raw" = "gray-8"
 
 "diff.plus" = "gray-8"
@@ -66,7 +66,7 @@
 "ui.text.inactive" = "gray-3"
 "ui.text.info" = "fg"
 "ui.text.directory" = "light-2"
-"ui.text.symlink" = { fg = "gray-7", modifiers = ["italic"] }
+"ui.text.symlink" = { fg = "gray-7"}
 
 "ui.cursor" = { fg = "gray-3", bg = "light-1" }
 "ui.cursor.primary" = { fg = "bg", bg = "light-1" }
@@ -123,11 +123,11 @@
 "ui.virtual.whitespace" = "bg-3"
 "ui.virtual.indent-guide" = "bg-3"
 "ui.virtual.wrap" = "gray-4"
-"ui.virtual.inlay-hint" = { fg = "gray-2", modifiers = ["italic"] }
-"ui.virtual.inline-value" = { fg = "gray-4", modifiers = ["italic"] }
-"ui.virtual.code-lens" = { fg = "gray-3", modifiers = ["italic"] }
-"ui.virtual.inline-blame" = { fg = "inline-blame", modifiers = ["italic"] }
-"ui.virtual.inline-completion" = { fg = "gray-2", modifiers = ["italic"] }
+"ui.virtual.inlay-hint" = { fg = "gray-2"}
+"ui.virtual.inline-value" = { fg = "gray-4"}
+"ui.virtual.code-lens" = { fg = "gray-3"}
+"ui.virtual.inline-blame" = { fg = "inline-blame"}
+"ui.virtual.inline-completion" = { fg = "gray-2"}
 "ui.virtual.fold-decoration" = { fg = "gray-4", bg = "bg-2" }
 "ui.virtual.jump-label" = { fg = "white", bg = "bg-3", modifiers = ["bold"] }
 
@@ -179,7 +179,7 @@
 "hint.stub" = { fg = "gray-4", modifiers = ["bold"] }
 "hint.tip" = { fg = "gray-4", modifiers = ["bold"] }
 
-"tabstop" = { bg = "bg-3", modifiers = ["italic"] }
+"tabstop" = { bg = "bg-3"}
 
 rainbow = ["white", "gray-8", "gray-6", "light-1", "gray-7", "gray-5"]
 
