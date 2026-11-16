@@ -40,7 +40,8 @@ directory-open = " "  # expanded folder icon (default: open-folder glyph, or 
 7. Lua plugins — event handlers, commands, buffer edits, annotations, overlay panels, prompts and pickers (see [Plugins](#plugins) below)
 8. Live-updating pickers — the file picker, global search, changed files, buffers, diagnostics and quicklist pickers follow changes while open; big previews load in the background
 9. EditorConfig — `.editorconfig` files applied when a file opens and again as soon as one is saved (see [EditorConfig](#editorconfig) below)
-10. Rounded cursors, like 4coder's `cursor_roundness` — `cursor-roundness = 0..50` in `[editor]` (the corner radius as a percentage of the cursor's width; `0`, the default, keeps the square cursor). Block cursors are drawn as images with the kitty graphics protocol (kitty, Ghostty) in the theme's `ui.cursor` colors; in other terminals, with bar or underline cursors, or with cursor colors from the terminal's palette rather than hex, they stay square
+10. Rounded cursors, like 4coder's `cursor_roundness` — off by default (see [Rounded Cursors](#rounded-cursors) below)
+11. Popups at the cursor (hover, signature help) stay inside their split and take a share of its width (see [Popup Width](#popup-width) below)
 
 
    
@@ -98,6 +99,14 @@ directly, `Esc` hands focus back to the editor while keeping the tree open, and
 `q` hides the panel entirely. When the panel floats, anything that hands focus
 back into an opened buffer (`l`/Enter, a split with `v`/`s`) — or plain `Esc` —
 also closes the float, since it would otherwise cover the editor.
+
+`hx .` (or `hx some/dir`) opens a file picker on the directory, as in Helix. To open the
+explorer on it instead, with the keyboard in the tree, set:
+
+```toml
+[editor.explorer]
+open-on-directory = true
+```
 
 The panel is pinned to one edge of the terminal (the editor views resize around
 it), or it can float over the editor. Opening it does not scan the whole
@@ -1143,6 +1152,47 @@ signature-help-position = "above"
 signature-help-position = "below"
 
 ```
+
+## Popup Width
+
+Hover and signature help popups open at the cursor. They stay inside the split the cursor is
+in, and take at most a share of its width; their text wraps to it:
+
+```toml
+[editor]
+# the most columns a popup takes, as a percentage of its window's width (10 to 100)
+popup-max-width-percent = 60   # the default
+```
+
+A popup always gets at least 40 columns (in a split narrower than that it may cover the
+splits beside it, to stay readable) and never more than 120. Menus (completion, code
+actions) are as wide as their entries. Try values with `:set popup-max-width-percent 45`.
+Clicking another split closes the signature help.
+
+## Rounded Cursors
+
+Block cursors with rounded corners, like 4coder's `cursor_roundness`:
+
+```toml
+[editor]
+# the corner radius, as a percentage of the cursor's width: 0 (square, the default) to 50
+# (the left and right ends are half circles)
+cursor-roundness = 25
+```
+
+- `0` turns it off: the terminal draws its own cursor, as before. Values below 0 count as 0,
+  above 50 as 50.
+- A terminal can only draw a square cursor, so Helix draws a rounded rectangle under the
+  character instead, as an image with the kitty graphics protocol (kitty, Ghostty, WezTerm
+  with `enable_kitty_graphics = true`). The image is sent once and moved with the
+  cursor, and freed when Helix exits, is suspended or clears the screen.
+- It uses the colors of the `ui.cursor` scopes, which must be hex colors (`"#ff8800"`): a
+  palette color such as `red` can't be drawn in an image, and the cursor stays square.
+- Bar and underline cursors (`[editor.cursor-shape]`) are not rounded.
+- Each cursor of a multiple selection is rounded; with more than 128 cursors on screen they
+  are all drawn square.
+- Elsewhere (tmux, Alacritty, Windows Terminal, terminals without the protocol) the cursor
+  stays square.
 
 ## Auto reload buffers on focus / changes
 Implements automatic reloading of buffers when their corresponding files are changed on disk. This behavior can be configured to trigger when the editor window gains focus, at a periodic interval, or both.
