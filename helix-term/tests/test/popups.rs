@@ -201,3 +201,138 @@ async fn prompt_cursor_follows_its_label_with_the_popup_command_line() -> anyhow
     }
     Ok(())
 }
+
+/// A signature help with documentation wider than a view.
+fn signature_help(
+    editor: &helix_view::Editor,
+) -> helix_term::ui::Popup<helix_term::ui::lsp::signature_help::SignatureHelp> {
+    use helix_term::ui::lsp::signature_help::{Signature, SignatureHelp};
+    use helix_term::ui::Popup;
+    let contents = SignatureHelp::new(
+        "go".to_string(),
+        editor.syn_loader.clone(),
+        0,
+        None,
+        vec![Signature {
+            signature: "Println(a ...any) (n int, err error)".to_string(),
+            signature_doc: Some("Println formats using the default formats. ".repeat(12)),
+            active_param_range: None,
+        }],
+    );
+    Popup::new(SignatureHelp::ID, contents)
+        .ignore_escape_key(true)
+        .panel_border(true)
+}
+
+/// A popup at the cursor (signature help, hover, completion) stays within the columns of the
+/// cursor's view: in a split it doesn't cover the view beside it. In a view too narrow to
+/// read it in, it takes the room it needs.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_popup_at_the_cursor_stays_within_its_view() -> anyhow::Result<()> {
+    let mut app = helpers::AppBuilder::new()
+        .with_input_text("#[f|]#mt.Println()\nsecond\nthird\n")
+        .build()?;
+    app.resize_terminal(160, 40).await;
+    send(&mut app, keys(":vsplit<ret>A")).await?;
+
+    let screen = app.compositor.size();
+    let (view, _) = helix_view::current_ref!(app.editor);
+    let view_area = view.area;
+    assert!(
+        view_area.left() > 0 && view_area.width < 100,
+        "{view_area:?}"
+    );
+    let mut popup = signature_help(&app.editor);
+    let area = popup.area(screen, &app.editor);
+    assert!(area.width > 40, "{area:?}");
+    assert!(area.left() >= view_area.left(), "{area:?} in {view_area:?}");
+    assert!(
+        area.right() <= view_area.right(),
+        "{area:?} in {view_area:?}"
+    );
+
+    // the left view: within it too
+    send(&mut app, keys("<esc><C-w>hA")).await?;
+    let (view, _) = helix_view::current_ref!(app.editor);
+    let view_area = view.area;
+    assert_eq!(view_area.left(), 0u16);
+    let mut popup = signature_help(&app.editor);
+    let area = popup.area(screen, &app.editor);
+    assert!(
+        area.right() <= view_area.right(),
+        "{area:?} in {view_area:?}"
+    );
+
+    // one view: the whole screen, as before
+    send(&mut app, keys("<esc><C-w>oA")).await?;
+    let mut popup = signature_help(&app.editor);
+    let area = popup.area(screen, &app.editor);
+    assert!(area.width > 100, "{area:?}");
+
+    // views too narrow to read a popup in: it spreads over its neighbours
+    send(
+        &mut app,
+        keys("<esc>:vsplit<ret>:vsplit<ret>:vsplit<ret>:vsplit<ret>A"),
+    )
+    .await?;
+    let (view, _) = helix_view::current_ref!(app.editor);
+    let view_area = view.area;
+    assert!(view_area.width < 40, "{view_area:?}");
+    let mut popup = signature_help(&app.editor);
+    let area = popup.area(screen, &app.editor);
+    assert!(area.width > view_area.width, "{area:?} over {view_area:?}");
+    assert!(area.right() <= screen.right(), "{area:?}");
+
+    // one view left, for `quit`
+    send(&mut app, keys("<esc><C-w>o")).await?;
+    quit(app).await
+}
+
+/// Clicking another view closes the signature help: it is about the call the cursor was in,
+/// and stayed up over the view clicked.
+#[tokio::test(flavor = "multi_thread")]
+async fn clicking_another_view_closes_the_signature_help() -> anyhow::Result<()> {
+    use helix_term::ui::lsp::signature_help::SignatureHelp;
+    use termina::event::{Modifiers as KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+
+    let mut app = helpers::AppBuilder::new()
+        .with_input_text("#[f|]#mt.Println()\nsecond\nthird\n")
+        .build()?;
+    app.resize_terminal(160, 40).await;
+    send(&mut app, keys(":vsplit<ret>A")).await?;
+    let origin = app.editor.tree.focus;
+    let popup = signature_help(&app.editor);
+    app.compositor.push(Box::new(popup));
+    helpers::run_event_loop_until_idle(&mut app).await;
+    assert!(app.compositor.has_id(SignatureHelp::ID));
+
+    // a click in the same view leaves it
+    let click = |column, row| {
+        vec![termina::Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::empty(),
+        })]
+    };
+    let (view, doc) = helix_view::current_ref!(app.editor);
+    let inner = view.inner_area(doc);
+    send(&mut app, click(inner.x + 3, inner.y + 30)).await?;
+    assert_eq!(app.editor.tree.focus, origin);
+    assert!(app.compositor.has_id(SignatureHelp::ID));
+
+    // a click in the other view closes it
+    let other = app
+        .editor
+        .tree
+        .views()
+        .map(|(view, _)| view)
+        .find(|view| view.id != origin)
+        .map(|view| (view.id, view.area))
+        .unwrap();
+    send(&mut app, click(other.1.x + 12, other.1.y + 30)).await?;
+    assert_eq!(app.editor.tree.focus, other.0);
+    assert!(!app.compositor.has_id(SignatureHelp::ID));
+    send(&mut app, keys("<esc><C-w>o")).await?;
+    quit(app).await
+}

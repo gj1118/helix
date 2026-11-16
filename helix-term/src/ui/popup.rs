@@ -16,6 +16,9 @@ use helix_view::{
 const MIN_HEIGHT: u16 = 6;
 const MAX_HEIGHT: u16 = 26;
 const MAX_WIDTH: u16 = 120;
+/// The narrowest view a popup at its cursor is kept within: in a narrower one it may spread
+/// over the views beside it, to stay readable.
+const MIN_VIEW_WIDTH: u16 = 40;
 
 struct RenderInfo {
     area: Rect,
@@ -207,7 +210,22 @@ impl<T: Component> Popup<T> {
             Open::Below => viewport.height.saturating_sub(1 + rel_y),
         };
         max_height = max_height.min(MAX_HEIGHT);
-        let mut max_width = viewport.width.saturating_sub(2).min(MAX_WIDTH);
+        // A popup at the cursor stays within the columns of the cursor's view: in a split, it
+        // doesn't spread over the neighbouring views. A view too narrow to read a popup in
+        // (and a popup anchored elsewhere) has the whole screen.
+        let (left, right) = editor
+            .tree
+            .try_get(editor.tree.focus)
+            .map(|view| view.area)
+            .filter(|area| {
+                !self.fixed
+                    && area.width >= MIN_VIEW_WIDTH
+                    && (area.left()..area.right()).contains(&rel_x)
+            })
+            .map_or((0, viewport.width), |area| {
+                (area.left(), area.right().min(viewport.width))
+            });
+        let mut max_width = right.saturating_sub(left).saturating_sub(2).min(MAX_WIDTH);
         if let Some(width) = self.max_size.0 {
             max_width = max_width.min(width.saturating_add(2));
         }
@@ -235,9 +253,9 @@ impl<T: Component> Popup<T> {
         if render_borders {
             width += 2;
         }
-        if viewport.width <= rel_x + width + 2 {
-            rel_x = viewport.width.saturating_sub(width + 2);
-            width = viewport.width.saturating_sub(rel_x + 2)
+        if right <= rel_x + width + 2 {
+            rel_x = right.saturating_sub(width + 2).max(left);
+            width = right.saturating_sub(rel_x + 2)
         }
 
         let area = match final_pos {
