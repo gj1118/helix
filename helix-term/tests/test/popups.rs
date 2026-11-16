@@ -263,11 +263,20 @@ async fn a_popup_at_the_cursor_stays_within_its_view() -> anyhow::Result<()> {
         "{area:?} in {view_area:?}"
     );
 
-    // one view: the whole screen, as before
+    // one view of 160 columns: 60% of it by default (`popup-max-width-percent`), border
+    // included
     send(&mut app, keys("<esc><C-w>oA")).await?;
     let mut popup = signature_help(&app.editor);
     let area = popup.area(screen, &app.editor);
-    assert!(area.width > 100, "{area:?}");
+    assert_eq!(area.width, 96u16, "{area:?}");
+    // the share can be set: 120 columns at most, and 40 at least
+    for (percent, width) in [(100u8, 120u16), (50, 80), (25, 40), (10, 40)] {
+        let set = format!("<esc>:set popup-max-width-percent {percent}<ret>A");
+        send(&mut app, keys(&set)).await?;
+        let mut popup = signature_help(&app.editor);
+        let area = popup.area(screen, &app.editor);
+        assert_eq!(area.width, width, "{percent}%: {area:?}");
+    }
 
     // views too narrow to read a popup in: it spreads over its neighbours
     send(

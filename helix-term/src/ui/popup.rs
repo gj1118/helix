@@ -19,6 +19,8 @@ const MAX_WIDTH: u16 = 120;
 /// The narrowest view a popup at its cursor is kept within: in a narrower one it may spread
 /// over the views beside it, to stay readable.
 const MIN_VIEW_WIDTH: u16 = 40;
+/// A popup is given this many columns at least, whatever share of its view it may take.
+const MIN_POPUP_WIDTH: u16 = 40;
 
 struct RenderInfo {
     area: Rect,
@@ -226,6 +228,13 @@ impl<T: Component> Popup<T> {
                 (area.left(), area.right().min(viewport.width))
             });
         let mut max_width = right.saturating_sub(left).saturating_sub(2).min(MAX_WIDTH);
+        // ... and takes a share of them at most (`popup-max-width-percent`): its text wraps
+        // to it. A menu is as wide as its entries.
+        if !is_menu && !self.fixed {
+            let percent = u32::from(editor.config().popup_max_width_percent.clamp(10, 100));
+            let share = u32::from(right.saturating_sub(left)) * percent / 100;
+            max_width = max_width.min((share as u16).max(MIN_POPUP_WIDTH));
+        }
         if let Some(width) = self.max_size.0 {
             max_width = max_width.min(width.saturating_add(2));
         }

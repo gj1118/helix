@@ -128,6 +128,24 @@ impl From<Vec<GutterType>> for GutterConfig {
     }
 }
 
+/// `popup-max-width-percent`: any number, brought into 10..=100.
+fn deserialize_popup_width_percent<'de, D>(deserializer: D) -> Result<u8, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Number {
+        Int(i64),
+        Float(f64),
+    }
+    Ok(match Number::deserialize(deserializer)? {
+        Number::Int(n) => n.clamp(10, 100) as u8,
+        Number::Float(n) if n.is_nan() => 60,
+        Number::Float(n) => n.round().clamp(10.0, 100.0) as u8,
+    })
+}
+
 /// `cursor-roundness`: any number, brought into 0..=50 (a value out of range must not make
 /// the whole config fail to load).
 fn deserialize_cursor_roundness<'de, D>(deserializer: D) -> Result<u8, D::Error>
@@ -594,6 +612,10 @@ pub struct Config {
     pub smart_tab: Option<SmartTabConfig>,
     /// Draw border around popups.
     pub popup_border: PopupBorderConfig,
+    /// The most columns a popup at the cursor (hover, signature help) takes, as a percentage of the width of the buffer's window: 10 to 100
+    /// (values out of range are brought into it). Its text wraps to it. Defaults to 60.
+    #[serde(deserialize_with = "deserialize_popup_width_percent")]
+    pub popup_max_width_percent: u8,
     /// Draw rounded border corners. Superseded by `border-style`, which takes
     /// priority when set.
     pub rounded_corners: bool,
@@ -2195,6 +2217,7 @@ impl Default for Config {
             trim_trailing_whitespace: false,
             smart_tab: Some(SmartTabConfig::default()),
             popup_border: PopupBorderConfig::None,
+            popup_max_width_percent: 60,
             rounded_corners: false,
             border_style: None,
             commands: Default::default(),
@@ -4738,6 +4761,24 @@ mod cursor_roundness_tests {
     fn roundness(value: &str) -> u8 {
         let config: Config = toml::from_str(&format!("cursor-roundness = {value}")).unwrap();
         config.cursor_roundness
+    }
+
+    #[test]
+    fn the_popup_width_is_a_percentage_within_range() {
+        assert_eq!(Config::default().popup_max_width_percent, 60u8);
+        for (value, expected) in [
+            ("10", 10u8),
+            ("45", 45),
+            ("100", 100),
+            ("0", 10),
+            ("-5", 10),
+            ("250", 100),
+            ("72.6", 73),
+        ] {
+            let config: Config =
+                toml::from_str(&format!("popup-max-width-percent = {value}")).unwrap();
+            assert_eq!(config.popup_max_width_percent, expected, "{value}");
+        }
     }
 
     #[test]
