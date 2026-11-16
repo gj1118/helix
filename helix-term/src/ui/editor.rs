@@ -517,7 +517,7 @@ impl EditorView {
 
         // Rounded cursors (`cursor-roundness`): after the text, under what goes over it.
         if is_focused {
-            if let Some(roundness) = crate::ui::rounded_cursor::roundness(editor) {
+            if let Some(roundness) = crate::ui::rounded_cursor::active(editor) {
                 let (primary, secondary) = Self::cursor_scopes(theme, editor.mode());
                 crate::ui::rounded_cursor::draw(
                     editor,
@@ -1202,7 +1202,7 @@ impl EditorView {
         let (primary_cursor_scope, cursor_scope) = Self::cursor_scopes(theme, mode);
         // Rounded cursors are drawn after the text (`rounded_cursor::draw`), over the cells
         // as they are without a cursor.
-        let rounded = crate::ui::rounded_cursor::roundness(editor).is_some();
+        let rounded = crate::ui::rounded_cursor::active(editor).is_some();
 
         let mut spans = Vec::new();
         for (i, range) in selection.iter().enumerate() {
@@ -1293,10 +1293,12 @@ impl EditorView {
         let text = doc.text().slice(..);
         let selection = doc.selection(view.id);
         let inner = view.inner_area(doc);
-        selection
+        // only those that can be on screen: finding where each one is costs
+        let (first, ranges) = crate::ui::rounded_cursor::ranges_in_view(doc, view);
+        ranges
             .iter()
             .enumerate()
-            .filter(|&(i, _)| i != selection.primary_index())
+            .filter(|&(i, _)| first + i != selection.primary_index())
             .filter_map(|(_, range)| {
                 let pos = view.screen_coords_at_pos(doc, text, range.cursor(text))?;
                 let x = inner.x.checked_add(u16::try_from(pos.col).ok()?)?;
@@ -2340,9 +2342,20 @@ impl EditorView {
     /// Clears the completion before a mouse action focuses another view: its preview and
     /// savepoint belong to the view it was opened in, and restoring them through another view
     /// panics ("Savepoint must not be used with a different view!", helix-editor/helix#15349).
+    ///
+    /// The signature help goes too: it is about the call the cursor was in, and would stay up
+    /// over the view clicked (focusing a view leaves insert mode without the mode switch that
+    /// closes it otherwise).
     fn clear_completion_on_view_switch(&mut self, editor: &mut Editor, view_id: ViewId) {
         if editor.tree.focus != view_id {
             self.clear_completion(editor);
+            helix_event::send_blocking(
+                &editor.handlers.signature_hints,
+                helix_view::handlers::lsp::SignatureHelpEvent::Cancel,
+            );
+            crate::job::dispatch_blocking(|_, compositor| {
+                compositor.remove(crate::ui::lsp::signature_help::SignatureHelp::ID);
+            });
         }
     }
 
@@ -3039,7 +3052,7 @@ impl Component for EditorView {
         if self.terminal_focused {
             // A rounded cursor is drawn by the editor: the terminal's one is hidden there (its
             // position kept, for input methods).
-            if crate::ui::rounded_cursor::roundness(editor).is_some() {
+            if crate::ui::rounded_cursor::active(editor).is_some() {
                 return (pos, CursorKind::Hidden);
             }
             (pos, kind)

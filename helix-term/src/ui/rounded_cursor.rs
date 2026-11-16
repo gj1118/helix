@@ -14,7 +14,7 @@ use std::sync::Arc;
 use helix_core::graphemes::{grapheme_width, next_grapheme_boundary};
 use helix_view::graphics::{Color, CursorKind, Modifier, Rect, Style};
 use helix_view::image_preview::{
-    kitty_place, kitty_transmit, kitty_unplace, png_bytes, rounded_rect, Protocol,
+    kitty_free, kitty_place, kitty_transmit, kitty_unplace, png_bytes, rounded_rect, Protocol,
 };
 use helix_view::{Document, Editor, View};
 use tui::buffer::{Buffer as Surface, Overlay};
@@ -22,8 +22,9 @@ use tui::buffer::{Buffer as Surface, Overlay};
 /// The largest roundness: the radius is half the cursor's width (its ends are half circles).
 pub const MAX_ROUNDNESS: u8 = 50;
 
-/// The cursors drawn rounded in a view at most (the primary one first); the others are square.
-const MAX_CURSORS: usize = 64;
+/// The cursors drawn rounded in a view at most. With more of them on screen, they are all
+/// drawn as before: each one is a placement to keep in the terminal and a position to find.
+pub const MAX_CURSORS: usize = 128;
 
 /// The kitty image ids of the cursors' images: this bit and 28 bits of what the image shows,
 /// apart from the previews' and the diff connectors' ids. Each image is sent once, and its
@@ -88,6 +89,33 @@ fn image(color: [u8; 3], width: u32, height: u32, radius: f32) -> (u32, Arc<[u8]
     })
 }
 
+/// The selections of `view` that can be on screen (those reaching into the lines shown), and
+/// the index of the first one. Finding where a cursor is on screen costs, so with many
+/// thousands of cursors only these are looked at.
+pub fn ranges_in_view<'a>(doc: &'a Document, view: &View) -> (usize, &'a [helix_core::Range]) {
+    let text = doc.text().slice(..);
+    let ranges = doc.selection(view.id).ranges();
+    let start = doc.view_offset(view.id).anchor.min(text.len_chars());
+    let last_line = view.estimate_last_doc_line(&view.text_annotations(doc, None), doc);
+    let end = if last_line + 1 >= text.len_lines() {
+        // the cursor can be at the end of the text
+        text.len_chars() + 1
+    } else {
+        text.line_to_char(last_line + 1)
+    };
+    let first = ranges.partition_point(|range| range.to() < start);
+    let last = ranges.partition_point(|range| range.from() < end);
+    (first, &ranges[first..last.max(first)])
+}
+
+/// The roundness the cursors of the focused view are drawn with in this frame: [`roundness`],
+/// unless more than [`MAX_CURSORS`] cursors can be on screen.
+pub fn active(editor: &Editor) -> Option<u8> {
+    let roundness = roundness(editor)?;
+    let (view, doc) = helix_view::current_ref!(editor);
+    (ranges_in_view(doc, view).1.len() <= MAX_CURSORS).then_some(roundness)
+}
+
 /// Draws the cursors of `view` (the focused view) in `surface`, after its text: rounded with
 /// `roundness`, in `primary` (the primary cursor's style) and `secondary` (the others').
 pub fn draw(
@@ -108,11 +136,10 @@ pub fn draw(
     });
 
     let primary_index = selection.primary_index();
-    let order =
-        std::iter::once(primary_index).chain((0..selection.len()).filter(|&i| i != primary_index));
-    let mut rounded = 0;
-    for index in order {
-        let cursor = selection.ranges()[index].cursor(text);
+    let (first, ranges) = ranges_in_view(doc, view);
+    for (index, range) in ranges.iter().enumerate().take(MAX_CURSORS) {
+        let index = first + index;
+        let cursor = range.cursor(text);
         let Some(pos) = view.screen_coords_at_pos(doc, text, cursor) else {
             continue;
         };
@@ -143,14 +170,15 @@ pub fn draw(
         } else {
             secondary
         };
-        // the cursor's placement of its image (not 0)
-        let placement = rounded as u32 + 1;
-        if rounded < MAX_CURSORS
-            && draw_rounded(surface, area, style, background, roundness, cell, placement)
-        {
-            rounded += 1;
+        // The cursor's placement of its image (not 0): the primary cursor has its own, so
+        // that it stays the same placement (moved, not shown anew) when cursors come and go.
+        let placement = if index == primary_index {
+            1
         } else {
-            // as it is drawn without rounding
+            (index - first) as u32 + 2
+        };
+        if !draw_rounded(surface, area, style, background, roundness, cell, placement) {
+            // a color of the terminal's palette can't be an image: as it is without rounding
             surface.set_style(area, style);
         }
     }
@@ -220,7 +248,11 @@ fn draw_rounded(
         cells: 0,
         // moved, not taken away and shown again: no flicker
         slot: Some(u64::from(id) << 32 | u64::from(placement)),
-        resource: Some((u64::from(id), transmit)),
+        resource: Some(tui::buffer::Resource {
+            id: u64::from(id),
+            load: transmit,
+            free: Some(Arc::from(kitty_free(id))),
+        }),
     });
     true
 }

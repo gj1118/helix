@@ -96,8 +96,13 @@ where
     sent_title: Option<String>,
     /// The overlays' resources sent since the screen was last cleared (see
     /// [`Overlay::resource`](crate::buffer::Overlay)).
-    sent_resources: std::collections::HashSet<u64>,
+    sent_resources: std::collections::HashMap<u64, Option<std::sync::Arc<[u8]>>>,
+    /// What frees the resources of a screen that was cleared, written with the next frame.
+    unsent_frees: Vec<std::sync::Arc<[u8]>>,
 }
+
+/// The overlays' resources kept in the terminal before those not shown are freed.
+const MAX_SENT_RESOURCES: usize = 32;
 
 /// Default terminal size: 80 columns, 24 lines
 pub const DEFAULT_TERMINAL_SIZE: Rect = Rect {
@@ -143,6 +148,7 @@ where
             title: None,
             sent_title: None,
             sent_resources: Default::default(),
+            unsent_frees: Vec::new(),
         })
     }
 
@@ -162,6 +168,20 @@ where
     pub fn restore(&mut self) -> io::Result<()> {
         if self.sent_title.take().is_some() {
             self.backend.pop_title()?;
+        }
+        // Nothing of ours stays in the terminal's memory: the overlays shown (images) are
+        // taken away and what was sent for them is freed. Errors don't keep the terminal
+        // from being given back.
+        let mut bytes: Vec<std::sync::Arc<[u8]>> = Vec::new();
+        for buffer in &mut self.buffers {
+            for overlay in buffer.overlays.drain(..) {
+                bytes.extend(overlay.cleanup);
+            }
+        }
+        bytes.append(&mut self.unsent_frees);
+        bytes.extend(self.sent_resources.drain().filter_map(|(_, free)| free));
+        for bytes in bytes {
+            let _ = self.backend.write_raw(0, 0, &bytes);
         }
         self.backend.restore()
     }
@@ -200,6 +220,9 @@ where
         if self.force_clear {
             self.backend.clear()?;
             self.force_clear = false;
+        }
+        for free in std::mem::take(&mut self.unsent_frees) {
+            self.backend.write_raw(0, 0, &free)?;
         }
 
         // Overlays (images) that are gone or have changed: take them away, and draw the cells
@@ -246,10 +269,13 @@ where
         // The new ones go over the cells.
         for overlay in &current_buffer.overlays {
             if !previous_buffer.overlays.contains(overlay) {
-                if let Some((id, resource)) = &overlay.resource {
-                    if self.sent_resources.insert(*id) {
+                if let Some(resource) = &overlay.resource {
+                    if let std::collections::hash_map::Entry::Vacant(entry) =
+                        self.sent_resources.entry(resource.id)
+                    {
+                        entry.insert(resource.free.clone());
                         self.backend
-                            .write_raw(overlay.area.x, overlay.area.y, resource)?;
+                            .write_raw(overlay.area.x, overlay.area.y, &resource.load)?;
                     }
                 }
                 self.backend
@@ -261,6 +287,28 @@ where
                         .map(|(x, y)| (x, y, &current_buffer[(x, y)]))
                         .filter(|(_, _, cell)| !cell.symbol.trim().is_empty());
                     self.backend.draw(text)?;
+                }
+            }
+        }
+
+        // The terminal's memory stays bounded: once many resources were sent (cursor images in
+        // the colors of several themes, for cells of several sizes...), those no overlay
+        // shows are freed. One needed again is sent again.
+        if self.sent_resources.len() > MAX_SENT_RESOURCES {
+            let used: std::collections::HashSet<u64> = current_buffer
+                .overlays
+                .iter()
+                .filter_map(|overlay| Some(overlay.resource.as_ref()?.id))
+                .collect();
+            let unused: Vec<u64> = self
+                .sent_resources
+                .keys()
+                .copied()
+                .filter(|id| !used.contains(id))
+                .collect();
+            for id in unused {
+                if let Some(Some(free)) = self.sent_resources.remove(&id) {
+                    self.backend.write_raw(0, 0, &free)?;
                 }
             }
         }
@@ -384,9 +432,11 @@ where
     /// synchronized frame with the repaint.
     pub fn clear(&mut self) -> io::Result<()> {
         self.force_clear = true;
-        // Erasing the display removes the terminal's secondary cursors too, and its images.
+        // Erasing the display removes the terminal's secondary cursors too, and what its
+        // images show: the images are freed with it, and sent again when they are shown again.
         self.sent_secondary_cursors = None;
-        self.sent_resources.clear();
+        self.unsent_frees
+            .extend(self.sent_resources.drain().filter_map(|(_, free)| free));
         // Reset the back buffer to make sure the next update will redraw everything.
         self.buffers[1 - self.current].reset();
         Ok(())
@@ -414,6 +464,14 @@ mod overlay_tests {
             cells: 0,
             slot: None,
             resource: None,
+        }
+    }
+
+    fn resource(id: u64) -> crate::buffer::Resource {
+        crate::buffer::Resource {
+            id,
+            load: Arc::from(format!("data {id}").into_bytes()),
+            free: Some(Arc::from(format!("free {id}").into_bytes())),
         }
     }
 
@@ -494,12 +552,12 @@ mod overlay_tests {
     }
 
     /// An overlay's resource (image data) is sent before the first overlay that needs it, and
-    /// again only after the screen was cleared.
+    /// again only after the screen was cleared (which frees it).
     #[test]
     fn a_resource_is_sent_once_until_the_screen_is_cleared() {
         let mut terminal = Terminal::new(TestBackend::new(20, 10)).unwrap();
         let at = |x| Overlay {
-            resource: Some((5, Arc::from(b"data 5".as_slice()))),
+            resource: Some(resource(5)),
             ..overlay(1, Rect::new(x, 1, 1, 1))
         };
 
@@ -520,8 +578,71 @@ mod overlay_tests {
         frame(&mut terminal, &[at(3)]);
         assert_eq!(
             raw(&mut terminal),
-            [(3, 1, "data 5".to_string()), (3, 1, "image 1".to_string())]
+            [
+                // freed with the cleared screen, then sent again
+                (0, 0, "free 5".to_string()),
+                (3, 1, "data 5".to_string()),
+                (3, 1, "image 1".to_string())
+            ]
         );
+    }
+
+    /// Giving the terminal back (exit, suspend) takes the overlays away and frees what was
+    /// sent for them; they are sent again when the terminal is claimed again.
+    #[test]
+    fn restoring_the_terminal_frees_what_was_sent() {
+        let mut terminal = Terminal::new(TestBackend::new(20, 10)).unwrap();
+        let image = Overlay {
+            resource: Some(resource(5)),
+            ..overlay(1, Rect::new(2, 1, 1, 1))
+        };
+        frame(&mut terminal, std::slice::from_ref(&image));
+        raw(&mut terminal);
+
+        terminal.restore().unwrap();
+        assert_eq!(
+            raw(&mut terminal),
+            [(0, 0, "delete 1".to_string()), (0, 0, "free 5".to_string())]
+        );
+        // nothing left to free
+        terminal.restore().unwrap();
+        assert_eq!(raw(&mut terminal), []);
+
+        terminal.claim().unwrap();
+        terminal.clear().unwrap();
+        frame(&mut terminal, &[image]);
+        assert_eq!(
+            raw(&mut terminal),
+            [(2, 1, "data 5".to_string()), (2, 1, "image 1".to_string())]
+        );
+    }
+
+    /// The resources sent stay bounded: past a number of them, those no overlay shows are
+    /// freed in the terminal, and sent again if they are needed again.
+    #[test]
+    fn unused_resources_are_freed_once_there_are_many() {
+        let mut terminal = Terminal::new(TestBackend::new(20, 10)).unwrap();
+        let with = |id: u64| Overlay {
+            resource: Some(resource(id)),
+            ..overlay(id, Rect::new(2, 1, 1, 1))
+        };
+        for id in 0..=MAX_SENT_RESOURCES as u64 {
+            frame(&mut terminal, &[with(id)]);
+        }
+        let sent = raw(&mut terminal);
+        let freed: Vec<&str> = sent
+            .iter()
+            .map(|(_, _, bytes)| bytes.as_str())
+            .filter(|bytes| bytes.starts_with("free"))
+            .collect();
+        // all but the one shown
+        assert_eq!(freed.len(), MAX_SENT_RESOURCES);
+        assert!(!freed.contains(&format!("free {MAX_SENT_RESOURCES}").as_str()));
+
+        // a freed one is sent again when shown again
+        frame(&mut terminal, &[with(0)]);
+        let sent = raw(&mut terminal);
+        assert!(sent.contains(&(2, 1, "data 0".to_string())), "{sent:?}");
     }
 
     #[test]

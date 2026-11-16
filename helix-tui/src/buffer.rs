@@ -194,10 +194,20 @@ pub struct Overlay {
     /// the next frame in the same slot replaces it there, so it isn't taken away (`cleanup`)
     /// first. A placement moved this way doesn't flicker.
     pub slot: Option<u64>,
-    /// Bytes that `payload` needs in the terminal (the image data a kitty placement shows), by
-    /// an id: sent once before the first payload that needs them, and again only after the
-    /// screen was cleared.
-    pub resource: Option<(u64, std::sync::Arc<[u8]>)>,
+    /// What `payload` needs in the terminal (the image data a kitty placement shows).
+    pub resource: Option<Resource>,
+}
+
+/// Bytes an [`Overlay`] needs in the terminal before it is shown: sent once before the first
+/// payload that needs them, and again only after the screen was cleared.
+#[derive(Debug, Clone)]
+pub struct Resource {
+    /// Identifies the bytes.
+    pub id: u64,
+    pub load: std::sync::Arc<[u8]>,
+    /// Sent to free the terminal's memory: when the terminal is given back (exit, suspend), or
+    /// when many resources were sent and no overlay uses this one anymore.
+    pub free: Option<std::sync::Arc<[u8]>>,
 }
 
 impl PartialEq for Overlay {

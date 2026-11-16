@@ -128,6 +128,25 @@ impl From<Vec<GutterType>> for GutterConfig {
     }
 }
 
+/// `cursor-roundness`: any number, brought into 0..=50 (a value out of range must not make
+/// the whole config fail to load).
+fn deserialize_cursor_roundness<'de, D>(deserializer: D) -> Result<u8, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Number {
+        Int(i64),
+        Float(f64),
+    }
+    Ok(match Number::deserialize(deserializer)? {
+        Number::Int(n) => n.clamp(0, 50) as u8,
+        // NaN becomes 0
+        Number::Float(n) => n.round().clamp(0.0, 50.0) as u8,
+    })
+}
+
 fn deserialize_gutter_seq_or_struct<'de, D>(deserializer: D) -> Result<GutterConfig, D::Error>
 where
     D: Deserializer<'de>,
@@ -447,6 +466,8 @@ pub struct Config {
     /// radius as a percentage of the cursor's width, from 0 (square, as the terminal draws
     /// it) to 50 (the left and right ends are half circles). Drawn as an image with the kitty
     /// graphics protocol; where the terminal doesn't have it, block cursors stay square.
+    /// Any number is accepted: below 0 counts as 0, above 50 as 50.
+    #[serde(deserialize_with = "deserialize_cursor_roundness")]
     pub cursor_roundness: u8,
     #[serde(deserialize_with = "deserialize_gutter_seq_or_struct")]
     pub gutters: GutterConfig,
@@ -4707,5 +4728,42 @@ mod notification_border_tests {
         }
         assert_eq!(NotificationBorderStyle::Solid.border_style(), Option::None);
         assert!(toml::from_str::<Config>("notifications.border.style = \"wavy\"").is_err());
+    }
+}
+
+#[cfg(test)]
+mod cursor_roundness_tests {
+    use super::Config;
+
+    fn roundness(value: &str) -> u8 {
+        let config: Config = toml::from_str(&format!("cursor-roundness = {value}")).unwrap();
+        config.cursor_roundness
+    }
+
+    #[test]
+    fn any_number_is_accepted_and_brought_into_range() {
+        assert_eq!(Config::default().cursor_roundness, 0u8);
+        for (value, expected) in [
+            ("0", 0u8),
+            ("1", 1),
+            ("25", 25),
+            ("50", 50),
+            ("51", 50),
+            ("255", 50),
+            ("300", 50),
+            ("9223372036854775807", 50),
+            ("-1", 0),
+            ("-9000", 0),
+            ("12.4", 12),
+            ("49.6", 50),
+            ("1e9", 50),
+            ("-0.5", 0),
+            ("nan", 0),
+            ("inf", 50),
+        ] {
+            assert_eq!(roundness(value), expected, "cursor-roundness = {value}");
+        }
+        // not a number: an error, as for any other option
+        assert!(toml::from_str::<Config>("cursor-roundness = \"round\"").is_err());
     }
 }

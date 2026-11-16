@@ -80,6 +80,13 @@ fn unplaced(app: &Application) -> Vec<(u32, u32)> {
         .collect()
 }
 
+/// The action (`a=p`, `a=d`...) of the last kitty graphics command sent.
+fn last_command(app: &Application) -> String {
+    let (_, _, bytes) = app.raw_output().last().expect("a graphics command");
+    let text = String::from_utf8_lossy(bytes);
+    text.trim_start_matches("\x1b_G").chars().take(3).collect()
+}
+
 fn cursor_kind(app: &Application) -> CursorKind {
     app.compositor.cursor(app.compositor.size(), &app.editor).1
 }
@@ -293,4 +300,60 @@ async fn a_cursor_in_palette_colors_is_square() -> anyhow::Result<()> {
         false,
     )
     .await
+}
+
+/// With more cursors on screen than are drawn rounded, all of them are drawn as before (the
+/// terminal draws the primary one); back under the limit, they are rounded again.
+#[tokio::test(flavor = "multi_thread")]
+async fn many_cursors_on_screen_are_drawn_square() -> anyhow::Result<()> {
+    let text = format!("#[a|]#\n{}", "a\n".repeat(399));
+    let mut app = app("cursor-roundness = 25", &text, true)?;
+    app.resize_terminal(80, 200).await;
+    test_key_sequences(
+        &mut app,
+        vec![
+            (
+                // a cursor on each of the 400 lines, far more than the screen shows
+                Some("%<A-s>"),
+                Some(&|app| {
+                    let (view, doc) = helix_view::current_ref!(app.editor);
+                    assert_eq!(doc.selection(view.id).len(), 400usize);
+                    assert_eq!(cursor_kind(app), CursorKind::Block);
+                    // the placement was taken away, and nothing shown since
+                    assert_eq!(last_command(app), "a=d");
+                }),
+            ),
+            (
+                Some(","),
+                Some(&|app| {
+                    assert_eq!(cursor_kind(app), CursorKind::Hidden);
+                    assert_eq!(last_command(app), "a=p");
+                }),
+            ),
+        ],
+        false,
+    )
+    .await
+}
+
+/// Giving the terminal back (exit, suspend) frees the cursor's image in the terminal, and
+/// a resumed editor sends it again.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_image_is_freed_when_the_terminal_is_given_back() -> anyhow::Result<()> {
+    let mut app = app("cursor-roundness = 25", "#[h|]#ello\n", true)?;
+    // (not `test_key_sequences`, which quits at its end)
+    helpers::run_event_loop_until_idle(&mut app).await;
+    assert_eq!(transmitted(&app).len(), 1usize);
+    let image = transmitted(&app)[0];
+
+    app.suspend_and_resume(true).await?;
+    let freed: Vec<u32> = kitty_commands(&app, "a=d,d=I,")
+        .into_iter()
+        .map(|(_, _, keys)| keys["i"])
+        .collect();
+    assert_eq!(freed, vec![image]);
+    // sent and placed again after the resume
+    assert_eq!(transmitted(&app), vec![image, image]);
+    assert_eq!(placements(&app).len(), 2usize);
+    Ok(())
 }

@@ -382,6 +382,11 @@ pub fn kitty_place(id: u32, placement: u32, cols: u16, rows: u16) -> Vec<u8> {
     format!("\x1b_Ga=p,i={id},p={placement},c={cols},r={rows},C=1,z=-1,q=2\x1b\\").into_bytes()
 }
 
+/// Frees image `id` in the terminal, with its placements.
+pub fn kitty_free(id: u32) -> Vec<u8> {
+    format!("\x1b_Ga=d,d=I,i={id},q=2\x1b\\").into_bytes()
+}
+
 /// Takes away the placement `placement` of image `id`, keeping the image in the terminal.
 pub fn kitty_unplace(id: u32, placement: u32) -> Vec<u8> {
     format!("\x1b_Ga=d,d=i,i={id},p={placement},q=2\x1b\\").into_bytes()
