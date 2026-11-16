@@ -9,7 +9,8 @@
 //! loaded tree survives hide/show cycles without any fs work. File
 //! mutations (create/rename/delete/cut/copy/paste) are driven from the
 //! panel: names are asked for in a cmdline popup, destructive steps are
-//! confirmed in a [`ConfirmBox`].
+//! confirmed in a [`ConfirmBox`]. Entries can be marked (`m`, `M`, Ctrl/Shift-click): rename,
+//! delete, cut and copy then act on all the marked entries instead of the one under the cursor.
 //!
 //! Key routing: while the panel is visible *and* focused, keys drive the
 //! tree; unbound keys (and all keys while an editor keymap sequence like
@@ -18,6 +19,7 @@
 //! the filter box at the top of the panel until `Enter`/`Esc`.
 
 use helix_plugin::{EventType, EventValue};
+use std::collections::BTreeSet;
 use std::error::Error as _;
 use std::io;
 use std::path::{Component as PathComponent, Path, PathBuf};
@@ -33,8 +35,9 @@ use helix_view::{
     document::Mode,
     editor::{Action, CmdlineStyle, GradientBorderConfig, PointerShape},
     explorer::{
-        copy_recursively, new_matcher, Entry, ExplorerClipboard, ExplorerSide, FloatDrag,
-        FloatGeometry, ScanOptions, Tree, TreeParams, FILTER_RESULT_LIMIT, FILTER_SCAN_LIMIT,
+        copy_recursively, new_matcher, outermost, Entry, ExplorerClipboard, ExplorerSide,
+        FloatDrag, FloatGeometry, ScanOptions, Tree, TreeParams, FILTER_RESULT_LIMIT,
+        FILTER_SCAN_LIMIT,
     },
     graphics::{Color, Rect, Style},
     Editor,
@@ -119,6 +122,14 @@ const FILTER_PLACEHOLDERS: &[&str] = &["/ to search (*.rs)", "/ search, *.rs", "
 const FILTER_EDITING_PLACEHOLDERS: &[&str] = &["name or *.rs", "*.rs"];
 /// The panel height from which the filter is a bordered box (three rows) rather than a line.
 const FILTER_BOX_MIN_HEIGHT: u16 = 8;
+/// The glyph in front of a marked entry.
+const MARK_GLYPH: &str = "● ";
+/// The glyph in front of an entry cut into the explorer's clipboard (moved on paste).
+const CUT_GLYPH: &str = "→ ";
+/// The glyph in front of an entry copied into the explorer's clipboard.
+const COPY_GLYPH: &str = "+ ";
+/// The entries a confirmation lists by name at most; the others are counted.
+const LISTED_ENTRIES: usize = 8;
 /// How long a git status is kept before the panel asks for a new one (it is asked for while the
 /// panel is drawn, so a hidden panel costs nothing).
 const GIT_STATUS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3);
@@ -354,6 +365,11 @@ pub struct Explorer {
     git_interval: std::time::Duration,
     /// Highlights the characters a fuzzy filter matched, kept: a matcher is large to make.
     matcher: nucleo::Matcher,
+    /// The marked entries (`m`, `M`, Ctrl/Shift-click), which rename, delete, cut and copy act
+    /// on instead of the entry under the cursor.
+    marks: BTreeSet<PathBuf>,
+    /// The entry last marked or unmarked, where `M` starts the range it marks.
+    mark_anchor: Option<PathBuf>,
 }
 
 impl Explorer {
@@ -387,7 +403,19 @@ impl Explorer {
             git_in_flight: false,
             git_interval: GIT_STATUS_INTERVAL,
             matcher: new_matcher(),
+            marks: BTreeSet::new(),
+            mark_anchor: None,
         })
+    }
+
+    /// The path of the entry under the cursor (`None` on the `...` row).
+    pub fn cursor_path(&self) -> Option<&Path> {
+        self.entry().map(|entry| entry.path.as_path())
+    }
+
+    /// The marked entries, in path order.
+    pub fn marked(&self) -> Vec<PathBuf> {
+        self.marks.iter().cloned().collect()
     }
 
     /// The row the cursor is on, counted from 0.
@@ -564,6 +592,7 @@ impl Explorer {
         let params = tree_params(editor);
         let keep = keep.or_else(|| self.entry().map(|entry| entry.path.clone()));
         self.tree.refresh(params);
+        self.prune_marks();
         self.git_asked = None;
         self.clamp_cursor();
         if let Some(keep) = keep {
@@ -575,11 +604,126 @@ impl Explorer {
     /// its ancestors are expanded so the entry is actually on screen.
     pub fn refresh_reveal(&mut self, editor: &Editor, path: PathBuf) {
         self.tree.refresh(tree_params(editor));
+        self.prune_marks();
         self.git_asked = None;
         if !self.reveal_path(&path, editor) {
             self.clamp_cursor();
             self.select_path(&path);
         }
+    }
+
+    // --------------------------------------------------------------------
+    // Marks
+    // --------------------------------------------------------------------
+
+    /// Whether the entry can be marked: not the `...` row, nor the root.
+    fn markable(&self, entry: &Entry) -> bool {
+        !entry.is_parent && !self.tree.is_root(&entry.path)
+    }
+
+    /// Marks the row `row`, or unmarks it when it is marked. `false` for a row that can't be.
+    fn toggle_mark_at(&mut self, row: usize) -> bool {
+        let Some(entry) = self.tree.visible().get(row).cloned() else {
+            return false;
+        };
+        if !self.markable(&entry) {
+            return false;
+        }
+        if !self.marks.remove(&entry.path) {
+            self.marks.insert(entry.path.clone());
+        }
+        self.mark_anchor = Some(entry.path);
+        true
+    }
+
+    /// `m`: marks the entry under the cursor (unmarks it when marked) and moves down, so
+    /// `mmm` marks three entries in a row.
+    fn on_toggle_mark(&mut self, editor: &mut Editor) -> EventResult {
+        let before = self.marks.len();
+        if !self.toggle_mark_at(self.cursor) {
+            editor.set_error("The explorer root cannot be marked");
+            return EventResult::Consumed(None);
+        }
+        self.cursor = (self.cursor + 1).min(self.len().saturating_sub(1));
+        self.report_marks(editor, before);
+        EventResult::Consumed(None)
+    }
+
+    /// Marks every entry from the row of the last marked one (see `mark_anchor`) to `row`,
+    /// both included. With no such row, only `row`.
+    fn mark_range_to(&mut self, row: usize) {
+        let anchor = self
+            .mark_anchor
+            .as_ref()
+            .and_then(|anchor| self.tree.visible().iter().position(|e| &e.path == anchor))
+            .unwrap_or(row);
+        let (from, to) = (anchor.min(row), anchor.max(row));
+        let paths: Vec<PathBuf> = self.tree.visible()[from..=to.min(self.len().saturating_sub(1))]
+            .iter()
+            .filter(|entry| self.markable(entry))
+            .map(|entry| entry.path.clone())
+            .collect();
+        self.marks.extend(paths);
+        if let Some(entry) = self.tree.visible().get(row) {
+            self.mark_anchor = Some(entry.path.clone());
+        }
+    }
+
+    /// `M`: marks the entries from the last one marked to the cursor.
+    fn on_mark_range(&mut self, editor: &mut Editor) -> EventResult {
+        let before = self.marks.len();
+        self.mark_range_to(self.cursor);
+        self.report_marks(editor, before);
+        EventResult::Consumed(None)
+    }
+
+    /// Unmarks everything; `false` when nothing was marked.
+    fn clear_marks(&mut self) -> bool {
+        self.mark_anchor = None;
+        let had = !self.marks.is_empty();
+        self.marks.clear();
+        had
+    }
+
+    /// Forgets the marks of entries that are gone (deleted, renamed or moved).
+    fn prune_marks(&mut self) {
+        self.marks
+            .retain(|path| std::fs::symlink_metadata(path).is_ok());
+    }
+
+    /// The keys for the marked entries, once the first one is marked (`before` were marked);
+    /// the count is in the header.
+    fn report_marks(&self, editor: &mut Editor, before: usize) {
+        if before == 0 && !self.marks.is_empty() {
+            editor.set_status("Explorer: marked (r rename, d delete, x cut, c copy, u unmark)");
+        }
+    }
+
+    /// What rename, delete, cut and copy act on: the marked entries, else the entry under the
+    /// cursor. Each with whether it is a folder.
+    fn targets(&self) -> Vec<(PathBuf, bool)> {
+        if self.marks.is_empty() {
+            self.entry()
+                .map(|entry| (entry.path.clone(), entry.is_dir))
+                .into_iter()
+                .collect()
+        } else {
+            self.marks
+                .iter()
+                .map(|path| (path.clone(), is_folder(path)))
+                .collect()
+        }
+    }
+
+    /// The header's word on what is being worked on: the marks, else the clipboard.
+    fn work_label(&self, editor: &Editor) -> Option<String> {
+        if !self.marks.is_empty() {
+            return Some(format!("{} marked", self.marks.len()));
+        }
+        editor.explorer_clipboard.as_ref().map(|clip| {
+            let what = if clip.cut { "to move" } else { "to copy" };
+            format!("{} {what}", clip.paths.len())
+        })
     }
 
     // --------------------------------------------------------------------
@@ -708,7 +852,10 @@ impl Explorer {
                 surface,
             );
         }
-        let title = format!(" {FILTER_BOX_TITLE} ");
+        let title = match self.work_label(editor) {
+            Some(work) => format!(" {FILTER_BOX_TITLE} · {work} "),
+            None => format!(" {FILTER_BOX_TITLE} "),
+        };
         let title_width = title.width() as u16;
         if area.width >= title_width + 4 {
             let title_style = theme.try_get("ui.popup.title").unwrap_or(border_style);
@@ -1032,15 +1179,27 @@ impl Explorer {
             KeyCode::Char('A') => self.on_create(cx, true),
             KeyCode::Char('r') => self.on_rename(cx),
             KeyCode::Char('d') => self.on_delete(cx),
-            KeyCode::Char('x') => self.on_cut(cx),
-            KeyCode::Char('c') => self.on_copy(cx),
+            KeyCode::Char('x') => self.on_clip(cx, true),
+            KeyCode::Char('c') => self.on_clip(cx, false),
             KeyCode::Char('p') => self.on_paste(cx),
+            KeyCode::Char('m') => self.on_toggle_mark(cx.editor),
+            KeyCode::Char('M') => self.on_mark_range(cx.editor),
+            KeyCode::Char('u') => {
+                if self.clear_marks() {
+                    cx.editor.set_status("Explorer: unmarked everything");
+                }
+                EventResult::Consumed(None)
+            }
             KeyCode::Char('q') => {
                 cx.editor.explorer_panel.hide();
                 EventResult::Consumed(None)
             }
             KeyCode::Esc => {
-                // An applied filter goes first; the next Esc leaves the panel.
+                // The marks go first, then an applied filter; the next Esc leaves the panel.
+                if self.clear_marks() {
+                    cx.editor.set_status("Explorer: unmarked everything");
+                    return EventResult::Consumed(None);
+                }
                 if self.tree.filter().is_some() {
                     self.clear_filter(cx.editor);
                     return EventResult::Consumed(None);
@@ -1313,6 +1472,21 @@ impl Explorer {
                     // Blank space below the last row: consumed but inert.
                     return EventResult::Consumed(None);
                 }
+                // Ctrl-click marks the row (or unmarks it), Shift-click marks the rows from the
+                // last one marked to it.
+                let before = self.marks.len();
+                if mouse.modifiers.contains(KeyModifiers::CONTROL) {
+                    self.cursor = i;
+                    self.toggle_mark_at(i);
+                    self.report_marks(cx.editor, before);
+                    return EventResult::Consumed(None);
+                }
+                if mouse.modifiers.contains(KeyModifiers::SHIFT) {
+                    self.mark_range_to(i);
+                    self.cursor = i;
+                    self.report_marks(cx.editor, before);
+                    return EventResult::Consumed(None);
+                }
                 self.cursor = i;
                 if mouse.modifiers != KeyModifiers::NONE {
                     return EventResult::Consumed(None);
@@ -1472,136 +1646,142 @@ impl Explorer {
         push_layer(popup)
     }
 
-    /// `r`: asks for the new name of the entry under the cursor.
+    /// `r`: asks for the new name of the entry under the cursor, or of each marked entry in
+    /// turn (one popup after the other, the cursor on the entry being renamed).
     fn on_rename(&self, cx: &mut Context) -> EventResult {
-        let Some(entry) = self.entry_cloned() else {
+        let queue = self.targets();
+        if queue.is_empty() {
             return EventResult::Consumed(None);
-        };
-        if self.tree.is_root(&entry.path) {
+        }
+        if queue.iter().any(|(path, _)| self.tree.is_root(path)) {
             cx.editor.set_error("Cannot rename the explorer root");
             return EventResult::Consumed(None);
         }
-        let from = entry.path.clone();
-        let parent_dir = from
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| self.root.clone());
-        let name = entry.name.clone();
-        let kind = if entry.is_dir { "folder" } else { "file" };
-
-        let popup = ask(
-            cx.editor,
-            format!("Rename {kind} {name}"),
-            Some(name),
-            move |cx: &mut Context, input: &str, event: PromptEvent| {
-                if event != PromptEvent::Validate {
-                    return;
-                }
-                let input = input.trim();
-                if input.is_empty() {
-                    return;
-                }
-                let new_name = match validate_file_name(input) {
-                    Ok(new_name) => new_name,
-                    Err(message) => {
-                        cx.editor.set_error(message);
-                        return;
-                    }
-                };
-                let dest = parent_dir.join(new_name);
-                if dest == from {
-                    return;
-                }
-                // On a case-insensitive file system (macOS, Windows) a new case of the same
-                // name finds the entry itself: that rename is allowed.
-                if std::fs::symlink_metadata(&dest).is_ok() && !same_entry(&from, &dest) {
-                    cx.editor
-                        .set_error(format!("Cannot rename: {} already exists", dest.display()));
-                    return;
-                }
-                match std::fs::rename(&from, &dest) {
-                    Ok(()) => {
-                        // Open buffers follow their file, or saving them
-                        // would recreate it under the old name.
-                        retarget_buffers(cx.editor, &from, &dest);
-                        file_event(
-                            EventType::OnFileRename,
-                            &dest,
-                            path_field("old_path", &from),
-                        );
-                        cx.editor.set_status(format!(
-                            "Renamed {} to {}",
-                            from.display(),
-                            dest.display()
-                        ));
-                    }
-                    Err(err) => cx.editor.set_error(format!(
-                        "Failed to rename {} to {}: {err}",
-                        from.display(),
-                        dest.display()
-                    )),
-                }
-                refresh_after(cx, dest);
-            },
-        );
-        push_layer(popup)
+        let rename = Rename {
+            queue,
+            index: 0,
+            renamed: 0,
+            last: None,
+        };
+        push_layer(rename.popup(cx.editor))
     }
 
-    /// `d`: asks for confirmation, then deletes the entry under the cursor.
+    /// `d`: asks for confirmation, then deletes the entry under the cursor, or all the
+    /// marked entries (one confirmation for all of them).
     fn on_delete(&self, cx: &mut Context) -> EventResult {
-        let Some(entry) = self.entry_cloned() else {
+        let targets = self.targets();
+        if targets.is_empty() {
             return EventResult::Consumed(None);
-        };
-        if self.tree.is_root(&entry.path) {
+        }
+        if targets.iter().any(|(path, _)| self.tree.is_root(path)) {
             cx.editor.set_error("Cannot delete the explorer root");
             return EventResult::Consumed(None);
         }
-        let path = entry.path.clone();
-        let is_dir = entry.is_dir;
-        let keep = path
+        // A marked folder takes what is marked inside it along.
+        let paths = outermost(targets.iter().map(|(path, _)| path.clone()));
+        let targets: Vec<(PathBuf, bool)> = targets
+            .into_iter()
+            .filter(|(path, _)| paths.contains(path))
+            .collect();
+        let keep = targets[0]
+            .0
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| self.root.clone());
-        let (kind, warning) = if entry.is_dir {
+
+        let (title, message) = if let [(path, is_dir)] = targets.as_slice() {
+            let (kind, warning) = if *is_dir {
+                (
+                    "folder",
+                    "The folder and everything inside it will be removed.",
+                )
+            } else {
+                ("file", "The file will be removed.")
+            };
+            let name = path.file_name().map_or_else(
+                || path.display().to_string(),
+                |n| n.to_string_lossy().into(),
+            );
             (
-                "folder",
-                "The folder and everything inside it will be removed.",
+                format!("Delete {kind}"),
+                format!(
+                    "Delete {kind} {name}?\n{}\n\n{warning} This cannot be undone.",
+                    self.display_rel(path)
+                ),
             )
         } else {
-            ("file", "The file will be removed.")
+            let folders = targets.iter().any(|(_, is_dir)| *is_dir);
+            let warning = if folders {
+                "Folders are removed with everything inside them."
+            } else {
+                "The files will be removed."
+            };
+            (
+                format!("Delete {} entries", targets.len()),
+                format!(
+                    "Delete these {} entries?\n{}\n\n{warning} This cannot be undone.",
+                    targets.len(),
+                    self.listing(targets.iter().map(|(path, _)| path.as_path()))
+                ),
+            )
         };
-        let message = format!(
-            "Delete {kind} {}?\n{}\n\n{warning} This cannot be undone.",
-            entry.name,
-            self.display_rel(&path)
-        );
 
         push_layer(ConfirmBox::new(
-            format!("Delete {kind}"),
+            title,
             message,
             "Delete",
             move |_compositor, cx| {
-                cx.editor
-                    .set_status(format!("Deleting {}…", path.display()));
-                let target = path.clone();
+                let count = targets.len();
+                cx.editor.set_status(if count == 1 {
+                    format!("Deleting {}…", targets[0].0.display())
+                } else {
+                    format!("Deleting {count} entries…")
+                });
+                let work: Vec<PathBuf> = targets.iter().map(|(path, _)| path.clone()).collect();
                 // A big tree can take a while to remove: keep the UI alive.
                 run_blocking(
                     cx,
-                    move || remove_path(&target),
+                    move || {
+                        Ok(work
+                            .iter()
+                            .map(|path| remove_path(path).err())
+                            .collect::<Vec<_>>())
+                    },
                     move |editor, compositor, result| {
-                        match result {
-                            Ok(()) => {
-                                file_event(
+                        let errors = result.unwrap_or_else(|err| {
+                            let message = err.to_string();
+                            targets
+                                .iter()
+                                .map(|_| Some(io::Error::other(message.clone())))
+                                .collect()
+                        });
+                        let mut failed = Vec::new();
+                        for ((path, is_dir), error) in targets.iter().zip(errors) {
+                            match error {
+                                None => file_event(
                                     EventType::OnFileDelete,
-                                    &path,
-                                    ("is_dir", EventValue::Bool(is_dir)),
-                                );
-                                editor.set_status(format!("Deleted {}", path.display()))
+                                    path,
+                                    ("is_dir", EventValue::Bool(*is_dir)),
+                                ),
+                                Some(err) => failed.push(format!("{}: {err}", path.display())),
                             }
-                            Err(err) => editor
-                                .set_error(format!("Failed to delete {}: {err}", path.display())),
+                        }
+                        let deleted = count - failed.len();
+                        match (count, failed.first()) {
+                            (1, None) => {
+                                editor.set_status(format!("Deleted {}", targets[0].0.display()))
+                            }
+                            (_, None) => editor.set_status(format!("Deleted {count} entries")),
+                            (1, Some(_)) => {
+                                editor.set_error(format!("Failed to delete {}", failed.join("; ")))
+                            }
+                            (_, Some(_)) => editor.set_error(format!(
+                                "Deleted {deleted} of {count} entries; failed: {}",
+                                failed.join("; ")
+                            )),
                         }
                         if let Some(explorer) = compositor.find_id::<Explorer>(EXPLORER_ID) {
+                            // What is left marked is what could not be deleted.
                             explorer.refresh_keep(editor, Some(keep));
                         }
                     },
@@ -1610,38 +1790,46 @@ impl Explorer {
         ))
     }
 
-    /// `x`: cut into the explorer's clipboard for the next `p`.
-    fn on_cut(&self, cx: &mut Context) -> EventResult {
-        let Some(entry) = self.entry_cloned() else {
+    /// Paths for a confirmation, one per line relative to the root: the first
+    /// [`LISTED_ENTRIES`], then how many more there are.
+    fn listing<'a>(&self, paths: impl ExactSizeIterator<Item = &'a Path>) -> String {
+        let total = paths.len();
+        let mut lines: Vec<String> = paths
+            .take(LISTED_ENTRIES)
+            .map(|path| format!("- {}", self.display_rel(path)))
+            .collect();
+        if total > LISTED_ENTRIES {
+            lines.push(format!("- … and {} more", total - LISTED_ENTRIES));
+        }
+        lines.join("\n")
+    }
+
+    /// `x` and `c`: cut or copy the entry under the cursor, or the marked entries, into the
+    /// explorer's clipboard for the next `p`. The marks go: the clipboard's entries are
+    /// shown with their own glyph.
+    fn on_clip(&mut self, cx: &mut Context, cut: bool) -> EventResult {
+        let targets = self.targets();
+        if targets.is_empty() {
             return EventResult::Consumed(None);
-        };
-        if self.tree.is_root(&entry.path) {
+        }
+        if cut && targets.iter().any(|(path, _)| self.tree.is_root(path)) {
             cx.editor.set_error("Cannot cut the explorer root");
             return EventResult::Consumed(None);
         }
-        cx.editor.explorer_clipboard = Some(ExplorerClipboard {
-            path: entry.path,
-            cut: true,
+        let paths = outermost(targets.into_iter().map(|(path, _)| path));
+        let count = paths.len();
+        cx.editor.explorer_clipboard = Some(ExplorerClipboard { paths, cut });
+        self.clear_marks();
+        let what = if cut { "cut" } else { "copied" };
+        cx.editor.set_status(match count {
+            1 => format!("Explorer: {what}"),
+            n => format!("Explorer: {what} {n} entries (p to paste them)"),
         });
-        // Selection changes are not required for paste to work.
-        cx.editor.set_status("Explorer: cut");
         EventResult::Consumed(None)
     }
 
-    /// `c`: copy into the explorer's clipboard for the next `p`.
-    fn on_copy(&self, cx: &mut Context) -> EventResult {
-        let Some(entry) = self.entry_cloned() else {
-            return EventResult::Consumed(None);
-        };
-        cx.editor.explorer_clipboard = Some(ExplorerClipboard {
-            path: entry.path,
-            cut: false,
-        });
-        cx.editor.set_status("Explorer: copied");
-        EventResult::Consumed(None)
-    }
-
-    /// `p`: paste the clipboard entry in/beside the selection.
+    /// `p`: paste the clipboard's entries in/beside the selection, after one confirmation
+    /// for all of those that would overwrite something.
     fn on_paste(&self, cx: &mut Context) -> EventResult {
         let Some(clip) = cx.editor.explorer_clipboard.clone() else {
             cx.editor.set_error("Explorer clipboard is empty");
@@ -1649,38 +1837,65 @@ impl Explorer {
         };
 
         let target_dir = self.mutation_target();
-        let Some(source_name) = clip.path.file_name() else {
-            cx.editor.set_error("Explorer clipboard has no file name");
-            return EventResult::Consumed(None);
-        };
-        let dest = target_dir.join(source_name);
-
-        if dest == clip.path {
-            cx.editor.set_error("Pasting back onto the original path");
-            return EventResult::Consumed(None);
-        }
-        if helix_view::explorer::is_within(&dest, &clip.path) {
-            cx.editor
-                .set_error("Cannot paste a path into its own subtree");
-            return EventResult::Consumed(None);
+        let mut moves: Vec<(PathBuf, PathBuf)> = Vec::with_capacity(clip.paths.len());
+        for from in &clip.paths {
+            let Some(source_name) = from.file_name() else {
+                cx.editor.set_error("Explorer clipboard has no file name");
+                return EventResult::Consumed(None);
+            };
+            let dest = target_dir.join(source_name);
+            if &dest == from {
+                cx.editor.set_error(if clip.paths.len() == 1 {
+                    "Pasting back onto the original path".to_string()
+                } else {
+                    format!("Pasting {} back onto itself", self.display_rel(from))
+                });
+                return EventResult::Consumed(None);
+            }
+            if helix_view::explorer::is_within(&dest, from) {
+                cx.editor
+                    .set_error("Cannot paste a path into its own subtree");
+                return EventResult::Consumed(None);
+            }
+            if moves.iter().any(|(_, to)| to == &dest) {
+                cx.editor.set_error(format!(
+                    "Cannot paste two entries named {} into one folder",
+                    source_name.to_string_lossy()
+                ));
+                return EventResult::Consumed(None);
+            }
+            moves.push((from.clone(), dest));
         }
 
         // Not `exists`: a dangling link at `dest` is replaced as well.
-        if std::fs::symlink_metadata(&dest).is_ok() {
-            let message = format!(
-                "{} already exists.\nIts contents will be overwritten.",
-                self.display_rel(&dest)
-            );
-            push_layer(ConfirmBox::new(
-                "Overwrite",
-                message,
-                "Overwrite",
-                move |_compositor, cx| paste_now(cx, &clip, &dest),
-            ))
-        } else {
-            paste_now(cx, &clip, &dest);
-            EventResult::Consumed(None)
+        let overwritten: Vec<&Path> = moves
+            .iter()
+            .map(|(_, to)| to.as_path())
+            .filter(|to| std::fs::symlink_metadata(to).is_ok())
+            .collect();
+        if overwritten.is_empty() {
+            paste_now(cx, clip.cut, moves);
+            return EventResult::Consumed(None);
         }
+        let message = if let [dest] = overwritten.as_slice() {
+            format!(
+                "{} already exists.\nIts contents will be overwritten.",
+                self.display_rel(dest)
+            )
+        } else {
+            format!(
+                "These {} entries already exist:\n{}\n\nTheir contents will be overwritten.",
+                overwritten.len(),
+                self.listing(overwritten.iter().copied())
+            )
+        };
+        let cut = clip.cut;
+        push_layer(ConfirmBox::new(
+            "Overwrite",
+            message,
+            "Overwrite",
+            move |_compositor, cx| paste_now(cx, cut, moves.clone()),
+        ))
     }
 
     // --------------------------------------------------------------------
@@ -1821,54 +2036,278 @@ fn transfer(from: &Path, to: &Path, cut: bool) -> io::Result<Option<io::Error>> 
     Ok(if cut { remove_path(from).err() } else { None })
 }
 
-/// Paste implementation shared by plain paste and overwrite confirmation. The
-/// work happens off the UI thread.
-fn paste_now(cx: &mut Context, clip: &ExplorerClipboard, dest: &Path) {
-    let (from, to, cut) = (clip.path.clone(), dest.to_path_buf(), clip.cut);
-    cx.editor.set_status(format!(
-        "{} {}…",
-        if cut { "Moving" } else { "Copying" },
-        from.display()
-    ));
-    let (work_from, work_to) = (from.clone(), to.clone());
+/// Paste implementation shared by plain paste and overwrite confirmation: moves (`cut`) or
+/// copies each `(from, to)`. The work happens off the UI thread.
+fn paste_now(cx: &mut Context, cut: bool, moves: Vec<(PathBuf, PathBuf)>) {
+    let Some((first_from, first_to)) = moves.first().cloned() else {
+        return;
+    };
+    let count = moves.len();
+    let doing = if cut { "Moving" } else { "Copying" };
+    cx.editor.set_status(if count == 1 {
+        format!("{doing} {}…", first_from.display())
+    } else {
+        format!("{doing} {count} entries…")
+    });
+    let work = moves.clone();
     run_blocking(
         cx,
-        move || transfer(&work_from, &work_to, cut),
+        move || {
+            Ok(work
+                .iter()
+                .map(|(from, to)| transfer(from, to, cut))
+                .collect::<Vec<_>>())
+        },
         move |editor, compositor, result| {
-            match result {
-                Err(err) => {
-                    editor.set_error(format!(
-                        "Failed to paste {} to {}: {err}",
-                        from.display(),
-                        to.display()
-                    ));
-                    return;
-                }
-                Ok(None) if !cut => {
-                    file_event(EventType::OnFileCopy, &to, path_field("source", &from));
-                    editor.set_status(format!("Copied {} to {}", from.display(), to.display()))
-                }
-                Ok(None) => {
-                    editor.explorer_clipboard = None;
-                    retarget_buffers(editor, &from, &to);
-                    file_event(EventType::OnFileRename, &to, path_field("old_path", &from));
-                    editor.set_status(format!("Moved {} to {}", from.display(), to.display()));
-                }
-                Ok(Some(err)) => {
-                    // The copy succeeded, removing the original did not: keep
-                    // the clipboard entry so the cut can be retried.
-                    editor.set_error(format!(
-                        "Copied {} to {} but failed to remove the original: {err}",
-                        from.display(),
-                        to.display()
-                    ));
+            let results = result.unwrap_or_else(|err| {
+                let message = err.to_string();
+                moves
+                    .iter()
+                    .map(|_| Err(io::Error::other(message.clone())))
+                    .collect()
+            });
+            let mut failed = Vec::new();
+            // the cut entries still where they were, to paste again
+            let mut left: Vec<PathBuf> = Vec::new();
+            for ((from, to), result) in moves.iter().zip(results) {
+                match result {
+                    Err(err) => {
+                        failed.push(format!("{} to {}: {err}", from.display(), to.display()));
+                        left.push(from.clone());
+                    }
+                    Ok(None) if !cut => {
+                        file_event(EventType::OnFileCopy, to, path_field("source", from))
+                    }
+                    Ok(None) => {
+                        retarget_buffers(editor, from, to);
+                        file_event(EventType::OnFileRename, to, path_field("old_path", from));
+                    }
+                    Ok(Some(err)) => {
+                        // The copy succeeded, removing the original did not: keep the
+                        // clipboard entry so the cut can be retried.
+                        failed.push(format!(
+                            "copied {} to {} but failed to remove the original: {err}",
+                            from.display(),
+                            to.display()
+                        ));
+                        left.push(from.clone());
+                    }
                 }
             }
+            if cut {
+                editor.explorer_clipboard = (!left.is_empty()).then_some(ExplorerClipboard {
+                    paths: left,
+                    cut: true,
+                });
+            }
+            let done = if cut { "Moved" } else { "Copied" };
+            match (count, failed.is_empty()) {
+                (1, true) => editor.set_status(format!(
+                    "{done} {} to {}",
+                    first_from.display(),
+                    first_to.display()
+                )),
+                (_, true) => editor.set_status(format!(
+                    "{done} {count} entries to {}",
+                    first_to.parent().unwrap_or(&first_to).display()
+                )),
+                (1, false) => editor.set_error(format!("Failed to paste {}", failed.join("; "))),
+                (_, false) => editor.set_error(format!(
+                    "{done} {} of {count} entries; failed: {}",
+                    count - failed.len(),
+                    failed.join("; ")
+                )),
+            }
             if let Some(explorer) = compositor.find_id::<Explorer>(EXPLORER_ID) {
-                explorer.refresh_reveal(editor, to);
+                explorer.refresh_reveal(editor, first_to);
             }
         },
     );
+}
+
+/// Whether `path` is a folder (a link to one included).
+fn is_folder(path: &Path) -> bool {
+    path.is_dir()
+}
+
+/// A rename of one entry or of several, one popup after the other.
+#[derive(Clone)]
+struct Rename {
+    /// The entries to rename, each with whether it is a folder.
+    queue: Vec<(PathBuf, bool)>,
+    /// The entry being renamed.
+    index: usize,
+    /// How many were renamed so far.
+    renamed: usize,
+    /// Where the last renamed entry is now, for the cursor to land on.
+    last: Option<PathBuf>,
+}
+
+impl Rename {
+    /// The popup asking for the new name of the entry at `index`.
+    fn popup(self, editor: &Editor) -> CmdlinePopup {
+        let (path, is_dir) = self.queue[self.index].clone();
+        let name = path
+            .file_name()
+            .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+        let kind = if is_dir { "folder" } else { "file" };
+        let total = self.queue.len();
+        let title = if total == 1 {
+            format!("Rename {kind} {name}")
+        } else {
+            format!("Rename {} of {total}: {kind} {name}", self.index + 1)
+        };
+        let mut state = Some(self);
+        ask(
+            editor,
+            title,
+            Some(name),
+            move |cx: &mut Context, input: &str, event: PromptEvent| {
+                let rename = match event {
+                    PromptEvent::Validate | PromptEvent::Abort => state.take(),
+                    PromptEvent::Update => return,
+                };
+                let Some(rename) = rename else {
+                    return;
+                };
+                if event == PromptEvent::Abort {
+                    rename.stop(cx);
+                } else {
+                    rename.answer(cx, input.trim());
+                }
+            },
+        )
+    }
+
+    /// The name typed for the entry at `index`: renames it, then asks for the next one. An
+    /// empty or unchanged name leaves the entry as it is; a name that can't be used asks
+    /// again.
+    fn answer(mut self, cx: &mut Context, input: &str) {
+        let (from, _) = self.queue[self.index].clone();
+        let parent_dir = from.parent().map(Path::to_path_buf).unwrap_or_default();
+        if !input.is_empty() {
+            let new_name = match validate_file_name(input) {
+                Ok(new_name) => new_name,
+                Err(message) => {
+                    cx.editor.set_error(message);
+                    return self.ask_again(cx);
+                }
+            };
+            let dest = parent_dir.join(new_name);
+            if dest != from {
+                // On a case-insensitive file system (macOS, Windows) a new case of the same
+                // name finds the entry itself: that rename is allowed.
+                if std::fs::symlink_metadata(&dest).is_ok() && !same_entry(&from, &dest) {
+                    cx.editor
+                        .set_error(format!("Cannot rename: {} already exists", dest.display()));
+                    return self.ask_again(cx);
+                }
+                match std::fs::rename(&from, &dest) {
+                    Ok(()) => {
+                        // Open buffers follow their file, or saving them
+                        // would recreate it under the old name.
+                        retarget_buffers(cx.editor, &from, &dest);
+                        file_event(
+                            EventType::OnFileRename,
+                            &dest,
+                            path_field("old_path", &from),
+                        );
+                        cx.editor.set_status(format!(
+                            "Renamed {} to {}",
+                            from.display(),
+                            dest.display()
+                        ));
+                        self.moved(&from, &dest);
+                        self.renamed += 1;
+                        self.last = Some(dest);
+                    }
+                    Err(err) => {
+                        cx.editor.set_error(format!(
+                            "Failed to rename {} to {}: {err}",
+                            from.display(),
+                            dest.display()
+                        ));
+                        return self.ask_again(cx);
+                    }
+                }
+            }
+        }
+        self.index += 1;
+        if self.index < self.queue.len() {
+            self.ask_again(cx);
+        } else {
+            self.finish(cx, false);
+        }
+    }
+
+    /// The entries still to rename that were inside `from`, now inside `to`.
+    fn moved(&mut self, from: &Path, to: &Path) {
+        for (path, _) in &mut self.queue[self.index + 1..] {
+            if let Ok(rest) = path.strip_prefix(from) {
+                *path = to.join(rest);
+            }
+        }
+    }
+
+    /// Asks for the name of the entry at `index` (again, after a name that couldn't be used),
+    /// with the explorer's cursor on it.
+    fn ask_again(self, cx: &mut Context) {
+        let path = self.queue[self.index].0.clone();
+        let last = self.last.clone();
+        let call: Callback = Callback::EditorCompositor(Box::new(move |editor, compositor| {
+            if let Some(explorer) = compositor.find_id::<Explorer>(EXPLORER_ID) {
+                // the renamed entries' marks follow them
+                if let Some(last) = last {
+                    explorer.marks.insert(last);
+                }
+                explorer.refresh_reveal(editor, path);
+            }
+            compositor.push(Box::new(self.popup(editor)));
+        }));
+        cx.jobs.callback(async move { Ok(call) });
+    }
+
+    /// Escape: the entries not renamed yet stay as they are.
+    fn stop(self, cx: &mut Context) {
+        if self.queue.len() > 1 {
+            cx.editor.set_status(format!(
+                "Renamed {} of {} entries: stopped",
+                self.renamed,
+                self.queue.len()
+            ));
+        }
+        self.finish(cx, true);
+    }
+
+    /// The rename is over: the marks go (unless stopped half way, when the entries left
+    /// stay marked) and the cursor goes to the last entry renamed.
+    fn finish(self, cx: &mut Context, stopped: bool) {
+        let total = self.queue.len();
+        if total > 1 && !stopped {
+            cx.editor
+                .set_status(format!("Renamed {} of {total} entries", self.renamed));
+        }
+        let show = self.last.clone();
+        let left: Vec<PathBuf> = if stopped {
+            self.queue[self.index..]
+                .iter()
+                .map(|(path, _)| path.clone())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let call: Callback = Callback::EditorCompositor(Box::new(move |editor, compositor| {
+            if let Some(explorer) = compositor.find_id::<Explorer>(EXPLORER_ID) {
+                explorer.clear_marks();
+                explorer.marks.extend(left);
+                match show {
+                    Some(path) => explorer.refresh_reveal(editor, path),
+                    None => explorer.refresh_keep(editor, None),
+                }
+            }
+        }));
+        cx.jobs.callback(async move { Ok(call) });
+    }
 }
 
 /// Queues a plugin event about a file the explorer changed: its `path` and `extra`.
@@ -2246,8 +2685,12 @@ impl Component for Explorer {
         if boxed {
             self.render_filter_box(Rect::new(rect.x, rect.y, rect.width, 3), surface, cx.editor);
         } else if header > 0 && !self.filter_editing && self.filter.is_empty() {
-            // The folder the tree starts in, until there is a filter to show.
-            let label = root_label(&self.root, self.input_area.width as usize);
+            // The folder the tree starts in, until there is a filter to show; what is being
+            // worked on (marks, the clipboard) while there is some.
+            let label = match self.work_label(cx.editor) {
+                Some(work) => work,
+                None => root_label(&self.root, self.input_area.width as usize),
+            };
             // The root is always on the path to the cursor.
             for x in 0..self.input_area.width {
                 surface[(self.input_area.x + x, self.input_area.y)].set_style(path_style);
@@ -2311,6 +2754,10 @@ impl Component for Explorer {
         let guides = cx.editor.config().explorer.indent_guides;
         let show_git = cx.editor.config().explorer.git_status;
         let path = PathInfo::new(self.tree.visible(), self.cursor);
+        let marked_style = explorer_marked_style(&cx.editor.theme);
+        let clipboard_style = explorer_clipboard_style(&cx.editor.theme);
+        let clipboard = cx.editor.explorer_clipboard.as_ref();
+        let marks = &self.marks;
         let matcher = &mut self.matcher;
         let mut indices: Vec<u32> = Vec::new();
 
@@ -2373,10 +2820,16 @@ impl Component for Explorer {
                         d.name_style.as_deref(),
                     )
                 });
+            let marked = !entry.is_parent && marks.contains(&entry.path);
             let name_spans = |base: Style| -> Vec<Span<'static>> {
                 let base = match name_color {
                     Some(color) => base.patch(color),
                     None => base,
+                };
+                let base = if marked {
+                    base.patch(marked_style)
+                } else {
+                    base
                 };
                 if highlight {
                     highlighted_name(&entry.name, &indices, base, match_style)
@@ -2403,6 +2856,15 @@ impl Component for Explorer {
                 spans.push(Span::styled(prefix, style));
             } else {
                 spans.push(Span::styled(prefix, tree_style));
+            }
+            // What is being worked on: the marked entries, and those in the clipboard.
+            if marked {
+                spans.push(Span::styled(MARK_GLYPH, marked_style));
+            } else if let Some(clip) =
+                clipboard.filter(|clip| !entry.is_parent && clip.paths.contains(&entry.path))
+            {
+                let glyph = if clip.cut { CUT_GLYPH } else { COPY_GLYPH };
+                spans.push(Span::styled(glyph, clipboard_style));
             }
             if entry.is_dir {
                 // Expanded and collapsed folders get their own glyphs.
@@ -2526,6 +2988,22 @@ fn explorer_border_style(
     fallback: helix_view::graphics::Style,
 ) -> helix_view::graphics::Style {
     theme.try_get("ui.explorer.border").unwrap_or(fallback)
+}
+
+/// Style of the marked entries' glyph and names: `ui.explorer.marked`, else
+/// `ui.text.focus`.
+fn explorer_marked_style(theme: &helix_view::Theme) -> Style {
+    theme
+        .try_get("ui.explorer.marked")
+        .unwrap_or_else(|| theme.get("ui.text.focus"))
+}
+
+/// Style of the glyph of the entries in the explorer's clipboard: `ui.explorer.clipboard`,
+/// else `ui.text.inactive`.
+fn explorer_clipboard_style(theme: &helix_view::Theme) -> Style {
+    theme
+        .try_get("ui.explorer.clipboard")
+        .unwrap_or_else(|| theme.get("ui.text.inactive"))
 }
 
 /// Style of the path to the cursor: the root row, the ancestors of the cursor and the
@@ -2860,6 +3338,37 @@ mod tests {
         assert!(validate_relative_path("/etc/passwd").is_err());
         assert!(validate_relative_path("./x").is_err());
         assert!(validate_relative_path("").is_err());
+    }
+
+    #[test]
+    fn a_renamed_folder_takes_the_entries_queued_inside_it_along() {
+        let mut rename = Rename {
+            queue: vec![
+                (PathBuf::from("/r/sub"), true),
+                (PathBuf::from("/r/sub/b.txt"), false),
+                (PathBuf::from("/r/subway.txt"), false),
+            ],
+            index: 0,
+            renamed: 0,
+            last: None,
+        };
+        rename.moved(Path::new("/r/sub"), Path::new("/r/lib"));
+        let paths: Vec<&Path> = rename
+            .queue
+            .iter()
+            .map(|(path, _)| path.as_path())
+            .collect();
+        assert_eq!(
+            paths,
+            [
+                Path::new("/r/sub"),
+                Path::new("/r/lib/b.txt"),
+                Path::new("/r/subway.txt")
+            ],
+            "only what follows and is inside the folder moves"
+        );
+        let folder: Vec<bool> = rename.queue.iter().map(|(_, is_dir)| *is_dir).collect();
+        assert_eq!(folder, [true, false, false]);
     }
 
     #[test]

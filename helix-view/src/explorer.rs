@@ -101,12 +101,28 @@ impl Default for ExplorerConfig {
 // Runtime state
 // ---------------------------------------------------------------------------
 
-/// An entry in the explorer clipboard. `cut` items are moved on paste,
-/// otherwise copied.
+/// The entries in the explorer clipboard (the marked entries, or the one under the cursor,
+/// when they were cut or copied). `cut` entries are moved on paste, otherwise copied.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExplorerClipboard {
-    pub path: PathBuf,
+    pub paths: Vec<PathBuf>,
     pub cut: bool,
+}
+
+/// `paths` without those inside another of them (a folder's entries go with the folder),
+/// in order.
+pub fn outermost(paths: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
+    let mut paths: Vec<PathBuf> = paths.into_iter().collect();
+    paths.sort();
+    paths.dedup();
+    let mut kept: Vec<PathBuf> = Vec::with_capacity(paths.len());
+    for path in paths {
+        // sorted: an ancestor comes right before its descendants
+        if !kept.last().is_some_and(|last| path.starts_with(last)) {
+            kept.push(path);
+        }
+    }
+    kept
 }
 
 /// What plugins see of the explorer and ask of it (`helix.explorer`). The explorer publishes
@@ -1848,6 +1864,26 @@ mod tests {
 
     fn names(tree: &Tree) -> Vec<String> {
         tree.visible().iter().map(|e| e.name.clone()).collect()
+    }
+
+    #[test]
+    fn outermost_drops_what_is_inside_another_path() {
+        let paths = [
+            "/r/b.txt",
+            "/r/a/x.txt",
+            "/r/a",
+            "/r/ab",
+            "/r/a/y/z",
+            "/r/b.txt",
+        ]
+        .map(PathBuf::from);
+        let kept: Vec<PathBuf> = outermost(paths);
+        assert_eq!(
+            kept,
+            ["/r/a", "/r/ab", "/r/b.txt"].map(PathBuf::from).to_vec(),
+            "a folder keeps its entries, a name that only starts like it doesn't"
+        );
+        assert_eq!(outermost(Vec::<PathBuf>::new()), Vec::<PathBuf>::new());
     }
 
     #[test]

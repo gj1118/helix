@@ -1180,3 +1180,353 @@ async fn a_directory_argument_opens_the_explorer_when_set() -> anyhow::Result<()
     .await?;
     Ok(())
 }
+
+/// Sends `keys` without quitting at the end, as `test_key_sequences` does.
+async fn send_keys(app: &mut Application, keys: &str) -> anyhow::Result<()> {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    for key in helix_view::input::parse_macro(keys)? {
+        tx.send(Ok(termina::Event::Key(key.into())))?;
+    }
+    drop(tx);
+    let mut stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
+    app.event_loop_until_idle(&mut stream).await;
+    Ok(())
+}
+
+/// Lets the file operations running off the UI thread finish until `done` holds.
+async fn wait_until(
+    app: &mut Application,
+    what: &str,
+    done: impl Fn(&Application) -> bool,
+) -> anyhow::Result<()> {
+    for _ in 0..100 {
+        if done(app) {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        let mut stream = tokio_stream::wrappers::UnboundedReceiverStream::new(
+            tokio::sync::mpsc::unbounded_channel().1,
+        );
+        app.event_loop_until_idle(&mut stream).await;
+    }
+    anyhow::bail!("timed out waiting for {what}")
+}
+
+fn explorer(app: &Application) -> &Explorer {
+    app.compositor
+        .get_id::<Explorer>(EXPLORER_ID)
+        .expect("the explorer is open")
+}
+
+/// Moves the tree's cursor to the entry named `name`.
+async fn goto(app: &mut Application, name: &str) -> anyhow::Result<()> {
+    send_keys(app, "gg").await?;
+    for _ in 0..50 {
+        let here = explorer(app)
+            .cursor_path()
+            .and_then(|path| path.file_name())
+            .is_some_and(|file| file == name);
+        if here {
+            return Ok(());
+        }
+        send_keys(app, "j").await?;
+    }
+    anyhow::bail!("no row named {name}")
+}
+
+/// The names of the marked entries.
+fn marked(app: &Application) -> Vec<String> {
+    explorer(app)
+        .marked()
+        .iter()
+        .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+        .collect()
+}
+
+fn panel_rows(app: &Application) -> Vec<String> {
+    app.rendered_rows()
+        .iter()
+        .map(|row| row.chars().take(PANEL_WIDTH).collect())
+        .collect()
+}
+
+/// A folder with `a.txt` to `d.txt` and the folder `dest`.
+fn four_files() -> anyhow::Result<(tempfile::TempDir, std::path::PathBuf)> {
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().canonicalize()?;
+    std::fs::create_dir(root.join("dest"))?;
+    for name in ["a.txt", "b.txt", "c.txt", "d.txt"] {
+        std::fs::write(root.join(name), format!("{name}\n"))?;
+    }
+    Ok((dir, root))
+}
+
+/// `m` marks entries that are not next to each other; the marked ones show a `●` and the
+/// header counts them; `d` deletes them all after one confirmation.
+#[tokio::test(flavor = "multi_thread")]
+async fn marked_entries_are_shown_and_deleted_together() -> anyhow::Result<()> {
+    let (_dir, root) = four_files()?;
+    let mut app = helpers::AppBuilder::new().with_config(config("")).build()?;
+    open_explorer(&mut app, &root);
+
+    goto(&mut app, "a.txt").await?;
+    // `m` moves down: a marked, b skipped, c marked
+    send_keys(&mut app, "mjm").await?;
+    assert_eq!(marked(&app), vec!["a.txt".to_string(), "c.txt".to_string()]);
+    let cursor: Option<String> = explorer(&app)
+        .cursor_path()
+        .map(|path| path.file_name().unwrap().to_string_lossy().into_owned());
+    assert_eq!(cursor.as_deref(), Some("d.txt"), "m moved down after c");
+    {
+        let rows = panel_rows(&app);
+        let text = rows.join("\n");
+        assert!(row(&rows, "a.txt").contains("● a.txt"), "{text}");
+        assert!(row(&rows, "c.txt").contains("● c.txt"), "{text}");
+        assert!(!row(&rows, "b.txt").contains('●'), "{text}");
+        assert!(rows[0].contains("Explorer · 2 marked"), "{text}");
+    }
+
+    // `m` on a marked entry unmarks it, then mark it back
+    goto(&mut app, "c.txt").await?;
+    send_keys(&mut app, "m").await?;
+    assert_eq!(marked(&app), vec!["a.txt".to_string()]);
+    goto(&mut app, "c.txt").await?;
+    send_keys(&mut app, "m").await?;
+    assert_eq!(marked(&app).len(), 2_usize);
+
+    // the confirmation lists both, whatever is under the cursor
+    goto(&mut app, "b.txt").await?;
+    send_keys(&mut app, "d").await?;
+    {
+        let text = app.rendered_rows().join("\n");
+        assert!(text.contains("Delete 2 entries"), "{text}");
+        assert!(
+            text.contains("- a.txt") && text.contains("- c.txt"),
+            "{text}"
+        );
+        assert!(
+            !text.contains("- b.txt"),
+            "the cursor's entry is not deleted:\n{text}"
+        );
+    }
+    send_keys(&mut app, "y").await?;
+    wait_until(&mut app, "the delete", |_| {
+        !root.join("a.txt").exists() && !root.join("c.txt").exists()
+    })
+    .await?;
+    assert!(root.join("b.txt").is_file(), "b.txt was not marked");
+    assert!(root.join("d.txt").is_file(), "d.txt was not marked");
+    wait_until(&mut app, "the marks to go", |app| marked(app).is_empty()).await?;
+    assert_eq!(
+        app.editor
+            .get_status()
+            .map(|(s, _)| s.to_string())
+            .as_deref(),
+        Some("Deleted 2 entries")
+    );
+    Ok(())
+}
+
+/// `M` marks the rows from the last one marked to the cursor; `x` cuts them (the marks go,
+/// a `→` shows what will move) and `p` moves them all into the folder under the cursor.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_range_is_marked_and_moved_together() -> anyhow::Result<()> {
+    let (_dir, root) = four_files()?;
+    let mut app = helpers::AppBuilder::new().with_config(config("")).build()?;
+    open_explorer(&mut app, &root);
+
+    goto(&mut app, "a.txt").await?;
+    send_keys(&mut app, "m").await?;
+    goto(&mut app, "c.txt").await?;
+    send_keys(&mut app, "M").await?;
+    assert_eq!(
+        marked(&app),
+        vec![
+            "a.txt".to_string(),
+            "b.txt".to_string(),
+            "c.txt".to_string()
+        ]
+    );
+
+    // the root can't be marked
+    send_keys(&mut app, "ggj").await?;
+    assert_eq!(explorer(&app).cursor_path(), Some(root.as_path()));
+    send_keys(&mut app, "m").await?;
+    assert_eq!(marked(&app).len(), 3_usize, "the root was marked");
+
+    send_keys(&mut app, "x").await?;
+    assert!(marked(&app).is_empty(), "the marks went into the clipboard");
+    let clip = app.editor.explorer_clipboard.clone().expect("a clipboard");
+    assert!(clip.cut);
+    assert_eq!(clip.paths.len(), 3_usize);
+    {
+        let rows = panel_rows(&app);
+        let text = rows.join("\n");
+        assert!(row(&rows, "b.txt").contains("→ b.txt"), "{text}");
+        assert!(!row(&rows, "d.txt").contains('→'), "{text}");
+        assert!(rows[0].contains("Explorer · 3 to move"), "{text}");
+    }
+
+    goto(&mut app, "dest").await?;
+    send_keys(&mut app, "p").await?;
+    wait_until(&mut app, "the move", |app| {
+        app.editor.explorer_clipboard.is_none()
+    })
+    .await?;
+    for name in ["a.txt", "b.txt", "c.txt"] {
+        assert!(root.join("dest").join(name).is_file(), "{name} moved");
+        assert!(!root.join(name).exists(), "{name} left");
+    }
+    assert!(root.join("d.txt").is_file());
+    assert_eq!(
+        std::fs::read_to_string(root.join("dest/b.txt"))?,
+        "b.txt\n".to_string()
+    );
+    Ok(())
+}
+
+/// Copied entries that would overwrite something are confirmed once, together.
+#[tokio::test(flavor = "multi_thread")]
+async fn pasting_over_several_entries_asks_once() -> anyhow::Result<()> {
+    let (_dir, root) = four_files()?;
+    std::fs::write(root.join("dest/a.txt"), "old a\n")?;
+    std::fs::write(root.join("dest/b.txt"), "old b\n")?;
+    let mut app = helpers::AppBuilder::new().with_config(config("")).build()?;
+    open_explorer(&mut app, &root);
+
+    goto(&mut app, "a.txt").await?;
+    send_keys(&mut app, "mmm").await?;
+    send_keys(&mut app, "c").await?;
+    {
+        let rows = panel_rows(&app);
+        assert!(
+            row(&rows, "c.txt").contains("+ c.txt"),
+            "{}",
+            rows.join("\n")
+        );
+    }
+    goto(&mut app, "dest").await?;
+    send_keys(&mut app, "p").await?;
+    {
+        let text = app.rendered_rows().join("\n");
+        assert!(text.contains("These 2 entries already exist"), "{text}");
+    }
+    send_keys(&mut app, "y").await?;
+    wait_until(&mut app, "the copy", |_| root.join("dest/c.txt").is_file()).await?;
+    assert_eq!(
+        std::fs::read_to_string(root.join("dest/a.txt"))?,
+        "a.txt\n".to_string()
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("dest/b.txt"))?,
+        "b.txt\n".to_string()
+    );
+    assert!(root.join("a.txt").is_file(), "a copy keeps the original");
+    assert!(
+        app.editor.explorer_clipboard.is_some(),
+        "a copy can be pasted again"
+    );
+    Ok(())
+}
+
+/// `r` with marked entries asks for each new name in turn, with the cursor on the entry; an
+/// unchanged name skips it, and Esc stops, leaving the rest marked.
+#[tokio::test(flavor = "multi_thread")]
+async fn marked_entries_are_renamed_one_after_the_other() -> anyhow::Result<()> {
+    let (_dir, root) = four_files()?;
+    let mut app = helpers::AppBuilder::new().with_config(config("")).build()?;
+    open_explorer(&mut app, &root);
+
+    goto(&mut app, "a.txt").await?;
+    send_keys(&mut app, "mmmm").await?;
+    assert_eq!(marked(&app).len(), 4_usize);
+
+    send_keys(&mut app, "r").await?;
+    {
+        let text = app.rendered_rows().join("\n");
+        assert!(text.contains("Rename 1 of 4: file a.txt"), "{text}");
+    }
+    send_keys(&mut app, "<C-u>x.txt<ret>").await?;
+    wait_until(&mut app, "the second popup", |app| {
+        app.rendered_rows()
+            .join("\n")
+            .contains("Rename 2 of 4: file b.txt")
+    })
+    .await?;
+    assert!(root.join("x.txt").is_file() && !root.join("a.txt").exists());
+    let on_b = explorer(&app)
+        .cursor_path()
+        .is_some_and(|path| path.ends_with("b.txt"));
+    assert!(on_b, "the cursor is on the entry being renamed");
+
+    // unchanged: skipped
+    send_keys(&mut app, "<ret>").await?;
+    wait_until(&mut app, "the third popup", |app| {
+        app.rendered_rows()
+            .join("\n")
+            .contains("Rename 3 of 4: file c.txt")
+    })
+    .await?;
+    // a name that exists asks again
+    send_keys(&mut app, "<C-u>d.txt<ret>").await?;
+    wait_until(&mut app, "the same popup again", |app| {
+        app.rendered_rows()
+            .join("\n")
+            .contains("Rename 3 of 4: file c.txt")
+    })
+    .await?;
+    assert!(
+        root.join("c.txt").is_file(),
+        "c.txt was not renamed over d.txt"
+    );
+    send_keys(&mut app, "<C-u>z.txt<ret>").await?;
+    wait_until(&mut app, "the last popup", |app| {
+        app.rendered_rows()
+            .join("\n")
+            .contains("Rename 4 of 4: file d.txt")
+    })
+    .await?;
+
+    // Esc: d.txt stays as it is, and marked
+    send_keys(&mut app, "<esc>").await?;
+    wait_until(&mut app, "the marks", |app| {
+        marked(app) == vec!["d.txt".to_string()]
+    })
+    .await?;
+    assert_eq!(
+        app.editor
+            .get_status()
+            .map(|(s, _)| s.to_string())
+            .as_deref(),
+        Some("Renamed 2 of 4 entries: stopped")
+    );
+    for name in ["x.txt", "b.txt", "z.txt", "d.txt"] {
+        assert!(root.join(name).is_file(), "{name}");
+    }
+    for name in ["a.txt", "c.txt"] {
+        assert!(!root.join(name).exists(), "{name}");
+    }
+
+    // `u` unmarks everything
+    send_keys(&mut app, "u").await?;
+    assert!(marked(&app).is_empty());
+    Ok(())
+}
+
+/// Esc unmarks before it clears a filter or leaves the panel.
+#[tokio::test(flavor = "multi_thread")]
+async fn escape_unmarks_first() -> anyhow::Result<()> {
+    let (_dir, root) = four_files()?;
+    let mut app = helpers::AppBuilder::new().with_config(config("")).build()?;
+    open_explorer(&mut app, &root);
+    goto(&mut app, "a.txt").await?;
+    send_keys(&mut app, "m<esc>").await?;
+    assert!(marked(&app).is_empty());
+    assert!(
+        app.editor.explorer_panel.focused,
+        "the tree kept the keyboard"
+    );
+    send_keys(&mut app, "<esc>").await?;
+    assert!(!app.editor.explorer_panel.focused);
+    Ok(())
+}

@@ -210,13 +210,47 @@ tree's own (open, rename, delete, ...) take precedence over the keymap.
 |`/` | Focus the filter box at the top of the panel (see below) |
 |`a` | Create a file (or a directory when the name ends in `/`) in the selected directory, or beside the selected file; at the root when nothing is selected |
 |`A` | Create a directory in the same place |
-|`r` | Rename the entry under the cursor (the popup is titled `Rename file <name>` / `Rename folder <name>` and prefilled). Open buffers of the file follow it. Changing only the case of the name (`readme.md` to `README.md`) also works on case-insensitive file systems (macOS, Windows) |
-|`d` | Delete the entry under the cursor; a confirmation box opens first and defaults to Cancel |
-|`x` | Cut the entry under the cursor |
-|`c` | Copy the entry under the cursor |
-|`p` | Paste from the explorer clipboard into the directory under the cursor. FIFOs, sockets and devices inside a copied folder are skipped |
+|`r` | Rename the entry under the cursor (the popup is titled `Rename file <name>` / `Rename folder <name>` and prefilled), or each marked entry in turn (see below). Open buffers of the file follow it. Changing only the case of the name (`readme.md` to `README.md`) also works on case-insensitive file systems (macOS, Windows) |
+|`d` | Delete the entry under the cursor, or all the marked entries; one confirmation box opens first and defaults to Cancel |
+|`x` | Cut the entry under the cursor, or the marked entries, to move them with `p` |
+|`c` | Copy the entry under the cursor, or the marked entries |
+|`p` | Paste the explorer clipboard (one entry or several) into the directory under the cursor; one confirmation box lists what would be overwritten. FIFOs, sockets and devices inside a copied folder are skipped |
+|`m` | Mark the entry under the cursor (or unmark it) and move down, so `mmm` marks three entries in a row |
+|`M` | Mark every entry from the last one marked to the cursor |
+|`u` | Unmark everything |
 |`q` | Close the panel |
-|`Esc` | Clear an active filter first; otherwise hand keyboard focus back to the editor (panel keeps its tree; a floating panel closes instead) |
+|`Esc` | Unmark everything first, then clear an active filter; otherwise hand keyboard focus back to the editor (panel keeps its tree; a floating panel closes instead) |
+
+### Working on several entries
+
+Mark the entries to work on, consecutive or not, then rename, delete, move or copy them
+all at once:
+
+- `m` marks the entry under the cursor (or unmarks it) and moves down: `mmm` marks three
+  entries in a row, `m` `j` `j` `m` two apart. `M` marks every entry from the last one
+  marked to the cursor. With the mouse, Ctrl-click marks a row and Shift-click marks the rows
+  from the last one marked (when the terminal passes those clicks on).
+- `u` or `Esc` unmarks everything. The root and the `...` row cannot be marked. Marks stay
+  while the tree is filtered, collapsed or refreshed; those of entries that are gone go.
+- While entries are marked, `r`, `d`, `x` and `c` act on them instead of on the entry under
+  the cursor. A marked folder takes what is marked inside it along.
+- `d` asks once for all of them: the confirmation lists the entries (the first eight, then how
+  many more).
+- `x` (or `c`) then `p` moves (or copies) them into the folder under the cursor. Entries that
+  would overwrite something are listed in one confirmation. Two entries with the same name
+  can't go into one folder.
+- `r` asks for the new names one after the other, in a popup titled
+  `Rename 2 of 5: file <name>`, with the tree's cursor on the entry being renamed. Enter
+  renames it and asks for the next one; leaving the name unchanged (or empty) skips that entry;
+  a name that can't be used (it exists, or has a `/`) asks again. `Esc` stops: the entries not
+  renamed yet stay marked. Renaming a marked folder keeps the marked entries inside it in
+  the queue, under its new name.
+
+What is being worked on stays visible: marked entries have a `●` in front of their name and
+are drawn in `ui.explorer.marked`; after `x` or `c`, the entries in the clipboard have
+a `→` (to move) or a `+` (to copy) in front, in `ui.explorer.clipboard`. The title of the filter
+box says how many there are (`Explorer · 3 marked`, `Explorer · 2 to move`), as does the
+first row of a panel too short for the box.
 
 ### Git status in the tree
 
@@ -302,12 +336,17 @@ explorer and the quickfix panel hand them to the editor's keymap. For example:
   ancestor row, and the selected row, with their own guide lines. Sibling rows are not highlighted.
   The selected row itself always uses `ui.selection`, so it stays the most visible row. Falls back
   to `ui.cursorline.primary`, then to `ui.selection`.
+- `ui.explorer.marked`: the `●` and the names of the marked entries. Falls back to `ui.text.focus`.
+- `ui.explorer.clipboard`: the `→` / `+` in front of the entries cut or copied. Falls back to
+  `ui.text.inactive`.
 
 ```toml
 "ui.explorer.border" = { fg = "#7aa2f7" }
 "ui.explorer.tree" = { fg = "#565f89" }
 "ui.explorer.tree.selected" = { fg = "#7aa2f7" }
 "ui.explorer.path" = { bg = "#2a2f45" }
+"ui.explorer.marked" = { fg = "#e0af68", modifiers = ["bold"] }
+"ui.explorer.clipboard" = { fg = "#565f89" }
 ```
 
 ### Floating explorer

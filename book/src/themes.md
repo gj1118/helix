@@ -350,6 +350,8 @@ These scopes are used for theming the editor interface:
 | `ui.explorer.tree`                | Tree guide lines (`├─ └─ │`) of the explorer on normal rows. Falls back to `ui.virtual` |
 | `ui.explorer.tree.selected`       | Tree guide lines of the explorer on the selected row. Falls back to the normal guide style over the selection highlight |
 | `ui.explorer.path`                | The path from the root of the explorer to the selected row: the root row, the ancestor rows and the selected row, with their own guide lines. Sibling rows are not highlighted. Falls back to `ui.cursorline.primary`, then to `ui.selection`, so the selected row stands out |
+| `ui.explorer.marked`              | The `●` and the names of the explorer's marked entries. Falls back to `ui.text.focus` |
+| `ui.explorer.clipboard`           | The `→` (to move) / `+` (to copy) in front of the entries in the explorer's clipboard. Falls back to `ui.text.inactive` |
 | `ui.picker.header`                | Header row area in pickers with multiple columns                                               |
 | `ui.picker.header.column`         | Column names in pickers with multiple columns                                                  |
 | `ui.picker.header.column.active`  | The column name in pickers with multiple columns where the cursor is entering into.            |
