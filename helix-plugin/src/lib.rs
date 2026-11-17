@@ -196,6 +196,32 @@ impl PluginManager {
         engine.call_event_handlers(editor, &event)
     }
 
+    /// Runs the handlers of a hook event now: whether what it guards may go on (no handler
+    /// returned `false`). Plugin code that is running (a command calling `helix.editor.run`)
+    /// is not interrupted by its own hooks: they are skipped, and it goes on.
+    pub fn run_hook(&self, editor: &mut Editor, event: PluginEvent) -> bool {
+        if !event.event_type.is_subscribed() {
+            return true;
+        }
+        // (running plugin code holds the engine)
+        if self.engine.try_write().is_none() {
+            return true;
+        }
+        self.engine.read().call_hook(editor, &event)
+    }
+
+    /// Calls the handlers of the events plugins emitted (`helix.emit`), and of the ones these
+    /// emit in turn, a few rounds at most: more wait for the next frame.
+    pub fn fire_custom_events(&self, editor: &mut Editor) {
+        for _ in 0..8 {
+            let engine = self.engine.read();
+            if !engine.has_custom_events() {
+                return;
+            }
+            engine.fire_custom_events(editor);
+        }
+    }
+
     /// Get plugin configuration for a specific plugin
     pub fn get_plugin_config(&self, name: &str) -> Option<&serde_json::Value> {
         self.config

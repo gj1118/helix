@@ -65,6 +65,10 @@ event_types! {
     OnModeChange => "mode_change",
     /// A key was pressed.
     OnKeyPress => "key_press",
+    /// A key is about to be handled: a handler returning `false` drops it.
+    OnKeyPre => "key_pre",
+    /// A command is about to run: a handler returning `false` keeps it from running.
+    OnCommandPre => "command_pre",
     /// A character was typed in insert mode.
     OnInsertChar => "insert_char",
     /// A command ran (a key binding, `:` command or macro).

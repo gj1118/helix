@@ -2659,8 +2659,11 @@ pub struct Editor {
     pub old_file_locs: HashMap<PathBuf, (ViewPosition, Selection)>,
     /// Run by [`Editor::save`] before a document is written (the application runs the plugins'
     /// `buffer_pre_save` handlers with it). It may edit the document: what it leaves is
-    /// written.
+    /// written. When it returns `false` the document is not written.
     pub pre_save_hook: Option<PreSaveHook>,
+    /// Asked before a command runs (the application runs the plugins' `command_pre`
+    /// handlers with it): `false` keeps it from running.
+    pub command_hook: Option<CommandHook>,
     /// Key bindings set by plugins (`helix.keymap`), over the configured keys.
     pub plugin_keymaps: PluginKeymaps,
     /// Status line segments of plugins (`helix.statusline`).
@@ -2678,7 +2681,11 @@ pub struct Editor {
 pub type Motion = Box<dyn Fn(&mut Editor)>;
 
 /// See [`Editor::pre_save_hook`].
-pub type PreSaveHook = Box<dyn FnMut(&mut Editor, DocumentId)>;
+pub type PreSaveHook = Box<dyn FnMut(&mut Editor, DocumentId) -> bool>;
+
+/// See [`Editor::command_hook`]: the command's name and its arguments (empty for a command
+/// that takes none).
+pub type CommandHook = Box<dyn FnMut(&mut Editor, &str, &str) -> bool>;
 
 #[derive(Debug)]
 pub enum EditorEvent {
@@ -2932,6 +2939,7 @@ impl Editor {
             workspace_trust,
             old_file_locs,
             pre_save_hook: None,
+            command_hook: None,
             plugin_keymaps: PluginKeymaps::default(),
             pending_config: None,
             plugin_statusline: Vec::new(),
@@ -4216,6 +4224,17 @@ impl Editor {
         }
     }
 
+    /// Whether the command `name` may run (see [`Editor::command_hook`]).
+    pub fn command_allowed(&mut self, name: &str, args: &str) -> bool {
+        // Taken out while it runs: a command it runs itself is not asked about.
+        let Some(mut hook) = self.command_hook.take() else {
+            return true;
+        };
+        let allowed = hook(self, name, args);
+        self.command_hook.get_or_insert(hook);
+        allowed
+    }
+
     pub fn save<P: Into<PathBuf>>(
         &mut self,
         doc_id: DocumentId,
@@ -4227,9 +4246,12 @@ impl Editor {
 
         // Taken out while it runs, so a save it starts itself doesn't run it again.
         if let Some(mut hook) = self.pre_save_hook.take() {
-            hook(self, doc_id);
+            let allowed = hook(self, doc_id);
             self.pre_save_hook.get_or_insert(hook);
             self.commit_pending_changes(doc_id);
+            if !allowed {
+                bail!("the save was cancelled by a plugin");
+            }
         }
 
         let path = path.map(|path| path.into());

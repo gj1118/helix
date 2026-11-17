@@ -199,7 +199,7 @@ error. The `event` table has a `type` field (the event name) and, depending on t
 | `exit` | | when Helix exits, before the last writes: buffers saved now are written |
 | `buffer_open` | `document_id`, `path` | when a file is opened |
 | `buffer_changed` | `document_id`, `path`, `changes` | when a buffer's text changes; at most once per buffer per frame, however many edits were made (previews, such as a completion being shown, do not count). `changes` lists what changed since the last `buffer_changed` of the buffer, see [Changes](#changes) |
-| `buffer_pre_save` | `document_id`, `path` | before a buffer is written: edits the handler makes are part of the saved file |
+| `buffer_pre_save` | `document_id`, `path` | before a buffer is written: edits the handler makes are part of the saved file; returning `false` cancels the save (a [hook](#hooks)) |
 | `buffer_post_save` | `document_id`, `path` | after a buffer was written |
 | `buffer_save_failed` | `document_id`, `path`, `error` | when writing a buffer failed |
 | `buffer_close` | `document_id`, `path` | when a buffer is closed |
@@ -209,8 +209,10 @@ error. The `event` table has a `type` field (the event name) and, depending on t
 | `selection_change` | `document_id`, `path` | when the selection or cursor moves; at most once per buffer per frame |
 | `mode_change` | `old_mode`, `new_mode` (`"normal"`, `"insert"`, `"select"`) | on mode switches |
 | `key_press` | `key` (e.g. `"a"`, `"C-s"`, `"ret"`) | for every key |
+| `key_pre` | `key`, `mode` (`"normal"`, `"insert"`, `"select"`) | before a key is handled (in the editor, a picker, a prompt...): returning `false` drops it (a [hook](#hooks)) |
 | `insert_char` | `char`, `document_id` | for every character typed in insert mode |
 | `command` | `name` (`"move_char_left"`, `"write"`, ...) | after each command run from a key, `:` or a macro |
+| `command_pre` | `name`, `args` (the arguments as typed, `""` for none) | before a command runs from a key, a macro or the command line: returning `false` keeps it from running (a [hook](#hooks)) |
 | `scroll` | `window_id`, `document_id`, `top_char` | when a window scrolls (once per frame) |
 | `window_open` | `window_id`, `document_id` | when a window opens (`:vsplit`, ...) |
 | `window_close` | `window_id`, `document_id` | when a window closes |
@@ -252,6 +254,56 @@ the next frame (a frame queues at most 10 000; a long macro does not turn into a
 handler calls). `buffer_pre_save` runs right before the write; when the save comes from
 plugin code that is running (a command calling `helix.editor.save()`), the handlers hear of
 it with the next frame instead, and their edits are not part of that write.
+
+### Hooks
+
+`buffer_pre_save`, `key_pre` and `command_pre` are hooks: their handlers run right away, in
+the order they were added, and one returning `false` stops what the event is about (the
+save fails with "the save was cancelled by a plugin", the key is dropped, the command does
+not run); the handlers after it are not called. Any other value, `nil` included, lets it go
+on; a handler that fails is logged and skipped. Hooks do not run for what running plugin
+code does itself (`helix.editor.run`, `helix.editor.save()`): a plugin is not interrupted by
+the hooks. Keep them quick: `key_pre` runs before every key.
+
+```lua
+-- no `:write` of a file under `generated/`, and no `x` in normal mode
+helix.on("command_pre", function(event)
+    assert(type(event.name) == "string" and type(event.args) == "string")
+    local buffer = helix.buffer.get_current()
+    local path = buffer:get_path() or ""
+    if (event.name == "write" or event.name == "w") and path:find("/generated/", 1, true) then
+        helix.ui.notify("generated files are not edited by hand")
+        return false
+    end
+end)
+helix.on("key_pre", function(event)
+    assert(type(event.key) == "string" and type(event.mode) == "string")
+    if event.key == "x" and event.mode == "normal" then
+        return false
+    end
+end)
+```
+
+### Events of plugins
+
+Plugins send each other events of their own: `helix.emit(name, data)` (`read`), with a
+name `"namespace:name"` (the plugin's name as the namespace, say), and `helix.on(name, fn)`
+in any plugin to hear them. `data` is `nil`, a boolean, a number, a string or a table of
+them (copied: plugins share no Lua value). The handlers run with the next frame (an event
+emitted by one of them in the round after), with `{ type = name, from = <the emitting
+plugin>, data = data }`. At most 10 000 events wait; `emit` is an error past that.
+
+```lua
+-- in the plugin "git": tell the others when the branch changes
+helix.emit("git:branch", { name = "main", ahead = 2 })
+
+-- in another plugin
+helix.on("git:branch", function(event)
+    assert(event.from == "git" and type(event.data.name) == "string")
+    assert(math.type(event.data.ahead) == "integer")
+    helix.statusline.set("branch", { text = event.data.name })
+end)
+```
 
 ## API reference
 

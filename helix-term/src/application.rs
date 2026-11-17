@@ -467,6 +467,16 @@ impl Application {
         if plugin_manager.is_enabled() {
             plugin_events::register_hooks();
             editor.pre_save_hook = Some(Self::plugin_pre_save_hook(plugin_manager.clone()));
+            let commands = plugin_manager.clone();
+            editor.command_hook = Some(Box::new(move |editor, name, args| {
+                commands.run_hook(
+                    editor,
+                    PluginEvent::with_fields(
+                        EventType::OnCommandPre,
+                        vec![("name", name.into()), ("args", args.into())],
+                    ),
+                )
+            }));
             let completions = plugin_manager.clone();
             editor.plugin_completion_hook = Some(Box::new(move |editor, request| {
                 // Plugin code that is running already holds the engine: no completions then.
@@ -615,11 +625,13 @@ impl Application {
             // Plugin code that is running already (a handler or command that writes) holds the
             // engine and has the editor: running handlers now would hand the editor out twice.
             // They hear of the save with the next frame instead.
+            // A handler returning `false` cancels the save.
             let plugin_code_running = plugin_manager.engine().try_write().is_none();
             if plugin_code_running {
                 plugin_events::queue(event);
-            } else if let Err(e) = plugin_manager.fire_event(editor, event) {
-                log::error!("Failed to fire plugin event: {}", e);
+                true
+            } else {
+                plugin_manager.run_hook(editor, event)
             }
         })
     }
@@ -635,6 +647,8 @@ impl Application {
                 log::error!("Failed to fire plugin event: {}", e);
             }
         }
+        // the plugins' own events (`helix.emit`)
+        self.plugin_manager.fire_custom_events(&mut self.editor);
     }
 
     /// Runs the handlers of an event now (not before the next frame).
@@ -1575,6 +1589,33 @@ impl Application {
             event if event.is_escape() => false,
             event => {
                 let event: helix_view::input::Event = event.into();
+                // A `key_pre` handler returning `false` drops the key.
+                if let helix_view::input::Event::Key(key) = &event {
+                    if self.plugin_manager.is_enabled()
+                        && EventType::OnKeyPre.is_subscribed()
+                        && !self.plugin_manager.run_hook(
+                            cx.editor,
+                            PluginEvent::with_fields(
+                                EventType::OnKeyPre,
+                                vec![
+                                    ("key", key.to_string().into()),
+                                    (
+                                        "mode",
+                                        format!("{:?}", cx.editor.mode())
+                                            .to_ascii_lowercase()
+                                            .into(),
+                                    ),
+                                ],
+                            ),
+                        )
+                    {
+                        // (what the handlers did is drawn)
+                        if !self.editor.should_close() {
+                            self.render().await;
+                        }
+                        return;
+                    }
+                }
                 if self.plugin_manager.is_enabled() {
                     match &event {
                         helix_view::input::Event::Key(key) => plugin_events::queue(PluginEvent {

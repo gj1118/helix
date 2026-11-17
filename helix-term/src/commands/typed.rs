@@ -6089,6 +6089,14 @@ pub(crate) fn execute_command_line(
     if command.is_empty() {
         return Ok(());
     }
+    // a plugin's `command_pre` handler may keep it from running
+    if event == PromptEvent::Validate
+        && !cx
+            .editor
+            .command_allowed(command.trim_start_matches('^'), rest)
+    {
+        return Ok(());
+    }
 
     // Custom commands shadow the built-in ones; `:^name` reaches the built-in.
     let command = match command.strip_prefix('^') {

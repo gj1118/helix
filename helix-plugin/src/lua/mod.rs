@@ -391,6 +391,25 @@ mod sandbox;
 
 /// Event handlers: event -> [(plugin name, callback in that plugin's state)].
 type EventHandlers = HashMap<EventType, Vec<(Arc<str>, Arc<RegistryKey>)>>;
+/// Handlers of the plugins' own events (`helix.on("git:branch", fn)`): name -> handlers.
+type CustomHandlers = HashMap<String, Vec<(Arc<str>, Arc<RegistryKey>)>>;
+
+/// An event a plugin emitted (`helix.emit`), heard by the handlers with the next frame.
+#[derive(Debug, Clone)]
+pub(crate) struct CustomEvent {
+    pub name: String,
+    pub data: serde_json::Value,
+    pub from: Arc<str>,
+}
+
+/// Most custom events waiting at once: a plugin emitting in a loop does not grow it forever.
+const MAX_CUSTOM_EVENTS: usize = 10_000;
+
+/// Whether `name` is the name of a plugin's own event: `<namespace>:<event>`.
+fn is_custom_event(name: &str) -> bool {
+    matches!(name.split_once(':'), Some((namespace, event)) if !namespace.is_empty() && !event.is_empty())
+}
+
 /// Commands: name -> (metadata, plugin name, callback in that plugin's state).
 type Commands = HashMap<String, (crate::types::CommandMetadata, Arc<str>, Arc<RegistryKey>)>;
 
@@ -424,6 +443,10 @@ pub struct LuaEngine {
     states: HashMap<Arc<str>, PluginState>,
     /// Registered event handlers: EventType -> Vec<(plugin_name, callback_ref)>
     event_handlers: Arc<RwLock<EventHandlers>>,
+    /// Handlers of the plugins' own events.
+    custom_handlers: Arc<RwLock<CustomHandlers>>,
+    /// The plugins' own events waiting for the next frame.
+    custom_events: Arc<parking_lot::Mutex<Vec<CustomEvent>>>,
     /// Registered commands: name -> (metadata, callback_ref)
     commands: Arc<RwLock<Commands>>,
     /// Builtin editor command registry
@@ -446,6 +469,8 @@ impl LuaEngine {
         Ok(Self {
             states: HashMap::new(),
             event_handlers: Arc::new(RwLock::new(HashMap::new())),
+            custom_handlers: Arc::new(RwLock::new(HashMap::new())),
+            custom_events: Arc::new(parking_lot::Mutex::new(Vec::new())),
             commands: Arc::new(RwLock::new(HashMap::new())),
             builtin_commands: None,
             ui_callbacks: Arc::new(RwLock::new(HashMap::new())),
@@ -608,6 +633,9 @@ impl LuaEngine {
         for (event_type, callbacks) in handlers.drain() {
             event_type.unsubscribe(callbacks.len());
         }
+        drop(handlers);
+        self.custom_handlers.write().clear();
+        self.custom_events.lock().clear();
     }
 
     /// Set the builtin command registry
@@ -730,14 +758,28 @@ impl LuaEngine {
     /// Register the event API
     fn register_event_api(&self, lua: &Lua, helix: &LuaTable) -> Result<()> {
         let event_handlers: Arc<RwLock<EventHandlers>> = Arc::clone(&self.event_handlers);
+        let custom_handlers = Arc::clone(&self.custom_handlers);
 
-        // helix.on(event_name, callback) - Subscribe to an event
+        // helix.on(event_name, callback) - Subscribe to an event (an editor event, or a
+        // plugin's own `namespace:name`)
         let on =
             lua.create_function(move |lua, (event_name, callback): (String, LuaFunction)| {
-                let event_type = EventType::from_str(&event_name).map_err(|_| {
-                    LuaError::RuntimeError(format!("Invalid event type: {}", event_name))
-                })?;
                 crate::permissions::require(lua, crate::permissions::Permission::Read, "helix.on")?;
+                if is_custom_event(&event_name) {
+                    let callback_ref = Arc::new(lua.create_registry_value(callback)?);
+                    custom_handlers
+                        .write()
+                        .entry(event_name)
+                        .or_default()
+                        .push((current_plugin_name(), callback_ref));
+                    return Ok(());
+                }
+                let event_type = EventType::from_str(&event_name).map_err(|_| {
+                    LuaError::RuntimeError(format!(
+                        "Invalid event type: {} (a plugin's own events are named \"namespace:name\")",
+                        event_name
+                    ))
+                })?;
 
                 let plugin_name = current_plugin_name();
                 let callback_ref = Arc::new(lua.create_registry_value(callback)?);
@@ -754,6 +796,41 @@ impl LuaEngine {
             })?;
 
         helix.set("on", on)?;
+
+        // helix.emit(name, data) - Emits a plugin's own event `namespace:name`: its handlers
+        // (of every plugin) are called with the next frame, with a copy of `data`.
+        let custom_events = Arc::clone(&self.custom_events);
+        let emit = lua.create_function(move |lua, (name, data): (String, LuaValue)| {
+            crate::permissions::require(lua, crate::permissions::Permission::Read, "helix.emit")?;
+            if !is_custom_event(&name) {
+                return Err(LuaError::RuntimeError(format!(
+                    "An emitted event is named \"namespace:name\" (got {name:?})"
+                )));
+            }
+            let data: serde_json::Value = match data {
+                LuaValue::Nil => serde_json::Value::Null,
+                data => lua.from_value(data).map_err(|err| {
+                    LuaError::RuntimeError(format!(
+                        "The data of an event is nil, a boolean, a number, a string or a table of them: {err}"
+                    ))
+                })?,
+            };
+            let mut events = custom_events.lock();
+            if events.len() >= MAX_CUSTOM_EVENTS {
+                return Err(LuaError::RuntimeError(format!(
+                    "Too many events waiting ({MAX_CUSTOM_EVENTS})"
+                )));
+            }
+            events.push(CustomEvent {
+                name,
+                data,
+                from: current_plugin_name(),
+            });
+            // (a frame fires them)
+            helix_event::request_redraw();
+            Ok(())
+        })?;
+        helix.set("emit", emit)?;
 
         // helix.permissions() - What the calling plugin may do: { "read", "ui", ... }
         let permissions = lua.create_function(|lua, ()| {
@@ -1249,6 +1326,12 @@ impl LuaEngine {
             event_type.unsubscribe(before - callbacks.len());
         }
         drop(handlers);
+        for callbacks in self.custom_handlers.write().values_mut() {
+            callbacks.retain(|(plugin, _)| **plugin != *name);
+        }
+        self.custom_events
+            .lock()
+            .retain(|event| *event.from != *name);
         self.commands
             .write()
             .retain(|_, (_, plugin, _)| **plugin != *name);
@@ -1324,6 +1407,83 @@ impl LuaEngine {
                     .map_err(|e| handler_error(format!("Handler execution failed: {}", e)))
             })
         })
+    }
+
+    /// Runs the handlers of a hook (`buffer_pre_save`, `key_pre`, `command_pre`) in order,
+    /// until one returns `false`: whether none did (what the hook guards may go on). A failing
+    /// handler is logged and does not stop it.
+    pub fn call_hook(&self, editor: &mut Editor, event: &PluginEvent) -> bool {
+        let callbacks: Vec<(Arc<str>, Arc<RegistryKey>)> =
+            match self.event_handlers.read().get(&event.event_type) {
+                Some(callbacks) if !callbacks.is_empty() => callbacks.clone(),
+                _ => return true,
+            };
+        for (plugin_name, callback_ref) in &callbacks {
+            let returned = (|| -> LuaResult<LuaValue> {
+                let lua = self
+                    .plugin_lua(plugin_name)
+                    .map_err(|err| LuaError::RuntimeError(err.to_string()))?;
+                let callback: LuaFunction = lua.registry_value(callback_ref)?;
+                let event_data = event_table(lua, event)?;
+                with_plugin(plugin_name, || {
+                    with_editor_context(editor, || callback.call::<LuaValue>(event_data))
+                })
+            })();
+            match returned {
+                Ok(LuaValue::Boolean(false)) => return false,
+                Ok(_) => {}
+                Err(err) => log::error!(
+                    "{} handler of {plugin_name} failed: {err}",
+                    event.event_type.as_str()
+                ),
+            }
+        }
+        true
+    }
+
+    /// Whether a plugin emitted an event that waits for its handlers.
+    pub fn has_custom_events(&self) -> bool {
+        !self.custom_events.lock().is_empty()
+    }
+
+    /// Calls the handlers of the events the plugins emitted (the ones emitted by these
+    /// handlers wait for the next call). A failing handler is logged.
+    pub fn fire_custom_events(&self, editor: &mut Editor) {
+        let events = std::mem::take(&mut *self.custom_events.lock());
+        for event in events {
+            let callbacks: Vec<(Arc<str>, Arc<RegistryKey>)> =
+                match self.custom_handlers.read().get(&event.name) {
+                    Some(callbacks) => callbacks.clone(),
+                    None => continue,
+                };
+            for (plugin_name, callback_ref) in &callbacks {
+                let called = (|| -> LuaResult<()> {
+                    let lua = self
+                        .plugin_lua(plugin_name)
+                        .map_err(|err| LuaError::RuntimeError(err.to_string()))?;
+                    let callback: LuaFunction = lua.registry_value(callback_ref)?;
+                    let table = lua.create_table()?;
+                    table.raw_set("type", event.name.as_str())?;
+                    table.raw_set("from", &*event.from)?;
+                    table.raw_set(
+                        "data",
+                        lua.to_value_with(
+                            &event.data,
+                            LuaSerializeOptions::new()
+                                .serialize_none_to_null(false)
+                                .serialize_unit_to_null(false)
+                                .set_array_metatable(false),
+                        )?,
+                    )?;
+                    with_plugin(plugin_name, || {
+                        with_editor_context(editor, || callback.call::<()>(table))
+                    })
+                })();
+                if let Err(err) = called {
+                    log::error!("handler of {} in {plugin_name} failed: {err}", event.name);
+                }
+            }
+        }
     }
 
     /// Get loaded plugins

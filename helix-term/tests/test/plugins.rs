@@ -1761,3 +1761,101 @@ async fn buffer_changed_lists_the_changes() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+/// Hooks: `key_pre` drops a key, `command_pre` keeps a command from running (from a key and
+/// from the command line), `buffer_pre_save` cancels a save; and a plugin hears another's
+/// own event.
+#[tokio::test(flavor = "multi_thread")]
+async fn plugin_hooks_cancel_and_plugins_hear_each_other() -> anyhow::Result<()> {
+    let guard = r#"
+        local seen = {}
+        helix.on("key_pre", function(event)
+            assert(type(event.key) == "string" and type(event.mode) == "string")
+            if event.key == "x" and event.mode == "normal" then
+                table.insert(seen, "key:x")
+                return false
+            end
+        end)
+        helix.on("command_pre", function(event)
+            if event.name == "delete_selection" or event.name == "sort" then
+                table.insert(seen, "command:" .. event.name .. ":" .. event.args)
+                helix.emit("guard:blocked", { name = event.name, count = #seen })
+                return false
+            end
+        end)
+        helix.on("buffer_pre_save", function()
+            table.insert(seen, "save")
+            return false
+        end)
+        helix.on("buffer_changed", function() end)
+        helix.register_command{ name = "guard-seen", handler = function()
+            helix.editor.set_register("y", { table.concat(seen, "|") })
+        end }
+    "#;
+    let listener = r#"
+        helix.on("guard:blocked", function(event)
+            assert(math.type(event.data.count) == "integer")
+            helix.editor.set_register("w", { event.from .. ":" .. event.data.name .. ":" .. event.data.count })
+        end)
+    "#;
+    let dir = plugin_dir(&[("guard", guard, None), ("listener", listener, None)])?;
+    let config = plugin_config(
+        dir.path(),
+        r#"
+        [[plugins]]
+        name = "guard"
+        permissions = ["edit", "commands"]
+        [[plugins]]
+        name = "listener"
+        permissions = ["edit"]
+        "#,
+    )?;
+    let file = helpers::temp_file_with_contents("b\na\n")?;
+    let mut app = helpers::AppBuilder::new()
+        .with_file(file.path(), None)
+        .with_config(config)
+        .build()?;
+    assert!(app.plugins_enabled());
+
+    // `x` (extend_line_below) is dropped, so `d` deletes one char... which is refused too;
+    // `:sort` is refused; `%y` still works
+    send_keys(&mut app, "xd:sort --reverse<ret>%y").await?;
+    let (_, doc) = helix_view::current_ref!(app.editor);
+    assert_eq!(doc.text().to_string(), "b\na\n".to_string());
+    assert_eq!(
+        app.editor
+            .registers
+            .read('"', &app.editor)
+            .and_then(|mut values| values.next().map(|value| value.into_owned())),
+        Some("b\na\n".to_string())
+    );
+    // the listener heard the last block (a frame later)
+    send_keys(&mut app, "").await?;
+    assert_eq!(register(&app, 'w'), vec!["guard:sort:3".to_string()]);
+
+    // the save is cancelled: an error, the file is untouched
+    send_keys(&mut app, "ione<esc>:w<ret>").await?;
+    let status = app.editor.get_status().map(|(text, _)| text.to_string());
+    assert!(
+        status
+            .as_deref()
+            .is_some_and(|text| text.contains("cancelled by a plugin")),
+        "{status:?}"
+    );
+    assert_eq!(std::fs::read_to_string(file.path())?, "b\na\n".to_string());
+
+    send_keys(&mut app, ":guard-seen<ret>").await?;
+    assert_eq!(
+        register(&app, 'y'),
+        vec![
+            "key:x",
+            "command:delete_selection:",
+            "command:sort:--reverse",
+            "save"
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect::<Vec<String>>()
+    );
+    Ok(())
+}

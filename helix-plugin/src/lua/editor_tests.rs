@@ -2632,3 +2632,106 @@ result = "ran"
     );
     assert_eq!(result, "ran".to_string());
 }
+
+#[test]
+fn plugins_emit_events_of_their_own_and_hooks_can_say_no() {
+    use crate::types::{EventType, EventValue, PluginEvent};
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let mut engine = engine();
+    engine
+        .add_state("q", crate::permissions::Permissions::all())
+        .unwrap();
+    // `q` listens, `p` emits
+    engine
+        .run_as(
+            "q",
+            &mut editor,
+            r#"
+            heard = {}
+            helix.on("git:branch", function(event)
+                assert(type(event.data) == "table" and math.type(event.data.ahead) == "integer")
+                table.insert(heard, event.type .. "|" .. event.from .. "|" .. event.data.name
+                    .. "|" .. event.data.ahead .. "|" .. tostring(event.data.tags[2]))
+                -- a handler may emit: heard in the next round
+                if event.data.name == "main" then helix.emit("git:again", "x") end
+            end)
+            helix.on("git:again", function(event) table.insert(heard, "again|" .. event.data) end)
+            "#,
+        )
+        .unwrap();
+    run(
+        &engine,
+        &mut editor,
+        r#"
+        helix.emit("git:branch", { name = "main", ahead = 2, tags = { "a", "b" } })
+        helix.emit("git:nobody", nil)
+        local ok, err = pcall(helix.emit, "nonamespace", 1)
+        assert(not ok and tostring(err):find("namespace:name", 1, true), tostring(err))
+        local ok2, err2 = pcall(helix.emit, "git:fn", function() end)
+        assert(not ok2 and tostring(err2):find("The data of an event", 1, true), tostring(err2))
+        local ok3, err3 = pcall(helix.on, "nonamespace", function() end)
+        assert(not ok3 and tostring(err3):find("Invalid event type", 1, true), tostring(err3))
+        "#,
+    )
+    .unwrap();
+    // nothing is heard before the frame fires them
+    let heard: mlua::Table = engine.state("q").unwrap().globals().get("heard").unwrap();
+    assert_eq!(heard.raw_len(), 0_usize);
+    assert!(engine.has_custom_events());
+    engine.fire_custom_events(&mut editor);
+    engine.fire_custom_events(&mut editor);
+    assert!(!engine.has_custom_events());
+    let heard: Vec<String> = heard.sequence_values().collect::<LuaResult<_>>().unwrap();
+    assert_eq!(
+        heard,
+        vec!["git:branch|p|main|2|b".to_string(), "again|x".to_string()]
+    );
+
+    // hooks: handlers in order until one says `false`; an error does not stop them
+    run(
+        &engine,
+        &mut editor,
+        r#"
+        calls = {}
+        helix.on("command_pre", function(event)
+            table.insert(calls, "first:" .. event.name .. ":" .. event.args)
+            error("boom")
+        end)
+        helix.on("command_pre", function(event)
+            table.insert(calls, "second")
+            if event.name == "write" then return false end
+            return nil
+        end)
+        helix.on("command_pre", function() table.insert(calls, "third") end)
+        "#,
+    )
+    .unwrap();
+    let hook = |name: &str| {
+        PluginEvent::with_fields(
+            EventType::OnCommandPre,
+            vec![
+                ("name", EventValue::from(name)),
+                ("args", EventValue::from("a b")),
+            ],
+        )
+    };
+    assert!(!engine.call_hook(&mut editor, &hook("write")));
+    assert!(engine.call_hook(&mut editor, &hook("quit")));
+    let calls: mlua::Table = lua(&engine).globals().get("calls").unwrap();
+    let calls: Vec<String> = calls.sequence_values().collect::<LuaResult<_>>().unwrap();
+    assert_eq!(
+        calls,
+        vec![
+            "first:write:a b",
+            "second",
+            "first:quit:a b",
+            "second",
+            "third"
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect::<Vec<String>>()
+    );
+}

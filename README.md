@@ -474,7 +474,7 @@ permissions = ["edit", "commands"]  # what it may do beyond looking ("read") and
   (`align = "right"`, or `"eol_or_right"` for a line too long for the window).
 - **Isolation** - each plugin runs in a Lua state of its own: one cannot change what another
   calls, nor act with another's permissions, nor take over its `:` commands.
-- **Events** - 43 of them: buffers (open, change, rename, save, failed save, close, focus
+- **Events** - 49 of them: buffers (open, change, rename, save, failed save, close, focus
   lost, language), modes, keys, typed characters, every command run, prompts (open, every
   change of their text, close), selections, scrolling,
   windows (open, close, focus), the terminal (resize, focus, paste, mouse), idle, settings,
@@ -482,6 +482,10 @@ permissions = ["edit", "commands"]  # what it may do beyond looking ("read") and
   explorer (cursor, files created, renamed, copied, deleted), exit. A buffer change lists
   what changed (ranges in chars and lines, before and after, with the text added and
   removed), so a plugin re-reads only that.
+  Hooks run before a key, a command or a save, and a handler returning `false` stops it
+  (`helix.on("command_pre", function(e) if e.name == "write" then return false end end)`).
+  Plugins send each other events of their own (`helix.emit("git:branch", { name = "main" })`,
+  heard with `helix.on("git:branch", fn)`).
   Helix does not even queue an event that no plugin listens to.
 
 Plugin code runs in a sandbox (no `io`, no `os.execute`, `require` only from the plugin

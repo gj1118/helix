@@ -2075,6 +2075,14 @@ impl EditorView {
         );
 
         let mut execute_command = |command: &commands::MappableCommand| {
+            // a plugin's `command_pre` handler may keep it from running
+            let args = match command {
+                commands::MappableCommand::Typable { args, .. } => args.as_str(),
+                _ => "",
+            };
+            if !cxt.editor.command_allowed(command.name(), args) {
+                return;
+            }
             command.execute(cxt);
             helix_event::dispatch(PostCommand { command, cx: cxt });
 
