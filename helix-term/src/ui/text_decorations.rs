@@ -205,15 +205,22 @@ impl Decoration for Cursor<'_> {
 pub(crate) struct FoldDecoration<'a> {
     annotations: FoldAnnotations<'a>,
     style: Style,
+    /// Where the labels are drawn (the window's), for clicks.
+    labels: &'a std::cell::RefCell<Vec<helix_view::view::FoldLabel>>,
 }
 
 impl<'a> FoldDecoration<'a> {
-    pub(crate) fn new(annotations: &'a TextAnnotations<'a>, theme: &Theme) -> Self {
+    pub(crate) fn new(
+        annotations: &'a TextAnnotations<'a>,
+        theme: &Theme,
+        labels: &'a std::cell::RefCell<Vec<helix_view::view::FoldLabel>>,
+    ) -> Self {
         Self {
             annotations: annotations.folds.clone(),
             style: theme
                 .try_get("ui.virtual.fold-decoration")
                 .unwrap_or_else(|| theme.get("ui.virtual")),
+            labels,
         }
     }
 }
@@ -268,6 +275,16 @@ impl<'a> Decoration for FoldDecoration<'a> {
             true,
             false,
         );
+        // the label and the rest of the row after it open the fold when clicked (the row of
+        // the screen: `visual_line` counts from the text's first row)
+        if let Some(row) = renderer.surface_row(pos.visual_line) {
+            self.labels.borrow_mut().push(helix_view::view::FoldLabel {
+                row,
+                start: renderer.viewport.x + draw_col,
+                end: renderer.viewport.x + width,
+                line: pos.doc_line,
+            });
+        }
 
         Position::new(1, 0)
     }

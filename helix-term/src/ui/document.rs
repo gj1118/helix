@@ -447,7 +447,8 @@ impl<'a> TextRenderer<'a> {
     }
 
     /// The surface row of row `y` of the text area, or `None` if it is scrolled out of view.
-    fn surface_row(&self, y: u16) -> Option<u16> {
+    /// The row of the screen of the text's row `y` (`None` above the view).
+    pub(crate) fn surface_row(&self, y: u16) -> Option<u16> {
         let row = (y as usize).checked_sub(self.offset.row)?;
         Some(row as u16 + self.viewport.y)
     }

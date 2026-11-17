@@ -1423,8 +1423,9 @@ Neovim's `:edit https://...`. Edit it freely; `:write <path>` keeps it. See
 
 **On the screen:** a closed fold is the line it hangs from, on the fold's background, ending
 with `▸ 12 lines · function`. The **fold column** (the `folds` gutter, next to the text by
-default) shows `▸` on closed folds and `▾` where a block starts: click `▸` to open a fold,
-`▾` to fold the block. Moving the cursor into a fold (a search, `g` to a line) opens it too.
+default) shows `▸` on closed folds and `▾` where a block starts: click `▸` (or the fold's
+label) to open a fold, `▾` to fold the block. Where no text object covers the cursor, `z f`
+folds the selected lines, or the indented block around the cursor. Moving the cursor into a fold (a search, `g` to a line) opens it too.
 
 Languages without tree-sitter text objects (plain text, YAML, config files) fold too: `z f` and
 `z M` use the language server's folding ranges (the `folding-ranges` feature) when it has them,

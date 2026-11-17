@@ -76,7 +76,8 @@ and selection: moving over a fold steps past its hidden lines.
 (`z c` keeps centering the view, as in Helix: fold with `z f`, `z a` or `z i`.)
 
 Where no text object covers the cursor (a Go `import ( … )` block, a table in a config
-file), `z f`, `z a` and `:fold` fold the block of more indented lines there instead.
+file), `z f`, `z a` and `:fold` fold the lines selected, when the selection spans several,
+or else the block of more indented lines there.
 
 `:fold` and `:unfold` without arguments do what `z f` and `z o` do (with `--document`, what
 `z M` and `z R` do); name text objects (`:fold function comment`) or pass `--all` to choose
@@ -99,7 +100,8 @@ Any of these opens a fold:
 - `z o` (or `z F`) anywhere on its line, the cursor at the start of the line included; `z O`
   opens the folds inside it too; `z R` opens everything.
 - `z a` on its line (and folds again on the next `z a`).
-- A click on its `▸` in the fold column.
+- A click on its label (`▸ 12 lines · function`, after the text) or on its `▸` in the fold
+  column.
 - Moving the cursor into what it hides: a search, `g` to a line, a jump or a selection that
   lands there opens it.
 

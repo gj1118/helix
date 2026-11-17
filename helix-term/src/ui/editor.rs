@@ -361,7 +361,12 @@ impl EditorView {
             decorations.add_decoration(Self::cursorline(doc, view, theme));
         }
 
-        decorations.add_decoration(FoldDecoration::new(&text_annotations, theme));
+        view.fold_labels.borrow_mut().clear();
+        decorations.add_decoration(FoldDecoration::new(
+            &text_annotations,
+            theme,
+            &view.fold_labels,
+        ));
 
         if is_focused && config.cursorcolumn {
             Self::highlight_cursorcolumn(doc, view, surface, theme, inner, &text_annotations);
@@ -2869,6 +2874,16 @@ impl EditorView {
                     return EventResult::Consumed(None);
                 }
 
+                // the label of a closed fold (`▸ 12 lines · function`), drawn over the text
+                // row: opens the fold
+                if let Some((view_id, line)) = fold_label_line(editor, row, column) {
+                    self.clear_completion_on_view_switch(editor, view_id);
+                    editor.focus(view_id);
+                    editor.explorer_panel.focused = false;
+                    commands::toggle_fold_at_line(editor, view_id, line);
+                    return EventResult::Consumed(None);
+                }
+
                 if let Some((_, view_id)) = pos_and_view(editor, row, column, true) {
                     self.clear_completion_on_view_switch(editor, view_id);
                     // Clearing a preview can change the text in both views. Resolve the
@@ -3468,6 +3483,17 @@ impl Component for EditorView {
             (pos, CursorKind::Underline)
         }
     }
+}
+
+/// The window and line of a click at (`row`, `column`) on the label of a closed fold.
+fn fold_label_line(editor: &Editor, row: u16, column: u16) -> Option<(ViewId, usize)> {
+    editor.tree.views().find_map(|(view, _)| {
+        view.fold_labels
+            .borrow()
+            .iter()
+            .find(|label| label.row == row && (label.start..label.end).contains(&column))
+            .map(|label| (view.id, label.line))
+    })
 }
 
 /// The window and line of a click at (`row`, `column`) in a window's fold column.

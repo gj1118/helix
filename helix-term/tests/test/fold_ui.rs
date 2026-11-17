@@ -354,3 +354,90 @@ async fn a_block_no_text_object_covers_folds_in_any_language() -> anyhow::Result
     }
     Ok(())
 }
+
+/// A click on a closed fold's label (`▸ 1 line · block`, after the text) opens it, also
+/// when the gutters have no fold column.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_click_on_a_folds_label_opens_it() -> anyhow::Result<()> {
+    let file = helpers::temp_file_with_contents(TEXT)?;
+    let mut config = helpers::test_config();
+    // a layout of one's own, without `folds`; the buffer line above the text (the label's row
+    // on the screen is not the text's)
+    config.editor.gutters.layout = vec![helix_view::editor::GutterType::LineNumbers];
+    config.editor.bufferline.render_mode = helix_view::editor::BufferLineRenderMode::Always;
+    let mut app = AppBuilder::new()
+        .with_config(config)
+        .with_file(file.path(), None)
+        .build()?;
+    send_keys(&mut app, "jzi").await;
+    assert_eq!(folds(&app), 1_usize);
+
+    // where the label is on the screen
+    let (row, column) = {
+        let rows = app.rendered_rows();
+        let (row, text) = rows
+            .iter()
+            .enumerate()
+            .find(|(_, row)| row.contains("▸ 1 line · block"))
+            .expect("the label is drawn");
+        let column = text.chars().position(|ch| ch == '▸').expect("its chevron");
+        (row as u16, column as u16)
+    };
+    for kind in [
+        MouseEventKind::Down(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+    ] {
+        send_events(
+            &mut app,
+            [Event::Mouse(MouseEvent {
+                kind,
+                column,
+                row,
+                modifiers: KeyModifiers::empty(),
+            })],
+        )
+        .await;
+    }
+    assert_eq!(folds(&app), 0_usize);
+    Ok(())
+}
+
+/// `:fold` (and `z f`) with lines selected that no text object covers (a whole Go import
+/// block, the cursor on its `)`) folds the selected lines, the first one shown.
+#[tokio::test(flavor = "multi_thread")]
+async fn selected_lines_no_text_object_covers_fold() -> anyhow::Result<()> {
+    for keys in [":fold<ret>", "zf"] {
+        let file = tempfile::Builder::new().suffix(".go").tempfile()?;
+        std::fs::write(file.path(), GO)?;
+        let mut app = AppBuilder::new()
+            .with_file(file.path(), None)
+            .with_lang_loader(helpers::test_syntax_loader(None))
+            .build()?;
+        // `import (` (line 3) to `)` (line 9), selected by lines
+        send_keys(&mut app, &format!("3ggxv9ggx{keys}")).await;
+        assert_eq!(
+            folds(&app),
+            1_usize,
+            "{keys}: {:?}",
+            app.editor.get_status()
+        );
+        let (view, doc) = current_ref!(app.editor);
+        let container = doc.fold_container(view.id).unwrap();
+        let fold = container.start_points()[0].fold(container);
+        // `import (` shown, the rest through `)` hidden
+        assert!(
+            matches!(
+                fold.object(),
+                helix_core::text_folding::FoldObject::Selection
+            ),
+            "{keys}: {}",
+            fold.object()
+        );
+        assert_eq!(
+            (fold.start.line, fold.end.line),
+            (3_usize, 8_usize),
+            "{keys}"
+        );
+    }
+    Ok(())
+}

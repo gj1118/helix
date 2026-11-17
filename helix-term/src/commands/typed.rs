@@ -3512,9 +3512,13 @@ fn fold(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow:
         if !auto || has_textobjects(doc, &loader) {
             let folded = fold_textobjects(doc, view, &loader, args);
             // with `--auto`, a place no text object covers (a Go import block, say): the
-            // block of more indented lines there, whatever the language server does
+            // lines selected, or the block of more indented lines there, whatever the
+            // language server does
             if folded.is_ok() || !auto {
                 return folded;
+            }
+            if !document && fold_selected_lines(doc, view).is_ok() {
+                return Ok(());
             }
             if fold_indent(doc, view, document).is_ok() {
                 return Ok(());
@@ -3523,6 +3527,10 @@ fn fold(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow:
         }
         drop(loader);
         let (view, doc) = current!(cx.editor);
+        // lines selected: those
+        if !document && fold_selected_lines(doc, view).is_ok() {
+            return Ok(());
+        }
         let has_server = doc
             .language_servers_with_feature(LanguageServerFeature::FoldingRanges)
             .next()
@@ -3628,8 +3636,6 @@ fn fold_lsp(cx: &mut compositor::Context, document: bool) -> anyhow::Result<()> 
 }
 
 fn fold_selection(doc: &mut Document, view: &View, args: Args) -> anyhow::Result<()> {
-    use text_folding::{Fold, FoldObject};
-
     // additional validation
     let invalid = args.has_flag("document") || args.has_flag("all") || args.first().is_some();
     if invalid {
@@ -3638,6 +3644,14 @@ fn fold_selection(doc: &mut Document, view: &View, args: Args) -> anyhow::Result
             with the flag `selection`."
         ));
     }
+
+    fold_selected_lines(doc, view)
+}
+
+/// Folds the lines of the primary selection, the first one shown (`:fold --selection`, and
+/// `z f` on a selection of lines no text object covers).
+fn fold_selected_lines(doc: &mut Document, view: &View) -> anyhow::Result<()> {
+    use text_folding::{Fold, FoldObject};
 
     let text = doc.text().slice(..);
     let range = doc.selection(view.id).primary();
