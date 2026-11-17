@@ -345,15 +345,26 @@ impl CmdlinePopup {
             help,
             !crate::ui::border_cells_take_background(&config),
         );
-        let mut border_style = help;
-        border_style.bg = None;
-        let block = Block::bordered()
-            .border_style(border_style)
-            .border_type(crate::ui::border_type(&config));
-        let inner = block
-            .inner(area)
-            .inner(helix_view::graphics::Margin::horizontal(1));
-        block.render(area, surface);
+        // The same border as the input and the completions: the gradient one when
+        // `[editor.gradient-borders]` is enabled, otherwise the common border color.
+        let inner = if config.gradient_borders.enable {
+            if !config.borders_hidden() {
+                let rounded = config.border_rounded();
+                let theme = &cx.editor.theme;
+                self.gradient_border(theme, &config.gradient_borders)
+                    .render(area, surface, theme, rounded);
+            }
+            // The gradient border is one cell wide whatever its thickness.
+            GradientBorder::inner_area(area)
+        } else {
+            let block = Block::bordered()
+                .border_style(crate::ui::border_style(&cx.editor.theme))
+                .border_type(crate::ui::border_type(&config));
+            let inner = block.inner(area);
+            block.render(area, surface);
+            inner
+        };
+        let inner = inner.inner(helix_view::graphics::Margin::horizontal(1));
         text.render(inner, surface, cx);
     }
 

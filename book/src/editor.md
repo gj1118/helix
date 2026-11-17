@@ -924,8 +924,9 @@ The color of the indicator is the `ui.virtual.inline-blame` theme key.
 
 ### `[editor.gradient-borders]` Section
 
-Draws the borders of pickers, command line popups, completion menus, previews and the floating
-explorer as a gradient, instead of a solid line. It is off by default.
+Draws the borders of pickers, command line popups (the input, its completions and the help of
+the command below them), completion menus, previews and the floating explorer as a gradient,
+instead of a solid line. It is off by default.
 
 | Key | Description | Default |
 |--|--|--|

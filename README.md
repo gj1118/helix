@@ -1046,7 +1046,7 @@ inherits = "your-base-theme"
 
 **Gradient Borders Configuration:**
 
-Transform your Helix interface with beautiful, configurable gradient borders for all pickers and UI components.
+Transform your Helix interface with beautiful, configurable gradient borders for all pickers and UI components, including the three boxes of the popup command line (the input, its completions and the help of the command).
 
 ```toml
 [editor.gradient-borders]

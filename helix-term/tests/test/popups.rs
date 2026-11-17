@@ -176,6 +176,59 @@ async fn command_line_popup_lists_completions_inside_the_screen() -> anyhow::Res
     quit(app).await
 }
 
+/// The help of the command below the popup command line has the same border as the input
+/// and the completions: the gradient one when gradient borders are on.
+#[tokio::test(flavor = "multi_thread")]
+async fn command_line_popup_help_follows_the_gradient_border() -> anyhow::Result<()> {
+    use helix_view::graphics::Color;
+    for gradient in [true, false] {
+        let mut app = helpers::AppBuilder::new()
+            .with_config(config(&format!(
+                "[editor]\nborder-style = \"plain\"\n\
+                 [editor.cmdline]\nstyle = \"popup\"\n\
+                 [editor.gradient-borders]\nenable = {gradient}\n\
+                 start-color = \"#ff0000\"\nend-color = \"#ff0000\"\nanimation-speed = 0\n"
+            )))
+            .build()?;
+        send(&mut app, keys(":config-reload")).await?;
+        let rows = app.rendered_rows();
+        let (y, row) = rows
+            .iter()
+            .enumerate()
+            .find(|(_, row)| row.contains("Refresh user config"))
+            .unwrap_or_else(|| panic!("no help:\n{}", rows.join("\n")));
+        // the border is left of the column of margin before the text
+        let text_x = row[..row.find("Refresh user config").unwrap()]
+            .chars()
+            .count();
+        let border_x = (text_x - 2) as u16;
+        let help_border = app.rendered_cell(border_x, y as u16).clone();
+        // the left border of the input box, on the row of the input
+        let input_y = rows
+            .iter()
+            .position(|row| row.contains("config-reload"))
+            .expect("the input") as u16;
+        let input_border = app.rendered_cell(border_x, input_y).clone();
+        assert_eq!(
+            help_border.symbol,
+            input_border.symbol,
+            "{gradient}:\n{}",
+            rows.join("\n")
+        );
+        if gradient {
+            assert_eq!(help_border.fg, input_border.fg);
+        }
+        let red = help_border.fg == Color::Rgb(255, 0, 0);
+        assert_eq!(
+            red, gradient,
+            "{gradient}: border colour {:?}",
+            help_border.fg
+        );
+        quit(app).await?;
+    }
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn prompt_cursor_follows_its_label_with_the_popup_command_line() -> anyhow::Result<()> {
     // `A-r` opens a plain prompt, which draws its label at the bottom whatever the command
