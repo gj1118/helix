@@ -588,8 +588,10 @@ helix.quickfix.decorate({ path = "/src/lib.rs", line = 12, text = "FAIL", style 
   `clear_decorations()` all of them (`ui`).
 - `add_action{ key, desc, run }`: `key` (one key) in the explorer, while it has the focus,
   runs `run(entry)` with the entry under the cursor, `{ path, is_dir }` (`explorer`). The
-  tree's own keys keep their meaning; an action takes a key the tree leaves to the editor's
-  keymap (so binding `j` or `k` would take them from moving in the tree).
+  tree's own keys keep their meaning (including the ones the user moved there in
+  `[keys.explorer]`); an action takes a key the tree leaves to the editor's keymap (so
+  binding `j` or `k` would take them from moving in the tree). A key the user turned off with
+  `no_op` in `[keys.explorer]` reaches no plugin action either.
   `remove_action(key)`, `list_actions()` as for the quickfix panel.
 
 What the explorer does to files is heard of with the `file_create`, `file_rename`,

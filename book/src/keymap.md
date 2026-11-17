@@ -476,8 +476,10 @@ keymap (see [Remapping](./remapping.md)).
 | `Space G b` | normal | `dap_toggle_breakpoints` | Toggle breakpoints on the lines of all cursors |
 | `Space G s s` | normal | `dap_switch_session` | Pick a [debug session](./debugging.md#several-sessions) |
 
-Inside the explorer panel, `x` cuts the entry under the cursor and `Esc` gives the keyboard back to
-the editor. See [the explorer keys](./editor.md#editorexplorer-section) for the full list.
+Inside the explorer panel, `x` cuts the entry under the cursor (or the marked entries), `m`
+marks entries to work on several at once, and `Esc` gives the keyboard back to the editor. See
+[the explorer keys](./editor.md#editorexplorer-section) for the full list; all of them can be
+changed in [`[keys.explorer]`](./remapping.md#keys-of-pickers-menus-popups-and-prompts).
 
 ## Insert mode
 
