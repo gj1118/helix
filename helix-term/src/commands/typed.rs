@@ -4032,6 +4032,24 @@ fn quickfix_close(
     Ok(())
 }
 
+fn undo_tree(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let (view, doc) = current_ref!(cx.editor);
+    let (view_id, doc_id) = (view.id, doc.id());
+    if let Some(tree) = crate::ui::undo_tree::UndoTree::new(cx.editor, doc_id, view_id) {
+        cx.jobs.callback(async move {
+            let call: crate::job::Callback =
+                crate::job::Callback::EditorCompositor(Box::new(move |_editor, compositor| {
+                    compositor.push(Box::new(tree));
+                }));
+            Ok(call)
+        });
+    }
+    Ok(())
+}
+
 fn notifications_history(
     cx: &mut compositor::Context,
     _args: Args,
@@ -5381,6 +5399,17 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &["quickfix-close"],
         doc: "Close the quickfix panel.",
         fun: quickfix_close,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "undo-tree",
+        aliases: &["undotree"],
+        doc: "Show the undo tree: every revision of the buffer, branches included. Moving through it shows each one; Enter keeps it, Esc goes back.",
+        fun: undo_tree,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

@@ -385,6 +385,146 @@ impl std::str::FromStr for UndoKind {
     }
 }
 
+/// What a revision changed, for showing the history (the undo tree).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevisionSummary {
+    /// Chars inserted and deleted.
+    pub inserted_chars: usize,
+    pub deleted_chars: usize,
+    /// Line breaks inserted and deleted.
+    pub inserted_lines: usize,
+    pub deleted_lines: usize,
+    /// The start of the text inserted (or, when nothing was, deleted), on one line.
+    pub excerpt: String,
+}
+
+/// A row of the undo tree: the drawing in front of it (`├─`, `│ `) and the revision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeRow {
+    pub prefix: String,
+    pub revision: usize,
+}
+
+/// The longest excerpt kept in a [`RevisionSummary`], in chars.
+const EXCERPT_CHARS: usize = 60;
+
+impl History {
+    /// How many revisions there are, the root (the text before any edit) included.
+    pub fn revision_count(&self) -> usize {
+        self.revisions.len()
+    }
+
+    /// The revision `revision` was made from (the root's is itself).
+    pub fn parent(&self, revision: usize) -> usize {
+        self.revisions.get(revision).map_or(0, |r| r.parent)
+    }
+
+    /// When `revision` was made.
+    pub fn timestamp(&self, revision: usize) -> Option<Instant> {
+        self.revisions.get(revision).map(|r| r.timestamp)
+    }
+
+    /// What `revision` changed (nothing for the root).
+    pub fn summary(&self, revision: usize) -> RevisionSummary {
+        let mut summary = RevisionSummary {
+            inserted_chars: 0,
+            deleted_chars: 0,
+            inserted_lines: 0,
+            deleted_lines: 0,
+            excerpt: String::new(),
+        };
+        let Some(revision) = self.revisions.get(revision).filter(|_| revision > 0) else {
+            return summary;
+        };
+        let mut inserted = String::new();
+        let mut deleted = String::new();
+        let tally =
+            |transaction: &Transaction, chars: &mut usize, lines: &mut usize, text: &mut String| {
+                for operation in transaction.changes().changes() {
+                    if let crate::Operation::Insert(fragment) = operation {
+                        *chars += fragment.chars().count();
+                        *lines += fragment.matches('\n').count();
+                        if text.chars().count() < EXCERPT_CHARS {
+                            if !text.is_empty() {
+                                text.push(' ');
+                            }
+                            text.push_str(fragment);
+                        }
+                    }
+                }
+            };
+        tally(
+            &revision.transaction,
+            &mut summary.inserted_chars,
+            &mut summary.inserted_lines,
+            &mut inserted,
+        );
+        // The inversion inserts what the revision deleted.
+        tally(
+            &revision.inversion,
+            &mut summary.deleted_chars,
+            &mut summary.deleted_lines,
+            &mut deleted,
+        );
+        let text = if inserted.trim().is_empty() {
+            deleted
+        } else {
+            inserted
+        };
+        summary.excerpt = text
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .take(EXCERPT_CHARS)
+            .collect();
+        summary
+    }
+
+    /// The revisions in the order the undo tree shows them, each with the drawing in front of
+    /// it: from the root down, a revision followed by the branches left behind from it
+    /// (indented, `├─`), then by the revision redo goes to (its last child), at the same
+    /// level. A history without undos is one column.
+    pub fn tree_rows(&self) -> Vec<TreeRow> {
+        let count = self.revisions.len();
+        let mut children: Vec<Vec<usize>> = vec![Vec::new(); count];
+        for (index, revision) in self.revisions.iter().enumerate().skip(1) {
+            children[revision.parent].push(index);
+        }
+        let mut rows = Vec::with_capacity(count);
+        // (revision, prefix of its own row, prefix of the rows under it); a stack, not
+        // recursion: a long history is a deep tree.
+        let mut stack = vec![(0usize, String::new(), String::new())];
+        while let Some((revision, first, rest)) = stack.pop() {
+            rows.push(TreeRow {
+                prefix: first,
+                revision,
+            });
+            let main = self.revisions[revision].last_child.map(NonZeroUsize::get);
+            if let Some(main) = main {
+                stack.push((main, rest.clone(), rest.clone()));
+            }
+            // pushed last so they come first; the oldest branch at the top
+            for &branch in children[revision].iter().rev() {
+                if Some(branch) != main {
+                    stack.push((branch, format!("{rest}├─"), format!("{rest}│ ")));
+                }
+            }
+        }
+        rows
+    }
+
+    /// The transactions that turn the text of the current revision into that of `revision`
+    /// (undoing up to their common ancestor, then redoing down), which becomes the current
+    /// one. Nothing for a revision that doesn't exist.
+    pub fn jump_to_revision(&mut self, revision: usize) -> Vec<Transaction> {
+        if revision >= self.revisions.len() {
+            return Vec::new();
+        }
+        self.jump_to(revision)
+    }
+}
+
 /// The undo history of a buffer in a form that can be written to disk (persistent undo):
 /// [`History::to_saved`] makes it, [`History::from_saved`] turns it back into a history.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -584,6 +724,86 @@ mod test {
         }
         edit(&mut history, &mut state, 6, 11, "you");
         (history, state)
+    }
+
+    #[test]
+    fn the_tree_shows_branches_indented_and_the_redo_path_in_line() {
+        // 0 -> 1 -> 2, undo to 1, -> 3 (the redo path), undo to 0, -> 4 (the redo path)
+        let (mut history, mut state) = branched_history();
+        for transaction in history.jump_to_revision(0) {
+            assert!(transaction.apply(&mut state.doc));
+        }
+        assert_eq!(state.doc, "hello");
+        let transaction =
+            Transaction::change(&state.doc, std::iter::once((0, 0, Some("oh ".into()))));
+        history.commit_revision(&transaction, &state);
+        assert!(transaction.apply(&mut state.doc));
+
+        let rows: Vec<(String, usize)> = history
+            .tree_rows()
+            .into_iter()
+            .map(|row| (row.prefix, row.revision))
+            .collect();
+        let expected: Vec<(String, usize)> = vec![
+            ("".into(), 0),
+            ("├─".into(), 1),
+            ("│ ├─".into(), 2),
+            ("│ ".into(), 3),
+            ("".into(), 4),
+        ];
+        assert_eq!(rows, expected);
+        assert_eq!(history.revision_count(), 5_usize);
+        assert_eq!(history.parent(3), 1_usize);
+    }
+
+    #[test]
+    fn a_long_history_is_one_column_and_does_not_recurse() {
+        let mut history = History::default();
+        let mut state = State {
+            doc: Rope::from(""),
+            selection: Selection::point(0),
+        };
+        for _ in 0..20_000 {
+            let end = state.doc.len_chars();
+            let transaction =
+                Transaction::change(&state.doc, std::iter::once((end, end, Some("x".into()))));
+            history.commit_revision(&transaction, &state);
+            assert!(transaction.apply(&mut state.doc));
+        }
+        let rows = history.tree_rows();
+        assert_eq!(rows.len(), 20_001_usize);
+        assert!(rows.iter().all(|row| row.prefix.is_empty()));
+        let order: Vec<usize> = rows.iter().map(|row| row.revision).collect();
+        assert_eq!(order, (0..20_001).collect::<Vec<usize>>());
+    }
+
+    #[test]
+    fn a_summary_counts_what_was_inserted_and_deleted() {
+        let (history, _) = branched_history();
+        // revision 3: " world" -> " you" (deleted "world", inserted "you")
+        let summary: RevisionSummary = history.summary(3);
+        assert_eq!(summary.inserted_chars, 3_usize);
+        assert_eq!(summary.deleted_chars, 5_usize);
+        assert_eq!(
+            (summary.inserted_lines, summary.deleted_lines),
+            (0_usize, 0_usize)
+        );
+        assert_eq!(summary.excerpt, "you".to_string());
+        assert_eq!(history.summary(0).excerpt, String::new());
+        assert_eq!(history.summary(99).inserted_chars, 0_usize);
+    }
+
+    #[test]
+    fn jumping_to_a_revision_goes_through_the_common_ancestor() {
+        let (mut history, mut state) = branched_history();
+        // from 3 ("hello you") to 2 ("hello there"), on the other branch
+        for transaction in history.jump_to_revision(2) {
+            assert!(transaction.apply(&mut state.doc));
+        }
+        assert_eq!(state.doc, "hello there");
+        assert_eq!(history.current_revision(), 2_usize);
+        assert!(history.jump_to_revision(42).is_empty());
+        assert_eq!(history.current_revision(), 2_usize);
     }
 
     #[test]

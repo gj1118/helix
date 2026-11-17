@@ -778,6 +778,7 @@ impl MappableCommand {
         quicklist_next_in_file, "Go to the next quicklist entry in this file",
         quicklist_prev_in_file, "Go to the previous quicklist entry in this file",
         quicklist_picker, "Open the quicklist picker",
+        undo_tree, "Show the undo tree: every revision of the buffer, branches included",
         quickfix, "Show the quickfix panel with the focus (the last list it showed, or the quicklist), or hide it when it is open",
         quickfix_focus, "Focus the quickfix panel (shows the quicklist in it when it is closed, like :copen)",
         restore_change, "Restore the changes touched by the selections from the diff base (HEAD)",
@@ -4806,6 +4807,15 @@ fn quickfix_focus(cx: &mut Context) {
 
 fn quicklist_picker(cx: &mut Context) {
     quicklist::quicklist_picker(cx)
+}
+
+/// Opens the undo tree of the focused buffer (`Space u`, `:undo-tree`).
+pub fn undo_tree(cx: &mut Context) {
+    let (view, doc) = current_ref!(cx.editor);
+    let (view_id, doc_id) = (view.id, doc.id());
+    if let Some(tree) = ui::undo_tree::UndoTree::new(cx.editor, doc_id, view_id) {
+        cx.push_layer(Box::new(tree));
+    }
 }
 
 fn snippet_picker(cx: &mut Context) {

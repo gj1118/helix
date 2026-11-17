@@ -400,6 +400,7 @@
 | `quicklist_next_in_file` | Go to the next quicklist entry in this file | normal: `` ]l ``, select: `` ]l `` |
 | `quicklist_prev_in_file` | Go to the previous quicklist entry in this file | normal: `` [l ``, select: `` [l `` |
 | `quicklist_picker` | Open the quicklist picker | normal: `` <space>q ``, select: `` <space>q `` |
+| `undo_tree` | Show the undo tree: every revision of the buffer, branches included | normal: `` <space>u ``, select: `` <space>u `` |
 | `quickfix` | Show the quickfix panel with the focus (the last list it showed, or the quicklist), or hide it when it is open | normal: `` <space>Q ``, select: `` <space>Q `` |
 | `quickfix_focus` | Focus the quickfix panel (shows the quicklist in it when it is closed, like :copen) |  |
 | `restore_change` | Restore the changes touched by the selections from the diff base (HEAD) |  |

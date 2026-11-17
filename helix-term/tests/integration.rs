@@ -53,6 +53,7 @@ mod test {
     mod snippets;
     mod splits;
     mod todos;
+    mod undo_tree;
     mod welcome;
     mod window_title;
 }

@@ -110,6 +110,7 @@
 | `:quickfix` | Show the quickfix panel with the focus (the last list it showed, or the quicklist), or hide it when it is open |
 | `:copen`, `:quickfix-open` | Show the quickfix panel: focus it, or show the last list it showed again, or the quicklist. |
 | `:cclose`, `:quickfix-close` | Close the quickfix panel. |
+| `:undo-tree`, `:undotree` | Show the undo tree: every revision of the buffer, branches included. Moving through it shows each one; Enter keeps it, Esc goes back. |
 | `:notifications-history`, `:notif-history`, `:nh` | Show notification history. |
 | `:notifications-clear`, `:notif-clear`, `:nc` | Clear notification history. |
 | `:notifications-dismiss`, `:notif-dismiss`, `:nd` | Dismiss all active notifications. |

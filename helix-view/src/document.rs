@@ -2542,6 +2542,24 @@ impl Document {
         success
     }
 
+    /// Turns the text into that of history revision `revision` (the undo tree), committing
+    /// pending changes first. Returns whether the text changed.
+    pub fn jump_to_revision(&mut self, view: &mut View, revision: usize) -> bool {
+        self.append_changes_to_history(view);
+        let txns = self.history.get_mut().jump_to_revision(revision);
+        let mut success = false;
+        for txn in txns {
+            if self.apply_impl(&txn, view.id, true) {
+                success = true;
+            }
+        }
+        if success {
+            // reset changeset to fix len
+            self.changes = ChangeSet::new(self.text().slice(..));
+        }
+        success
+    }
+
     /// Undo modifications to the [`Document`] according to `uk`.
     pub fn earlier(&mut self, view: &mut View, uk: UndoKind) -> bool {
         self.earlier_later_impl(view, uk, true)

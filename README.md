@@ -1325,6 +1325,18 @@ changed it since (a `git checkout`, a formatter run outside Helix), the file ope
 history, so old edits are never applied to a different text. See
 [Persistent undo](book/src/editor.md#persistent-undo) in the book.
 
+## Undo Tree
+
+`Space u` (or `:undo-tree`) shows every revision of the buffer in a panel at the right,
+branches included: edits made after an undo leave the undone ones on a branch that `u` and `U`
+can't reach any more, and the tree can. Each row shows what the revision changed and how long
+ago; branches are indented under the revision they started from.
+
+Moving with `j`/`k` turns the buffer into that revision, so you see its text behind the panel.
+`Enter` keeps it, `Esc` goes back to where you were. With
+[persistent undo](#persistent-undo), the tree holds the edits of earlier sessions too. See
+[Undo tree](book/src/keymap.md#undo-tree) in the book.
+
 ## Code Folding
 
 **Code Folding Commands:**
