@@ -6342,16 +6342,27 @@ fn yank_impl(editor: &mut Editor, jobs: &Jobs, register: char) {
         .map(Cow::into_owned)
         .collect();
     let selections = values.len();
+    let flashed = yanked_ranges(doc.selection(view.id).iter());
 
     persist_clipboard(&editor.config.load(), jobs, register, &values);
 
     match editor.registers.write(register, values) {
-        Ok(_) => editor.set_status(format!(
-            "yanked {selections} selection{} to register {register}",
-            if selections == 1 { "" } else { "s" }
-        )),
+        Ok(_) => {
+            editor.flash_yank(flashed);
+            editor.set_status(format!(
+                "yanked {selections} selection{} to register {register}",
+                if selections == 1 { "" } else { "s" }
+            ))
+        }
         Err(err) => editor.set_error(err.to_string()),
     }
+}
+
+/// The char ranges of the selections yanked, for [`Editor::flash_yank`].
+fn yanked_ranges<'a>(
+    ranges: impl Iterator<Item = &'a helix_core::Range>,
+) -> Vec<std::ops::Range<usize>> {
+    ranges.map(|range| range.from()..range.to()).collect()
 }
 
 fn yank_joined_impl(editor: &mut Editor, separator: &str, register: char) {
@@ -6360,6 +6371,7 @@ fn yank_joined_impl(editor: &mut Editor, separator: &str, register: char) {
 
     let selection = doc.selection(view.id);
     let selections = selection.len();
+    let flashed = yanked_ranges(selection.iter());
     let joined = selection
         .fragments(text)
         .fold(String::new(), |mut acc, fragment| {
@@ -6371,10 +6383,13 @@ fn yank_joined_impl(editor: &mut Editor, separator: &str, register: char) {
         });
 
     match editor.registers.write(register, vec![joined]) {
-        Ok(_) => editor.set_status(format!(
-            "joined and yanked {selections} selection{} to register {register}",
-            if selections == 1 { "" } else { "s" }
-        )),
+        Ok(_) => {
+            editor.flash_yank(flashed);
+            editor.set_status(format!(
+                "joined and yanked {selections} selection{} to register {register}",
+                if selections == 1 { "" } else { "s" }
+            ))
+        }
         Err(err) => editor.set_error(err.to_string()),
     }
 }
@@ -6406,10 +6421,15 @@ fn yank_primary_selection_impl(editor: &mut Editor, register: char) {
     let (view, doc) = current!(editor);
     let text = doc.text().slice(..);
 
-    let selection = doc.selection(view.id).primary().fragment(text).to_string();
+    let primary = doc.selection(view.id).primary();
+    let selection = primary.fragment(text).to_string();
+    let flashed = yanked_ranges(std::iter::once(&primary));
 
     match editor.registers.write(register, vec![selection]) {
-        Ok(_) => editor.set_status(format!("yanked primary selection to register {register}",)),
+        Ok(_) => {
+            editor.flash_yank(flashed);
+            editor.set_status(format!("yanked primary selection to register {register}",))
+        }
         Err(err) => editor.set_error(err.to_string()),
     }
 }

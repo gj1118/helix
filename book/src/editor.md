@@ -54,6 +54,7 @@
 | `mouse-yank-register` | Which register to use for mouse yanks. | `*` |
 | `middle-click-paste` | Middle click paste support | `true` |
 | `default-yank-register` | Default register used for yank/paste | `'"'` |
+| `yank-highlight` | How long, in milliseconds, yanked text is highlighted (`ui.highlight.yank`), like Neovim's `vim.hl.on_yank`; `0` turns it off. An edit ends it at once | `200` |
 | `scroll-lines` | Number of lines to scroll per scroll wheel step | `3` |
 | `shell` | Shell to use when running external commands | Unix: `["sh", "-c"]`<br/>Windows: `["cmd", "/C"]` |
 | `line-number` | Line number display: `absolute` simply shows each line's number, while `relative` shows the distance from the current line. When unfocused or in insert mode, `relative` will still show absolute line numbers | `"absolute"` |

@@ -441,6 +441,19 @@ impl EditorView {
                 overlays.push(overlay);
             }
         }
+        // what was just yanked, over the selection
+        if let Some(ranges) = editor.yank_flash_in(view, doc) {
+            let highlight = theme
+                .find_highlight_exact("ui.highlight.yank")
+                .or_else(|| theme.find_highlight_exact("ui.highlight"))
+                .or_else(|| theme.find_highlight_exact("ui.selection"));
+            if let Some(highlight) = highlight {
+                overlays.push(OverlayHighlights::Homogeneous {
+                    highlight,
+                    ranges: ranges.to_vec(),
+                });
+            }
+        }
 
         let gutter_overflow = view.gutter_offset(doc) == 0;
         if !gutter_overflow {

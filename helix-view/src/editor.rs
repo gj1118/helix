@@ -513,6 +513,9 @@ pub struct Config {
     pub auto_format: bool,
     /// Default register used for yank/paste. Defaults to '"'
     pub default_yank_register: char,
+    /// How long (in milliseconds) yanked text is highlighted (`ui.highlight.yank`), like
+    /// Neovim's `vim.hl.on_yank`. 0 turns it off. Defaults to 200.
+    pub yank_highlight: u64,
     /// Automatic save on focus lost and/or after delay.
     /// Time delay in milliseconds since last edit after which auto save timer triggers.
     /// Time delay defaults to false with 3000ms delay. Focus lost defaults to false.
@@ -2184,6 +2187,7 @@ impl Default for Config {
             snippet_completion: true,
             auto_format: true,
             default_yank_register: '"',
+            yank_highlight: 200,
             auto_save: AutoSave::default(),
             auto_reload: AutoReload::default(),
             idle_timeout: Duration::from_millis(250),
@@ -2618,6 +2622,8 @@ pub struct Editor {
     pub plugin_completion_sources: Vec<crate::plugin_ui::PluginCompletionSource>,
     /// Asks the plugins' completion sources (set by the application when plugins load).
     pub plugin_completion_hook: Option<crate::plugin_ui::PluginCompletionHook>,
+    /// The text just yanked, highlighted for a moment (see [`Config::yank_highlight`]).
+    pub yank_flash: Option<YankFlash>,
     /// The floating windows of plugins (`helix.ui.float`), the last one on top.
     pub plugin_floats: Vec<crate::plugin_ui::PluginFloat>,
     /// The marks plugins show on the quickfix panel's rows.
@@ -2769,6 +2775,19 @@ pub struct StatusSegment {
     pub document: Option<DocumentId>,
     /// Lower first.
     pub priority: i64,
+}
+
+/// Text just yanked, highlighted in its window until `until` (and while the buffer is
+/// unchanged).
+#[derive(Debug, Clone, PartialEq)]
+pub struct YankFlash {
+    pub view: ViewId,
+    pub document: DocumentId,
+    /// The buffer's version when it was yanked: an edit ends the highlight.
+    pub version: i32,
+    /// Chars, `end` exclusive.
+    pub ranges: Vec<std::ops::Range<usize>>,
+    pub until: Instant,
 }
 
 /// A plugin's text in the bar at the top of windows (`helix.winbar`).
@@ -2966,6 +2985,7 @@ impl Editor {
             plugin_completion_sources: Vec::new(),
             plugin_completion_hook: None,
             plugin_floats: Vec::new(),
+            yank_flash: None,
             plugin_quickfix_marks: Default::default(),
             diff_sessions: Vec::new(),
             diff_review: None,
@@ -4310,6 +4330,48 @@ impl Editor {
             .collect();
         segments.sort_by_key(|segment| segment.priority);
         segments
+    }
+
+    /// Highlights `ranges` (chars) of the focused buffer for [`Config::yank_highlight`]
+    /// milliseconds: they were just yanked.
+    pub fn flash_yank(&mut self, ranges: Vec<std::ops::Range<usize>>) {
+        let millis = self.config().yank_highlight;
+        let ranges: Vec<_> = ranges.into_iter().filter(|r| r.start < r.end).collect();
+        if millis == 0 || ranges.is_empty() {
+            self.yank_flash = None;
+            return;
+        }
+        let Some(view) = self.tree.try_get(self.tree.focus) else {
+            return;
+        };
+        let Some(doc) = self.documents.get(&view.doc) else {
+            return;
+        };
+        let duration = Duration::from_millis(millis);
+        self.yank_flash = Some(YankFlash {
+            view: view.id,
+            document: doc.id(),
+            version: doc.version(),
+            ranges,
+            until: Instant::now() + duration,
+        });
+        // drawn once more when it is over, to take it away
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                sleep(duration).await;
+                helix_event::request_redraw();
+            });
+        }
+    }
+
+    /// The ranges just yanked in `view`, if their highlight is not over.
+    pub fn yank_flash_in(&self, view: &View, doc: &Document) -> Option<&[std::ops::Range<usize>]> {
+        let flash = self.yank_flash.as_ref()?;
+        (flash.view == view.id
+            && flash.document == doc.id()
+            && flash.version == doc.version()
+            && Instant::now() < flash.until)
+            .then_some(flash.ranges.as_slice())
     }
 
     /// Whether the command `name` may run (see [`Editor::command_hook`]).

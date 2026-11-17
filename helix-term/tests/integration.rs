@@ -60,4 +60,5 @@ mod test {
     mod url_buffer;
     mod welcome;
     mod window_title;
+    mod yank_highlight;
 }

@@ -390,6 +390,7 @@ These scopes are used for theming the editor interface:
 | `ui.selection`                    | For selections in the editing area                                                             |
 | `ui.selection.primary`            |                                                                                                |
 | `ui.highlight`                    | Highlighted lines in the picker preview                                                        |
+| `ui.highlight.yank`               | Text just yanked, for a moment (`yank-highlight`); falls back to `ui.highlight`, then `ui.selection`|
 | `ui.highlight.frameline`          | Line at which debugging execution is paused at                                                 |
 | `ui.diff.add`                     | Background of added lines in a [side-by-side diff](./diff.md) (default: `diff.plus` mixed into the background, or a green tint if it is a grey) |
 | `ui.diff.delete`                  | Background of removed lines in a side-by-side diff (default: from `diff.minus`)               |
