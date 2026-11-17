@@ -1461,7 +1461,7 @@ impl EditorView {
 
         // Determine scroll offset
         let scroll_offset = editor
-            .documents()
+            .bufferline_documents()
             .position(|d| d.id() == current_doc)
             .and_then(|current_idx| positions.get(current_idx))
             .map_or(0, |&target_x| {
@@ -1477,7 +1477,7 @@ impl EditorView {
         let sep_width = sep.width();
 
         // Second pass: render with the calculated offset
-        for (idx, doc) in editor.documents().enumerate() {
+        for (idx, doc) in editor.bufferline_documents().enumerate() {
             let buffer_x = positions[idx];
             let text = &buffer_texts[idx];
 
@@ -1548,9 +1548,9 @@ impl EditorView {
     fn bufferline_cache_is_current(&self, editor: &Editor, separator: &str) -> bool {
         let cache = &self.bufferline_cache;
         cache.separator == separator
-            && cache.doc_ids.len() == editor.documents.len()
+            && cache.doc_ids.len() == editor.bufferline_documents().count()
             && editor
-                .documents()
+                .bufferline_documents()
                 .zip(&cache.doc_ids)
                 .zip(&cache.doc_paths)
                 .zip(&cache.modified)
@@ -1577,10 +1577,13 @@ impl EditorView {
 
         let scratch = PathBuf::from(SCRATCH_BUFFER_NAME);
 
-        let current_ids: Vec<DocumentId> = editor.documents().map(|d| d.id()).collect();
-        let current_modified: Vec<bool> = editor.documents().map(|d| d.is_modified()).collect();
+        let current_ids: Vec<DocumentId> = editor.bufferline_documents().map(|d| d.id()).collect();
+        let current_modified: Vec<bool> = editor
+            .bufferline_documents()
+            .map(|d| d.is_modified())
+            .collect();
         let current_paths: Vec<String> = editor
-            .documents()
+            .bufferline_documents()
             .map(|d| {
                 // Lossy conversion so non-UTF-8 paths keep distinct names
                 // instead of all collapsing to "".
@@ -1589,7 +1592,7 @@ impl EditorView {
             .collect();
 
         let languages: Vec<Option<String>> = editor
-            .documents()
+            .bufferline_documents()
             .map(|d| d.language_name().map(String::from))
             .collect();
 
@@ -1608,7 +1611,7 @@ impl EditorView {
                 .map(|p| p.split(MAIN_SEPARATOR).map(String::from).collect())
                 .collect();
             editor
-                .documents()
+                .bufferline_documents()
                 .enumerate()
                 .map(|(idx, doc)| {
                     let name = Self::compute_display_name(&components, idx);
@@ -1626,7 +1629,7 @@ impl EditorView {
         // separator "│" and file icons are multi-byte but one column wide.
         let sep_width = separator.width();
 
-        for (idx, doc) in editor.documents().enumerate() {
+        for (idx, doc) in editor.bufferline_documents().enumerate() {
             if idx > 0 {
                 total_width = total_width.saturating_add(sep_width);
             }
@@ -2835,7 +2838,7 @@ impl EditorView {
                 let bufferline_visible = match config.bufferline.render_mode {
                     helix_view::editor::BufferLineRenderMode::Always => true,
                     helix_view::editor::BufferLineRenderMode::Multiple => {
-                        editor.documents.len() > 1
+                        editor.bufferline_documents().nth(1).is_some()
                     }
                     _ => false,
                 };
@@ -3526,7 +3529,7 @@ fn uses_bufferline(editor: &Editor) -> bool {
     use helix_view::editor::BufferLineRenderMode;
     match editor.config().bufferline.render_mode {
         BufferLineRenderMode::Always => true,
-        BufferLineRenderMode::Multiple => editor.documents.len() > 1,
+        BufferLineRenderMode::Multiple => editor.bufferline_documents().nth(1).is_some(),
         _ => false,
     }
 }

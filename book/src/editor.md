@@ -147,12 +147,19 @@ their path.
 |--|--|---------|
 | `render-mode` | When to show it: `"always"`, `"never"` or `"multiple"` (only when more than one buffer is open) | `"never"` |
 | `separator` | Text drawn between two labels | `"│"` |
+| `scope` | Which buffers it lists while there are several [tab pages](./keymap.md#tab-pages): `"tab"`, the buffers of the tab shown (the ones opened or shown in it), or `"global"`, every open buffer. `gn` / `gp`, `:buffer-next` / `:buffer-previous` and the buffer picker (`Space b`) go through the same buffers. With one tab page both list every buffer | `"tab"` |
 
 ```toml
 [editor.bufferline]
 render-mode = "multiple"
 separator = "│"
+scope = "tab"
 ```
+
+With `scope = "tab"`, a buffer stays open when its tab is not shown: only the list is scoped. A
+buffer opened in a tab (`:open`, a picker, `:tab-new file`) belongs to that tab, and one shown in
+windows of several tabs to each of them. Closing a tab page gives its buffers to the tab shown
+next, so no open buffer goes missing from every list. `:buffer name` still reaches any buffer.
 
 The upstream string form is accepted too: `bufferline = "multiple"` (or `"always"`,
 `"never"`) under `[editor]` sets `render-mode` and keeps the other keys at their defaults.

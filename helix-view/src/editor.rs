@@ -1364,6 +1364,17 @@ pub enum BufferLineRenderMode {
     Multiple,
 }
 
+/// Which buffers the bufferline lists (and `gn` / `gp` and the buffer picker go through).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BufferLineScope {
+    /// Every open buffer, whatever tab page shows it.
+    Global,
+    /// The buffers of the tab page shown: the ones opened or shown in it.
+    #[default]
+    Tab,
+}
+
 /// The `bufferline` setting: a table (`[editor.bufferline]`), or the upstream string form
 /// (`bufferline = "multiple"`), which sets the render mode and leaves the other fields at
 /// their defaults.
@@ -1372,6 +1383,7 @@ pub enum BufferLineRenderMode {
 pub struct BufferLineConfig {
     pub render_mode: BufferLineRenderMode,
     pub separator: String,
+    pub scope: BufferLineScope,
 }
 
 /// The table form of [`BufferLineConfig`].
@@ -1385,6 +1397,7 @@ pub struct BufferLineConfig {
 struct BufferLineTable {
     render_mode: BufferLineRenderMode,
     separator: String,
+    scope: BufferLineScope,
 }
 
 impl Default for BufferLineTable {
@@ -1392,10 +1405,12 @@ impl Default for BufferLineTable {
         let BufferLineConfig {
             render_mode,
             separator,
+            scope,
         } = BufferLineConfig::default();
         Self {
             render_mode,
             separator,
+            scope,
         }
     }
 }
@@ -1413,7 +1428,7 @@ impl<'de> Deserialize<'de> for BufferLineConfig {
             fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
                 write!(
                     f,
-                    "\"always\", \"never\", \"multiple\" or a table with `render-mode` and `separator`"
+                    "\"always\", \"never\", \"multiple\" or a table with `render-mode`, `separator` and `scope`"
                 )
             }
 
@@ -1438,6 +1453,7 @@ impl<'de> Deserialize<'de> for BufferLineConfig {
                 Ok(BufferLineConfig {
                     render_mode: table.render_mode,
                     separator: table.separator,
+                    scope: table.scope,
                 })
             }
         }
@@ -1451,6 +1467,7 @@ impl Default for BufferLineConfig {
         Self {
             render_mode: BufferLineRenderMode::default(),
             separator: String::from("│"),
+            scope: BufferLineScope::default(),
         }
     }
 }
@@ -2541,6 +2558,9 @@ pub struct Editor {
     /// Current editing mode.
     pub mode: Mode,
     pub tree: Tree,
+    /// The buffers of each tab page (by its root container): the ones opened or shown in
+    /// it. What the bufferline lists with `[editor.bufferline] scope = "tab"`.
+    tab_buffers: HashMap<ViewId, HashSet<DocumentId>>,
     pub next_document_id: DocumentId,
     pub documents: BTreeMap<DocumentId, Document>,
 
@@ -2944,6 +2964,7 @@ impl Editor {
         Self {
             mode: Mode::Normal,
             tree: Tree::new(area),
+            tab_buffers: HashMap::new(),
             next_document_id: DocumentId::default(),
             documents: BTreeMap::new(),
             saves: HashMap::new(),
@@ -3736,10 +3757,100 @@ impl Editor {
         }
         // the right sides of the diffs keep their connector in front of the new gutters
         self.diff_gutters_changed(&config.gutters);
+        self.sync_tab_buffers();
+    }
+
+    /// Adds `doc` to the buffers of the tab page of `view` (the tab shown for `None`).
+    fn add_to_tab_of(&mut self, view: Option<ViewId>, doc: DocumentId) {
+        let tab = match view {
+            Some(view) => self.tree.tab_of(view),
+            None => Some(self.tree.active_tab()),
+        };
+        if let Some(root) = tab.and_then(|tab| self.tree.tab_root(tab)) {
+            self.tab_buffers.entry(root).or_default().insert(doc);
+        }
+    }
+
+    /// Takes `doc` out of the buffers of tab page `index` (unless a window of the tab shows
+    /// it): `:tab-new file` opens a file for the new tab, not for the one it was run in.
+    pub fn remove_from_tab(&mut self, index: usize, doc: DocumentId) {
+        let shown = self
+            .tree
+            .tab_views(index)
+            .into_iter()
+            .any(|view| self.tree.try_get(view).is_some_and(|view| view.doc == doc));
+        if shown {
+            return;
+        }
+        if let Some(root) = self.tree.tab_root(index) {
+            if let Some(buffers) = self.tab_buffers.get_mut(&root) {
+                buffers.remove(&doc);
+            }
+        }
+    }
+
+    /// Keeps the buffers of the tab pages in step with the tabs and buffers: the closed
+    /// tabs and buffers go, every buffer a window shows is in its tab, and the buffers no
+    /// tab has any more (their tab closed) join the tab shown, so that none goes missing.
+    fn sync_tab_buffers(&mut self) {
+        let roots: Vec<ViewId> = (0..self.tree.tab_count())
+            .filter_map(|tab| self.tree.tab_root(tab))
+            .collect();
+        let documents = &self.documents;
+        self.tab_buffers.retain(|root, buffers| {
+            buffers.retain(|doc| documents.contains_key(doc));
+            roots.contains(root)
+        });
+        for (tab, root) in roots.iter().enumerate() {
+            for view in self.tree.tab_views(tab) {
+                if let Some(view) = self.tree.try_get(view) {
+                    self.tab_buffers.entry(*root).or_default().insert(view.doc);
+                }
+            }
+        }
+        let orphans: Vec<DocumentId> = self
+            .documents
+            .keys()
+            .filter(|doc| {
+                !self
+                    .tab_buffers
+                    .values()
+                    .any(|buffers| buffers.contains(doc))
+            })
+            .copied()
+            .collect();
+        if let Some(root) = self.tree.tab_root(self.tree.active_tab()) {
+            self.tab_buffers.entry(root).or_default().extend(orphans);
+        }
+    }
+
+    /// Whether the bufferline of the tab page shown lists `doc` (see
+    /// [`Self::bufferline_documents`]).
+    pub fn in_bufferline(&self, doc: DocumentId) -> bool {
+        if self.config().bufferline.scope == BufferLineScope::Global || self.tree.tab_count() < 2 {
+            return true;
+        }
+        // the buffer of the focused window always is (whatever the bookkeeping says)
+        self.tree
+            .try_get(self.tree.focus)
+            .is_some_and(|view| view.doc == doc)
+            || self
+                .tree
+                .tab_root(self.tree.active_tab())
+                .and_then(|root| self.tab_buffers.get(&root))
+                .is_some_and(|buffers| buffers.contains(&doc))
+    }
+
+    /// The buffers the bufferline lists, in order: every open buffer, or with
+    /// `[editor.bufferline] scope = "tab"` (the default) and several tab pages, the ones of
+    /// the tab shown. `gn` / `gp` and the buffer picker go through these.
+    pub fn bufferline_documents(&self) -> impl Iterator<Item = &Document> {
+        self.documents().filter(|doc| self.in_bufferline(doc.id()))
     }
 
     fn replace_document_in_view(&mut self, current_view: ViewId, doc_id: DocumentId) {
         let scrolloff = self.config().scrolloff;
+        self.add_to_tab_of(Some(current_view), doc_id);
         let view = self.tree.get_mut(current_view);
 
         view.doc = doc_id;
@@ -3826,6 +3937,7 @@ impl Editor {
             }
             Action::Load => {
                 let view_id = view!(self).id;
+                self.add_to_tab_of(Some(view_id), id);
                 let doc = doc_mut!(self, &id);
                 doc.ensure_view_init(view_id);
                 doc.mark_as_focused();
@@ -3848,6 +3960,7 @@ impl Editor {
                         _ => unreachable!(),
                     },
                 );
+                self.add_to_tab_of(Some(view_id), id);
                 // initialize selection for view
                 let doc = doc_mut!(self, &id);
                 doc.ensure_view_init(view_id);
@@ -3876,6 +3989,7 @@ impl Editor {
     ) -> ViewId {
         let view = View::new(id, self.config().gutters.clone());
         let view_id = self.tree.dock(view, side, size);
+        self.add_to_tab_of(Some(view_id), id);
         let doc = doc_mut!(self, &id);
         doc.ensure_view_init(view_id);
         if focus {
@@ -3893,6 +4007,8 @@ impl Editor {
             DocumentId(unsafe { NonZeroUsize::new_unchecked(self.next_document_id.0.get() + 1) });
         doc.id = id;
         self.documents.insert(id, doc);
+        // opened in the tab page shown
+        self.add_to_tab_of(None, id);
 
         let (save_sender, save_receiver) = tokio::sync::mpsc::unbounded_channel();
         self.saves.insert(id, save_sender);
@@ -4077,6 +4193,7 @@ impl Editor {
         self.tree.new_tab();
         let view = View::new(doc_id, self.config().gutters.clone());
         let view_id = self.tree.insert(view);
+        self.add_to_tab_of(Some(view_id), doc_id);
         let doc = doc_mut!(self, &doc_id);
         doc.ensure_view_init(view_id);
         doc.mark_as_focused();
@@ -4280,6 +4397,7 @@ impl Editor {
                 });
             let view = View::new(doc_id, self.config().gutters.clone());
             let view_id = self.tree.insert(view);
+            self.add_to_tab_of(Some(view_id), doc_id);
             let doc = doc_mut!(self, &doc_id);
             doc.ensure_view_init(view_id);
             doc.mark_as_focused();
@@ -4947,8 +5065,22 @@ mod bufferline_config_tests {
             BufferLineConfig {
                 render_mode: BufferLineRenderMode::Multiple,
                 separator: "|".to_owned(),
+                scope: BufferLineScope::Tab,
             }
         );
+        // the scope: the tab page's buffers by default, or all of them
+        assert_eq!(BufferLineConfig::default().scope, BufferLineScope::Tab);
+        assert_eq!(
+            bufferline("[bufferline]\nscope = \"global\"")
+                .unwrap()
+                .scope,
+            BufferLineScope::Global
+        );
+        assert_eq!(
+            bufferline("[bufferline]\nscope = \"tab\"").unwrap().scope,
+            BufferLineScope::Tab
+        );
+        assert!(bufferline("[bufferline]\nscope = \"window\"").is_err());
         assert_eq!(
             bufferline("[bufferline]\nseparator = \"|\"").unwrap(),
             BufferLineConfig {

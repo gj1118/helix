@@ -343,7 +343,10 @@ one, a tab line on the top row shows them: each tab's number, the file of its fo
 | `:tab-previous [N]` (`:tabp`) | Show the previous tab page (N back) |
 | `:tab-move [N]` | Move the tab page shown to position N (the end without N) |
 
-Buffers are shared by all tab pages: a buffer can be shown in windows of several tabs, and
+Buffers are shared by all tab pages, but the bufferline of each tab lists its own: the buffers
+opened or shown in it (`[editor.bufferline] scope`, see [editor](./editor.md#editorbufferline-section);
+`scope = "global"` lists every buffer in every tab). `gn` / `gp` and `Space b` go through the
+same ones. A buffer can be shown in windows of several tabs, and
 closing a buffer closes the windows of every tab that show only it. Closing a tab's last window
 (`:q`, `Ctrl-w q`) closes the tab; quitting Helix (`:qa`) closes the windows of every tab. The
 tab line is styled with `ui.tabline`, `ui.tabline.active` and `ui.tabline.background`, and

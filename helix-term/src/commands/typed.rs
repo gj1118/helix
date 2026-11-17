@@ -4278,6 +4278,7 @@ fn tab_new(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyh
     if event != PromptEvent::Validate {
         return Ok(());
     }
+    let open_before = cx.editor.documents.len();
     let doc_id = match args.first() {
         Some(path) => {
             let path = helix_stdx::path::expand_tilde(Path::new(path));
@@ -4287,7 +4288,14 @@ fn tab_new(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyh
         }
         None => cx.editor.new_file(Action::Load),
     };
+    let opened = cx.editor.documents.len() > open_before;
+    let from = cx.editor.tree.active_tab();
     cx.editor.new_tab(doc_id);
+    // A buffer opened for the new tab is the new tab's only, not the one the command ran in
+    // (the bufferline of each tab lists its own buffers).
+    if opened {
+        cx.editor.remove_from_tab(from, doc_id);
+    }
     Ok(())
 }
 

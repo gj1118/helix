@@ -1412,7 +1412,10 @@ than one (number, file of the focused window, `+N` other windows); click one to 
 | `Ctrl-w X` | Close the tab page |
 | `:tab-new [file]`, `:tab-close`, `:tab-only`, `:tab-next [N]`, `:tab-previous`, `:tab-move [N]` | The same from the command line (Vim's `:tabnew`, `:tabc`, `:tabo`, `:tabn`, `:tabp` work too) |
 
-Buffers are shared by the tabs. Closing a tab's last window closes the tab; `:qa` closes every
+Buffers are shared by the tabs, but each tab's bufferline lists only its own buffers (the ones
+opened or shown in it), and `gn` / `gp` and `Space b` go through those. Set
+`[editor.bufferline] scope = "global"` to list every buffer in every tab. Closing a tab gives
+its buffers to the tab you land on. Closing a tab's last window closes the tab; `:qa` closes every
 tab. Theme keys: `ui.tabline`, `ui.tabline.active`, `ui.tabline.background`. See
 [Tab pages](book/src/keymap.md#tab-pages) in the book.
 

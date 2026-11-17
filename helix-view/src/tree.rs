@@ -501,6 +501,15 @@ impl Tree {
         self.tabs.iter().position(|(tab_root, _)| *tab_root == root)
     }
 
+    /// The root container of tab `index`: it identifies the tab while tabs are opened,
+    /// closed and moved around it.
+    pub fn tab_root(&self, index: usize) -> Option<ViewId> {
+        if index == self.active {
+            return Some(self.root);
+        }
+        self.tabs.get(index).map(|(root, _)| *root)
+    }
+
     /// The view focused in tab `index` (the root container when the tab has none).
     pub fn tab_focus(&self, index: usize) -> Option<ViewId> {
         if index == self.active {

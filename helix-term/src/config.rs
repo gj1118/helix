@@ -427,6 +427,7 @@ mod tests {
             BufferLineConfig {
                 render_mode: BufferLineRenderMode::Always,
                 separator: "|".to_owned(),
+                ..BufferLineConfig::default()
             }
         );
 

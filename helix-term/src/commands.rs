@@ -1174,30 +1174,19 @@ fn goto_previous_buffer(cx: &mut Context) {
 
 fn goto_buffer(editor: &mut Editor, direction: Direction, count: usize) {
     let current = view!(editor).doc;
+    // The buffers of the bufferline: the tab page's with `[editor.bufferline] scope = "tab"`.
+    let ids: Vec<DocumentId> = editor.bufferline_documents().map(|doc| doc.id()).collect();
+    let Some(position) = ids.iter().position(|id| *id == current) else {
+        return;
+    };
     // Going around the buffers whole times changes nothing: a huge count (`99999999gn`)
     // would otherwise walk the cycle that many times.
-    let count = count % editor.documents.len();
-
-    let id = match direction {
-        Direction::Forward => {
-            let iter = editor.documents.keys();
-            // skip 'count' times past current buffer
-            iter.cycle().skip_while(|id| *id != &current).nth(count)
-        }
-        Direction::Backward => {
-            let iter = editor.documents.keys();
-            // skip 'count' times past current buffer
-            iter.rev()
-                .cycle()
-                .skip_while(|id| *id != &current)
-                .nth(count)
-        }
-    }
-    .unwrap();
-
-    let id = *id;
-
-    editor.switch(id, Action::Replace);
+    let count = count % ids.len();
+    let index = match direction {
+        Direction::Forward => (position + count) % ids.len(),
+        Direction::Backward => (position + ids.len() - count) % ids.len(),
+    };
+    editor.switch(ids[index], Action::Replace);
 }
 
 fn extend_to_line_start(cx: &mut Context) {
@@ -4493,9 +4482,9 @@ fn buffer_picker(cx: &mut Context) {
     // Most recently used buffers first.
     fn buffer_items(editor: &Editor) -> Vec<BufferMeta<'static>> {
         let current = view!(editor).doc;
+        // the buffers of the bufferline: the tab page's with `[editor.bufferline] scope = "tab"`
         let mut items = editor
-            .documents
-            .values()
+            .bufferline_documents()
             .map(|doc| new_meta(doc, current))
             .collect::<Vec<_>>();
         items.sort_unstable_by_key(|item| std::cmp::Reverse(item.focused_at));
