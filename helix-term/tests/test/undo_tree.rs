@@ -182,8 +182,17 @@ async fn the_undo_tree_goes_to_the_quickfix_panel_when_it_is_on() -> anyhow::Res
                     assert!(helix_term::ui::quickfix::focused(&app.editor));
                 }),
             ),
+            // the preview takes the windows' place above the panel: revision #1's text
             (
-                Some("kk<ret>"),
+                Some("k"),
+                Some(&|app| {
+                    let rows = app.rendered_rows();
+                    let top: Vec<&str> = rows.iter().take(3).map(|row| row.trim()).collect();
+                    assert_eq!(top, vec!["one", "two", ""], "{}", screen(app));
+                }),
+            ),
+            (
+                Some("k<ret>"),
                 Some(&|app| assert_eq!(buffer_text(app), "one\n".to_string())),
             ),
         ],
