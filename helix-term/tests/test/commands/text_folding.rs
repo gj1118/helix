@@ -413,9 +413,22 @@ async fn fold_comment() -> anyhow::Result<()> {
                     g7|
                     zf",
                 ),
+                // a comment of one line folds nothing: the block the cursor is in (the
+                // body of `mod format_is_needed`) is folded instead, like Vim's `zc`
                 Some(&|app| {
-                    let expected = ((Position::new(15, 7), Position::new(15, 7)), 0);
+                    let expected = ((Position::new(15, 7), Position::new(15, 7)), 1);
                     assert_eq!(result(app), expected);
+                    let (view, doc) = current_ref!(&app.editor);
+                    let container = doc.fold_container(view.id).unwrap();
+                    let objects: Vec<String> = container
+                        .start_points()
+                        .iter()
+                        .map(|start| start.object.to_string())
+                        .collect();
+                    assert!(
+                        objects.iter().any(|object| object == "block"),
+                        "{objects:?}"
+                    );
                 }),
             ),
             (
@@ -1668,8 +1681,14 @@ async fn toggle_fold() -> anyhow::Result<()> {
                 Some("z<A-f>"),
                 Some(&|app| assert_eq!(folds_number(app), 0)),
             ),
+            // the doc comment: no text object for `z Alt-f`, which then folds like `z f`
+            // (the comment), and opens it again
             (
                 Some("g7gz<A-f>"),
+                Some(&|app| assert_eq!(folds_number(app), 1)),
+            ),
+            (
+                Some("z<A-f>"),
                 Some(&|app| assert_eq!(folds_number(app), 0)),
             ),
             (
