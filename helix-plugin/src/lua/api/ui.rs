@@ -182,6 +182,11 @@ pub fn register_ui_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     })?;
     ui_module.set("popup", popup)?;
 
+    // helix.ui.float{ buffer, title, width, height, position, focus, cursorline, cursor,
+    // keys, on_close } - A floating window showing `buffer`; returns its handle
+    let float = lua.create_function(super::float::open)?;
+    ui_module.set("float", float)?;
+
     // helix.ui.set_status(message) - Set status line message
     let set_status = lua.create_function(|lua, message: String| {
         require(lua, Permission::Ui, "helix.ui.set_status")?;

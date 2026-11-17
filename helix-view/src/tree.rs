@@ -75,6 +75,15 @@ const MIN_SPLIT_HEIGHT: u16 = 3;
 
 /// The boundary between two neighbouring splits, as grabbed with the mouse.
 /// Obtained from [`Tree::divider_at`] and moved with [`Tree::drag_divider`].
+/// The edge of the screen a docked window is put on ([`Tree::dock`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DockSide {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SplitDivider {
     container: ViewId,
@@ -501,6 +510,167 @@ impl Tree {
     }
 
     /// Opens a new, empty tab page after the one shown, and shows it: insert a view next.
+    /// Puts `view` along an edge of the tab shown, `size` cells wide (left, right) or high
+    /// (top, bottom), at most half the tab's width (height): the whole height (or width) of the
+    /// screen, beside all the other windows. The focus does not move (but to the first window
+    /// of an empty tab). The size is kept in proportion when the screen is resized, like
+    /// the other splits'.
+    pub fn dock(&mut self, view: View, side: DockSide, size: u16) -> ViewId {
+        let layout = match side {
+            DockSide::Left | DockSide::Right => Layout::Vertical,
+            DockSide::Top | DockSide::Bottom => Layout::Horizontal,
+        };
+        let root = self.root;
+        let node = self.nodes.insert(Node::view(view));
+        self.get_mut(node).id = node;
+
+        let Content::Container(container) = &mut self.nodes[root].content else {
+            unreachable!("a root is a container")
+        };
+        if container.layout != layout {
+            if container.children.is_empty() {
+                container.layout = layout;
+            } else {
+                // The windows there go into a container of their own, beside the new one.
+                let children = std::mem::take(&mut container.children);
+                let bounds = std::mem::take(&mut container.node_bounds);
+                let old_layout = container.layout;
+                container.layout = layout;
+                let mut inner = Node::container(old_layout);
+                inner.parent = root;
+                let inner = self.nodes.insert(inner);
+                for &child in &children {
+                    self.nodes[child].parent = inner;
+                }
+                if let Content::Container(inner_container) = &mut self.nodes[inner].content {
+                    inner_container.children = children;
+                    inner_container.node_bounds = bounds;
+                }
+                if let Content::Container(container) = &mut self.nodes[root].content {
+                    container.push_child(inner);
+                }
+            }
+        }
+        let Content::Container(container) = &mut self.nodes[root].content else {
+            unreachable!("a root is a container")
+        };
+        let index = match side {
+            DockSide::Left | DockSide::Top => 0,
+            DockSide::Right | DockSide::Bottom => container.children.len(),
+        };
+        container.insert_child(index, node);
+        self.nodes[node].parent = root;
+        if self.focus == root {
+            self.focus = node;
+        }
+        self.recalculate();
+        self.set_child_size(root, index, size);
+        node
+    }
+
+    /// Makes child `index` of `container` `size` cells along its layout (clamped so the others
+    /// keep their least size), the others sharing what is left in proportion to their sizes.
+    fn set_child_size(&mut self, container: ViewId, index: usize, size: u16) {
+        let Content::Container(node) = &self.nodes[container].content else {
+            return;
+        };
+        let layout = node.layout;
+        let sizes: Vec<u16> = node
+            .children
+            .iter()
+            .map(|&child| {
+                let area = self.node_area(child);
+                match layout {
+                    Layout::Vertical => area.width,
+                    Layout::Horizontal => area.height,
+                }
+            })
+            .collect();
+        if sizes.len() < 2 || index >= sizes.len() {
+            return;
+        }
+        let min = match layout {
+            Layout::Vertical => MIN_SPLIT_WIDTH,
+            Layout::Horizontal => MIN_SPLIT_HEIGHT,
+        };
+        let total: u32 = sizes.iter().map(|&s| s.max(1) as u32).sum();
+        // the least the others take: each window in them keeps its least size
+        let reserved: u32 = node
+            .children
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != index)
+            .map(|(_, &child)| {
+                let leaves = self.leaves_along(child, layout);
+                // (and the gap column between side by side windows)
+                let gaps = if layout == Layout::Vertical {
+                    leaves - 1
+                } else {
+                    0
+                };
+                leaves * min as u32 + gaps
+            })
+            .sum();
+        // at most half: the windows beside it keep their proportions among themselves
+        let most = total.saturating_sub(reserved).min(total / 2);
+        let size = (size as u32).clamp(min as u32, most.max(min as u32));
+        let rest_before: u32 = sizes
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != index)
+            .map(|(_, &s)| s.max(1) as u32)
+            .sum();
+        let rest = total.saturating_sub(size);
+        let unit = sizes.len() as f64 * DEFAULT_WEIGHT / total.max(1) as f64;
+        // whole cells (what rounding leaves goes to the last of the others): a fraction
+        // would be rounded into the first window's size
+        let mut cells: Vec<u32> = sizes
+            .iter()
+            .enumerate()
+            .map(|(i, &s)| {
+                if i == index {
+                    size
+                } else {
+                    s.max(1) as u32 * rest / rest_before.max(1)
+                }
+            })
+            .collect();
+        let given: u32 = cells.iter().sum();
+        if let Some(last) = (0..cells.len()).rev().find(|&i| i != index) {
+            cells[last] += total.saturating_sub(given);
+        }
+        let Content::Container(node) = &mut self.nodes[container].content else {
+            return;
+        };
+        for (i, bounds) in node.node_bounds.iter_mut().enumerate() {
+            let weight = (cells[i].max(1) as f64) * unit;
+            match layout {
+                Layout::Vertical => bounds.width = weight,
+                Layout::Horizontal => bounds.height = weight,
+            }
+            bounds.expand = false;
+        }
+        self.recalculate();
+    }
+
+    /// How many windows of `node` sit side by side along `layout` at most.
+    fn leaves_along(&self, node: ViewId, layout: Layout) -> u32 {
+        match &self.nodes[node].content {
+            Content::View(_) => 1,
+            Content::Container(container) => {
+                let counts = container
+                    .children
+                    .iter()
+                    .map(|&child| self.leaves_along(child, layout));
+                if container.layout == layout {
+                    counts.sum()
+                } else {
+                    counts.max().unwrap_or(1)
+                }
+            }
+        }
+    }
+
     pub fn new_tab(&mut self) {
         let mut root = Node::container(Layout::Vertical);
         root.parent = ViewId::default();
@@ -2016,6 +2186,74 @@ mod test {
         let mut tree = Tree::new(Rect::new(0, 0, width, height));
         let first = tree.insert(View::new(DocumentId::default(), GutterConfig::default()));
         (tree, first)
+    }
+
+    #[test]
+    fn docked_windows_sit_along_an_edge_at_their_size() {
+        let (mut tree, main) = new_tree(101, 40);
+        let other = tree.split(
+            View::new(DocumentId::default(), GutterConfig::default()),
+            Layout::Vertical,
+        );
+        tree.focus = main;
+        // on the left, 30 columns: the others share the rest; the focus stays
+        let left = tree.dock(
+            View::new(DocumentId::default(), GutterConfig::default()),
+            DockSide::Left,
+            30,
+        );
+        assert_eq!(tree.focus, main);
+        assert_eq!(tree.get(left).area.x, 0);
+        assert_eq!(tree.get(left).area.width, 30);
+        assert_eq!(tree.get(left).area.height, 40);
+        assert!(tree.get(main).area.x > 30);
+        let widths =
+            tree.get(left).area.width + tree.get(main).area.width + tree.get(other).area.width;
+        assert_eq!(widths, 99, "101 columns, two 1-column gaps");
+
+        // at the bottom: across the whole width, under all of them
+        let bottom = tree.dock(
+            View::new(DocumentId::default(), GutterConfig::default()),
+            DockSide::Bottom,
+            8,
+        );
+        assert_eq!(tree.get(bottom).area.height, 8);
+        assert_eq!(tree.get(bottom).area.width, 101);
+        assert_eq!(tree.get(bottom).area.y, 32);
+        assert_eq!(tree.get(left).area.height, 32);
+        assert_eq!(tree.get(left).area.width, 30);
+        assert_eq!(tree.views().count(), 4_usize);
+
+        // closing it gives the room back
+        tree.remove(bottom);
+        assert_eq!(tree.get(left).area.height, 40);
+
+        // too big a size: half the width at most
+        let right = tree.dock(
+            View::new(DocumentId::default(), GutterConfig::default()),
+            DockSide::Right,
+            500,
+        );
+        assert_eq!(tree.get(right).area.right(), 101);
+        assert!(
+            tree.get(right).area.width <= 51,
+            "{}",
+            tree.get(right).area.width
+        );
+        assert!(tree.get(main).area.width >= MIN_SPLIT_WIDTH);
+        assert!(tree.get(other).area.width >= MIN_SPLIT_WIDTH);
+    }
+
+    #[test]
+    fn a_docked_window_in_an_empty_tab_gets_the_focus() {
+        let mut tree = Tree::new(Rect::new(0, 0, 80, 20));
+        let docked = tree.dock(
+            View::new(DocumentId::default(), GutterConfig::default()),
+            DockSide::Top,
+            5,
+        );
+        assert_eq!(tree.focus, docked);
+        assert_eq!(tree.get(docked).area.height, 20);
     }
 
     #[test]

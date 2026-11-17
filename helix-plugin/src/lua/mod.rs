@@ -960,6 +960,25 @@ impl LuaEngine {
                     Some(opts) => opts.get("menu")?,
                     None => None,
                 };
+                let document = match &opts {
+                    Some(opts) => match opts.get::<LuaValue>("buffer")? {
+                        LuaValue::Nil => None,
+                        LuaValue::UserData(ud) => Some(
+                            ud.borrow::<api::buffer::LuaBuffer>()
+                                .map_err(|_| {
+                                    LuaError::RuntimeError("opts.buffer must be a buffer".into())
+                                })?
+                                .document_id,
+                        ),
+                        other => {
+                            return Err(LuaError::RuntimeError(format!(
+                                "opts.buffer must be a buffer (got a value of type {})",
+                                other.type_name()
+                            )))
+                        }
+                    },
+                    None => None,
+                };
                 let plugin = current_plugin_name();
                 let command = match action {
                     LuaValue::Function(function) => {
@@ -1046,6 +1065,7 @@ impl LuaEngine {
                                 description: description.clone(),
                                 languages: languages.clone(),
                                 menu: menu.clone(),
+                                document,
                             });
                     }
                     Ok(())
@@ -1098,6 +1118,10 @@ impl LuaEngine {
                 entry.set("desc", binding.description)?;
                 entry.set("language", binding.languages)?;
                 entry.set("menu", binding.menu)?;
+                entry.set(
+                    "buffer",
+                    binding.document.map(|document| format!("{document:?}")),
+                )?;
                 list.push(entry)?;
             }
             Ok(list)
@@ -1172,6 +1196,31 @@ impl LuaEngine {
             })
             .map_err(PluginError::LuaError)
         })
+    }
+
+    /// Runs function `function` of float `float` of `plugin` (one of its keys, or its
+    /// `on_close`), with the float's cursor line and buffer.
+    pub fn run_float(
+        &self,
+        editor: &mut Editor,
+        plugin: &str,
+        float: u64,
+        function: u64,
+    ) -> Result<()> {
+        let lua = self.plugin_lua(plugin)?;
+        with_plugin(&Arc::from(plugin), || {
+            with_editor_context(editor, || api::float::run(lua, float, function))
+                .map_err(PluginError::LuaError)
+        })
+    }
+
+    /// Drops the functions of float `float` of `plugin` (it was closed).
+    pub fn forget_float(&self, plugin: &str, float: u64) {
+        if let Ok(lua) = self.plugin_lua(plugin) {
+            if let Err(err) = api::float::forget(lua, float) {
+                log::error!("float {float} of {plugin}: {err}");
+            }
+        }
     }
 
     /// Asks completion source `id` of `plugin` (see [`api::completion::complete`]).

@@ -306,6 +306,51 @@ pub fn register_window_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     )?;
     window_module.set("split", split)?;
 
+    // helix.window.dock(buffer, { side, size, focus }) - A window showing `buffer` along an
+    // edge of the screen ("left", "right", "top", "bottom"), `size` cells wide (high)
+    let dock = lua.create_function(
+        |lua, (buffer, options): (LuaUserDataRef<super::buffer::LuaBuffer>, Option<LuaTable>)| {
+            require(lua, Permission::Windows, "helix.window.dock")?;
+            let (side, size, focus) = match &options {
+                Some(options) => (
+                    options.get::<Option<String>>("side")?,
+                    options.get::<Option<u16>>("size")?,
+                    options.get::<Option<bool>>("focus")?,
+                ),
+                None => (None, None, None),
+            };
+            let side = match side.as_deref().unwrap_or("left") {
+                "left" => helix_view::tree::DockSide::Left,
+                "right" => helix_view::tree::DockSide::Right,
+                "top" => helix_view::tree::DockSide::Top,
+                "bottom" => helix_view::tree::DockSide::Bottom,
+                other => {
+                    return Err(LuaError::RuntimeError(format!(
+                        "Invalid side '{other}' (expected left, right, top or bottom)"
+                    )))
+                }
+            };
+            let vertical = matches!(
+                side,
+                helix_view::tree::DockSide::Top | helix_view::tree::DockSide::Bottom
+            );
+            let size = size.unwrap_or(if vertical { 10 } else { 30 });
+            let document = buffer.document_id;
+            let view_id = crate::lua::with_editor(|editor| {
+                if editor.document(document).is_none() {
+                    return Err(LuaError::RuntimeError(format!(
+                        "Buffer {:?} no longer exists",
+                        document
+                    )));
+                }
+                Ok(editor.dock(document, side, size, focus.unwrap_or(false)))
+            })?;
+            helix_event::request_redraw();
+            Ok(LuaWindow { view_id })
+        },
+    )?;
+    window_module.set("dock", dock)?;
+
     helix_table.set("window", window_module)?;
 
     Ok(())

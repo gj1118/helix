@@ -947,10 +947,10 @@ fn key_bindings_may_be_for_some_languages_in_a_menu() {
     assert_eq!(tasks, Some(vec!["plaintasks".to_string()]));
     let applies: Vec<bool> = [Some("plaintasks"), Some("rust"), None]
         .into_iter()
-        .map(|language| bindings[0].applies_to(language))
+        .map(|language| bindings[0].applies_to(language, None))
         .collect();
     assert_eq!(applies, [true, false, false]);
-    assert!(bindings[2].applies_to(Some("rust")));
+    assert!(bindings[2].applies_to(Some("rust"), None));
     assert!(editor.plugin_keymaps.has_language_bindings());
 }
 
@@ -2844,6 +2844,125 @@ local segments = helix.winbar.list()
 assert(type(segments) == "table" and #segments >= 2)
 assert(segments[1].position == "left" and math.type(segments[1].priority) == "integer")
 
+result = "ran"
+        "#,
+    );
+    assert_eq!(result, "ran".to_string());
+}
+
+#[test]
+fn floats_docked_windows_and_buffer_keys_of_plugins() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    run(
+        &engine,
+        &mut editor,
+        r#"
+        local list = helix.buffer.create("one\ntwo\nthree\nfour\n")
+        first = helix.ui.float({
+            buffer = list, title = "Items", width = 20, height = 2, cursor = 3,
+            keys = { ["<ret>"] = function(ctx) picked = ctx.line end },
+        })
+        assert(first:is_open() and first:is_focused() and first:get_cursor() == 3)
+        assert(math.type(first:id()) == "integer")
+        first:set_cursor(99)
+        assert(first:get_cursor() == 5, first:get_cursor()) -- the last line (after the newline)
+        -- a second focused float takes the focus
+        second = helix.ui.float({ buffer = list, position = { row = 1, col = 2 }, focus = true })
+        assert(second:is_focused() and not first:is_focused())
+        first:focus()
+        assert(first:is_focused() and not second:is_focused())
+        second:update({ title = "Other", width = 5, position = "cursor" })
+        assert(second:get_buffer():id() == list:id())
+        assert(second:close() == true and second:close() == false and not second:is_open())
+        local ok, err = pcall(second.get_cursor, second)
+        assert(not ok and tostring(err):find("is closed", 1, true), tostring(err))
+        local ok2, err2 = pcall(helix.ui.float, { buffer = list, keys = { gg = function() end } })
+        assert(not ok2 and tostring(err2):find("one key", 1, true), tostring(err2))
+        local ok3, err3 = pcall(helix.ui.float, { title = "x" })
+        assert(not ok3 and tostring(err3):find("needs a `buffer`", 1, true), tostring(err3))
+
+        -- a docked window of the buffer, and a key for that buffer only
+        side = helix.window.dock(list, { side = "left", size = 25 })
+        assert(side:get_buffer():id() == list:id() and not side:is_focused())
+        helix.keymap.set("normal", "<space>z", function() end, { buffer = list })
+        local bindings = helix.keymap.list()
+        assert(#bindings == 1 and bindings[1].buffer == list:id(), tostring(bindings[1].buffer))
+        local ok4, err4 = pcall(helix.window.dock, list, { side = "middle" })
+        assert(not ok4 and tostring(err4):find("Invalid side", 1, true), tostring(err4))
+        "#,
+    )
+    .unwrap();
+    assert_eq!(editor.plugin_floats.len(), 1_usize);
+    let float = &editor.plugin_floats[0];
+    assert_eq!(
+        (
+            float.title.as_deref(),
+            float.width,
+            float.height,
+            float.cursor_line,
+            float.top_line
+        ),
+        (Some("Items"), 20_u16, 2_u16, 4_usize, 3_usize)
+    );
+    assert_eq!(float.keys.len(), 1_usize);
+    // the key runs the plugin's function with the cursor line
+    let (id, function) = (float.id, float.keys[0].1);
+    engine.run_float(&mut editor, "p", id, function).unwrap();
+    let picked: i64 = lua(&engine).globals().get("picked").unwrap();
+    assert_eq!(picked, 5_i64);
+
+    // the docked window: 25 columns on the left, the focus where it was
+    let docked: Vec<_> = editor
+        .tree
+        .views()
+        .filter(|(view, _)| view.area.x == 0 && view.area.width == 25)
+        .collect();
+    assert_eq!(docked.len(), 1_usize);
+    assert!(!docked[0].1);
+    let binding = &editor.plugin_keymaps.bindings[0];
+    assert!(binding.applies_to(None, Some(docked[0].0.doc)));
+    assert!(!binding.applies_to(None, Some(helix_view::doc!(editor).id())));
+}
+
+#[test]
+fn the_float_and_dock_examples_of_the_book_run() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    let result = result_of(
+        &engine,
+        &mut editor,
+        r#"
+local list = helix.buffer.create("alpha\nbeta\ngamma\n") -- needs `edit`
+local picked = nil
+local float = helix.ui.float({
+    buffer = list,
+    title = "Pick one",
+    width = 20,
+    height = 3,
+    keys = {
+        ["<ret>"] = function(ctx)
+            picked = ctx.buffer:get_line(ctx.line)
+            ctx.float:close()
+        end,
+    },
+})
+assert(float:is_open() and float:is_focused())
+float:set_cursor(2)
+assert(math.type(float:get_cursor()) == "integer" and float:get_cursor() == 2)
+assert(float:close() == true and not float:is_open())
+local outline = helix.buffer.create("fn main\nfn helper\n") -- needs `edit`
+local window = helix.window.dock(outline, { side = "right", size = 24 })
+assert(window:get_buffer():id() == outline:id() and not window:is_focused())
+local area = window:get_area()
+assert(math.type(area.width) == "integer" and area.width == 24)
+helix.keymap.set("normal", "<ret>", function()
+    helix.ui.notify("jump to " .. outline:get_line(window:get_cursor().row + 1))
+end, { buffer = outline }) -- needs `keymaps`
 result = "ran"
         "#,
     );

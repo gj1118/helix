@@ -392,6 +392,92 @@ pub struct PluginCompletionItem {
 
 /// Asks the plugins' completion sources (set by the application when plugins are loaded):
 /// the items of each source asked, with the source's name.
+/// Where a plugin's floating window is put (`helix.ui.float`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FloatPosition {
+    /// The middle of the editor.
+    Center,
+    /// Under the primary cursor (above it when there is no room below).
+    Cursor,
+    /// Its top left corner at a screen cell (0-based), moved in when it would not fit.
+    At { row: u16, col: u16 },
+}
+
+/// A floating window of a plugin: a buffer drawn in a frame over the windows. One focused
+/// float gets the keys: its own (`keys`), moving its cursor line, and Escape closing it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PluginFloat {
+    pub id: u64,
+    pub plugin: String,
+    pub document: crate::DocumentId,
+    pub title: Option<String>,
+    /// The size of its text, borders not counted (clamped to the editor).
+    pub width: u16,
+    pub height: u16,
+    pub position: FloatPosition,
+    pub focused: bool,
+    /// The line of its cursor (0-based), highlighted when `cursorline` is set.
+    pub cursor_line: usize,
+    /// The first line shown (0-based).
+    pub top_line: usize,
+    pub cursorline: bool,
+    /// The plugin's keys: each runs the plugin's function `id` with the cursor line.
+    pub keys: Vec<(KeyEvent, u64)>,
+    /// The plugin's function run when Escape (or `q`) closes it.
+    pub on_close: Option<u64>,
+}
+
+impl PluginFloat {
+    /// Moves the cursor line to `line` (clamped to the buffer's `lines`), scrolling to keep
+    /// it shown.
+    pub fn set_cursor_line(&mut self, line: usize, lines: usize) {
+        self.cursor_line = line.min(lines.saturating_sub(1));
+        let height = (self.height as usize).max(1);
+        if self.cursor_line < self.top_line {
+            self.top_line = self.cursor_line;
+        } else if self.cursor_line >= self.top_line + height {
+            self.top_line = self.cursor_line + 1 - height;
+        }
+    }
+
+    /// Where it is drawn in `area` (the editor's), its frame included, with the primary
+    /// cursor's screen position `cursor` for [`FloatPosition::Cursor`].
+    pub fn frame(
+        &self,
+        area: crate::graphics::Rect,
+        cursor: Option<(u16, u16)>,
+    ) -> crate::graphics::Rect {
+        let width = (self.width.max(1) + 2).min(area.width);
+        let height = (self.height.max(1) + 2).min(area.height);
+        let (x, y) = match self.position {
+            FloatPosition::Center => (
+                area.x + (area.width - width) / 2,
+                area.y + (area.height - height) / 2,
+            ),
+            FloatPosition::At { row, col } => (area.x + col, area.y + row),
+            FloatPosition::Cursor => match cursor {
+                Some((row, col)) => {
+                    let below = row + 1;
+                    let y = if below + height <= area.bottom() {
+                        below
+                    } else {
+                        row.saturating_sub(height)
+                    };
+                    (col, y)
+                }
+                None => (
+                    area.x + (area.width - width) / 2,
+                    area.y + (area.height - height) / 2,
+                ),
+            },
+        };
+        // moved in to fit
+        let x = x.clamp(area.x, area.right().saturating_sub(width));
+        let y = y.clamp(area.y, area.bottom().saturating_sub(height));
+        crate::graphics::Rect::new(x, y, width, height)
+    }
+}
+
 pub type PluginCompletionHook = Box<
     dyn FnMut(
         &mut crate::Editor,
@@ -436,5 +522,68 @@ mod completion_source_tests {
         };
         let wanted: bool = everywhere.wanted(None, "wor", "wor", false);
         assert!(wanted);
+    }
+}
+
+#[cfg(test)]
+mod float_tests {
+    use super::*;
+    use crate::graphics::Rect;
+
+    fn float(position: FloatPosition, width: u16, height: u16) -> PluginFloat {
+        PluginFloat {
+            id: 1,
+            plugin: "p".into(),
+            document: crate::DocumentId::default(),
+            title: None,
+            width,
+            height,
+            position,
+            focused: true,
+            cursor_line: 0,
+            top_line: 0,
+            cursorline: true,
+            keys: Vec::new(),
+            on_close: None,
+        }
+    }
+
+    #[test]
+    fn a_float_is_framed_where_it_fits() {
+        let area = Rect::new(0, 0, 80, 24);
+        // centered, its frame two cells larger
+        assert_eq!(
+            float(FloatPosition::Center, 20, 5).frame(area, None),
+            Rect::new(29, 8, 22, 7)
+        );
+        // under the cursor, or above it at the bottom of the screen
+        assert_eq!(
+            float(FloatPosition::Cursor, 10, 3).frame(area, Some((5, 7))),
+            Rect::new(7, 6, 12, 5)
+        );
+        assert_eq!(
+            float(FloatPosition::Cursor, 10, 3).frame(area, Some((22, 7))),
+            Rect::new(7, 17, 12, 5)
+        );
+        // moved in from the right edge; never larger than the editor
+        assert_eq!(
+            float(FloatPosition::At { row: 2, col: 75 }, 10, 3).frame(area, None),
+            Rect::new(68, 2, 12, 5)
+        );
+        assert_eq!(
+            float(FloatPosition::Center, 200, 100).frame(area, None),
+            area
+        );
+    }
+
+    #[test]
+    fn the_cursor_line_scrolls_the_float() {
+        let mut f = float(FloatPosition::Center, 10, 3);
+        f.set_cursor_line(5, 10);
+        assert_eq!((f.cursor_line, f.top_line), (5_usize, 3_usize));
+        f.set_cursor_line(1, 10);
+        assert_eq!((f.cursor_line, f.top_line), (1_usize, 1_usize));
+        f.set_cursor_line(50, 10);
+        assert_eq!((f.cursor_line, f.top_line), (9_usize, 7_usize));
     }
 }

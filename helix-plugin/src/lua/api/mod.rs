@@ -8,6 +8,7 @@ pub mod completion;
 pub mod diff;
 pub mod editor;
 pub mod explorer;
+pub mod float;
 pub mod fs;
 pub mod log;
 pub mod lsp;

@@ -334,6 +334,9 @@ These scopes are used for theming the editor interface:
 | `ui.statusline.inactive`          | Statusline (unfocused document)                                                                |
 | `ui.winbar`                       | The bar of plugins at the top of windows (`helix.winbar`); falls back to `ui.statusline`       |
 | `ui.winbar.inactive`              | That bar in windows without the focus; falls back to `ui.statusline.inactive`                  |
+| `ui.float`                        | A floating window of a plugin (`helix.ui.float`); falls back to `ui.popup`                     |
+| `ui.float.border`                 | Its frame; falls back to `ui.window`                                                           |
+| `ui.float.border.focused`         | The frame of the float that has the keys; falls back to `ui.float.border`, then `ui.text.focus`|
 | `ui.statusline.normal`            | Statusline mode during normal mode ([only if `editor.color-modes` is enabled][editor-section]) |
 | `ui.statusline.insert`            | Statusline mode during insert mode ([only if `editor.color-modes` is enabled][editor-section]) |
 | `ui.statusline.select`            | Statusline mode during select mode ([only if `editor.color-modes` is enabled][editor-section]) |

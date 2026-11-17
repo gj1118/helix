@@ -1912,3 +1912,90 @@ async fn a_plugin_draws_a_gutter_column_and_a_window_bar() -> anyhow::Result<()>
     assert!(!rows[bar + 1].contains("ab"), "{:?}", rows[bar + 1]);
     Ok(())
 }
+
+/// A plugin's floating window is drawn over the windows and takes the keys while focused:
+/// `j` moves its cursor line, its own key runs the plugin with that line, Escape closes it
+/// (running `on_close`) and gives the keys back. A docked window of a plugin buffer gets a
+/// key of that buffer only.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plugin_float_takes_the_keys_and_a_docked_window_has_its_own() -> anyhow::Result<()> {
+    let init = r#"
+        local events = {}
+        local function record(what)
+            table.insert(events, what)
+            helix.editor.set_register("y", { table.concat(events, "|") })
+        end
+        helix.register_command{ name = "float-open", handler = function()
+            local list = helix.buffer.create("alpha\nbeta\ngamma\n")
+            helix.ui.float({
+                buffer = list, title = "Pick one", width = 20, height = 3,
+                keys = { ["<ret>"] = function(ctx)
+                    record("picked:" .. ctx.buffer:get_line(ctx.line))
+                end },
+                on_close = function(ctx) record("closed:" .. ctx.line) end,
+            })
+        end }
+        helix.register_command{ name = "dock-open", handler = function()
+            local side = helix.buffer.create("side panel\n")
+            helix.window.dock(side, { side = "right", size = 20, focus = true })
+            helix.keymap.set("normal", "Z", function() record("side-key") end, { buffer = side })
+        end }
+    "#;
+    let dir = plugin_dir(&[("floaty", init, None)])?;
+    let config = plugin_config(
+        dir.path(),
+        r#"
+        [[plugins]]
+        name = "floaty"
+        permissions = ["edit", "commands", "windows", "keymaps"]
+        "#,
+    )?;
+    let file = helpers::temp_file_with_contents("main text\n")?;
+    let mut app = helpers::AppBuilder::new()
+        .with_file(file.path(), None)
+        .with_config(config)
+        .build()?;
+    assert!(app.plugins_enabled());
+
+    send_keys(&mut app, ":float-open<ret>").await?;
+    let screen = app.rendered_rows().join("\n");
+    assert!(screen.contains("Pick one"), "{screen}");
+    assert!(screen.contains("beta"), "{screen}");
+    assert_eq!(app.editor.plugin_floats.len(), 1_usize);
+
+    // `j` moves the float's line, not the editor's; Enter runs the plugin's key
+    send_keys(&mut app, "j<ret>").await?;
+    assert_eq!(app.editor.plugin_floats[0].cursor_line, 1_usize);
+    // `x` does nothing while the float has the keys
+    send_keys(&mut app, "x").await?;
+    let (_, doc) = helix_view::current_ref!(app.editor);
+    assert_eq!(doc.text().to_string(), "main text\n".to_string());
+
+    send_keys(&mut app, "<esc>").await?;
+    assert!(app.editor.plugin_floats.is_empty());
+    assert_eq!(
+        register(&app, 'y'),
+        vec!["picked:beta\n".to_string(), "closed:2".to_string()]
+    );
+    // the keys are the editor's again
+    send_keys(&mut app, "iX<esc>").await?;
+    let (_, doc) = helix_view::current_ref!(app.editor);
+    assert_eq!(doc.text().to_string(), "Xmain text\n".to_string());
+
+    // the docked window: on the right, focused; its key works there only
+    send_keys(&mut app, ":dock-open<ret>").await?;
+    let (view, doc) = helix_view::current_ref!(app.editor);
+    assert_eq!(doc.text().to_string(), "side panel\n".to_string());
+    assert_eq!(view.area.width, 20_u16);
+    assert_eq!(view.area.right(), app.editor.tree.area().right());
+    send_keys(&mut app, "Z").await?;
+    send_keys(&mut app, "<C-w>hZ").await?;
+    let events = register(&app, 'y');
+    assert_eq!(events.last().map(String::as_str), Some("side-key"));
+    assert_eq!(
+        events.iter().filter(|e| *e == "side-key").count(),
+        1_usize,
+        "{events:?}"
+    );
+    Ok(())
+}

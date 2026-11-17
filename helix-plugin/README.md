@@ -528,6 +528,46 @@ Buffer methods (they raise an error once the buffer is closed):
   handle: `handle:update(options)` shows other content (the same options),
   `handle:close()` closes it. One plugin popup is shown at a time: a new one replaces it
   (`ui`).
+- `float{ buffer, title, width, height, position, focus, cursorline, cursor, keys,
+  on_close }`: a floating window showing `buffer` in a frame over the windows (a list, a
+  menu, a preview, a dashboard: the buffer is the plugin's to fill and update, drawn every
+  frame with its syntax highlighting). `width`/`height` are the text's size (default 40 ×
+  10, borders not counted, never larger than the editor); `position` is `"center"`
+  (default), `"cursor"` (under the cursor, above it near the bottom) or `{ row, col }` (its
+  top left corner, moved in to fit); `cursor` its cursor line (1-based, default 1),
+  highlighted unless `cursorline = false`. A focused float (`focus`, default `true`; one at
+  a time) takes the keys: its `keys` (`{ ["<ret>"] = function(ctx) end }`, one key each)
+  run their function with `ctx = { float, line, buffer }` (its handle, its cursor line,
+  1-based, and its buffer); else `j`/`k`, the arrows, `C-d`/`C-u`, the page keys, `g`/`G`
+  and Home/End move its cursor line, `Esc` and `q` close it (running `on_close` with the
+  same `ctx`), and the other keys do nothing. An unfocused float is only drawn: the keys go
+  to the windows. Returns a handle: `id()`, `is_open()`, `is_focused()`, `get_cursor()`,
+  `get_buffer()` (`read`); `focus(focused)` (`true` by default; `false` gives the keys
+  back), `set_cursor(line)`, `update{ title, width, height, position }` (`title = false`
+  removes it), `close()` (without `on_close`; returns whether it was open) (`ui`). A float
+  goes when its buffer is closed. Styled with `ui.float` (its background, else
+  `ui.popup`), `ui.float.border` and `ui.float.border.focused`.
+
+  ```lua
+  local list = helix.buffer.create("alpha\nbeta\ngamma\n") -- needs `edit`
+  local picked = nil
+  local float = helix.ui.float({
+      buffer = list,
+      title = "Pick one",
+      width = 20,
+      height = 3,
+      keys = {
+          ["<ret>"] = function(ctx)
+              picked = ctx.buffer:get_line(ctx.line)
+              ctx.float:close()
+          end,
+      },
+  })
+  assert(float:is_open() and float:is_focused())
+  float:set_cursor(2)
+  assert(math.type(float:get_cursor()) == "integer" and float:get_cursor() == 2)
+  assert(float:close() == true and not float:is_open())
+  ```
 - `show_help()` is not implemented (raises an error).
 
 Callbacks run later, after the current plugin code has returned. A prompt or picker that is
@@ -540,6 +580,24 @@ gets `false`).
 - `split(direction, buffer)`: splits the focused window (`"vertical"` or `"horizontal"`),
   showing `buffer` (default: the same one); returns the new window, which has the focus
   (`windows`).
+- `dock(buffer, { side, size, focus })`: a window showing `buffer` along an edge of the
+  screen, beside all the others: `side` `"left"` (default), `"right"`, `"top"` or
+  `"bottom"`, `size` its width (default 30) or height (default 10) in cells, at most half
+  the screen; it has the focus with `focus = true`. A sidebar or a bottom panel of the
+  plugin: an ordinary window (closed with `window:close()`, resized like the others), whose
+  buffer can have keys of its own (`helix.keymap.set(..., { buffer = buffer })`). Returns
+  the window (`windows`).
+
+  ```lua
+  local outline = helix.buffer.create("fn main\nfn helper\n") -- needs `edit`
+  local window = helix.window.dock(outline, { side = "right", size = 24 })
+  assert(window:get_buffer():id() == outline:id() and not window:is_focused())
+  local area = window:get_area()
+  assert(math.type(area.width) == "integer" and area.width == 24)
+  helix.keymap.set("normal", "<ret>", function()
+      helix.ui.notify("jump to " .. outline:get_line(window:get_cursor().row + 1))
+  end, { buffer = outline }) -- needs `keymaps`
+  ```
 
 Window methods (they raise an error once the window is closed):
 
@@ -557,15 +615,20 @@ Window methods (they raise an error once the window is closed):
   `"select"` or a list of them) to `action`, a command as in `[keys]` of `config.toml`
   (`"move_line_down"`, `":write"`, `"@ihello<esc>"`, `"no_op"` to unbind) or a Lua function.
   `keys` is written like a macro: `"<space>z"`, `"gx"`, `"<C-s>"` (one named key may leave
-  out the brackets: `"C-s"`). `opts.desc` is what the key help shows. It needs `keymaps`,
+  out the brackets: `"C-s"`). `opts.desc` is what the key help shows; `opts.language` (a
+  language name or a list of them) makes the binding for the buffers of those languages only:
+  the key keeps its meaning in the others, and follows the focused buffer; `opts.buffer` (a
+  buffer) makes it for that buffer only (a plugin's buffer in a docked window), over the
+  bindings for its language and for all; `opts.menu` names
+  the menu the key is in (`"Tasks"` for the `<space>t` of `<space>tn`). It needs `keymaps`,
   and for a command what the command needs when the key is pressed (`":sh ..."` needs
   `shell`, a macro every permission): a plugin cannot make a key do what it may not do
   itself. A function runs as the plugin's code, with its permissions. A plugin may bind its
   own `:` commands, not another plugin's.
 - `del(modes, keys)`: removes a binding the plugin set; the configured one is back. Returns
   whether there was one (`keymaps`).
-- `list()`: the bindings of all plugins: `{ { plugin, mode, keys, command, desc }, ... }`
-  (`read`).
+- `list()`: the bindings of all plugins: `{ { plugin, mode, keys, command, desc, language,
+  menu, buffer }, ... }` (`buffer` the id of the buffer it is for, `nil` for all) (`read`).
 
 The bindings go over the keys of `config.toml` (also after `:config-reload`); a later
 binding of the same keys replaces an earlier one, whichever plugin set it.

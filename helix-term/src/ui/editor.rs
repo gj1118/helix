@@ -1687,6 +1687,163 @@ impl EditorView {
     }
 
     #[allow(clippy::too_many_lines)]
+    /// A key in the focused float `index`: one of the plugin's runs its function; else the
+    /// cursor line moves (`j`/`k`, the arrows, `C-d`/`C-u`, page keys, `g`/`G`, Home/End), or
+    /// Escape (`q`) closes it, running its `on_close`. Any other key does nothing.
+    fn float_key(
+        index: usize,
+        key: KeyEvent,
+        editor: &mut Editor,
+        manager: Option<std::sync::Arc<helix_plugin::PluginManager>>,
+    ) {
+        let float = &editor.plugin_floats[index];
+        let (id, plugin) = (float.id, float.plugin.clone());
+        let bound = float
+            .keys
+            .iter()
+            .find(|(bound, _)| *bound == key)
+            .map(|(_, function)| *function);
+        if let Some(function) = bound {
+            if let Some(manager) = manager.clone() {
+                if let Err(err) = manager.run_float(editor, &plugin, id, function) {
+                    editor.set_error(format!("{plugin}: {err}"));
+                }
+            }
+            helix_event::request_redraw();
+            return;
+        }
+        let lines = editor
+            .document(float.document)
+            .map_or(1, |doc| doc.text().len_lines());
+        let height = float.height.max(1) as usize;
+        let line = float.cursor_line;
+        let target = match key {
+            key!('j') | key!(Down) => Some(line + 1),
+            key!('k') | key!(Up) => Some(line.saturating_sub(1)),
+            crate::ctrl!('d') => Some(line + height / 2),
+            crate::ctrl!('u') => Some(line.saturating_sub(height / 2)),
+            key!(PageDown) => Some(line + height),
+            key!(PageUp) => Some(line.saturating_sub(height)),
+            key!('g') | key!(Home) => Some(0),
+            key!('G') | key!(End) => Some(lines),
+            _ => None,
+        };
+        if let Some(target) = target {
+            editor.plugin_floats[index].set_cursor_line(target, lines);
+            return;
+        }
+        if matches!(key, key!(Esc) | key!('q')) {
+            let on_close = editor.plugin_floats[index].on_close;
+            if let (Some(function), Some(manager)) = (on_close, manager.clone()) {
+                if let Err(err) = manager.run_float(editor, &plugin, id, function) {
+                    editor.set_error(format!("{plugin}: {err}"));
+                }
+            }
+            editor.plugin_floats.retain(|float| float.id != id);
+            if let Some(manager) = manager.clone() {
+                manager.forget_float(&plugin, id);
+            }
+        }
+    }
+
+    /// The floating windows of plugins (`helix.ui.float`), the last one on top: a frame with
+    /// the title, and the buffer's text from the float's first line, its cursor line
+    /// highlighted.
+    fn render_floats(editor: &Editor, area: Rect, surface: &mut Surface) {
+        if editor.plugin_floats.is_empty() {
+            return;
+        }
+        let theme = &editor.theme;
+        let config = editor.config();
+        let loader = editor.syn_loader.load();
+        let cursor = editor
+            .cursor()
+            .0
+            .map(|position| (position.row as u16, position.col as u16));
+        let background = theme
+            .try_get_exact("ui.float")
+            .unwrap_or_else(|| theme.get("ui.popup"));
+        for float in &editor.plugin_floats {
+            let Some(doc) = editor.document(float.document) else {
+                continue;
+            };
+            let frame = float.frame(area, cursor);
+            if frame.width < 3 || frame.height < 3 {
+                continue;
+            }
+            surface.clear_with(frame, background);
+            let border = if float.focused {
+                theme
+                    .try_get_exact("ui.float.border.focused")
+                    .or_else(|| theme.try_get_exact("ui.float.border"))
+                    .unwrap_or_else(|| theme.get("ui.text.focus"))
+            } else {
+                theme
+                    .try_get_exact("ui.float.border")
+                    .unwrap_or_else(|| theme.get("ui.window"))
+            };
+            tui::widgets::Widget::render(
+                tui::widgets::Block::bordered()
+                    .border_type(crate::ui::border_type(&config))
+                    .border_style(border),
+                frame,
+                surface,
+            );
+            if let Some(title) = &float.title {
+                let title = format!(" {title} ");
+                let room = frame.width.saturating_sub(4) as usize;
+                let title_style = theme.try_get("ui.popup.title").unwrap_or(border);
+                surface.set_stringn(frame.x + 2, frame.y, &title, room, title_style);
+            }
+            let inner = frame.inner(helix_view::graphics::Margin::all(1));
+            let text = doc.text().slice(..);
+            let top = float.top_line.min(text.len_lines().saturating_sub(1));
+            let offset = helix_view::view::ViewPosition {
+                anchor: text.line_to_char(top),
+                ..Default::default()
+            };
+            let annotations = TextAnnotations::default();
+            let highlighter = Self::doc_syntax_highlighter(
+                doc,
+                &annotations,
+                offset.anchor,
+                inner.height,
+                &loader,
+            );
+            let mut decorations = DecorationManager::default();
+            if float.cursorline {
+                let style = if float.focused {
+                    theme.get("ui.cursorline.primary")
+                } else {
+                    theme.get("ui.cursorline.secondary")
+                };
+                let line = float.cursor_line;
+                decorations.add_decoration(move |renderer: &mut TextRenderer, pos: LinePos| {
+                    if pos.doc_line == line {
+                        let row = Rect::new(
+                            renderer.viewport.x,
+                            pos.visual_line,
+                            renderer.viewport.width,
+                            1,
+                        );
+                        renderer.set_style(row, style);
+                    }
+                });
+            }
+            render_document(
+                surface,
+                inner,
+                doc,
+                offset,
+                &annotations,
+                highlighter,
+                Vec::new(),
+                theme,
+                decorations,
+            );
+        }
+    }
+
     /// The plugins' bar at the top of a window (`helix.winbar`): its segments on the left,
     /// in the center and on the right, with the window's buffer filled in.
     pub fn render_window_bar(
@@ -2950,6 +3107,12 @@ impl Component for EditorView {
                 cx.editor.reset_idle_timer();
                 canonicalize_key(&mut key);
 
+                // A focused floating window of a plugin takes the keys.
+                if let Some(index) = cx.editor.plugin_floats.iter().rposition(|f| f.focused) {
+                    Self::float_key(index, key, cx.editor, cx.plugin_manager.clone());
+                    return EventResult::Consumed(None);
+                }
+
                 // clear status
                 cx.editor.status_msg = None;
 
@@ -3153,6 +3316,14 @@ impl Component for EditorView {
         crate::ui::diff_view::render_connectors(cx.editor, surface);
         self.terminal_secondary_cursors = self.secondary_cursor_cells(cx.editor, surface);
 
+        // The plugins' floating windows, over the windows (a float whose buffer was closed
+        // goes with it).
+        let documents = &cx.editor.documents;
+        cx.editor
+            .plugin_floats
+            .retain(|float| documents.contains_key(&float.document));
+        Self::render_floats(cx.editor, editor_area, surface);
+
         // The info box of pending keys (`cx.editor.autoinfo`) is drawn by the compositor, over
         // every layer: see `Compositor::render`.
 
@@ -3258,6 +3429,10 @@ impl Component for EditorView {
     }
 
     fn cursor(&self, _area: Rect, editor: &Editor) -> (Option<Position>, CursorKind) {
+        // a focused float of a plugin has the keys (and shows its cursor line)
+        if editor.plugin_floats.iter().any(|float| float.focused) {
+            return (None, CursorKind::Hidden);
+        }
         let (pos, kind) = editor.cursor();
         if self.terminal_focused {
             // A rounded cursor is drawn by the editor: the terminal's one is hidden there (its

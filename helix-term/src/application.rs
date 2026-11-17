@@ -113,7 +113,7 @@ pub struct Application {
     /// The version of the plugins' bindings merged into the keys (`None`: merge again).
     /// The version of the plugins' bindings merged into the keys, and the language of the
     /// focused buffer they were merged for (when some are for some languages only).
-    applied_keymaps: Option<(u64, Option<String>)>,
+    applied_keymaps: Option<(u64, Option<String>, Option<helix_view::DocumentId>)>,
     /// Why the last window title could not be expanded (logged once, not for every frame).
     title_error: Option<String>,
     ui_receiver: tokio::sync::mpsc::UnboundedReceiver<crate::plugin_registry::UiRequest>,
@@ -531,7 +531,7 @@ impl Application {
             plugin_manager,
             plugin_watch,
             base_keys,
-            applied_keymaps: Some((0, None)),
+            applied_keymaps: Some((0, None, None)),
             plugin_pickers: HashMap::new(),
             plugin_popup: None,
             title_error: None,
@@ -559,18 +559,25 @@ impl Application {
                     .and_then(|doc| doc.language_name().map(str::to_string))
             })
             .flatten();
-        let applied = (keymaps.version, language);
+        let document = keymaps
+            .has_buffer_bindings()
+            .then(|| self.editor.tree.get(self.editor.tree.focus).doc);
+        let applied = (keymaps.version, language, document);
         if self.applied_keymaps.as_ref() == Some(&applied) {
             return;
         }
         let mut keys = self.base_keys.clone();
-        // the bindings for all languages first: those for the focused buffer's go over them
+        // the bindings for all buffers first: those for the focused buffer's language go over
+        // them, and those for the focused buffer over these
         let (general, scoped): (Vec<_>, Vec<_>) = keymaps
             .bindings
             .iter()
-            .filter(|binding| binding.applies_to(applied.1.as_deref()))
-            .partition(|binding| binding.languages.is_none());
-        for binding in general.into_iter().chain(scoped) {
+            .filter(|binding| binding.applies_to(applied.1.as_deref(), applied.2))
+            .partition(|binding| binding.languages.is_none() && binding.document.is_none());
+        let (for_buffer, for_language): (Vec<_>, Vec<_>) = scoped
+            .into_iter()
+            .partition(|binding| binding.document.is_some());
+        for binding in general.into_iter().chain(for_language).chain(for_buffer) {
             let command = match binding.command.parse::<crate::commands::MappableCommand>() {
                 Ok(crate::commands::MappableCommand::Typable { name, args, doc }) => {
                     crate::commands::MappableCommand::Typable {

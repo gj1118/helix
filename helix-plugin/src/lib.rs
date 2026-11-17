@@ -134,6 +134,7 @@ impl PluginManager {
         editor.plugin_keymaps.clear();
         editor.plugin_statusline.clear();
         editor.plugin_window_bar.clear();
+        editor.plugin_floats.clear();
         editor.sync_window_bars();
         editor.plugin_explorer.decorations.clear();
         editor.plugin_actions.clear();
@@ -248,6 +249,25 @@ impl PluginManager {
         context: &helix_view::plugin_ui::ActionContext,
     ) -> Result<()> {
         self.engine.read().run_action(editor, plugin, id, context)
+    }
+
+    /// Runs function `function` of float `float` of `plugin` (a key of the float, or its
+    /// `on_close`).
+    pub fn run_float(
+        &self,
+        editor: &mut Editor,
+        plugin: &str,
+        float: u64,
+        function: u64,
+    ) -> Result<()> {
+        self.engine
+            .read()
+            .run_float(editor, plugin, float, function)
+    }
+
+    /// Drops the functions of a float of `plugin` that was closed.
+    pub fn forget_float(&self, plugin: &str, float: u64) {
+        self.engine.read().forget_float(plugin, float)
     }
 
     /// Asks the completion sources of the plugins that want `request` (see

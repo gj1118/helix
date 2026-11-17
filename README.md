@@ -449,6 +449,11 @@ permissions = ["edit", "commands"]  # what it may do beyond looking ("read") and
   run on the editor's thread when the result is in.
 - **Popups** - text, styled lines or markdown, at the cursor, centered or anywhere, updated
   and closed through a handle.
+- **Windows of their own** - floating windows showing a plugin's buffer
+  (`helix.ui.float{ buffer = list, title = "Pick", keys = { ["<ret>"] = fn } }`), which take
+  the keys while focused, and windows docked along an edge of the screen
+  (`helix.window.dock(buffer, { side = "right", size = 30 })`) with keys for their buffer
+  only (`helix.keymap.set("normal", "<ret>", fn, { buffer = buffer })`).
 - **Diagnostics and completion** - diagnostics of the plugin's own on any buffer
   (`buffer:set_diagnostics{...}`, shown like a language server's, in the gutter and the
   pickers), and completion sources whose items join the completion menu
