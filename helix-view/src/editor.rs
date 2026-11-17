@@ -2099,6 +2099,11 @@ pub struct PersistenceConfig {
     pub old_files_trim: usize,
     pub commands_trim: usize,
     pub search_trim: usize,
+    /// Keep each file's undo history when it is saved, and bring it back when the file is
+    /// opened again with the same contents (persistent undo).
+    pub undo: bool,
+    /// Where the undo histories are kept; the `undo` folder of the state folder when unset.
+    pub undo_dir: Option<PathBuf>,
 }
 
 impl Default for PersistenceConfig {
@@ -2116,6 +2121,8 @@ impl Default for PersistenceConfig {
             old_files_trim: 100,
             commands_trim: 100,
             search_trim: 100,
+            undo: false,
+            undo_dir: None,
         }
     }
 }

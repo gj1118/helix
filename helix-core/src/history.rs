@@ -2,7 +2,7 @@ use crate::{Assoc, ChangeSet, Range, Rope, Selection, Transaction};
 use regex::Regex;
 use std::num::NonZeroUsize;
 use std::sync::LazyLock;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 #[derive(Debug, Clone)]
 pub struct State {
@@ -385,10 +385,284 @@ impl std::str::FromStr for UndoKind {
     }
 }
 
+/// The undo history of a buffer in a form that can be written to disk (persistent undo):
+/// [`History::to_saved`] makes it, [`History::from_saved`] turns it back into a history.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SavedHistory {
+    revisions: Vec<SavedRevision>,
+    current: usize,
+    /// When it was saved (seconds since the Unix epoch), for the revisions' times.
+    saved_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct SavedRevision {
+    parent: usize,
+    last_child: Option<usize>,
+    transaction: SavedTransaction,
+    inversion: SavedTransaction,
+    /// How long before `saved_at` the revision was made, in milliseconds.
+    age_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct SavedTransaction {
+    changes: Vec<SavedOperation>,
+    selection: Option<Selection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+enum SavedOperation {
+    Retain(usize),
+    Delete(usize),
+    Insert(String),
+}
+
+impl SavedTransaction {
+    fn new(transaction: &Transaction) -> Self {
+        use crate::Operation;
+        Self {
+            changes: transaction
+                .changes()
+                .changes()
+                .iter()
+                .map(|operation| match operation {
+                    Operation::Retain(n) => SavedOperation::Retain(*n),
+                    Operation::Delete(n) => SavedOperation::Delete(*n),
+                    Operation::Insert(text) => SavedOperation::Insert(text.to_string()),
+                })
+                .collect(),
+            selection: transaction.selection().cloned(),
+        }
+    }
+
+    fn transaction(&self) -> Transaction {
+        let mut changes = ChangeSet::with_capacity(self.changes.len());
+        for operation in &self.changes {
+            match operation {
+                SavedOperation::Retain(n) => changes.retain(*n),
+                SavedOperation::Delete(n) => changes.delete(*n),
+                SavedOperation::Insert(text) => changes.insert(text.as_str().into()),
+            }
+        }
+        let transaction = Transaction::from(changes);
+        match &self.selection {
+            Some(selection) => transaction.with_selection(selection.clone()),
+            None => transaction,
+        }
+    }
+}
+
+impl SavedHistory {
+    /// The number of revisions, the root included.
+    pub fn len(&self) -> usize {
+        self.revisions.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.revisions.is_empty()
+    }
+}
+
+impl History {
+    /// The history in a form that can be written to disk.
+    pub fn to_saved(&self) -> SavedHistory {
+        let now = Instant::now();
+        SavedHistory {
+            revisions: self
+                .revisions
+                .iter()
+                .map(|revision| SavedRevision {
+                    parent: revision.parent,
+                    last_child: revision.last_child.map(NonZeroUsize::get),
+                    transaction: SavedTransaction::new(&revision.transaction),
+                    inversion: SavedTransaction::new(&revision.inversion),
+                    age_ms: now
+                        .saturating_duration_since(revision.timestamp)
+                        .as_millis()
+                        .try_into()
+                        .unwrap_or(u64::MAX),
+                })
+                .collect(),
+            current: self.current,
+            saved_at: SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map_or(0, |since| since.as_secs()),
+        }
+    }
+
+    /// The history `saved` was made from, for a document of `doc_len` chars that is in the
+    /// state of its current revision. `None` when it doesn't fit: revisions out of order, or
+    /// changes whose lengths don't follow each other or the document.
+    pub fn from_saved(saved: &SavedHistory, doc_len: usize) -> Option<History> {
+        let count = saved.revisions.len();
+        if count == 0 || saved.current >= count {
+            return None;
+        }
+        let now_secs = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |since| since.as_secs());
+        // how long ago it was saved
+        let since_saved = Duration::from_secs(now_secs.saturating_sub(saved.saved_at));
+        let now = Instant::now();
+
+        let mut revisions: Vec<Revision> = Vec::with_capacity(count);
+        for (index, revision) in saved.revisions.iter().enumerate() {
+            if index > 0 && revision.parent >= index {
+                return None;
+            }
+            let last_child = match revision.last_child {
+                None => None,
+                Some(child) if child > index && child < count => NonZeroUsize::new(child),
+                Some(_) => return None,
+            };
+            let age = since_saved + Duration::from_millis(revision.age_ms);
+            revisions.push(Revision {
+                parent: if index == 0 { 0 } else { revision.parent },
+                last_child,
+                transaction: revision.transaction.transaction(),
+                inversion: revision.inversion.transaction(),
+                timestamp: now.checked_sub(age).unwrap_or(now),
+            });
+        }
+
+        // The length of the document at each revision; the root's is that of the changes
+        // made from it.
+        let mut len_at = vec![None; count];
+        for index in 1..count {
+            let revision = &revisions[index];
+            let (before, after) = (
+                revision.transaction.changes().len(),
+                revision.transaction.changes().len_after(),
+            );
+            let inversion = revision.inversion.changes();
+            if inversion.len() != after || inversion.len_after() != before {
+                return None;
+            }
+            match len_at[revision.parent] {
+                Some(len) if len != before => return None,
+                Some(_) => {}
+                None if revision.parent == 0 => len_at[0] = Some(before),
+                None => return None,
+            }
+            len_at[index] = Some(after);
+        }
+        if len_at[saved.current].unwrap_or(doc_len) != doc_len {
+            return None;
+        }
+
+        Some(History {
+            revisions,
+            current: saved.current,
+        })
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
     use crate::Selection;
+
+    /// A history of three edits with a branch: "hello" -> "hello world" -> "hello there",
+    /// undo, -> "hello you".
+    fn branched_history() -> (History, State) {
+        let mut history = History::default();
+        let mut state = State {
+            doc: Rope::from("hello"),
+            selection: Selection::point(0),
+        };
+        let edit = |history: &mut History, state: &mut State, from, to, text: &str| {
+            let transaction =
+                Transaction::change(&state.doc, std::iter::once((from, to, Some(text.into()))));
+            history.commit_revision(&transaction, state);
+            transaction.apply(&mut state.doc);
+        };
+        edit(&mut history, &mut state, 5, 5, " world");
+        edit(&mut history, &mut state, 6, 11, "there");
+        if let Some(undo) = history.undo() {
+            undo.apply(&mut state.doc);
+        }
+        edit(&mut history, &mut state, 6, 11, "you");
+        (history, state)
+    }
+
+    #[test]
+    fn a_saved_history_comes_back_whole() {
+        let (history, mut state) = branched_history();
+        assert_eq!(state.doc, "hello you");
+        let saved: SavedHistory = history.to_saved();
+        assert_eq!(saved.len(), 4_usize, "the root and three revisions");
+
+        let mut restored = History::from_saved(&saved, state.doc.len_chars()).expect("it fits");
+        assert_eq!(restored.current_revision(), 3_usize);
+        assert_eq!(restored.to_saved().revisions, saved.revisions);
+
+        // undo twice: back to "hello", redo goes down the last branch again
+        for expected in ["hello world", "hello"] {
+            let undo = restored.undo().expect("an undo").clone();
+            assert!(undo.apply(&mut state.doc));
+            assert_eq!(state.doc, expected);
+        }
+        assert!(restored.undo().is_none(), "at the root");
+        let redo = restored.redo().expect("a redo").clone();
+        assert!(redo.apply(&mut state.doc));
+        assert_eq!(state.doc, "hello world");
+        // the other branch is still there, by time
+        let later = restored.later(UndoKind::Steps(2));
+        for transaction in later {
+            assert!(transaction.apply(&mut state.doc));
+        }
+        assert_eq!(state.doc, "hello you");
+    }
+
+    #[test]
+    fn a_saved_history_survives_serialization_and_keeps_its_times() {
+        let (history, state) = branched_history();
+        let bytes = serde_json::to_vec(&history.to_saved()).unwrap();
+        let saved: SavedHistory = serde_json::from_slice(&bytes).unwrap();
+        let restored = History::from_saved(&saved, state.doc.len_chars()).unwrap();
+        let ages: Vec<bool> = restored
+            .revisions
+            .iter()
+            .map(|revision| revision.timestamp <= Instant::now())
+            .collect();
+        assert_eq!(ages, vec![true; 4]);
+    }
+
+    #[test]
+    fn a_history_that_does_not_fit_is_refused() {
+        let (history, state) = branched_history();
+        let saved = history.to_saved();
+        let len = state.doc.len_chars();
+        // another document length
+        assert!(History::from_saved(&saved, len + 1).is_none());
+        // a current revision out of range
+        let mut bad = saved.clone();
+        bad.current = 9;
+        assert!(History::from_saved(&bad, len).is_none());
+        // a parent after its child
+        let mut bad = saved.clone();
+        bad.revisions[1].parent = 2;
+        assert!(History::from_saved(&bad, len).is_none());
+        // a change whose length doesn't follow its parent's
+        let mut bad = saved.clone();
+        bad.revisions[2]
+            .transaction
+            .changes
+            .insert(0, SavedOperation::Retain(3));
+        assert!(History::from_saved(&bad, len).is_none());
+        // nothing at all
+        let mut bad = saved;
+        bad.revisions.clear();
+        assert!(History::from_saved(&bad, len).is_none());
+        // an empty history fits any document
+        let empty = History::default().to_saved();
+        let restored: Option<History> = History::from_saved(&empty, 42);
+        assert_eq!(
+            restored.map(|history| history.current_revision()),
+            Some(0_usize)
+        );
+    }
 
     #[test]
     fn test_undo_redo() {

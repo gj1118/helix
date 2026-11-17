@@ -1308,6 +1308,23 @@ every key after an `Esc ]` or `Esc P` that isn't a terminal's reply: Esc then `]
 `P`, read together (a busy moment, a slow SSH connection) used to freeze the keyboard until a
 terminator the keyboard never sends. They are keys again (`Alt-]`, `Alt-P`, then the rest).
 
+## Persistent Undo
+
+Undo history that survives closing a file and quitting Helix. Saving a file also writes its
+undo history; opening the file again brings it back, so `u`, `U`, `:earlier` and `:later` reach
+the edits made in earlier sessions, branches included. Off by default:
+
+```toml
+[editor.persistence]
+undo = true
+# undo-dir = "~/.cache/helix-undo"   # default: `undo` in Helix's state directory
+```
+
+The history only comes back when the file holds exactly what Helix saved. If another program
+changed it since (a `git checkout`, a formatter run outside Helix), the file opens with an empty
+history, so old edits are never applied to a different text. See
+[Persistent undo](book/src/editor.md#persistent-undo) in the book.
+
 ## Code Folding
 
 **Code Folding Commands:**

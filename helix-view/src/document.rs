@@ -1256,8 +1256,36 @@ impl Document {
 
         doc.editor_config = editor_config;
         doc.detect_indent_and_line_ending();
+        doc.restore_undo_history();
 
         Ok(doc)
+    }
+
+    /// With persistent undo on, brings back the undo history kept when the file was last
+    /// saved, if it still holds the text it was saved with.
+    fn restore_undo_history(&mut self) {
+        let config = self.config.load();
+        if !config.persistence.undo {
+            return;
+        }
+        let Some(path) = self.path.clone() else {
+            return;
+        };
+        let dir = crate::persistence::undo_dir(config.persistence.undo_dir.as_deref());
+        let Some(saved) = crate::persistence::read_undo(&dir, &path, &self.text) else {
+            return;
+        };
+        match History::from_saved(&saved, self.text.len_chars()) {
+            Some(history) => {
+                let revision = history.current_revision();
+                self.history.set(history);
+                self.last_saved_revision = revision;
+            }
+            None => log::warn!(
+                "ignoring the undo history of {}: it does not fit the file",
+                path.display()
+            ),
+        }
     }
 
     /// The same as [`format`], but only returns formatting changes if auto-formatting
@@ -1493,6 +1521,21 @@ impl Document {
         let encoding_with_bom_info = (self.encoding, self.has_bom);
         let last_saved_time = self.last_saved_time;
         let failed_path = path.clone();
+        // Persistent undo: the history as it is now, written once the text is. Not with
+        // uncommitted changes (a save in insert mode): the saved text would not be the
+        // history's current state.
+        let undo = {
+            let config = self.config.load();
+            (config.persistence.undo && self.changes.is_empty()).then(|| {
+                let history = self.history.take();
+                let saved = history.to_saved();
+                self.history.set(history);
+                (
+                    crate::persistence::undo_dir(config.persistence.undo_dir.as_deref()),
+                    saved,
+                )
+            })
+        };
 
         // We encode the file according to the `Document`'s encoding.
         let future = async move {
@@ -1640,6 +1683,22 @@ impl Document {
             }
 
             write_result?;
+
+            if let Some((dir, history)) = undo {
+                let (undo_path, undo_text) = (path.clone(), text.clone());
+                // A failed undo write leaves the save as it is.
+                let _ = tokio::task::spawn_blocking(move || {
+                    if let Err(err) =
+                        crate::persistence::write_undo(&dir, &undo_path, &undo_text, history)
+                    {
+                        log::warn!(
+                            "failed to write the undo history of {}: {err}",
+                            undo_path.display()
+                        );
+                    }
+                })
+                .await;
+            }
 
             let event = DocumentSavedEvent {
                 revision: current_rev,

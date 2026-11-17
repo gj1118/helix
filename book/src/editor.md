@@ -1404,3 +1404,25 @@ The state is formatted with bincode, and stored in files in the state directory 
 | `old-files-trim` | number of old-files entries to keep when helix trims the state files at startup | `100` |
 | `commands-trim` | number of command history entries to keep when helix trims the state files at startup | `100` |
 | `search-trim` | number of search history entries to keep when helix trims the state files at startup | `100` |
+| `undo` | whether to keep each file's undo history when it is saved, and bring it back when the file is opened again (persistent undo, see below) | `false` |
+| `undo-dir` | the folder the undo histories are kept in | `undo` in the state directory |
+
+#### Persistent undo
+
+With `undo = true`, saving a file also writes its undo history, one file per edited file in
+`undo-dir`. When you open the file again, even after quitting Helix, `u`, `U`, `:earlier` and
+`:later` go back through the edits made before, branches included.
+
+```toml
+[editor.persistence]
+undo = true
+# undo-dir = "~/.cache/helix-undo"
+```
+
+- The history is only brought back if the file still holds exactly what Helix saved: if
+  another program (git, a formatter run outside Helix) changed it since, the file opens with an
+  empty history, as before. Undoing would otherwise apply old edits to a different text.
+- What is written is the history as of the save. Edits made after the last save (and a save
+  made from insert mode, before the edit is committed) are not in it.
+- The undo files are not removed when their file is deleted; delete the folder to forget
+  every history.

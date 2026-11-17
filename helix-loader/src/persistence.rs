@@ -125,9 +125,69 @@ pub fn trim_history<T: Clone + Serialize + for<'a> Deserialize<'a>>(
     }
 }
 
+/// Writes `value` alone to `filepath`, creating its folder: to a temporary file next to it
+/// first, then moved over it, so a crash halfway leaves the old file (or none), never half a
+/// file.
+pub fn write_state_file<T: Serialize>(filepath: &Path, value: &T) -> io::Result<()> {
+    let dir = filepath
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no parent folder"))?;
+    std::fs::create_dir_all(dir)?;
+    let mut encoded = Vec::new();
+    serialize_into(&mut encoded, value).map_err(bincode_io_error)?;
+    let file_name = filepath
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no file name"))?;
+    let mut temporary = file_name.to_owned();
+    temporary.push(format!(".{}.tmp", std::process::id()));
+    let temporary = dir.join(temporary);
+    let written = open_state_file(&temporary, false).and_then(|mut file| {
+        file.write_all(&encoded)?;
+        file.flush()
+    });
+    match written.and_then(|()| std::fs::rename(&temporary, filepath)) {
+        Ok(()) => Ok(()),
+        Err(err) => {
+            let _ = std::fs::remove_file(&temporary);
+            Err(err)
+        }
+    }
+}
+
+/// Reads what [`write_state_file`] wrote; `None` when the file is missing or can't be read
+/// (corrupt, another format).
+pub fn read_state_file<T: for<'a> Deserialize<'a>>(filepath: &Path) -> Option<T> {
+    let (mut entries, complete) = read_history_impl::<T>(filepath);
+    (complete && entries.len() == 1).then(|| entries.remove(0))
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn a_state_file_round_trips_and_a_bad_one_reads_as_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested").join("value");
+        write_state_file(&path, &(7u32, "seven".to_string())).unwrap();
+        let read: Option<(u32, String)> = read_state_file(&path);
+        assert_eq!(read, Some((7u32, "seven".to_string())));
+        // replaced whole, and no temporary file left behind
+        write_state_file(&path, &(8u32, "eight".to_string())).unwrap();
+        assert_eq!(
+            read_state_file::<(u32, String)>(&path),
+            Some((8u32, "eight".to_string()))
+        );
+        let names: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names, vec![std::ffi::OsString::from("value")]);
+
+        std::fs::write(&path, b"\xff\xff").unwrap();
+        assert_eq!(read_state_file::<(u32, String)>(&path), None);
+        assert_eq!(read_state_file::<u32>(&dir.path().join("missing")), None);
+    }
 
     #[test]
     fn history_round_trips_and_survives_corruption() {

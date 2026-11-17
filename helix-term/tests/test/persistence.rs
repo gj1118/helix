@@ -140,3 +140,138 @@ async fn test_persistence() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+/// A config with persistent undo on, its histories kept in `dir`.
+fn config_with_undo(dir: &std::path::Path) -> Config {
+    let mut editor_config = editor::Config::default();
+    editor_config.persistence.undo = true;
+    editor_config.persistence.undo_dir = Some(dir.to_path_buf());
+    Config {
+        theme: None,
+        keys: keymap::default(),
+        editor: editor_config,
+        plugins: None,
+    }
+}
+
+fn buffer_text(app: &helix_term::application::Application) -> String {
+    helix_view::current_ref!(app.editor).1.text().to_string()
+}
+
+/// Edits made and saved before the file was closed can be undone after it is opened again,
+/// in order and back to the first version.
+#[tokio::test(flavor = "multi_thread")]
+async fn undo_history_survives_closing_the_file() -> anyhow::Result<()> {
+    let undo_dir = tempfile::tempdir()?;
+    let mut file = helpers::temp_file_with_contents("one\n")?;
+
+    // Session 1: two edits, each saved, then quit.
+    let mut app = helpers::AppBuilder::new()
+        .with_config(config_with_undo(undo_dir.path()))
+        .with_file(file.path(), None)
+        .build()?;
+    test_key_sequences(
+        &mut app,
+        vec![
+            (Some("otwo<esc>:w<ret>"), None),
+            (Some("othree<esc>:wq<ret>"), None),
+        ],
+        true,
+    )
+    .await?;
+    helpers::assert_file_has_content(&mut file, "one\ntwo\nthree\n")?;
+    let undo_files = std::fs::read_dir(undo_dir.path())?.count();
+    assert_eq!(undo_files, 1_usize, "one undo file for the file");
+
+    // Session 2: the history is back, and the buffer is not modified.
+    let mut app = helpers::AppBuilder::new()
+        .with_config(config_with_undo(undo_dir.path()))
+        .with_file(file.path(), None)
+        .build()?;
+    test_key_sequences(
+        &mut app,
+        vec![
+            (
+                None,
+                Some(&|app| {
+                    let doc = helix_view::doc!(app.editor);
+                    assert!(!doc.is_modified(), "a restored history is not a change");
+                }),
+            ),
+            (
+                Some("u"),
+                Some(&|app| assert_eq!(buffer_text(app), "one\ntwo\n".to_string())),
+            ),
+            (
+                Some("u"),
+                Some(&|app| {
+                    assert_eq!(buffer_text(app), "one\n".to_string());
+                    assert!(helix_view::doc!(app.editor).is_modified());
+                }),
+            ),
+            // past the first version there is nothing more; U redoes
+            (
+                Some("uU"),
+                Some(&|app| assert_eq!(buffer_text(app), "one\ntwo\n".to_string())),
+            ),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}
+
+/// A file changed by another program since it was saved gets no history: undo would
+/// otherwise apply edits made to a different text.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_file_changed_elsewhere_gets_no_undo_history() -> anyhow::Result<()> {
+    let undo_dir = tempfile::tempdir()?;
+    let file = helpers::temp_file_with_contents("one\n")?;
+    test_key_sequence(
+        &mut helpers::AppBuilder::new()
+            .with_config(config_with_undo(undo_dir.path()))
+            .with_file(file.path(), None)
+            .build()?,
+        Some("otwo<esc>:wq<ret>"),
+        None,
+        true,
+    )
+    .await?;
+
+    std::fs::write(file.path(), "something else\n")?;
+    test_key_sequence(
+        &mut helpers::AppBuilder::new()
+            .with_config(config_with_undo(undo_dir.path()))
+            .with_file(file.path(), None)
+            .build()?,
+        Some("u"),
+        Some(&|app| {
+            assert_eq!(buffer_text(app), "something else\n".to_string());
+            assert!(!helix_view::doc!(app.editor).is_modified());
+        }),
+        false,
+    )
+    .await?;
+    Ok(())
+}
+
+/// With persistent undo off (the default), nothing is written.
+#[tokio::test(flavor = "multi_thread")]
+async fn no_undo_file_without_the_setting() -> anyhow::Result<()> {
+    let undo_dir = tempfile::tempdir()?;
+    let file = helpers::temp_file_with_contents("one\n")?;
+    let mut config = config_with_undo(undo_dir.path());
+    config.editor.persistence.undo = false;
+    test_key_sequence(
+        &mut helpers::AppBuilder::new()
+            .with_config(config)
+            .with_file(file.path(), None)
+            .build()?,
+        Some("otwo<esc>:wq<ret>"),
+        None,
+        true,
+    )
+    .await?;
+    assert_eq!(std::fs::read_dir(undo_dir.path())?.count(), 0_usize);
+    Ok(())
+}
