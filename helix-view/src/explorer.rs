@@ -1504,9 +1504,13 @@ impl Tree {
             });
         }
 
-        // Best matches first (ties keep scan order); only the top results are
-        // shown.
-        let by_rank = |a: &(u32, u32), b: &(u32, u32)| b.1.cmp(&a.1).then(a.0.cmp(&b.0));
+        // Best matches first; ties by path, so the best match is the same on every system
+        // (the scan's order is the file system's, which differs between them). Only the top
+        // results are shown.
+        let by_rank = |a: &(u32, u32), b: &(u32, u32)| {
+            b.1.cmp(&a.1)
+                .then_with(|| scan[a.0 as usize].path.cmp(&scan[b.0 as usize].path))
+        };
         self.filter_matches = scored.len();
         let capped = scored.len() > FILTER_RESULT_LIMIT;
         if capped {
@@ -2432,6 +2436,23 @@ mod tests {
 
         tree.set_filter("", p);
         assert!(tree.best_match().is_none());
+    }
+
+    #[test]
+    fn equally_good_matches_pick_the_first_path_whatever_the_scan_order() {
+        // Created last to first: the file system may list them in any order (Linux and
+        // macOS differ), the best match is the same.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        for name in ["d.txt", "c.txt", "b.txt", "a.txt"] {
+            fs::write(root.join(name), "").unwrap();
+        }
+        let p = params(false, true);
+        let mut tree = Tree::new(root.clone(), p).unwrap();
+        tree.set_filter("txt", p);
+        tree.wait_for_scan(p);
+        assert_eq!(tree.best_match(), Some(root.join("a.txt").as_path()));
+        assert_eq!(tree.best_file(), Some(root.join("a.txt").as_path()));
     }
 
     #[test]
