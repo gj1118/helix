@@ -1,6 +1,9 @@
 //! The quicklist commands: collecting locations (from the cursor, or from a picker with
 //! `Ctrl-q`), walking them and the quicklist picker. See `helix_view::quicklist` for the list
 //! itself.
+//!
+//! Each window also has a location list of its own (Neovim's `:lopen`): the same commands
+//! work on it, the entries opening in that window.
 
 use std::path::PathBuf;
 
@@ -9,8 +12,8 @@ use helix_core::{hashmap, line_ending::line_end_char_index, Range, Selection};
 use helix_view::{
     align_view,
     editor::Action,
-    quicklist::{Entry, Position, Target},
-    Align, DocumentId, Editor,
+    quicklist::{Entry, Position, Quicklist, Target},
+    Align, DocumentId, Editor, ViewId,
 };
 
 use super::{push_jump, Context};
@@ -18,6 +21,63 @@ use crate::{
     ctrl,
     ui::{self, picker::PathOrId, Picker, PickerColumn},
 };
+
+/// A list of locations: the editor's quicklist, or the location list of a window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum List {
+    Quick,
+    Location(ViewId),
+}
+
+impl List {
+    /// The location list of the focused window.
+    pub fn focused_location(editor: &Editor) -> Self {
+        List::Location(editor.tree.focus)
+    }
+
+    /// The list; `None` for the location list of a window that was closed.
+    pub fn get(self, editor: &Editor) -> Option<&Quicklist> {
+        match self {
+            List::Quick => Some(&editor.quicklist),
+            List::Location(view) => editor.tree.try_get(view).map(|view| &view.location_list),
+        }
+    }
+
+    pub fn get_mut(self, editor: &mut Editor) -> Option<&mut Quicklist> {
+        match self {
+            List::Quick => Some(&mut editor.quicklist),
+            List::Location(view) => {
+                editor.tree.try_get(view)?;
+                Some(&mut editor.tree.get_mut(view).location_list)
+            }
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            List::Quick => "quicklist",
+            List::Location(_) => "location list",
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            List::Quick => "Quicklist",
+            List::Location(_) => "Location list",
+        }
+    }
+
+    /// What to do to fill it, said when it is empty.
+    fn empty_hint(self) -> &'static str {
+        match self {
+            List::Quick => "The quicklist is empty, add locations with Alt-q or Ctrl-q in a picker",
+            List::Location(_) => {
+                "The location list of this window is empty: Alt-q in a picker, :ladd or \
+                 :ldiagnostics fill it"
+            }
+        }
+    }
+}
 
 /// How much of a line is kept as an entry's text.
 const MAX_TEXT_CHARS: usize = 200;
@@ -90,23 +150,73 @@ pub fn entries_from_locations<'a>(
         .collect()
 }
 
-/// Make `entries` the quicklist (the `Ctrl-q` action of pickers).
-pub fn set_from_picker(editor: &mut Editor, entries: Vec<Entry>) {
+/// The diagnostics of the focused buffer, in order, as entries (`:ldiagnostics`): each
+/// selects its range, and its text is `error: message`.
+pub fn diagnostics_entries(editor: &Editor) -> Vec<Entry> {
+    use helix_core::diagnostic::Severity;
+    let (_, doc) = helix_view::current_ref!(editor);
+    let target = target_of(editor, doc.id());
+    let len = doc.text().len_chars();
+    let mut diagnostics: Vec<&helix_core::Diagnostic> = doc.diagnostics().iter().collect();
+    diagnostics.sort_by_key(|diagnostic| (diagnostic.range.start, diagnostic.range.end));
+    diagnostics
+        .into_iter()
+        .map(|diagnostic| {
+            let severity = match diagnostic.severity {
+                Some(Severity::Error) => "error",
+                Some(Severity::Warning) => "warning",
+                Some(Severity::Info) => "info",
+                Some(Severity::Hint) => "hint",
+                None => "note",
+            };
+            let message = diagnostic.message.lines().next().unwrap_or_default();
+            let (start, end) = (
+                diagnostic.range.start.min(len),
+                diagnostic.range.end.min(len),
+            );
+            Entry::new(
+                target.clone(),
+                Position::Selection(Selection::single(start, end.max(start))),
+                diagnostic.line,
+                format!("{severity}: {message}"),
+            )
+        })
+        .collect()
+}
+
+/// Make `entries` the list `list` (`Ctrl-q` and `Alt-q` of pickers, `:ldiagnostics`).
+pub fn set_list(editor: &mut Editor, list: List, entries: Vec<Entry>) {
     let count = entries.len();
-    editor.quicklist.replace(entries);
+    let Some(target) = list.get_mut(editor) else {
+        return;
+    };
+    target.replace(entries);
+    let title = list.title();
     editor.set_status(match count {
-        0 => "Cleared the quicklist".to_owned(),
-        1 => "Quicklist: 1 location".to_owned(),
-        n => format!("Quicklist: {n} locations"),
+        0 => format!("Cleared the {}", list.name()),
+        1 => format!("{title}: 1 location"),
+        n => format!("{title}: {n} locations"),
     });
 }
 
 pub fn add_to_quicklist(cx: &mut Context) {
-    let entry = current_entry(cx.editor);
-    cx.editor.quicklist.push(entry);
-    let count = cx.editor.quicklist.len();
-    cx.editor
-        .set_status(format!("Added to the quicklist ({count})"));
+    add_to(cx.editor, List::Quick)
+}
+
+/// Adds the cursor's place to the location list of the focused window (`:ladd`).
+pub fn add_to_location_list(cx: &mut Context) {
+    let list = List::focused_location(cx.editor);
+    add_to(cx.editor, list)
+}
+
+pub fn add_to(editor: &mut Editor, list: List) {
+    let entry = current_entry(editor);
+    let Some(target) = list.get_mut(editor) else {
+        return;
+    };
+    target.push(entry);
+    let count = target.len();
+    editor.set_status(format!("Added to the {} ({count})", list.name()));
 }
 
 /// Move the current selection of the focused view to where `entry` points.
@@ -135,10 +245,22 @@ fn place_cursor(editor: &mut Editor, position: &Position) {
 
 /// Open the entry `index` and make it the current one. The place we leave is added to the
 /// jumplist.
-pub fn visit(editor: &mut Editor, index: usize, action: Action) -> anyhow::Result<()> {
-    let Some(entry) = editor.quicklist.entries().get(index).cloned() else {
-        bail!("There is no such quicklist entry");
+/// An entry of a location list opens in its window.
+pub fn visit_in(
+    editor: &mut Editor,
+    list: List,
+    index: usize,
+    action: Action,
+) -> anyhow::Result<()> {
+    let Some(entry) = list
+        .get(editor)
+        .and_then(|entries| entries.entries().get(index).cloned())
+    else {
+        bail!("There is no such {} entry", list.name());
     };
+    if let List::Location(view) = list {
+        editor.focus(view);
+    }
     {
         let (view, doc) = current!(editor);
         push_jump(view, doc);
@@ -157,39 +279,66 @@ pub fn visit(editor: &mut Editor, index: usize, action: Action) -> anyhow::Resul
         }
     }
     place_cursor(editor, &entry.position);
-    editor.quicklist.set_current(index);
-    let total = editor.quicklist.len();
-    editor.set_status(format!("Quicklist {}/{}", index + 1, total));
+    // (a location list follows its window into the split it was opened in)
+    let list = match (list, action) {
+        (List::Location(_), Action::HorizontalSplit | Action::VerticalSplit) => {
+            List::focused_location(editor)
+        }
+        _ => list,
+    };
+    let Some(entries) = list.get_mut(editor) else {
+        return Ok(());
+    };
+    entries.set_current(index);
+    let total = entries.len();
+    editor.set_status(format!("{} {}/{}", list.title(), index + 1, total));
     Ok(())
 }
 
 /// Visit the entry `count` entries away from the current one, only counting the entries in the
 /// focused file or buffer when `in_file` is set.
 fn step(cx: &mut Context, forward: bool, in_file: bool) {
+    step_in(cx, List::Quick, forward, in_file)
+}
+
+fn step_in(cx: &mut Context, list: List, forward: bool, in_file: bool) {
     // `]q`/`[q` visit the entries of the quickfix panel while it is shown.
-    if !in_file && cx.editor.quickfix_panel.visible {
+    if list == List::Quick && !in_file && cx.editor.quickfix_panel.visible {
         let count = cx.count();
         cx.callback.push(Box::new(move |compositor, cx| {
             compositor.quickfix_step(forward, count, cx);
         }));
         return;
     }
-    if cx.editor.quicklist.is_empty() {
-        cx.editor
-            .set_status("The quicklist is empty, add locations with Alt-q or Ctrl-q in a picker");
+    if list.get(cx.editor).is_none_or(Quicklist::is_empty) {
+        cx.editor.set_status(list.empty_hint());
         return;
     }
     let target = target_of(cx.editor, doc!(cx.editor).id());
-    let index = cx.editor.quicklist.step(forward, cx.count(), |entry| {
-        !in_file || entry.target == target
+    let count = cx.count();
+    let index = list.get(cx.editor).and_then(|entries| {
+        entries.step(forward, count, |entry| !in_file || entry.target == target)
     });
     let Some(index) = index else {
-        cx.editor.set_status("No quicklist entries in this file");
+        cx.editor
+            .set_status(format!("No {} entries in this file", list.name()));
         return;
     };
-    if let Err(err) = visit(cx.editor, index, Action::Replace) {
+    if let Err(err) = visit_in(cx.editor, list, index, Action::Replace) {
         cx.editor.set_error(format!("{err:#}"));
     }
+}
+
+/// `]L`: the next entry of the focused window's location list.
+pub fn location_list_next(cx: &mut Context) {
+    let list = List::focused_location(cx.editor);
+    step_in(cx, list, true, false)
+}
+
+/// `[L`: the previous entry of the focused window's location list.
+pub fn location_list_prev(cx: &mut Context) {
+    let list = List::focused_location(cx.editor);
+    step_in(cx, list, false, false)
 }
 
 pub fn quicklist_next(cx: &mut Context) {
@@ -223,10 +372,12 @@ pub struct QuickItem {
     line: usize,
 }
 
-fn items(editor: &Editor) -> Vec<QuickItem> {
-    let current = editor.quicklist.current();
-    editor
-        .quicklist
+fn items(editor: &Editor, list: List) -> Vec<QuickItem> {
+    let Some(entries) = list.get(editor) else {
+        return Vec::new();
+    };
+    let current = entries.current();
+    entries
         .entries()
         .iter()
         .enumerate()
@@ -264,9 +415,8 @@ fn items(editor: &Editor) -> Vec<QuickItem> {
         .collect()
 }
 
-fn index_of(editor: &Editor, id: u64) -> Option<usize> {
-    editor
-        .quicklist
+fn index_of(editor: &Editor, list: List, id: u64) -> Option<usize> {
+    list.get(editor)?
         .entries()
         .iter()
         .position(|entry| entry.id == id)
@@ -275,15 +425,28 @@ fn index_of(editor: &Editor, id: u64) -> Option<usize> {
 pub fn quicklist_picker(cx: &mut Context) {
     match picker(cx.editor) {
         Some(picker) => ui::quickfix::show_from_command(cx, picker),
-        None => cx
-            .editor
-            .set_status("The quicklist is empty, add locations with Alt-q or Ctrl-q in a picker"),
+        None => cx.editor.set_status(List::Quick.empty_hint()),
+    }
+}
+
+/// `Space L`, `:lopen`: the location list of the focused window, in a picker (or the
+/// quickfix panel).
+pub fn location_list_picker(cx: &mut Context) {
+    let list = List::focused_location(cx.editor);
+    match picker_of(cx.editor, list) {
+        Some(picker) => ui::quickfix::show_from_command(cx, picker),
+        None => cx.editor.set_status(list.empty_hint()),
     }
 }
 
 /// The picker of the quicklist; `None` when it is empty.
 pub fn picker(editor: &Editor) -> Option<Picker<QuickItem, ()>> {
-    if editor.quicklist.is_empty() {
+    picker_of(editor, List::Quick)
+}
+
+/// The picker of `list`; `None` when it is empty.
+pub fn picker_of(editor: &Editor, list: List) -> Option<Picker<QuickItem, ()>> {
+    if list.get(editor).is_none_or(Quicklist::is_empty) {
         return None;
     }
     let columns = [
@@ -299,9 +462,11 @@ pub fn picker(editor: &Editor) -> Option<Picker<QuickItem, ()>> {
 
     let handlers: ui::picker::PickerKeyHandlers<QuickItem, ()> = hashmap! {
         ctrl!('x') => Box::new(
-            |cx: &mut crate::compositor::Context, item: &QuickItem, _: std::sync::Arc<()>, _| {
-                if let Some(index) = index_of(cx.editor, item.id) {
-                    cx.editor.quicklist.remove(index);
+            move |cx: &mut crate::compositor::Context, item: &QuickItem, _: std::sync::Arc<()>, _| {
+                if let Some(index) = index_of(cx.editor, list, item.id) {
+                    if let Some(entries) = list.get_mut(cx.editor) {
+                        entries.remove(index);
+                    }
                 }
             },
         ) as ui::picker::PickerKeyHandler<_, _>,
@@ -310,13 +475,13 @@ pub fn picker(editor: &Editor) -> Option<Picker<QuickItem, ()>> {
     let picker = Picker::new(
         columns,
         1,
-        items(editor),
+        items(editor, list),
         (),
-        |cx, item: &QuickItem, action| {
-            let Some(index) = index_of(cx.editor, item.id) else {
+        move |cx, item: &QuickItem, action| {
+            let Some(index) = index_of(cx.editor, list, item.id) else {
                 return;
             };
-            if let Err(err) = visit(cx.editor, index, action) {
+            if let Err(err) = visit_in(cx.editor, list, index, action) {
                 cx.editor.set_error(format!("{err:#}"));
             }
         },
@@ -331,15 +496,15 @@ pub fn picker(editor: &Editor) -> Option<Picker<QuickItem, ()>> {
     })
     .with_key_handlers(handlers)
     .with_live_refresh(
-        |editor| editor.quicklist.version(),
-        Some(Box::new(|editor, injector| {
-            for item in items(editor) {
+        move |editor| list.get(editor).map_or(0, Quicklist::version),
+        Some(Box::new(move |editor, injector| {
+            for item in items(editor, list) {
                 let _ = injector.push(item);
             }
         })),
         |item| item.id.to_string(),
     )
-    .with_title("Quicklist");
+    .with_title(list.title());
     Some(picker)
 }
 

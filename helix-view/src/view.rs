@@ -171,6 +171,9 @@ pub struct View {
     /// Whether a bar of plugins (`helix.winbar`) takes the top row (see
     /// [`crate::Editor::sync_window_bars`]).
     pub bar: bool,
+    /// The window's own list of locations (Neovim's location list), beside the editor's
+    /// quicklist. A window split from this one starts with a copy.
+    pub location_list: crate::quicklist::Quicklist,
 }
 
 impl fmt::Debug for View {
@@ -200,6 +203,7 @@ impl View {
             gutters,
             diagnostics_handler: DiagnosticsHandler::new(),
             bar: false,
+            location_list: Default::default(),
         }
     }
 

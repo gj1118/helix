@@ -4261,6 +4261,81 @@ fn tab_only(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> an
     Ok(())
 }
 
+/// `:lopen`: the location list of the focused window, in a picker (or the quickfix panel).
+fn location_list_open(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    run_static(cx, &super::MappableCommand::location_list_picker)
+}
+
+fn location_list_next(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    run_static(cx, &super::MappableCommand::location_list_next)
+}
+
+fn location_list_prev(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    run_static(cx, &super::MappableCommand::location_list_prev)
+}
+
+fn location_list_add(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let list = super::quicklist::List::focused_location(cx.editor);
+    super::quicklist::add_to(cx.editor, list);
+    Ok(())
+}
+
+fn location_list_clear(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let list = super::quicklist::List::focused_location(cx.editor);
+    super::quicklist::set_list(cx.editor, list, Vec::new());
+    Ok(())
+}
+
+/// `:ldiagnostics`: the diagnostics of the focused buffer into the window's location list.
+fn location_list_diagnostics(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let entries = super::quicklist::diagnostics_entries(cx.editor);
+    let list = super::quicklist::List::focused_location(cx.editor);
+    super::quicklist::set_list(cx.editor, list, entries);
+    Ok(())
+}
+
 fn tab_next(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
@@ -5716,6 +5791,72 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &["tabonly", "tabo"],
         doc: "Close every tab page but the one shown.",
         fun: tab_only,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "location-list",
+        aliases: &["lopen", "lop", "llist"],
+        doc: "Show the location list of the window (its own list of locations), in a picker or the quickfix panel.",
+        fun: location_list_open,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "location-list-next",
+        aliases: &["lnext", "lne"],
+        doc: "Go to the next entry of the window's location list.",
+        fun: location_list_next,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "location-list-previous",
+        aliases: &["lprevious", "lprev", "lp", "lN"],
+        doc: "Go to the previous entry of the window's location list.",
+        fun: location_list_prev,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "location-list-add",
+        aliases: &["ladd"],
+        doc: "Add the cursor's place to the window's location list.",
+        fun: location_list_add,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "location-list-clear",
+        aliases: &["lclear"],
+        doc: "Empty the window's location list.",
+        fun: location_list_clear,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "location-list-diagnostics",
+        aliases: &["ldiagnostics", "ldiag"],
+        doc: "Put the diagnostics of the buffer in the window's location list.",
+        fun: location_list_diagnostics,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

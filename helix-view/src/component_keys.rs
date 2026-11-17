@@ -76,6 +76,7 @@ impl Component {
                 ("select_vertical", "C-v"),
                 ("toggle_preview", "C-t"),
                 ("copy_to_quicklist", "C-q"),
+                ("copy_to_location_list", "A-q"),
                 ("scroll_preview_up", "A-k"),
                 ("scroll_preview_down", "A-j"),
                 ("close", "esc"),

@@ -543,6 +543,8 @@ fn static_permissions(name: &str) -> &'static [Permission] {
         | "quicklist_prev"
         | "quicklist_next_in_file"
         | "quicklist_prev_in_file"
+        | "location_list_next"
+        | "location_list_prev"
         | "quickfix"
         | "quickfix_focus"
         | "suspend" => &[Windows],
@@ -584,6 +586,7 @@ fn static_permissions(name: &str) -> &'static [Permission] {
         | "goto_hover"
         | "snippet_picker"
         | "quicklist_picker"
+        | "location_list_picker"
         | "blame_line"
         | "blame_details"
         | "completion" => &[Ui],
@@ -612,6 +615,9 @@ fn typable_permissions(name: &str) -> Option<&'static [Permission]> {
     use Permission::*;
     Some(match name {
         "undo-tree" => &[Ui, Edit],
+        "location-list" => &[Ui],
+        "location-list-next" | "location-list-previous" => &[Windows],
+        "location-list-add" | "location-list-clear" | "location-list-diagnostics" => &[],
         "tab-new" | "tab-close" | "tab-only" | "tab-next" | "tab-previous" | "tab-move" => {
             &[Windows]
         }
@@ -857,7 +863,7 @@ mod tests {
     fn static_commands_are_classified() {
         let count = crate::commands::MappableCommand::STATIC_COMMAND_LIST.len();
         assert_eq!(
-            count, 417,
+            count, 421,
             "commands were added or removed: check `static_permissions` for them"
         );
         use helix_plugin::types::EditorCommandRegistry;

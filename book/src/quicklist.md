@@ -41,6 +41,31 @@ Removing the current entry leaves the editor cursor where it is. After closing t
 4. Close the picker and walk through the locations with `]q` and `[q`.
 5. Use `]l` and `[l` to stay in the current file, or `Space q` to browse the whole list.
 
+## Location lists
+
+Each window also has a list of its own, like Neovim's location list (`:lopen`): the
+quicklist is for the whole editor, a location list for the window you were working in, so
+two searches in two windows don't overwrite each other's list. It works like the quicklist:
+
+| Key / command | Action | Command |
+| --- | --- | --- |
+| `Alt-q` in a picker | Copy the matched locations into the window's location list (`Ctrl-q`: into the quicklist) | |
+| `:ladd` | Add the cursor's place to it | `location-list-add` |
+| `:ldiagnostics` | Put the buffer's diagnostics in it, in order (`error: message`, each selecting its range) | `location-list-diagnostics` |
+| `]L` / `[L`, `:lnext` / `:lprev` | Go to its next / previous entry, wrapping around | `location_list_next`, `location_list_prev` |
+| `Space Alt-q`, `:lopen` | Show it, in a picker (in the [quickfix panel](#quickfix-panel) when that is on); `Ctrl-x` removes an entry | `location_list_picker` |
+| `:lclear` | Empty it | `location-list-clear` |
+
+The entries of a location list open in its window, whichever window has the focus when
+you pick one. A window split from another starts with a copy of its list (as in Neovim);
+the lists then go their own ways. A window's list goes when the window is closed.
+
+```text
+:ldiagnostics      the errors and warnings of this file, in this window's list
+]L ]L [L           through them
+<space><A-q>       all of them, previewed
+```
+
 ## Quickfix panel
 
 With `[editor.quickfix] enable = true`, the lists of locations open in a panel at the bottom of

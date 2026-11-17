@@ -664,6 +664,17 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
     /// order they are shown in. Pickers whose results aren't locations (no preview) are left
     /// alone; a picker without matches clears the quicklist.
     fn copy_to_quicklist(&mut self, editor: &mut Editor) {
+        self.copy_to_list(editor, crate::commands::quicklist::List::Quick)
+    }
+
+    /// Like [`Picker::copy_to_quicklist`], into the location list of the focused window
+    /// (`Alt-q`).
+    fn copy_to_location_list(&mut self, editor: &mut Editor) {
+        let list = crate::commands::quicklist::List::focused_location(editor);
+        self.copy_to_list(editor, list)
+    }
+
+    fn copy_to_list(&mut self, editor: &mut Editor, list: crate::commands::quicklist::List) {
         if self.file_fn.is_none() {
             editor.set_status("The results of this picker are not locations");
             return;
@@ -677,7 +688,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                 .matched_items(..)
                 .filter_map(|item| file_fn(editor, item.data)),
         );
-        crate::commands::quicklist::set_from_picker(editor, entries);
+        crate::commands::quicklist::set_list(editor, list, entries);
     }
 
     /// Waits (briefly) until the results are those of the current query. The matcher works in
@@ -2230,9 +2241,12 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
             ctrl!('t') => {
                 self.toggle_preview();
             }
-            // Copy the matched locations into the quicklist.
+            // Copy the matched locations into the quicklist, or the window's location list.
             ctrl!('q') => {
                 self.copy_to_quicklist(ctx.editor);
+            }
+            alt!('q') => {
+                self.copy_to_location_list(ctx.editor);
             }
             // Preview line scrolling. Alt-d/f/b are intentionally avoided here: the prompt
             // keybinds (which also apply in pickers) use them for word editing in the
@@ -2656,6 +2670,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             }
             ctrl!('t') => self.toggle_preview(),
             ctrl!('q') => self.copy_to_quicklist(cx.editor),
+            alt!('q') => self.copy_to_location_list(cx.editor),
             // `C-h` / `C-l`: the editor's keys (to the explorer, back to the code by default)
             ctrl!('h') | ctrl!('l') => return EventResult::Ignored(None),
             // Esc gives the focus back to the code, the panel stays (like the explorer's)

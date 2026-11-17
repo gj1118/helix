@@ -75,7 +75,7 @@ enum Cursor {
     Gap(usize),
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Quicklist {
     entries: Vec<Entry>,
     cursor: Cursor,

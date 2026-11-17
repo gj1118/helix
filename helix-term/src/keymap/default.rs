@@ -177,6 +177,7 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "x" => goto_prev_xml_element,
             "q" => quicklist_prev,
             "l" => quicklist_prev_in_file,
+            "L" => location_list_prev,
             "space" => add_newline_above,
         },
         "]" => { "Right bracket" fallback=select_textobject_inside_next_pair
@@ -194,6 +195,7 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "x" => goto_next_xml_element,
             "q" => quicklist_next,
             "l" => quicklist_next_in_file,
+            "L" => location_list_next,
             "space" => add_newline_below,
         },
 
@@ -383,6 +385,7 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "B" => blame_line,
             "i" => snippet_picker,
             "q" => quicklist_picker,
+            "A-q" => location_list_picker,
             "u" => undo_tree,
         },
         "z" => { "View"

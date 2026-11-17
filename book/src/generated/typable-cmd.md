@@ -113,6 +113,12 @@
 | `:tab-new`, `:tabnew`, `:tabedit`, `:tabe` | Open a new tab page, with the file given or an empty buffer. |
 | `:tab-close`, `:tabclose`, `:tabc` | Close the tab page shown (its windows; not the last tab). |
 | `:tab-only`, `:tabonly`, `:tabo` | Close every tab page but the one shown. |
+| `:location-list`, `:lopen`, `:lop`, `:llist` | Show the location list of the window (its own list of locations), in a picker or the quickfix panel. |
+| `:location-list-next`, `:lnext`, `:lne` | Go to the next entry of the window's location list. |
+| `:location-list-previous`, `:lprevious`, `:lprev`, `:lp`, `:lN` | Go to the previous entry of the window's location list. |
+| `:location-list-add`, `:ladd` | Add the cursor's place to the window's location list. |
+| `:location-list-clear`, `:lclear` | Empty the window's location list. |
+| `:location-list-diagnostics`, `:ldiagnostics`, `:ldiag` | Put the diagnostics of the buffer in the window's location list. |
 | `:tab-next`, `:tabnext`, `:tabn` | Show the next tab page, or tab page N (1-based) when given. |
 | `:tab-previous`, `:tabprevious`, `:tabp`, `:tabN` | Show the previous tab page (N tab pages back when given). |
 | `:tab-move`, `:tabmove` | Move the tab page shown to position N (1-based; the last without N). |

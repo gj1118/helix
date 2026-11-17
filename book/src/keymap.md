@@ -396,6 +396,7 @@ This layer is a kludge of mappings, mostly pickers.
 | `B`     | Show blame for the current line                                         | `blame_line`                             |
 | `i`     | Open the snippet picker (see [Snippets](./snippets.md))                 | `snippet_picker`                         |
 | `q`     | Open the quicklist picker (see [Quicklist](./quicklist.md))             | `quicklist_picker`                       |
+| `Alt-q` | Open the location list of the window (see [Location lists](./quicklist.md#location-lists))| `location_list_picker`                   |
 | `u`     | Show the undo tree (see [below](#undo-tree))                            | `undo_tree`                              |
 
 #### Undo tree
@@ -495,7 +496,9 @@ These mappings are in the style of [vim-unimpaired](https://github.com/tpope/vim
 | `]q`     | Go to the next quicklist entry (of the [quickfix panel](./quicklist.md#quickfix-panel) while it is shown) | `quicklist_next`        |
 | `[q`     | Go to the previous quicklist entry (of the quickfix panel while it is shown) | `quicklist_prev`        |
 | `]l`     | Go to the next quicklist entry in this file  | `quicklist_next_in_file` |
+| `]L`     | Go to the next entry of the window's [location list](./quicklist.md#location-lists)| `location_list_next`     |
 | `[l`     | Go to the previous quicklist entry in this file | `quicklist_prev_in_file` |
+| `[L`     | Go to the previous entry of the window's location list| `location_list_prev`     |
 
 ## Fork-specific keys
 
@@ -628,6 +631,7 @@ See the documentation page on [pickers](./pickers.md) for more info.
 | `Ctrl-v`                     | Open vertically                                            |
 | `Ctrl-t`                     | Toggle preview                                             |
 | `Ctrl-q`                     | Copy the matched locations into the [quicklist](./quicklist.md) |
+| `Alt-q`                      | Copy the matched locations into the window's [location list](./quicklist.md#location-lists)|
 | `PageUp`                     | Scroll the preview up a page (page up the list when no preview is shown)   |
 | `PageDown`                   | Scroll the preview down a page (page down the list when no preview is shown) |
 | `Alt-k`, `Shift-Up`          | Scroll the preview up a line                              |

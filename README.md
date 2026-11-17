@@ -554,6 +554,15 @@ git difftool            # also --staged, main, HEAD~1 HEAD...
 
 See the book's Diffs page (`book/src/diff.md`).
 
+## Location Lists
+
+Each window has a list of locations of its own, beside the editor-wide quicklist, like
+Neovim's location list: `Alt-q` in a picker copies its matches there (`Ctrl-q` still goes to
+the quicklist), `:ladd` adds the cursor's place, and `:ldiagnostics` puts the buffer's
+diagnostics in it. `]L` / `[L` (`:lnext` / `:lprev`) walk it, `Space Alt-q` (`:lopen`) shows
+it in a picker or the quickfix panel, `:lclear` empties it. Its entries open in its window;
+a split starts with a copy. See [Location lists](book/src/quicklist.md#location-lists).
+
 ## Quickfix Panel
 
 Lists of locations can open in a panel at the bottom of the editor, like Neovim's quickfix

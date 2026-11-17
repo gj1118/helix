@@ -783,6 +783,10 @@ impl MappableCommand {
         quicklist_next_in_file, "Go to the next quicklist entry in this file",
         quicklist_prev_in_file, "Go to the previous quicklist entry in this file",
         quicklist_picker, "Open the quicklist picker",
+        add_to_location_list, "Add the current location to the location list of the window",
+        location_list_next, "Go to the next entry of the window's location list",
+        location_list_prev, "Go to the previous entry of the window's location list",
+        location_list_picker, "Open the location list of the window (like :lopen)",
         undo_tree, "Show the undo tree: every revision of the buffer, branches included",
         quickfix, "Show the quickfix panel with the focus (the last list it showed, or the quicklist), or hide it when it is open",
         quickfix_focus, "Focus the quickfix panel (shows the quicklist in it when it is closed, like :copen)",
@@ -4774,6 +4778,22 @@ fn git_file_history(cx: &mut Context) {
 
 fn git_history(cx: &mut Context) {
     git_history::git_history(cx.editor, cx.jobs)
+}
+
+fn add_to_location_list(cx: &mut Context) {
+    quicklist::add_to_location_list(cx)
+}
+
+fn location_list_next(cx: &mut Context) {
+    quicklist::location_list_next(cx)
+}
+
+fn location_list_prev(cx: &mut Context) {
+    quicklist::location_list_prev(cx)
+}
+
+fn location_list_picker(cx: &mut Context) {
+    quicklist::location_list_picker(cx)
 }
 
 fn add_to_quicklist(cx: &mut Context) {
