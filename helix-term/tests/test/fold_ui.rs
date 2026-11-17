@@ -274,3 +274,83 @@ async fn a_go_import_block_folds_though_no_text_object_covers_it() -> anyhow::Re
     }
     Ok(())
 }
+
+/// The same in other languages: a construct their text objects do not cover (a `use` list,
+/// a parenthesized import, a literal, a table) folds its indented lines. Each case: the file
+/// extension, its text with the construct on lines 1 to 3 (0-based, its header on line 0),
+/// and the line the cursor is on.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_block_no_text_object_covers_folds_in_any_language() -> anyhow::Result<()> {
+    let cases: [(&str, &str); 10] = [
+        (
+            "rs",
+            "use std::{\n    fmt,\n    io,\n    mem,\n};\n\nfn main() {}\n",
+        ),
+        (
+            "py",
+            "from os import (\n    path,\n    sep,\n    getcwd,\n)\n\nprint(path)\n",
+        ),
+        (
+            "js",
+            "import {\n  alpha,\n  beta,\n  gamma,\n} from \"x\";\n\nalpha();\n",
+        ),
+        (
+            "ts",
+            "import {\n  alpha,\n  beta,\n  gamma,\n} from \"x\";\n\nconst n: number = 1;\n",
+        ),
+        (
+            "c",
+            "int values[] = {\n    1,\n    2,\n    3,\n};\n\nint main() { return 0; }\n",
+        ),
+        (
+            "lua",
+            "local t = {\n  a = 1,\n  b = 2,\n  c = 3,\n}\n\nprint(t)\n",
+        ),
+        ("rb", "VALUES = [\n  1,\n  2,\n  3,\n]\n\nputs VALUES\n"),
+        ("json", "[\n  1,\n  2,\n  3\n]\n"),
+        (
+            "toml",
+            "deps = [\n  \"a\",\n  \"b\",\n  \"c\",\n]\n\nname = \"x\"\n",
+        ),
+        ("yaml", "list:\n  - a\n  - b\n  - c\nname: x\n"),
+    ];
+    for (extension, text) in cases {
+        for keys in ["zf", "za", ":fold<ret>"] {
+            let file = tempfile::Builder::new()
+                .suffix(&format!(".{extension}"))
+                .tempfile()?;
+            std::fs::write(file.path(), text)?;
+            let mut app = AppBuilder::new()
+                .with_file(file.path(), None)
+                .with_lang_loader(helpers::test_syntax_loader(None))
+                .build()?;
+            {
+                let (_, doc) = current_ref!(app.editor);
+                assert!(
+                    doc.syntax().is_some(),
+                    "{extension}: a syntax tree, so its text objects are looked at"
+                );
+            }
+            // the cursor on the middle line of the construct
+            send_keys(&mut app, &format!("3gg{keys}")).await;
+            assert_eq!(
+                folds(&app),
+                1_usize,
+                "{extension} {keys}: {:?}",
+                app.editor.get_status()
+            );
+            let (view, doc) = current_ref!(app.editor);
+            let container = doc.fold_container(view.id).unwrap();
+            let fold = container.start_points()[0].fold(container);
+            // its inner lines hidden, the header shown
+            assert_eq!(
+                (fold.start.line, fold.end.line),
+                (1_usize, 3_usize),
+                "{extension} {keys}"
+            );
+            send_keys(&mut app, "za").await;
+            assert_eq!(folds(&app), 0_usize, "{extension} {keys}");
+        }
+    }
+    Ok(())
+}
