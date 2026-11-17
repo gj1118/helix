@@ -69,8 +69,13 @@ async fn moving_through_the_undo_tree_shows_each_revision() -> anyhow::Result<()
                 }),
             ),
             // Enter keeps the revision under the cursor; the history keeps every branch
+            // (the command opens the tree once the key handling is done)
             (
-                Some(":undo-tree<ret>k<ret>"),
+                Some(":undo-tree<ret>"),
+                Some(&|app| assert!(tree_is_open(app))),
+            ),
+            (
+                Some("k<ret>"),
                 Some(&|app| {
                     assert!(!tree_is_open(app));
                     assert_eq!(buffer_text(app), "one\ntwo\nthree\n".to_string());
@@ -97,7 +102,8 @@ async fn the_tree_has_the_last_edit_and_the_original() -> anyhow::Result<()> {
     test_key_sequences(
         &mut app,
         vec![
-            (Some("ihello<esc>:undo-tree<ret>"), None),
+            (Some("ihello<esc>"), None),
+            (Some(":undo-tree<ret>"), None),
             (
                 None,
                 Some(&|app| {

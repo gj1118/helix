@@ -101,6 +101,91 @@ pub(crate) mod test_utils;
 #[cfg(test)]
 mod test;
 
+/// The blocks of `text` by indentation: `(header, last)` line pairs, where the lines after
+/// `header` up to `last` are all more indented than it (blank lines in between belong to the
+/// block; blank lines after its last line don't). Nested blocks are listed too, in order of
+/// their header.
+pub fn indent_blocks(text: RopeSlice, tab_width: usize) -> Vec<(usize, usize)> {
+    let indent = |line: usize| -> Option<usize> {
+        let mut width = 0;
+        for ch in text.line(line).chars() {
+            match ch {
+                ' ' => width += 1,
+                '\t' => width += tab_width.max(1) - width % tab_width.max(1),
+                '\n' | '\r' => return None,
+                c if c.is_whitespace() => width += 1,
+                _ => return Some(width),
+            }
+        }
+        None
+    };
+    let mut blocks = Vec::new();
+    // the headers still open: (line, indent)
+    let mut stack: Vec<(usize, usize)> = Vec::new();
+    let mut last_non_blank = None;
+    for line in 0..text.len_lines() {
+        let Some(width) = indent(line) else {
+            continue;
+        };
+        while let Some(&(header, header_width)) = stack.last() {
+            if header_width < width {
+                break;
+            }
+            stack.pop();
+            if let Some(last) = last_non_blank.filter(|last| *last > header) {
+                blocks.push((header, last));
+            }
+        }
+        stack.push((line, width));
+        last_non_blank = Some(line);
+    }
+    while let Some((header, _)) = stack.pop() {
+        if let Some(last) = last_non_blank.filter(|last| *last > header) {
+            blocks.push((header, last));
+        }
+    }
+    blocks.sort_unstable();
+    blocks
+}
+
+/// The innermost of `blocks` (`(header, last)` line pairs) that `line` is in, its header
+/// line included.
+pub fn innermost_block(blocks: &[(usize, usize)], line: usize) -> Option<(usize, usize)> {
+    blocks
+        .iter()
+        .filter(|(header, last)| *header <= line && line <= *last)
+        .max_by_key(|(header, _)| *header)
+        .copied()
+}
+
+/// The fold points that hide lines `header + 1 ..= last`, `header` staying visible as the
+/// fold's first line. `None` when there is nothing after the header to hide.
+pub fn line_fold_points(
+    text: RopeSlice,
+    object: FoldObject,
+    header: usize,
+    last: usize,
+) -> Option<(StartFoldPoint, EndFoldPoint)> {
+    if last <= header || last >= text.len_lines() {
+        return None;
+    }
+    let first_hidden = header + 1;
+    let start = text.line_to_char(first_hidden)
+        + text
+            .line(first_hidden)
+            .first_non_whitespace_char()
+            .unwrap_or(0);
+    let end = match text.line(last).last_non_whitespace_char() {
+        Some(char) => text.line_to_char(last) + char,
+        None => {
+            let line_end = text.line_to_char(last) + text.line(last).len_chars();
+            line_end.saturating_sub(1).max(start)
+        }
+    };
+    let header_char = text.line_to_char(header);
+    Some(Fold::new_points(text, object, header_char, &(start..=end)))
+}
+
 /// A kind of fold.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FoldObject {
@@ -108,6 +193,10 @@ pub enum FoldObject {
     Selection,
     /// Indicates a folded text of text object (class, function, etc.)
     TextObject(&'static str),
+    /// A block of lines more indented than the line before it.
+    Indent,
+    /// A folding range of a language server.
+    Region,
 }
 
 impl fmt::Display for FoldObject {
@@ -115,6 +204,8 @@ impl fmt::Display for FoldObject {
         match self {
             Self::Selection => write!(f, "something"),
             Self::TextObject(textobject) => write!(f, "{textobject}"),
+            Self::Indent => write!(f, "block"),
+            Self::Region => write!(f, "region"),
         }
     }
 }
@@ -912,5 +1003,58 @@ impl<'a> FoldAnnotations<'a> {
             .filter(|fold| fold.is_superest())
             .map(|fold| fold.end.line - fold.start.line + 1)
             .sum()
+    }
+}
+
+#[cfg(test)]
+mod indent_test {
+    use super::*;
+    use crate::Rope;
+
+    #[test]
+    fn blocks_follow_the_indentation_and_nest() {
+        let text = Rope::from(
+            "fn a():\n    one\n\n    if x:\n        two\n    three\n\nfn b():\n\tfour\nend\n",
+        );
+        let blocks: Vec<(usize, usize)> = indent_blocks(text.slice(..), 4);
+        // `fn a()` holds lines 1-5 (the blank line 2 inside), `if x` holds line 4,
+        // `fn b()` holds the tab-indented line 8; the blank line 6 belongs to none
+        assert_eq!(blocks, vec![(0, 5), (3, 4), (7, 8)]);
+
+        assert_eq!(innermost_block(&blocks, 4), Some((3, 4)));
+        assert_eq!(
+            innermost_block(&blocks, 3),
+            Some((3, 4)),
+            "a header heads its block"
+        );
+        assert_eq!(innermost_block(&blocks, 5), Some((0, 5)));
+        assert_eq!(innermost_block(&blocks, 9), None);
+    }
+
+    #[test]
+    fn a_flat_text_has_no_blocks() {
+        let text = Rope::from("a\nb\n\nc\n");
+        assert_eq!(
+            indent_blocks(text.slice(..), 4),
+            Vec::<(usize, usize)>::new()
+        );
+        assert_eq!(
+            indent_blocks(Rope::from("").slice(..), 4),
+            Vec::<(usize, usize)>::new()
+        );
+    }
+
+    #[test]
+    fn fold_points_hide_the_lines_after_the_header() {
+        let text = Rope::from("head\n  body one\n  body two\ntail\n");
+        let slice = text.slice(..);
+        let (start, end) = line_fold_points(slice, FoldObject::Indent, 0, 2).unwrap();
+        assert_eq!(start.object, FoldObject::Indent);
+        assert_eq!(start.header, 0_usize);
+        // from the first non-blank char of line 1 to the last one of line 2
+        assert_eq!(start.target, text.line_to_char(1) + 2);
+        assert_eq!(end.target, text.line_to_char(2) + 9);
+        assert!(line_fold_points(slice, FoldObject::Indent, 2, 2).is_none());
+        assert!(line_fold_points(slice, FoldObject::Region, 0, 99).is_none());
     }
 }

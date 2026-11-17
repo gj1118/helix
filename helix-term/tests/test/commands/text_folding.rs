@@ -1773,3 +1773,106 @@ mod tests {
     )
     .await
 }
+
+/// The folds of the focused window: (header line, last hidden line, kind).
+fn folds(app: &Application) -> Vec<(usize, usize, String)> {
+    let (view, doc) = current_ref!(&app.editor);
+    let text = doc.text().slice(..);
+    let Some(container) = doc.fold_container(view.id) else {
+        return Vec::new();
+    };
+    container
+        .start_points()
+        .iter()
+        .map(|start| {
+            let fold = start.fold(container);
+            (
+                text.char_to_line(fold.header()),
+                text.char_to_line(fold.end.target),
+                fold.object().to_string(),
+            )
+        })
+        .collect()
+}
+
+/// A buffer without tree-sitter text objects (plain text) folds by indentation: `z f` the
+/// block the cursor is in, `z M` every block, `z R` and `z F` unfold, `z i` folds by
+/// indentation whatever the language.
+#[tokio::test(flavor = "multi_thread")]
+async fn without_text_objects_folds_follow_the_indentation() -> anyhow::Result<()> {
+    let file = helpers::temp_file_with_contents("a:\n  b\n  c:\n    d\ne\n")?;
+    let app = &mut helpers::AppBuilder::new()
+        .with_file(file.path(), None)
+        .build()?;
+    let block = |header: usize, last: usize| (header, last, "block".to_string());
+    test_key_sequences(
+        app,
+        vec![
+            (
+                Some("4ggzf"),
+                Some(&|app| assert_eq!(folds(app), vec![block(2, 3)])),
+            ),
+            (Some("zF"), Some(&|app| assert!(folds(app).is_empty()))),
+            (
+                Some("zM"),
+                Some(&|app| assert_eq!(folds(app), vec![block(0, 3), block(2, 3)])),
+            ),
+            (Some("zR"), Some(&|app| assert!(folds(app).is_empty()))),
+            (
+                Some("ggzi"),
+                Some(&|app| assert_eq!(folds(app), vec![block(0, 3)])),
+            ),
+            (
+                Some(":unfold -s<ret>:fold --indent --document<ret>"),
+                Some(&|app| assert_eq!(folds(app).len(), 2_usize)),
+            ),
+            (
+                Some(":unfold -s -d -r<ret>"),
+                Some(&|app| assert!(folds(app).is_empty())),
+            ),
+            // a line with nothing indented under it
+            (
+                Some("5ggzi"),
+                Some(&|app| {
+                    assert!(folds(app).is_empty());
+                    let status = app.editor.get_status().map(|(s, _)| s.to_string());
+                    assert_eq!(
+                        status.as_deref(),
+                        Some("'fold': Nothing to fold: no lines are indented under this one.")
+                    );
+                }),
+            ),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}
+
+/// In a language with text objects, `z f` still folds them, and `z R` unfolds them too.
+#[tokio::test(flavor = "multi_thread")]
+async fn text_objects_come_first_and_unfold_all_takes_them_too() -> anyhow::Result<()> {
+    let app = &mut helpers::AppBuilder::new()
+        .with_file(RUST_CODE, None)
+        .build()?;
+    test_key_sequences(
+        app,
+        vec![
+            (
+                Some("zM"),
+                Some(&|app| {
+                    let kinds: Vec<String> = folds(app).into_iter().map(|f| f.2).collect();
+                    assert!(!kinds.is_empty());
+                    assert!(
+                        kinds.iter().all(|kind| kind != "block"),
+                        "text objects, not indentation: {kinds:?}"
+                    );
+                }),
+            ),
+            (Some("zR"), Some(&|app| assert!(folds(app).is_empty()))),
+        ],
+        false,
+    )
+    .await?;
+    Ok(())
+}

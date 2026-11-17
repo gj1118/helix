@@ -3448,6 +3448,23 @@ pub const FOLD_SIGNATURE: Signature = Signature {
             doc: "Fold all textobjects, excluding specified ones.",
             ..Flag::DEFAULT
         },
+        Flag {
+            name: "indent",
+            alias: Some('i'),
+            doc: "Fold by indentation: the block of more indented lines the cursor is in (with --document, every block).",
+            ..Flag::DEFAULT
+        },
+        Flag {
+            name: "lsp",
+            alias: Some('l'),
+            doc: "Fold the language server's folding range the cursor is in (with --document, every range).",
+            ..Flag::DEFAULT
+        },
+        Flag {
+            name: "auto",
+            doc: "Fold text objects; without them (no tree-sitter text objects for the language, none found), the language server's folding ranges, else by indentation.",
+            ..Flag::DEFAULT
+        },
     ],
     ..Signature::DEFAULT
 };
@@ -3457,14 +3474,126 @@ fn fold(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow:
         return Ok(());
     }
 
+    let document = args.has_flag("document");
+    if args.has_flag("indent") {
+        let (view, doc) = current!(cx.editor);
+        return fold_indent(doc, view, document);
+    }
+    if args.has_flag("lsp") {
+        return fold_lsp(cx, document);
+    }
+    let auto = args.has_flag("auto");
     let (view, doc) = current!(cx.editor);
 
     if args.has_flag("selection") {
         fold_selection(doc, view, args)
     } else {
         let loader = cx.editor.syn_loader.load();
-        fold_textobjects(doc, view, &loader, args)
+        if !auto || has_textobjects(doc, &loader) {
+            return fold_textobjects(doc, view, &loader, args);
+        }
+        let has_server = doc
+            .language_servers_with_feature(LanguageServerFeature::FoldingRanges)
+            .next()
+            .is_some();
+        if has_server {
+            fold_lsp(cx, document)
+        } else {
+            fold_indent(doc, view, document)
+        }
     }
+}
+
+/// Whether the buffer's language has tree-sitter text objects to fold.
+fn has_textobjects(doc: &Document, loader: &Loader) -> bool {
+    doc.syntax()
+        .is_some_and(|syntax| loader.textobject_query(syntax.root_language()).is_some())
+}
+
+/// Folds blocks of more indented lines: the innermost one the cursor is in, or every one.
+fn fold_indent(doc: &mut Document, view: &View, document: bool) -> anyhow::Result<()> {
+    use text_folding::{indent_blocks, innermost_block, line_fold_points, FoldObject};
+    let text = doc.text().slice(..);
+    let blocks = indent_blocks(text, doc.tab_width());
+    let blocks = if document {
+        blocks
+    } else {
+        let cursor = doc.selection(view.id).primary().cursor(text);
+        innermost_block(&blocks, text.char_to_line(cursor))
+            .into_iter()
+            .collect()
+    };
+    let points: Vec<_> = blocks
+        .into_iter()
+        .filter_map(|(header, last)| line_fold_points(text, FoldObject::Indent, header, last))
+        .collect();
+    if points.is_empty() {
+        return Err(anyhow!(
+            "Nothing to fold: no lines are indented under this one."
+        ));
+    }
+    doc.replace_folds(view, points);
+    Ok(())
+}
+
+/// Folds the language server's folding range the cursor is in, or every one. The ranges come
+/// back later; the folds are made then.
+fn fold_lsp(cx: &mut compositor::Context, document: bool) -> anyhow::Result<()> {
+    let (view, doc) = current_ref!(cx.editor);
+    let Some(server) = doc
+        .language_servers_with_feature(LanguageServerFeature::FoldingRanges)
+        .next()
+    else {
+        return Err(anyhow!(
+            "No language server of this buffer has folding ranges."
+        ));
+    };
+    let Some(future) = server.text_document_folding_range(doc.identifier()) else {
+        return Err(anyhow!(
+            "No language server of this buffer has folding ranges."
+        ));
+    };
+    let (doc_id, view_id) = (doc.id(), view.id);
+    cx.jobs.callback(async move {
+        let ranges = future.await?.unwrap_or_default();
+        let call: crate::job::Callback = crate::job::Callback::Editor(Box::new(move |editor| {
+            use text_folding::{innermost_block, line_fold_points, FoldObject};
+            if !editor.tree.contains(view_id) {
+                return;
+            }
+            let view = editor.tree.get(view_id);
+            let Some(doc) = editor.documents.get_mut(&doc_id) else {
+                return;
+            };
+            let text = doc.text().slice(..);
+            let mut blocks: Vec<(usize, usize)> = ranges
+                .iter()
+                .map(|range| (range.start_line as usize, range.end_line as usize))
+                .filter(|(start, end)| end > start && *end < text.len_lines())
+                .collect();
+            blocks.sort_unstable();
+            blocks.dedup();
+            if !document {
+                let cursor = doc.selection(view_id).primary().cursor(text);
+                blocks = innermost_block(&blocks, text.char_to_line(cursor))
+                    .into_iter()
+                    .collect();
+            }
+            let points: Vec<_> = blocks
+                .into_iter()
+                .filter_map(|(header, last)| {
+                    line_fold_points(text, FoldObject::Region, header, last)
+                })
+                .collect();
+            if points.is_empty() {
+                editor.set_error("Nothing to fold: the cursor is in no folding range.");
+                return;
+            }
+            doc.replace_folds(view, points);
+        }));
+        Ok(call)
+    });
+    Ok(())
 }
 
 fn fold_selection(doc: &mut Document, view: &View, args: Args) -> anyhow::Result<()> {
@@ -3730,7 +3859,34 @@ fn unfold(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
 
     let (view, doc) = current!(cx.editor);
 
-    if args.has_flag("selection") {
+    if args.has_flag("auto") {
+        use text_folding::FoldObject;
+        if args.has_flag("document") {
+            // every kind of fold: text objects, selections, indentation, language server
+            return unfold_matching(doc, view, &args, |_| true);
+        }
+        // the text objects first, as without `--auto`; then the other folds
+        let loader = cx.editor.syn_loader.load();
+        if has_textobjects(doc, &loader) {
+            let line = if args.has_flag("recursive") {
+                "--all --recursive"
+            } else {
+                "--all"
+            };
+            let signature = TYPABLE_COMMAND_MAP
+                .get("unfold")
+                .expect("unfold is a command")
+                .signature;
+            let textobject_args = Args::parse(line, signature, true, |token| Ok(token.content))
+                .map_err(|err| anyhow!("{err}"))?;
+            if unfold_textobjects(doc, view, &loader, textobject_args).is_ok() {
+                return Ok(());
+            }
+        }
+        unfold_matching(doc, view, &args, |object| {
+            !matches!(object, FoldObject::TextObject(_))
+        })
+    } else if args.has_flag("selection") {
         unfold_selection(doc, view, args)
     } else {
         let loader = cx.editor.syn_loader.load();
@@ -3739,9 +3895,6 @@ fn unfold(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyho
 }
 
 fn unfold_selection(doc: &mut Document, view: &View, args: Args) -> anyhow::Result<()> {
-    use std::cmp::{max, min};
-
-    use graphemes::prev_grapheme_boundary;
     use text_folding::FoldObject;
 
     // additional validation
@@ -3752,6 +3905,23 @@ fn unfold_selection(doc: &mut Document, view: &View, args: Args) -> anyhow::Resu
             with the flag `selection`."
         ));
     }
+    // the folds not made from text objects: selections, indentation, language servers
+    unfold_matching(doc, view, &args, |object| {
+        !matches!(object, FoldObject::TextObject(_))
+    })
+}
+
+/// Unfolds the folds of the objects `keep` accepts that overlap the selection (or the whole
+/// document with `--document`); the outermost ones only, unless `--recursive`.
+fn unfold_matching(
+    doc: &mut Document,
+    view: &View,
+    args: &Args,
+    keep: impl Fn(&text_folding::FoldObject) -> bool,
+) -> anyhow::Result<()> {
+    use std::cmp::{max, min};
+
+    use graphemes::prev_grapheme_boundary;
 
     let text = doc.text().slice(..);
     let Some(container) = doc.fold_container(view.id) else {
@@ -3776,7 +3946,7 @@ fn unfold_selection(doc: &mut Document, view: &View, args: Args) -> anyhow::Resu
         .start_points()
         .iter()
         .enumerate()
-        .filter(|(_, sfp)| matches!(sfp.object, FoldObject::Selection))
+        .filter(|(_, sfp)| keep(&sfp.object))
         .filter(|(_, sfp)| sfp.is_superest() || args.has_flag("recursive"))
         .filter(|(_, sfp)| {
             let fold = sfp.fold(container);
@@ -5336,7 +5506,7 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
                 Flag {
                     name: "selection",
                     alias: Some('s'),
-                    doc: "Unfold folds that were folded with the flag `selection`.",
+                    doc: "Unfold folds made from a selection, by indentation or from the language server.",
                     ..Flag::DEFAULT
                 },
                 Flag {
@@ -5355,6 +5525,11 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
                     name: "recursive",
                     alias: Some('r'),
                     doc: "Unfold both superest and nested folds.",
+                    ..Flag::DEFAULT
+                },
+                Flag {
+                    name: "auto",
+                    doc: "Unfold folds of every kind (text objects, selections, indentation, language server).",
                     ..Flag::DEFAULT
                 },
             ],

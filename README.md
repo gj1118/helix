@@ -1357,9 +1357,17 @@ with `--server`. With no Helix running, `hx --remote file` just opens the file, 
 ## Code Folding
 
 **Code Folding Commands:**
-- `fold` - Fold text objects
-- `unfold` - Unfold text objects
-- `toggle_fold` - Toggle fold for the text object at the primary cursor
+- `fold` (`z f`) - Fold the text object under the cursor
+- `unfold` (`z F`) - Unfold the folds under the cursor
+- `toggle_fold` (`z Alt-f`) - Toggle fold for the text object at the primary cursor
+- `fold_indent` (`z i`) - Fold the block of more indented lines the cursor is in
+- `fold_all` (`z M`) - Fold everything in the document
+- `unfold_all` (`z R`) - Unfold everything
+
+Languages without tree-sitter text objects (plain text, YAML, config files) fold too: `z f` and
+`z M` use the language server's folding ranges (the `folding-ranges` feature) when it has them,
+else the indentation. `:fold --indent` and `:fold --lsp` pick one; `-d` folds every block or
+range of the document.
 
 **Configuration:**
 To automatically fold specific text objects when a document is opened:

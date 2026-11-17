@@ -66,8 +66,18 @@ and selection: moving over a fold steps past its hidden lines.
 | Key                    | Command       | Action                                                          |
 | ---                    | ---           | ---                                                             |
 | `z f` / `Z f`          | `fold`        | Fold the text object under the cursor                           |
-| `z F` / `Z F`          | `unfold`      | Unfold the text object under the cursor                         |
+| `z F` / `Z F`          | `unfold`      | Unfold the folds under the cursor                               |
 | `z Alt-f` / `Z Alt-f`  | `toggle_fold` | Fold or unfold the text object at the primary cursor            |
+| `z i` / `Z i`          | `fold_indent` | Fold the block of more indented lines the cursor is in          |
+| `z M` / `Z M`          | `fold_all`    | Fold everything in the document                                 |
+| `z R` / `Z R`          | `unfold_all`  | Unfold everything                                               |
+
+Languages without tree-sitter text objects (plain text, YAML, many config formats) fold
+too: there `z f` and `z M` use the folding ranges of the buffer's language server when it has
+them (the `folding-ranges` [feature](./languages.md)), else the indentation. A block by
+indentation is a line and the lines after it that are more indented (blank lines inside
+included): `z f` folds the innermost block the cursor is in, the line it heads staying visible.
+`z i` folds by indentation in any language.
 
 `:fold` and `:unfold` do the same from the command line. `:fold` takes the names of text objects as
 positional arguments, and these flags:
@@ -76,11 +86,23 @@ positional arguments, and these flags:
   with a line ending). It cannot be combined with the other flags or with text object names.
 - `-d` / `--document`: fold every text object of the names given in the entire document.
 - `-a` / `--all`: fold all text objects in the document, except the names given.
+- `-i` / `--indent`: fold the block of more indented lines the cursor is in (with `-d`, every
+  block, nested ones included).
+- `-l` / `--lsp`: fold the language server's folding range the cursor is in (with `-d`, every
+  range). The ranges are asked for when the command runs; the folds appear when they come back.
+- `--auto`: text objects when the language has them, else the language server's folding ranges,
+  else the indentation. `z f` and `z M` use it.
+
+`:unfold` takes `-s` (the folds made from a selection, by indentation or from the language
+server), `-d`, `-a`, `-r` (nested folds too) and `--auto` (folds of every kind: `z F` and
+`z R`).
 
 ```text
 :fold -d comment
 :fold -a comment
 :fold -s
+:fold --indent --document
+:fold --lsp
 ```
 
 To fold text objects automatically whenever a document is opened, list them in `fold-textobjects` (see

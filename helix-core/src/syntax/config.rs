@@ -326,6 +326,7 @@ pub enum LanguageServerFeature {
     DocumentColors,
     CallHierarchy,
     InlineCompletion,
+    FoldingRanges,
 }
 
 impl Display for LanguageServerFeature {
@@ -355,6 +356,7 @@ impl Display for LanguageServerFeature {
             DocumentColors => "document-colors",
             CallHierarchy => "call-hierarchy",
             InlineCompletion => "inline-completion",
+            FoldingRanges => "folding-ranges",
         };
         write!(f, "{feature}",)
     }

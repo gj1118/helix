@@ -392,6 +392,9 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "f" => fold,
             "F" => unfold,
             "A-f" => toggle_fold,
+            "i" => fold_indent,
+            "M" => fold_all,
+            "R" => unfold_all,
 
             "/" => search,
             "?" => rsearch,
@@ -413,6 +416,9 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "f" => fold,
             "F" => unfold,
             "A-f" => toggle_fold,
+            "i" => fold_indent,
+            "M" => fold_all,
+            "R" => unfold_all,
 
             "/" => search,
             "?" => rsearch,

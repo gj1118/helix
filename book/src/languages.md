@@ -271,6 +271,7 @@ The list of supported features is:
 - `document-colors`
 - `call-hierarchy`
 - `inline-completion`
+- `folding-ranges`
 
 ## Debugger configuration
 

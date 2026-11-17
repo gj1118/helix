@@ -406,6 +406,9 @@
 | `restore_change` | Restore the changes touched by the selections from the diff base (HEAD) |  |
 | `rotate_selections_first` | Make the first selection your primary one |  |
 | `rotate_selections_last` | Make the last selection your primary one |  |
-| `fold` | Fold text objects | normal: `` Zf ``, `` zf ``, select: `` Zf ``, `` zf `` |
-| `unfold` | Unfold text objects | normal: `` ZF ``, `` zF ``, select: `` ZF ``, `` zF `` |
+| `fold` | Fold the text object under the cursor (else the language server's folding range, else the indented block) | normal: `` Zf ``, `` zf ``, select: `` Zf ``, `` zf `` |
+| `unfold` | Unfold the folds under the cursor | normal: `` ZF ``, `` zF ``, select: `` ZF ``, `` zF `` |
 | `toggle_fold` | Toggle fold for the text object at the primary cursor | normal: `` Z<A-f> ``, `` z<A-f> ``, select: `` Z<A-f> ``, `` z<A-f> `` |
+| `fold_all` | Fold every text object of the document (else every folding range, else every indented block) | normal: `` ZM ``, `` zM ``, select: `` ZM ``, `` zM `` |
+| `unfold_all` | Unfold everything | normal: `` ZR ``, `` zR ``, select: `` ZR ``, `` zR `` |
+| `fold_indent` | Fold the block of more indented lines the cursor is in | normal: `` Zi ``, `` zi ``, select: `` Zi ``, `` zi `` |

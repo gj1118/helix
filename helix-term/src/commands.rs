@@ -784,9 +784,12 @@ impl MappableCommand {
         restore_change, "Restore the changes touched by the selections from the diff base (HEAD)",
         rotate_selections_first, "Make the first selection your primary one",
         rotate_selections_last, "Make the last selection your primary one",
-        fold, "Fold text objects",
-        unfold, "Unfold text objects",
+        fold, "Fold the text object under the cursor (else the language server's folding range, else the indented block)",
+        unfold, "Unfold the folds under the cursor",
         toggle_fold, "Toggle fold for the text object at the primary cursor",
+        fold_all, "Fold every text object of the document (else every folding range, else every indented block)",
+        unfold_all, "Unfold everything",
+        fold_indent, "Fold the block of more indented lines the cursor is in",
     );
 }
 
@@ -9501,12 +9504,27 @@ fn lsp_or_syntax_workspace_symbol_picker(cx: &mut Context) {
 }
 
 fn fold(cx: &mut Context) {
-    let command: MappableCommand = ":fold --all".parse().unwrap();
+    let command: MappableCommand = ":fold --all --auto".parse().unwrap();
     command.execute(cx);
 }
 
 fn unfold(cx: &mut Context) {
-    let command: MappableCommand = ":unfold --all".parse().unwrap();
+    let command: MappableCommand = ":unfold --auto".parse().unwrap();
+    command.execute(cx);
+}
+
+fn fold_all(cx: &mut Context) {
+    let command: MappableCommand = ":fold --all --document --auto".parse().unwrap();
+    command.execute(cx);
+}
+
+fn unfold_all(cx: &mut Context) {
+    let command: MappableCommand = ":unfold --auto --document --recursive".parse().unwrap();
+    command.execute(cx);
+}
+
+fn fold_indent(cx: &mut Context) {
+    let command: MappableCommand = ":fold --indent".parse().unwrap();
     command.execute(cx);
 }
 

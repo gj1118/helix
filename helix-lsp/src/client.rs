@@ -457,6 +457,10 @@ impl Client {
                 capabilities.inline_completion_provider,
                 Some(OneOf::Left(true) | OneOf::Right(_))
             ),
+            LanguageServerFeature::FoldingRanges => !matches!(
+                capabilities.folding_range_provider,
+                None | Some(lsp::FoldingRangeProviderCapability::Simple(false))
+            ),
         }
     }
 
@@ -857,6 +861,12 @@ impl Client {
                     document_link: Some(lsp::DocumentLinkClientCapabilities {
                         dynamic_registration: Some(false),
                         tooltip_support: Some(false),
+                    }),
+                    folding_range: Some(lsp::FoldingRangeClientCapabilities {
+                        dynamic_registration: Some(false),
+                        // folds are whole lines
+                        line_folding_only: Some(true),
+                        ..Default::default()
                     }),
                     call_hierarchy: Some(lsp::DynamicRegistrationClientCapabilities {
                         dynamic_registration: Some(false),
@@ -1450,6 +1460,21 @@ impl Client {
         };
 
         Some(self.call::<lsp::request::DocumentLinkRequest>(params))
+    }
+
+    pub fn text_document_folding_range(
+        &self,
+        text_document: lsp::TextDocumentIdentifier,
+    ) -> Option<impl Future<Output = Result<Option<Vec<lsp::FoldingRange>>>>> {
+        if !self.supports_feature(LanguageServerFeature::FoldingRanges) {
+            return None;
+        }
+        let params = lsp::FoldingRangeParams {
+            text_document,
+            work_done_progress_params: lsp::WorkDoneProgressParams::default(),
+            partial_result_params: lsp::PartialResultParams::default(),
+        };
+        Some(self.call::<lsp::request::FoldingRangeRequest>(params))
     }
 
     pub fn resolve_document_link(
