@@ -1338,6 +1338,19 @@ every key after an `Esc ]` or `Esc P` that isn't a terminal's reply: Esc then `]
 `P`, read together (a busy moment, a slow SSH connection) used to freeze the keyboard until a
 terminator the keyboard never sends. They are keys again (`Alt-]`, `Alt-P`, then the rest).
 
+## Highlight on Yank
+
+Yanked text flashes for a moment (200 ms), like Neovim's `vim.hl.on_yank`, so you see what
+went into the register; an edit ends it at once. Set how long in milliseconds, or turn it off
+with `0`:
+
+```toml
+[editor]
+yank-highlight = 200
+```
+
+The theme key is `ui.highlight.yank` (falling back to `ui.highlight`, then `ui.selection`).
+
 ## Persistent Undo
 
 Undo history that survives closing a file and quitting Helix. Saving a file also writes its
@@ -1421,11 +1434,20 @@ Neovim's `:edit https://...`. Edit it freely; `:write <path>` keeps it. See
 - `fold_all` (`z M`) - Fold everything in the document
 - `unfold_all` (`z R`) - Unfold everything
 
-**On the screen:** a closed fold is the line it hangs from, on the fold's background, ending
-with `▸ 12 lines · function`. The **fold column** (the `folds` gutter, next to the text by
-default) shows `▸` on closed folds and `▾` where a block starts: click `▸` (or the fold's
-label) to open a fold, `▾` to fold the block. Where no text object covers the cursor, `z f`
-folds the selected lines, or the indented block around the cursor. Moving the cursor into a fold (a search, `g` to a line) opens it too.
+`:fold` and `:unfold` without arguments do what `z f` and `z o` do (with `--document`, what
+`z M` and `z R` do); name text objects (`:fold function comment`) or pass `--all` to choose.
+
+**On the screen:** a closed fold is the line it hangs from, on the fold's background
+(`ui.virtual.fold-decoration`), ending with `▸ 12 lines · function`. The **fold column**
+(the `folds` gutter, next to the text by default) shows `▸` on closed folds and `▾` where a
+block starts (`ui.gutter.fold`, `ui.gutter.foldable`): click `▸` or the fold's label to open
+a fold, `▾` to fold the block. A `[editor.gutters] layout` of your own needs `"folds"` in
+it for the column. Moving the cursor into a fold (a search, `g` to a line) opens it too.
+
+**Where no text object covers the cursor** (a Go `import ( … )` block, a Rust `use` list, a
+JSON array), `z f`, `z a` and `:fold` fold the selected lines when the selection spans
+several, else the block of more indented lines around the cursor, in any language and
+without a language server.
 
 Languages without tree-sitter text objects (plain text, YAML, config files) fold too: `z f` and
 `z M` use the language server's folding ranges (the `folding-ranges` feature) when it has them,
