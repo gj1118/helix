@@ -54,6 +54,42 @@ impl GutterType {
     }
 }
 
+/// A plugin's gutter column (`buffer:set_gutter`): the text of its cell on each line, on the
+/// first row of a wrapped line.
+pub fn plugin_gutter<'doc>(
+    gutter: &'doc crate::document::PluginGutter,
+    theme: &Theme,
+) -> GutterFn<'doc> {
+    let cells: Vec<(usize, &str, Style)> = gutter
+        .cells
+        .iter()
+        .map(|cell| {
+            let base = cell
+                .scope
+                .as_deref()
+                .map(|scope| theme.get(scope))
+                .unwrap_or_default();
+            (cell.line, cell.text.as_str(), base.patch(cell.style))
+        })
+        .collect();
+    let width = gutter.width;
+    Box::new(move |line, _selected, first_visual_line, out| {
+        if !first_visual_line {
+            return None;
+        }
+        let index = cells.partition_point(|(cell_line, ..)| *cell_line < line);
+        let (cell_line, text, style) = cells.get(index)?;
+        if *cell_line != line {
+            return None;
+        }
+        // padded to the width (the text fits in it)
+        let used = helix_core::unicode::width::UnicodeWidthStr::width(*text);
+        out.push_str(text);
+        out.extend(std::iter::repeat_n(' ', width.saturating_sub(used)));
+        Some(*style)
+    })
+}
+
 pub fn diagnostic<'doc>(
     doc: &'doc Document,
     _view: &View,

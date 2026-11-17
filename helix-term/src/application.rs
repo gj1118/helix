@@ -663,6 +663,8 @@ impl Application {
 
     async fn render(&mut self) {
         self.handle_plugin_events();
+        // (a window opened since the plugins' bar last changed gets it)
+        self.editor.sync_window_bars();
         self.apply_plugin_keymaps();
 
         if self.compositor.full_redraw {

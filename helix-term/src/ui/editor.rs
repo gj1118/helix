@@ -331,8 +331,17 @@ impl EditorView {
         let text_annotations = view.text_annotations(doc, Some(theme));
         let mut decorations = DecorationManager::default();
 
+        if view.bar {
+            Self::render_window_bar(editor, doc, view, area.with_height(1), surface, is_focused);
+        }
         if config.breadcrumb.enable {
-            Self::render_breadcrumb(editor, doc, view, area.with_height(1), surface);
+            Self::render_breadcrumb(
+                editor,
+                doc,
+                view,
+                area.clip_top(view.bar_offset()).with_height(1),
+                surface,
+            );
         }
 
         if !(is_focused && self.terminal_focused) {
@@ -1678,6 +1687,103 @@ impl EditorView {
     }
 
     #[allow(clippy::too_many_lines)]
+    /// The plugins' bar at the top of a window (`helix.winbar`): its segments on the left,
+    /// in the center and on the right, with the window's buffer filled in.
+    pub fn render_window_bar(
+        editor: &Editor,
+        doc: &Document,
+        view: &View,
+        viewport: Rect,
+        surface: &mut Surface,
+        is_focused: bool,
+    ) {
+        use helix_view::editor::SegmentPosition;
+        let theme = &editor.theme;
+        let base = if is_focused {
+            theme
+                .try_get_exact("ui.winbar")
+                .unwrap_or_else(|| theme.get("ui.statusline"))
+        } else {
+            theme
+                .try_get_exact("ui.winbar.inactive")
+                .unwrap_or_else(|| theme.get("ui.statusline.inactive"))
+        };
+        surface.clear_with(viewport, base);
+
+        let name = doc
+            .path()
+            .and_then(|path| path.file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| helix_view::document::SCRATCH_BUFFER_NAME.to_string());
+        let path = doc
+            .relative_path()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_else(|| helix_view::document::SCRATCH_BUFFER_NAME.to_string());
+        let modified = if doc.is_modified() { "[+]" } else { "" };
+        let language = doc.language_name().unwrap_or("text");
+        let fill = |text: &str| {
+            text.replace("{name}", &name)
+                .replace("{path}", &path)
+                .replace("{modified}", modified)
+                .replace("{language}", language)
+        };
+        // (text, style) of each side, a space between segments
+        let mut sides: [Vec<(String, Style)>; 3] = Default::default();
+        for segment in editor.window_bar_segments(view) {
+            let style = base
+                .patch(
+                    segment
+                        .scope
+                        .as_deref()
+                        .map(|scope| theme.get(scope))
+                        .unwrap_or_default(),
+                )
+                .patch(segment.style);
+            let side = match segment.position {
+                SegmentPosition::Left => 0,
+                SegmentPosition::Center => 1,
+                SegmentPosition::Right => 2,
+            };
+            sides[side].push((fill(&segment.text), style));
+        }
+        let width = |side: &[(String, Style)]| -> u16 {
+            let text: usize = side
+                .iter()
+                .map(|(text, _)| helix_core::unicode::width::UnicodeWidthStr::width(text.as_str()))
+                .sum();
+            (text + side.len().saturating_sub(1)) as u16
+        };
+        let draw = |surface: &mut Surface, mut x: u16, side: &[(String, Style)]| {
+            for (i, (text, style)) in side.iter().enumerate() {
+                if i > 0 {
+                    x = x.saturating_add(1);
+                }
+                let remaining = viewport.right().saturating_sub(x) as usize;
+                if remaining == 0 {
+                    break;
+                }
+                x = surface
+                    .set_stringn(x, viewport.y, text, remaining, *style)
+                    .0;
+            }
+        };
+        // the right side, then the center, then the left over them: the left one is the
+        // first to read
+        let right = width(&sides[2]);
+        draw(
+            surface,
+            viewport.right().saturating_sub(right).max(viewport.x),
+            &sides[2],
+        );
+        let center = width(&sides[1]);
+        draw(
+            surface,
+            viewport.x + viewport.width.saturating_sub(center) / 2,
+            &sides[1],
+        );
+        draw(surface, viewport.x, &sides[0]);
+    }
+
     pub fn render_breadcrumb(
         editor: &Editor,
         doc: &Document,
@@ -1854,9 +1960,39 @@ impl EditorView {
         let gutter_style_virtual = theme.get("ui.gutter.virtual");
         let gutter_selected_style_virtual = theme.get("ui.gutter.selected.virtual");
 
-        for gutter_type in view.gutters() {
-            let mut gutter = gutter_type.style(editor, doc, view, theme, is_focused);
-            let width = gutter_type.width(view, doc);
+        // The plugins' columns (`buffer:set_gutter`) on either side of the configured ones.
+        let mut plugin_columns: Vec<&helix_view::document::PluginGutter> =
+            doc.plugin_gutters.iter().collect();
+        plugin_columns.sort_by_key(|gutter| gutter.priority);
+        let columns: Vec<(helix_view::gutter::GutterFn, usize)> = plugin_columns
+            .iter()
+            .filter(|gutter| gutter.left)
+            .map(|gutter| {
+                (
+                    helix_view::gutter::plugin_gutter(gutter, theme),
+                    gutter.width,
+                )
+            })
+            .chain(view.gutters().iter().map(|gutter_type| {
+                (
+                    gutter_type.style(editor, doc, view, theme, is_focused),
+                    gutter_type.width(view, doc),
+                )
+            }))
+            .chain(
+                plugin_columns
+                    .iter()
+                    .filter(|gutter| !gutter.left)
+                    .map(|gutter| {
+                        (
+                            helix_view::gutter::plugin_gutter(gutter, theme),
+                            gutter.width,
+                        )
+                    }),
+            )
+            .collect();
+
+        for (mut gutter, width) in columns {
             // avoid lots of small allocations by reusing a text buffer for each line
             let mut text = String::with_capacity(width);
             let cursors = cursors.clone();

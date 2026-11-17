@@ -715,6 +715,7 @@ impl LuaEngine {
         api::register_diff_api(&lua, &helix)?;
         api::register_fs_api(&lua, &helix)?;
         api::register_statusline_api(&lua, &helix)?;
+        api::register_winbar_api(&lua, &helix)?;
         api::register_process_api(&lua, &helix)?;
         api::register_log_api(&lua, &helix)?;
         api::register_completion_api(&lua, &helix)?;

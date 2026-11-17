@@ -329,6 +329,30 @@ Buffer methods (they raise an error once the buffer is closed):
   (`line` 1-based, `text` one cell wide, and a [style](#styles)); drawn in the diagnostics
   column (the `diagnostics` gutter) on lines without a diagnostic. Replaces the plugin's
   signs of the buffer; `set_signs({})` clears them (`ui`).
+- `set_gutter(id, column)`: a gutter column of the plugin for this buffer, drawn in every
+  window showing it: `{ width, position, priority, cells = { { line, text, ... } } }`.
+  `width` is 1 to 20 cells (default 1); `position` `"left"` (default: before the configured
+  [gutters](./editor.md#editorgutters-section)) or `"right"` (after them, next to the
+  text); columns of a side are ordered by `priority` (lower first). Each cell has a `line`
+  (1-based), a `text` (cut to the width) and a [style](#styles); the cells move with their
+  lines as the buffer is edited. Set again with the same `id` to change it, `nil` to remove
+  it (`ui`). Blame annotations, coverage marks, test results:
+
+  ```lua
+  local buffer = helix.buffer.get_current()
+  buffer:set_gutter("coverage", {
+      width = 2,
+      cells = { { line = 1, text = "✔", fg = "green" }, { line = 2, text = "✘", style = "error" } },
+  })
+  local columns = buffer:get_gutters()
+  assert(type(columns) == "table" and columns[1].id == "coverage")
+  assert(math.type(columns[1].width) == "integer" and columns[1].width == 2)
+  assert(columns[1].cells[2].line == 2 and columns[1].cells[2].text == "✘")
+  buffer:set_gutter("coverage", nil)
+  assert(#buffer:get_gutters() == 0)
+  ```
+- `get_gutters()`: the gutter columns of all plugins on this buffer: `{ { plugin, id,
+  width, position, priority, cells = { { line, text } } } }` (`read`).
 - `set_highlights(list)`: ranges the plugin highlights with a theme key: `{ { start_line,
   start_col, end_line, end_col, style } }` (positions like `delete`; without columns, whole
   lines) or `{ { from, to, style } }` (char indices); `style` is a theme key (`"warning"`,
@@ -576,6 +600,38 @@ helix.on("buffer_post_save", function()
     assert(type(time) == "string" and time:match("^%d%d:%d%d$"))
     helix.statusline.set("changes", { text = "saved " .. time, fg = "green" })
 end)
+```
+
+### `helix.winbar`
+
+A bar at the top of windows (above the breadcrumbs), like Neovim's `winbar`: plugins'
+segments on its left, center and right, drawn by Helix every frame. A window has the bar
+while a segment shows in it.
+
+- `set(id, { text, position, window, buffer, priority, style, fg, bg, modifiers })`: shows
+  (or changes) the plugin's segment `id`: `position` is `"left"` (default), `"center"` or
+  `"right"`; `window` limits it to one window, `buffer` to the windows showing a buffer;
+  segments of a side are ordered by `priority` (lower first), a space between them. In
+  `text`, `{name}` (the file's name), `{path}` (relative to the working directory),
+  `{modified}` (`[+]` when modified) and `{language}` are filled in for each window. The
+  bar is styled with `ui.winbar` (`ui.winbar.inactive` in the windows without focus),
+  the status line's styles when the theme has none (`ui`).
+- `remove(id)`: removes the segment, returns whether there was one; `clear()`: removes all
+  of the plugin's (`ui`).
+- `list()`: the segments of all plugins: `{ { plugin, id, text, position, priority } }`
+  (`read`).
+
+```lua
+-- the file of each window, and the language on the right of the focused one's
+helix.winbar.set("file", { text = "{path}{modified}", style = "ui.text" })
+helix.winbar.set("language", {
+    text = "{language}",
+    position = "right",
+    window = helix.window.get_current(),
+})
+local segments = helix.winbar.list()
+assert(type(segments) == "table" and #segments >= 2)
+assert(segments[1].position == "left" and math.type(segments[1].priority) == "integer")
 ```
 
 ### Changes

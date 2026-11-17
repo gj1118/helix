@@ -17,6 +17,7 @@ pub mod statusline;
 pub(crate) mod style;
 pub mod treesitter;
 pub mod ui;
+pub mod winbar;
 pub mod window;
 
 // Re-exports for convenience
@@ -32,4 +33,5 @@ pub use process::register_process_api;
 pub use quickfix::*;
 pub use statusline::*;
 pub use ui::*;
+pub use winbar::*;
 pub use window::*;

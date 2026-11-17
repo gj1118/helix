@@ -332,6 +332,8 @@ These scopes are used for theming the editor interface:
 | `ui.linenr.normal`, `ui.linenr.insert`, `ui.linenr.select` | Line numbers in each mode, used instead of `ui.linenr` and `ui.linenr.selected` with [`gutters.line-numbers.same-color`](./editor.md#editorguttersline-numbers-section). Without them, `ui.linenr` |
 | `ui.statusline`                   | Statusline                                                                                     |
 | `ui.statusline.inactive`          | Statusline (unfocused document)                                                                |
+| `ui.winbar`                       | The bar of plugins at the top of windows (`helix.winbar`); falls back to `ui.statusline`       |
+| `ui.winbar.inactive`              | That bar in windows without the focus; falls back to `ui.statusline.inactive`                  |
 | `ui.statusline.normal`            | Statusline mode during normal mode ([only if `editor.color-modes` is enabled][editor-section]) |
 | `ui.statusline.insert`            | Statusline mode during insert mode ([only if `editor.color-modes` is enabled][editor-section]) |
 | `ui.statusline.select`            | Statusline mode during select mode ([only if `editor.color-modes` is enabled][editor-section]) |

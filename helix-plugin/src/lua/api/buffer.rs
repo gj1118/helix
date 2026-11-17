@@ -619,6 +619,67 @@ impl LuaUserData for LuaBuffer {
             })
         });
 
+        // A gutter column of the plugin: buffer:set_gutter(id, { width, position, priority,
+        // cells = { { line, text, style... }, ... } }), or nil to remove it
+        methods.add_method(
+            "set_gutter",
+            |lua, this, (id, spec): (String, Option<LuaTable>)| {
+                require(lua, Permission::Ui, "buffer:set_gutter")?;
+                let plugin = crate::lua::current_plugin_name().to_string();
+                let gutter = spec
+                    .map(|spec| gutter_from_lua(lua, &plugin, &id, &spec))
+                    .transpose()?;
+                crate::lua::with_editor(|editor| {
+                    let doc = editor.document_mut(this.document_id).ok_or_else(|| {
+                        LuaError::RuntimeError(format!(
+                            "Buffer {:?} no longer exists",
+                            this.document_id
+                        ))
+                    })?;
+                    let index = doc
+                        .plugin_gutters
+                        .iter()
+                        .position(|g| g.plugin == plugin && g.id == id);
+                    match (index, gutter) {
+                        (Some(index), Some(gutter)) => doc.plugin_gutters[index] = gutter,
+                        (None, Some(gutter)) => doc.plugin_gutters.push(gutter),
+                        (Some(index), None) => {
+                            doc.plugin_gutters.remove(index);
+                        }
+                        (None, None) => {}
+                    }
+                    helix_event::request_redraw();
+                    Ok(())
+                })
+            },
+        );
+
+        // The gutter columns of all plugins on this buffer: { { plugin, id, width, position,
+        // priority, cells = { { line, text } } } }
+        methods.add_method("get_gutters", |lua, this, ()| {
+            require(lua, Permission::Read, "buffer:get_gutters")?;
+            let gutters = with_doc(this.document_id, |doc| Ok(doc.plugin_gutters.clone()))?;
+            let list = lua.create_table_with_capacity(gutters.len(), 0)?;
+            for gutter in gutters {
+                let entry = lua.create_table()?;
+                entry.set("plugin", gutter.plugin)?;
+                entry.set("id", gutter.id)?;
+                entry.set("width", gutter.width)?;
+                entry.set("position", if gutter.left { "left" } else { "right" })?;
+                entry.set("priority", gutter.priority)?;
+                let cells = lua.create_table_with_capacity(gutter.cells.len(), 0)?;
+                for cell in gutter.cells {
+                    let item = lua.create_table_with_capacity(0, 2)?;
+                    item.set("line", cell.line + 1)?;
+                    item.set("text", cell.text)?;
+                    cells.push(item)?;
+                }
+                entry.set("cells", cells)?;
+                list.push(entry)?;
+            }
+            Ok(list)
+        });
+
         // Highlights of the plugin: { {start_line, start_col, end_line, end_col, style}, ...}
         // (positions like `delete`) or { {from, to, style}, ... } (char indices); `style` is a
         // theme key. Replaces the plugin's highlights of this buffer; `{}` clears them.
@@ -993,6 +1054,83 @@ impl LuaUserData for LuaBuffer {
             Ok(format!("{:?}", this.document_id))
         });
     }
+}
+
+/// The widest gutter column of a plugin.
+const MAX_GUTTER_WIDTH: usize = 20;
+
+/// The text cut to `width` cells (whole graphemes).
+fn fit_width(text: &str, width: usize) -> String {
+    use helix_core::unicode::{segmentation::UnicodeSegmentation, width::UnicodeWidthStr};
+    let mut used = 0;
+    let mut fitted = String::new();
+    for grapheme in text.graphemes(true) {
+        let cells = grapheme.width();
+        if used + cells > width {
+            break;
+        }
+        used += cells;
+        fitted.push_str(grapheme);
+    }
+    fitted
+}
+
+/// A gutter column from its Lua spec (`buffer:set_gutter`).
+fn gutter_from_lua(
+    lua: &Lua,
+    plugin: &str,
+    id: &str,
+    spec: &LuaTable,
+) -> LuaResult<helix_view::document::PluginGutter> {
+    let width: usize = spec.raw_get::<Option<usize>>("width")?.unwrap_or(1);
+    if !(1..=MAX_GUTTER_WIDTH).contains(&width) {
+        return Err(LuaError::RuntimeError(format!(
+            "A gutter column is 1 to {MAX_GUTTER_WIDTH} cells wide (got {width})"
+        )));
+    }
+    let left = match spec.raw_get::<Option<String>>("position")?.as_deref() {
+        None | Some("left") => true,
+        Some("right") => false,
+        Some(other) => {
+            return Err(LuaError::RuntimeError(format!(
+                "Invalid position '{other}' (expected left or right)"
+            )))
+        }
+    };
+    let priority: i64 = spec.raw_get::<Option<i64>>("priority")?.unwrap_or(0);
+    let mut cells = Vec::new();
+    if let Some(list) = spec.raw_get::<Option<LuaTable>>("cells")? {
+        for i in 1..=list.raw_len() {
+            let item: LuaTable = list.raw_get(i)?;
+            let line: usize = item.raw_get::<Option<usize>>("line")?.ok_or_else(|| {
+                LuaError::RuntimeError("A gutter cell needs a `line` (1-based)".into())
+            })?;
+            let text: String = item.raw_get::<Option<String>>("text")?.unwrap_or_default();
+            if text.contains(['\n', '\r', '\t']) {
+                return Err(LuaError::RuntimeError(
+                    "A gutter cell is text of one line, without tabs".into(),
+                ));
+            }
+            let (scope, style) = super::style::read_style(lua, &item)?;
+            cells.push(helix_view::document::PluginGutterCell {
+                line: line.saturating_sub(1),
+                text: fit_width(&text, width),
+                scope,
+                style,
+            });
+        }
+    }
+    // by line (the first cell of a line wins)
+    cells.sort_by_key(|cell| cell.line);
+    cells.dedup_by_key(|cell| cell.line);
+    Ok(helix_view::document::PluginGutter {
+        plugin: plugin.to_string(),
+        id: id.to_string(),
+        width,
+        left,
+        priority,
+        cells,
+    })
 }
 
 /// How many matches `find_all` returns without a `max`, and at most.

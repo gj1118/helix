@@ -206,7 +206,19 @@ fn render_connector(editor: &Editor, index: usize, session: &DiffSession, surfac
     if width < 2 {
         return;
     }
-    let area = Rect::new(right_view.area.x, right_inner.y, width, right_inner.height);
+    // after the plugins' columns on the left, where the connector's gutter is
+    let left_columns: u16 = right_doc
+        .plugin_gutters
+        .iter()
+        .filter(|gutter| gutter.left)
+        .map(|gutter| gutter.width as u16)
+        .sum();
+    let area = Rect::new(
+        right_view.area.x + left_columns,
+        right_inner.y,
+        width,
+        right_inner.height,
+    );
     let styles = DiffStyles::new(&editor.theme);
     // the left side's rows, in the connector's rows
     let shift = left_inner.y as f32 - right_inner.y as f32;

@@ -438,7 +438,9 @@ permissions = ["edit", "commands"]  # what it may do beyond looking ("read") and
   suggested edit, taken change by change with `>>`).
 - **Drawing** - plugins set data and Helix draws it every frame, without running plugin code:
   status line segments (`helix.statusline.set("branch", { text = "main", position = "left" })`,
-  for every buffer or one), gutter signs, highlights of ranges with theme keys, explorer row
+  for every buffer or one), a bar at the top of windows (`helix.winbar.set("file",
+  { text = "{path}{modified}" })`), gutter columns of their own (`buffer:set_gutter("blame",
+  { width = 8, cells = {...} })`), gutter signs, highlights of ranges with theme keys, explorer row
   texts, and theme styles (`helix.ui.set_style("ui.statusline", { bg = "#202020" })`, kept
   over theme changes).
 - **Background work** - timers (`helix.defer`, `helix.every`), programs whose output comes

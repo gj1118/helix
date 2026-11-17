@@ -1859,3 +1859,56 @@ async fn plugin_hooks_cancel_and_plugins_hear_each_other() -> anyhow::Result<()>
     );
     Ok(())
 }
+
+/// A plugin's gutter column and window bar are drawn: the bar on the top row of the window
+/// (the file's name filled in), the column's cells before the line numbers.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plugin_draws_a_gutter_column_and_a_window_bar() -> anyhow::Result<()> {
+    let init = r#"
+        helix.on("ready", function()
+            local buffer = helix.buffer.get_current()
+            buffer:set_gutter("blame", { width = 3, cells = { { line = 2, text = "ab" } } })
+            helix.winbar.set("name", { text = "<{name}{modified}>" })
+            helix.winbar.set("right", { text = "R-{language}", position = "right" })
+        end)
+    "#;
+    let dir = plugin_dir(&[("bars", init, None)])?;
+    let config = plugin_config(
+        dir.path(),
+        r#"
+        [[plugins]]
+        name = "bars"
+        permissions = ["edit"]
+        "#,
+    )?;
+    let file = helpers::temp_file_with_contents("first\nsecond\nthird\n")?;
+    let name = file
+        .path()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let mut app = helpers::AppBuilder::new()
+        .with_file(file.path(), None)
+        .with_config(config)
+        .build()?;
+    assert!(app.plugins_enabled());
+    send_keys(&mut app, "").await?;
+    // a change: `{modified}` shows
+    send_keys(&mut app, "ix<esc>").await?;
+
+    let rows = app.rendered_rows();
+    let bar = rows
+        .iter()
+        .position(|row| row.contains(&format!("<{name}[+]>")));
+    let bar = bar.unwrap_or_else(|| panic!("no bar: {rows:#?}"));
+    assert!(rows[bar].trim_end().ends_with("R-text"), "{}", rows[bar]);
+    // the text starts on the row under the bar; the column's cell on the second line,
+    // before its number
+    assert!(rows[bar + 1].contains("xfirst"), "{rows:#?}");
+    assert!(rows[bar + 2].starts_with("ab "), "{:?}", rows[bar + 2]);
+    let second: Vec<&str> = rows[bar + 2].split_whitespace().collect();
+    assert_eq!(second, vec!["ab", "2", "second"]);
+    assert!(!rows[bar + 1].contains("ab"), "{:?}", rows[bar + 1]);
+    Ok(())
+}

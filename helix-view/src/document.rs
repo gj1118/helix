@@ -139,6 +139,35 @@ pub struct PluginSign {
     pub style: crate::graphics::Style,
 }
 
+/// A gutter column of a plugin (`buffer:set_gutter`): drawn before or after the configured
+/// gutters of every window showing the buffer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PluginGutter {
+    pub plugin: String,
+    /// The plugin's name for it (set again to change it).
+    pub id: String,
+    /// In cells, 1 at least.
+    pub width: usize,
+    /// Before the configured gutters (`false`: after them, next to the text).
+    pub left: bool,
+    /// Lower first among the columns of the same side.
+    pub priority: i64,
+    /// By line.
+    pub cells: Vec<PluginGutterCell>,
+}
+
+/// What a plugin's gutter column shows on a line.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PluginGutterCell {
+    /// The line (0-based).
+    pub line: usize,
+    /// At most the column's width.
+    pub text: String,
+    /// A theme key, under `style`.
+    pub scope: Option<String>,
+    pub style: crate::graphics::Style,
+}
+
 /// A range a plugin highlights with a theme key (`buffer:set_highlights`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PluginHighlight {
@@ -261,6 +290,8 @@ pub struct Document {
     /// Current indent style.
     /// Gutter signs of plugins, by line.
     pub plugin_signs: Vec<PluginSign>,
+    /// Gutter columns of plugins, in the order they are drawn on each side.
+    pub plugin_gutters: Vec<PluginGutter>,
     /// Highlights of plugins.
     pub plugin_highlights: Vec<PluginHighlight>,
     pub indent_style: IndentStyle,
@@ -1129,6 +1160,7 @@ impl Document {
             inlay_hints_oudated: false,
             view_data: Default::default(),
             plugin_signs: Vec::new(),
+            plugin_gutters: Vec::new(),
             plugin_highlights: Vec::new(),
             indent_style: DEFAULT_INDENT,
             editor_config: EditorConfig::default(),
@@ -2067,6 +2099,24 @@ impl Document {
                 sign.line = new_text.char_to_line(mapped);
             }
             self.plugin_signs.sort_by_key(|sign| sign.line);
+        }
+        if self
+            .plugin_gutters
+            .iter()
+            .any(|gutter| !gutter.cells.is_empty())
+        {
+            let old_lines = old_text.len_lines();
+            let new_text = self.text.slice(..);
+            for gutter in &mut self.plugin_gutters {
+                for cell in &mut gutter.cells {
+                    let start = old_text.line_to_char(cell.line.min(old_lines.saturating_sub(1)));
+                    let mapped = changes
+                        .map_pos(start, Assoc::After)
+                        .min(new_text.len_chars());
+                    cell.line = new_text.char_to_line(mapped);
+                }
+                gutter.cells.sort_by_key(|cell| cell.line);
+            }
         }
     }
 
@@ -3059,6 +3109,11 @@ impl Document {
     }
 
     #[inline]
+    /// The width of the plugins' gutter columns.
+    pub fn plugin_gutters_width(&self) -> usize {
+        self.plugin_gutters.iter().map(|gutter| gutter.width).sum()
+    }
+
     pub fn diagnostics(&self) -> &[Diagnostic] {
         &self.diagnostics
     }

@@ -2668,6 +2668,8 @@ pub struct Editor {
     pub plugin_keymaps: PluginKeymaps,
     /// Status line segments of plugins (`helix.statusline`).
     pub plugin_statusline: Vec<StatusSegment>,
+    /// Segments of plugins in the bar at the top of windows (`helix.winbar`).
+    pub plugin_window_bar: Vec<BarSegment>,
     /// Theme styles plugins set (`helix.ui.set_style`), kept over theme changes.
     pub plugin_theme_overrides: Vec<(String, Style)>,
     /// The newest settings sent to the application (`:set`) and not applied yet: the next
@@ -2765,6 +2767,34 @@ pub struct StatusSegment {
     pub document: Option<DocumentId>,
     /// Lower first.
     pub priority: i64,
+}
+
+/// A plugin's text in the bar at the top of windows (`helix.winbar`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct BarSegment {
+    pub plugin: String,
+    /// The plugin's name for it (set again to change it).
+    pub id: String,
+    /// With `{name}`, `{path}`, `{modified}` and `{language}` filled in for each window.
+    pub text: String,
+    /// A theme key, under `style`.
+    pub scope: Option<String>,
+    pub style: Style,
+    pub position: SegmentPosition,
+    /// Only in windows showing this buffer.
+    pub document: Option<DocumentId>,
+    /// Only in this window.
+    pub window: Option<ViewId>,
+    /// Lower first.
+    pub priority: i64,
+}
+
+impl BarSegment {
+    /// Whether it shows in `view`.
+    pub fn shows_in(&self, view: &View) -> bool {
+        self.window.is_none_or(|window| window == view.id)
+            && self.document.is_none_or(|document| document == view.doc)
+    }
 }
 
 /// Key bindings set by plugins. The application merges them over the configured keys each
@@ -2943,6 +2973,7 @@ impl Editor {
             plugin_keymaps: PluginKeymaps::default(),
             pending_config: None,
             plugin_statusline: Vec::new(),
+            plugin_window_bar: Vec::new(),
             plugin_theme_overrides: Vec::new(),
             kitty_multi_cursor_support: false,
         }
@@ -4222,6 +4253,27 @@ impl Editor {
             let view = self.tree.get_mut(view_id);
             doc.append_changes_to_history(view);
         }
+    }
+
+    /// Gives each window (of every tab) the top row for the plugins' bar when a segment
+    /// shows in it, or takes it back. Run when the segments change and before each frame
+    /// (a window opened since gets its bar).
+    pub fn sync_window_bars(&mut self) {
+        let segments = &self.plugin_window_bar;
+        for (view, _) in self.tree.all_views_mut() {
+            view.bar = segments.iter().any(|segment| segment.shows_in(view));
+        }
+    }
+
+    /// The plugins' segments showing in `view`, ordered by priority.
+    pub fn window_bar_segments(&self, view: &View) -> Vec<&BarSegment> {
+        let mut segments: Vec<&BarSegment> = self
+            .plugin_window_bar
+            .iter()
+            .filter(|segment| segment.shows_in(view))
+            .collect();
+        segments.sort_by_key(|segment| segment.priority);
+        segments
     }
 
     /// Whether the command `name` may run (see [`Editor::command_hook`]).

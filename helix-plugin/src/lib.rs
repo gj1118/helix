@@ -133,6 +133,8 @@ impl PluginManager {
         // drew: they set it again as they load.
         editor.plugin_keymaps.clear();
         editor.plugin_statusline.clear();
+        editor.plugin_window_bar.clear();
+        editor.sync_window_bars();
         editor.plugin_explorer.decorations.clear();
         editor.plugin_actions.clear();
         editor.plugin_completion_sources.clear();
@@ -151,6 +153,7 @@ impl PluginManager {
         for doc in editor.documents.values_mut() {
             doc.clear_plugin_diagnostics();
             doc.plugin_signs.clear();
+            doc.plugin_gutters.clear();
             doc.plugin_highlights.clear();
             doc.plugin_annotations.clear();
             doc.plugin_panels.clear();

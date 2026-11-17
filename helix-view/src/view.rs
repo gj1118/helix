@@ -168,6 +168,9 @@ pub struct View {
     // left to future work. For now we treat all views as focused and give them
     // each their own handler.
     pub diagnostics_handler: DiagnosticsHandler,
+    /// Whether a bar of plugins (`helix.winbar`) takes the top row (see
+    /// [`crate::Editor::sync_window_bars`]).
+    pub bar: bool,
 }
 
 impl fmt::Debug for View {
@@ -196,6 +199,7 @@ impl View {
             object_selections: Vec::new(),
             gutters,
             diagnostics_handler: DiagnosticsHandler::new(),
+            bar: false,
         }
     }
 
@@ -223,14 +227,14 @@ impl View {
 
     pub fn inner_area(&self, doc: &Document) -> Rect {
         self.area
-            .clip_top(self.breadcrumb_offset(doc))
+            .clip_top(self.bar_offset() + self.breadcrumb_offset(doc))
             .clip_left(self.gutter_offset(doc))
             .clip_bottom(1) // -1 for statusline
     }
 
     pub fn inner_height(&self, doc: &Document) -> usize {
         self.area
-            .clip_top(self.breadcrumb_offset(doc))
+            .clip_top(self.bar_offset() + self.breadcrumb_offset(doc))
             .clip_bottom(1) // -1 for statusline
             .height
             .into()
@@ -250,12 +254,18 @@ impl View {
             .layout
             .iter()
             .map(|gutter| gutter.width(self, doc) as u16)
-            .sum();
+            .sum::<u16>()
+            .saturating_add(doc.plugin_gutters_width() as u16);
         if total_width < self.area.width {
             total_width
         } else {
             0
         }
+    }
+
+    /// Height in rows taken by the plugins' bar (0 or 1), above the breadcrumb bar.
+    pub fn bar_offset(&self) -> u16 {
+        u16::from(self.bar)
     }
 
     /// Height in rows taken by the breadcrumb bar (0 or 1).

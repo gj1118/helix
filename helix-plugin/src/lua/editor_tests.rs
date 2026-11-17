@@ -2735,3 +2735,117 @@ fn plugins_emit_events_of_their_own_and_hooks_can_say_no() {
         .collect::<Vec<String>>()
     );
 }
+
+#[test]
+fn gutter_columns_and_window_bars_of_plugins() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    run(
+        &engine,
+        &mut editor,
+        r#"
+        local b = helix.buffer.get_current()
+        b:set_text("one\ntwo\nthree\n")
+        b:set_gutter("marks", {
+            width = 2,
+            cells = { { line = 2, text = "●●●", style = "error" }, { line = 1, text = "a" } },
+        })
+        b:set_gutter("right", { position = "right", cells = { { line = 3, text = "r" } } })
+        local ok, err = pcall(b.set_gutter, b, "wide", { width = 21 })
+        assert(not ok and tostring(err):find("1 to 20 cells", 1, true), tostring(err))
+        local ok2, err2 = pcall(b.set_gutter, b, "bad", { position = "top" })
+        assert(not ok2 and tostring(err2):find("Invalid position", 1, true), tostring(err2))
+        local ok3, err3 = pcall(b.set_gutter, b, "nl", { cells = { { line = 1, text = "a\nb" } } })
+        assert(not ok3 and tostring(err3):find("one line", 1, true), tostring(err3))
+
+        helix.winbar.set("file", { text = "{name}{modified}" })
+        helix.winbar.set("lang", { text = "{language}", position = "right", priority = 2 })
+        local listed = helix.winbar.list()
+        assert(#listed == 2 and listed[1].position == "left" and math.type(listed[2].priority) == "integer")
+        local ok4, err4 = pcall(helix.winbar.set, "x", { text = "a\nb" })
+        assert(not ok4 and tostring(err4):find("one line", 1, true), tostring(err4))
+        "#,
+    )
+    .unwrap();
+    {
+        let (view, doc) = helix_view::current_ref!(editor);
+        assert_eq!(doc.plugin_gutters.len(), 2_usize);
+        let marks = &doc.plugin_gutters[0];
+        assert_eq!((marks.width, marks.left), (2_usize, true));
+        // cut to the width, sorted by line
+        let cells: Vec<(usize, &str)> = marks
+            .cells
+            .iter()
+            .map(|cell| (cell.line, cell.text.as_str()))
+            .collect();
+        assert_eq!(cells, vec![(0_usize, "a"), (1, "●●")]);
+        assert_eq!(doc.plugin_gutters_width(), 3_usize);
+        // the bar takes the top row
+        assert!(view.bar);
+        assert_eq!(view.inner_area(doc).y, view.area.y + 1);
+    }
+
+    // a line inserted above: the cells move down with their lines
+    run(
+        &engine,
+        &mut editor,
+        r#"
+        local b = helix.buffer.get_current()
+        b:insert(1, 0, "zero\n")
+        b:set_gutter("right", nil)
+        assert(helix.winbar.remove("file") == true and helix.winbar.remove("file") == false)
+        helix.winbar.clear()
+        "#,
+    )
+    .unwrap();
+    let (view, doc) = helix_view::current_ref!(editor);
+    let lines: Vec<usize> = doc.plugin_gutters[0]
+        .cells
+        .iter()
+        .map(|cell| cell.line)
+        .collect();
+    assert_eq!(lines, vec![1_usize, 2]);
+    assert_eq!(doc.plugin_gutters.len(), 1_usize);
+    assert!(!view.bar);
+    assert_eq!(view.inner_area(doc).y, view.area.y);
+}
+
+#[test]
+fn the_gutter_and_winbar_examples_of_the_book_run() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    let result = result_of(
+        &engine,
+        &mut editor,
+        r#"
+helix.buffer.get_current():set_text("a\nb\nc\n")
+local buffer = helix.buffer.get_current()
+buffer:set_gutter("coverage", {
+    width = 2,
+    cells = { { line = 1, text = "✔", fg = "green" }, { line = 2, text = "✘", style = "error" } },
+})
+local columns = buffer:get_gutters()
+assert(type(columns) == "table" and columns[1].id == "coverage")
+assert(math.type(columns[1].width) == "integer" and columns[1].width == 2)
+assert(columns[1].cells[2].line == 2 and columns[1].cells[2].text == "✘")
+buffer:set_gutter("coverage", nil)
+assert(#buffer:get_gutters() == 0)-- the file of each window, and the language on the right of the focused one's
+helix.winbar.set("file", { text = "{path}{modified}", style = "ui.text" })
+helix.winbar.set("language", {
+    text = "{language}",
+    position = "right",
+    window = helix.window.get_current(),
+})
+local segments = helix.winbar.list()
+assert(type(segments) == "table" and #segments >= 2)
+assert(segments[1].position == "left" and math.type(segments[1].priority) == "integer")
+
+result = "ran"
+        "#,
+    );
+    assert_eq!(result, "ran".to_string());
+}
