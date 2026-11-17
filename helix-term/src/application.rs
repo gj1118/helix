@@ -781,6 +781,11 @@ impl Application {
     where
         S: Stream<Item = std::io::Result<TerminalEvent>> + Unpin,
     {
+        // for integration tests only: a call without any input (`send_keys("")`, to let a
+        // frame pass) is idle once the idle timeout is over, even when nothing else happens:
+        // the last call cleared the timer when it reported idle
+        #[cfg(feature = "integration")]
+        self.editor.reset_idle_timer();
         loop {
             if self.editor.should_close() {
                 return false;
