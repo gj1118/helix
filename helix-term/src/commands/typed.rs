@@ -3492,6 +3492,16 @@ fn fold(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow:
     if args.has_flag("lsp") {
         return fold_lsp(cx, document);
     }
+    // `:fold` alone (no text object named, no `--all`): like `z f`, or `z M` with
+    // `--document`, rather than folding no kind of text object
+    if args.first().is_none() && !args.has_flag("all") && !args.has_flag("selection") {
+        let command = if document {
+            &super::MappableCommand::fold_all
+        } else {
+            &super::MappableCommand::fold
+        };
+        return run_static(cx, command);
+    }
     let auto = args.has_flag("auto");
     let (view, doc) = current!(cx.editor);
 
@@ -3865,6 +3875,23 @@ pub fn fold_textobjects(
 fn unfold(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
+    }
+
+    // `:unfold` alone: like `z o` (`z O` with `--recursive`, `z R` with `--document`), rather
+    // than unfolding no kind of text object
+    if args.first().is_none()
+        && !args.has_flag("all")
+        && !args.has_flag("auto")
+        && !args.has_flag("selection")
+    {
+        let command = if args.has_flag("document") {
+            &super::MappableCommand::unfold_all
+        } else if args.has_flag("recursive") {
+            &super::MappableCommand::unfold_recursive
+        } else {
+            &super::MappableCommand::unfold
+        };
+        return run_static(cx, command);
     }
 
     let (view, doc) = current!(cx.editor);

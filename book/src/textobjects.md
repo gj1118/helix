@@ -75,6 +75,10 @@ and selection: moving over a fold steps past its hidden lines.
 
 (`z c` keeps centering the view, as in Helix: fold with `z f`, `z a` or `z i`.)
 
+`:fold` and `:unfold` without arguments do what `z f` and `z o` do (with `--document`, what
+`z M` and `z R` do); name text objects (`:fold function comment`) or pass `--all` to choose
+what to fold.
+
 ### On the screen
 
 A closed fold is one line: the line it hangs from (the first line of the function, the

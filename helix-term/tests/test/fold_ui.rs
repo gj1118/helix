@@ -164,3 +164,58 @@ async fn z_o_z_a_and_z_capital_o_work_anywhere_on_the_line() -> anyhow::Result<(
     assert_eq!(folds(&app), 0_usize);
     Ok(())
 }
+
+/// `:fold` and `:unfold` without arguments do what `z f` and `z o` do, rather than saying
+/// "The list of text objects is empty."; with `--document`, what `z M` and `z R` do.
+#[tokio::test(flavor = "multi_thread")]
+async fn fold_and_unfold_without_arguments_work_like_their_keys() -> anyhow::Result<()> {
+    let (mut app, _file) = app()?;
+    send_keys(&mut app, "").await;
+
+    // on `if a`: its block
+    send_keys(&mut app, "j:fold<ret>").await;
+    assert_eq!(folds(&app), 1_usize);
+    assert!(app
+        .editor
+        .get_status()
+        .is_none_or(|(_, severity)| { *severity != helix_view::editor::Severity::Error }));
+    send_keys(&mut app, ":unfold<ret>").await;
+    assert_eq!(folds(&app), 0_usize);
+
+    // every block, then everything open again
+    send_keys(&mut app, ":fold --document<ret>").await;
+    assert_eq!(folds(&app), 2_usize);
+    send_keys(&mut app, ":unfold -d<ret>").await;
+    assert_eq!(folds(&app), 0_usize);
+    Ok(())
+}
+
+/// The same in a language with text objects: `:fold` folds the function at the cursor.
+#[tokio::test(flavor = "multi_thread")]
+async fn fold_without_arguments_folds_the_text_object_at_the_cursor() -> anyhow::Result<()> {
+    let file = tempfile::Builder::new().suffix(".rs").tempfile()?;
+    std::fs::write(
+        file.path(),
+        "fn one() {\n    let a = 1;\n    let b = 2;\n}\n\nfn two() {}\n",
+    )?;
+    let mut app = AppBuilder::new()
+        .with_file(file.path(), None)
+        .with_lang_loader(helpers::test_syntax_loader(None))
+        .build()?;
+    send_keys(&mut app, "j:fold<ret>").await;
+    assert_eq!(folds(&app), 1_usize);
+    let status = app.editor.get_status().map(|(text, _)| text.to_string());
+    assert!(
+        status
+            .as_deref()
+            .is_none_or(|text| !text.contains("is empty")),
+        "{status:?}"
+    );
+    let (view, doc) = current_ref!(app.editor);
+    let container = doc.fold_container(view.id).unwrap();
+    let fold = container.start_points()[0].fold(container);
+    assert_eq!(fold.object().to_string(), "function".to_string());
+    send_keys(&mut app, ":unfold<ret>").await;
+    assert_eq!(folds(&app), 0_usize);
+    Ok(())
+}
