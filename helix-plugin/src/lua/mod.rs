@@ -1445,6 +1445,33 @@ fn event_table(lua: &Lua, event: &PluginEvent) -> LuaResult<LuaTable> {
                 path.as_ref().map(|p| p.to_string_lossy().into_owned()),
             )?;
         }
+        EventData::BufferChanged {
+            document_id,
+            path,
+            changes,
+        } => {
+            data.raw_set("document_id", format!("{:?}", document_id))?;
+            data.raw_set(
+                "path",
+                path.as_ref().map(|p| p.to_string_lossy().into_owned()),
+            )?;
+            let list = lua.create_table_with_capacity(changes.len(), 0)?;
+            for change in changes {
+                let item = lua.create_table_with_capacity(0, 10)?;
+                item.raw_set("from", change.from)?;
+                item.raw_set("to", change.to)?;
+                item.raw_set("old_from", change.old_from)?;
+                item.raw_set("old_to", change.old_to)?;
+                item.raw_set("start_line", change.start_line)?;
+                item.raw_set("end_line", change.end_line)?;
+                item.raw_set("old_start_line", change.old_start_line)?;
+                item.raw_set("old_end_line", change.old_end_line)?;
+                item.raw_set("text", change.text.as_str())?;
+                item.raw_set("removed", change.removed.as_str())?;
+                list.raw_push(item)?;
+            }
+            data.raw_set("changes", list)?;
+        }
         EventData::ModeChange { old_mode, new_mode } => {
             // Spelled like `helix.editor.mode()` returns them ("normal", "insert", ...).
             data.raw_set("old_mode", old_mode.to_ascii_lowercase())?;

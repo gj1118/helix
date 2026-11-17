@@ -1711,3 +1711,53 @@ async fn a_plugin_reads_the_syntax_tree_at_the_cursor() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+/// `buffer_changed` lists what changed since the last one: typed text, a deleted line.
+#[tokio::test(flavor = "multi_thread")]
+async fn buffer_changed_lists_the_changes() -> anyhow::Result<()> {
+    let init = r#"
+        local seen = {}
+        helix.on("buffer_changed", function(event)
+            assert(type(event.changes) == "table")
+            for _, c in ipairs(event.changes) do
+                assert(math.type(c.from) == "integer" and type(c.text) == "string")
+                table.insert(seen, table.concat({
+                    c.from, c.to, c.old_from, c.old_to, c.start_line, c.end_line,
+                    c.old_start_line, c.old_end_line, c.text, c.removed,
+                }, ":"))
+            end
+            helix.editor.set_register("y", { table.concat(seen, "|") })
+        end)
+    "#;
+    let dir = plugin_dir(&[("changes", init, None)])?;
+    let config = plugin_config(
+        dir.path(),
+        r#"
+        [[plugins]]
+        name = "changes"
+        permissions = ["edit"]
+        "#,
+    )?;
+    let file = helpers::temp_file_with_contents("one\ntwo\nthree\n")?;
+    let mut app = helpers::AppBuilder::new()
+        .with_file(file.path(), None)
+        .with_config(config)
+        .build()?;
+    assert!(app.plugins_enabled());
+
+    // each key is handled in a frame of its own: a change each (a macro or a paste would be
+    // one list of all its changes)
+    send_keys(&mut app, "jA!?<esc>").await?;
+    send_keys(&mut app, "jxd").await?;
+    let seen = register(&app, 'y').join("|");
+    let parts: Vec<&str> = seen.split('|').collect();
+    assert_eq!(parts.first(), Some(&"7:8:7:7:2:2:2:2:!:"), "{seen}");
+    assert_eq!(parts.get(1), Some(&"8:9:8:8:2:2:2:2:?:"), "{seen}");
+    // `xd` deletes the line "three\n": nothing now there, it was line 3
+    assert_eq!(
+        parts.last(),
+        Some(&"10:10:10:16:3:3:3:3::three\n"),
+        "{seen}"
+    );
+    Ok(())
+}

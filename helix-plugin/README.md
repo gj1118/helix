@@ -162,7 +162,7 @@ error. The `event` table has a `type` field (the event name) and, depending on t
 | `ready` | | once at startup, after `buffer_open` of the files given on the command line |
 | `exit` | | when Helix exits, before the last writes: buffers saved now are written |
 | `buffer_open` | `document_id`, `path` | when a file is opened |
-| `buffer_changed` | `document_id`, `path` | when a buffer's text changes; at most once per buffer per frame, however many edits were made (previews, such as a completion being shown, do not count) |
+| `buffer_changed` | `document_id`, `path`, `changes` | when a buffer's text changes; at most once per buffer per frame, however many edits were made (previews, such as a completion being shown, do not count). `changes` lists what changed since the last `buffer_changed` of the buffer, see [Changes](#changes) |
 | `buffer_pre_save` | `document_id`, `path` | before a buffer is written: edits the handler makes are part of the saved file |
 | `buffer_post_save` | `document_id`, `path` | after a buffer was written |
 | `buffer_save_failed` | `document_id`, `path`, `error` | when writing a buffer failed |
@@ -523,6 +523,31 @@ helix.on("buffer_post_save", function()
     local time = os.date("%H:%M")
     assert(type(time) == "string" and time:match("^%d%d:%d%d$"))
     helix.statusline.set("changes", { text = "saved " .. time, fg = "green" })
+end)
+```
+
+### Changes
+
+The `changes` of a `buffer_changed` event are the edits made since the last one of the
+buffer, in the order of the text, adjacent ones merged (a macro, a replace of every match or
+a paste in many cursors gives one list). Each is `{ from, to, old_from, old_to, start_line,
+end_line, old_start_line, old_end_line, text, removed }`: `from`/`to` the chars now there
+(`to` exclusive, `from == to` for a deletion) and `start_line`/`end_line` their lines
+(1-based, the last line the change touches), the `old_*` ones the same in the text before
+the changes; `text` what is now there and `removed` what was. More than 1 000 changes are
+given as one spanning them all. A handler that re-highlights or re-parses only what changed
+uses these instead of the whole buffer.
+
+```lua
+local touched = {}
+helix.on("buffer_changed", function(event)
+    for _, change in ipairs(event.changes) do
+        assert(math.type(change.start_line) == "integer" and change.start_line >= 1)
+        assert(type(change.removed) == "string" and change.to - change.from == utf8.len(change.text))
+        for line = change.start_line, change.end_line do
+            touched[line] = true
+        end
+    end
 end)
 ```
 

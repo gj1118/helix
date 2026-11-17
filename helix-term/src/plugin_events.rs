@@ -9,9 +9,10 @@
 //! ([`EventType::is_subscribed`]): `insert_char`, `command` and `key_press` come with every
 //! key.
 
+use helix_core::{ChangeSet, Rope};
 use helix_event::register_hook;
 use helix_lsp::LanguageServerId;
-use helix_plugin::{EventData, EventType, EventValue, PluginEvent};
+use helix_plugin::{EventData, EventType, EventValue, PluginEvent, TextChange};
 use helix_view::{
     events::{
         ConfigDidChange, DiagnosticsDidChange, DocumentDidChange, DocumentDidClose,
@@ -28,6 +29,88 @@ use crate::events::{OnModeSwitch, PostCommand, PostInsertChar};
 
 helix_event::runtime_local! {
     static PENDING: Mutex<Vec<PluginEvent>> = Mutex::new(Vec::new());
+    /// The changes of each buffer since its last `buffer_changed`: its text before them and
+    /// the changes composed.
+    static CHANGES: Mutex<Vec<(DocumentId, Rope, ChangeSet)>> = Mutex::new(Vec::new());
+}
+
+/// Most changes a `buffer_changed` lists: more (a replace-all of many matches) are given as
+/// one change spanning them.
+const MAX_CHANGES: usize = 1_000;
+
+fn changes() -> std::sync::MutexGuard<'static, Vec<(DocumentId, Rope, ChangeSet)>> {
+    match CHANGES.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+/// Adds the changes of a transaction to the buffer's since its last `buffer_changed`.
+fn record_changes(document_id: DocumentId, old_text: &Rope, changes_set: &ChangeSet) {
+    let mut all = changes();
+    let index = all.iter().position(|(id, ..)| *id == document_id);
+    let entry = index.map(|index| all.swap_remove(index));
+    match entry {
+        // (a change the plugins did not hear of in between: start over from this one)
+        Some((_, before, composed)) if composed.len_after() == changes_set.len() => {
+            all.push((document_id, before, composed.compose(changes_set.clone())));
+        }
+        _ => all.push((document_id, old_text.clone(), changes_set.clone())),
+    }
+}
+
+/// The changes `changes_set` makes to `old_text`, as plugins get them: in order, adjacent
+/// ones merged, at most [`MAX_CHANGES`] (more are one change from the first to the last).
+pub(crate) fn text_changes(old_text: &Rope, changes_set: &ChangeSet) -> Vec<TextChange> {
+    // (old_from, old_to, inserted chars)
+    let mut spans: Vec<(usize, usize, String)> = Vec::new();
+    for (from, to, text) in changes_set.changes_iter() {
+        let text = text.map(|text| text.to_string()).unwrap_or_default();
+        match spans.last_mut() {
+            Some(last) if last.1 == from => {
+                last.1 = to;
+                last.2.push_str(&text);
+            }
+            _ => spans.push((from, to, text)),
+        }
+    }
+    if spans.is_empty() {
+        return Vec::new();
+    }
+    let mut new_text = old_text.clone();
+    changes_set.apply(&mut new_text);
+    if spans.len() > MAX_CHANGES {
+        let first = spans.first().expect("not empty").0;
+        let last = spans.last().expect("not empty").1;
+        let delta = new_text.len_chars() as isize - old_text.len_chars() as isize;
+        let new_last = (last as isize + delta) as usize;
+        spans = vec![(first, last, new_text.slice(first..new_last).to_string())];
+    }
+    // The line of the last char of a change (its start line when empty).
+    let end_line = |text: &Rope, from: usize, to: usize| {
+        text.char_to_line(if to > from { to - 1 } else { from }) + 1
+    };
+    let mut delta: isize = 0;
+    spans
+        .into_iter()
+        .map(|(old_from, old_to, text)| {
+            let from = (old_from as isize + delta) as usize;
+            let to = from + text.chars().count();
+            delta += (to - from) as isize - (old_to - old_from) as isize;
+            TextChange {
+                from,
+                to,
+                old_from,
+                old_to,
+                start_line: new_text.char_to_line(from) + 1,
+                end_line: end_line(&new_text, from, to),
+                old_start_line: old_text.char_to_line(old_from) + 1,
+                old_end_line: end_line(old_text, old_from, old_to),
+                removed: old_text.slice(old_from..old_to).to_string(),
+                text,
+            }
+        })
+        .collect()
 }
 
 /// Most events a frame queues: a macro replaying many thousands of commands is not turned
@@ -103,9 +186,37 @@ fn queue_once_plain(event_type: EventType) {
     }
 }
 
-/// The events queued since the last call.
+/// The events queued since the last call. A `buffer_changed` gets the changes made since the
+/// last one.
 pub(crate) fn take() -> Vec<PluginEvent> {
-    std::mem::take(&mut *pending())
+    let mut events = std::mem::take(&mut *pending());
+    if events
+        .iter()
+        .any(|event| event.event_type == EventType::OnBufferChanged)
+    {
+        let mut all = changes();
+        for event in &mut events {
+            if event.event_type != EventType::OnBufferChanged {
+                continue;
+            }
+            if let EventData::Buffer { document_id, path } = &event.data {
+                let changes = all
+                    .iter()
+                    .position(|(id, ..)| id == document_id)
+                    .map(|index| {
+                        let (_, before, composed) = all.swap_remove(index);
+                        text_changes(&before, &composed)
+                    })
+                    .unwrap_or_default();
+                event.data = EventData::BufferChanged {
+                    document_id: *document_id,
+                    path: path.clone(),
+                    changes,
+                };
+            }
+        }
+    }
+    events
 }
 
 /// A number for a language server, unique among the running ones (its slot).
@@ -163,8 +274,9 @@ pub(crate) fn register_hooks() {
 
     register_hook!(move |event: &mut DocumentDidChange<'_>| {
         // Previews (of a completion, say) are undone right away.
-        if !event.ghost_transaction {
+        if !event.ghost_transaction && EventType::OnBufferChanged.is_subscribed() {
             let doc = &event.doc;
+            record_changes(doc.id(), event.old_text, event.changes);
             queue_once(EventType::OnBufferChanged, doc.id(), || {
                 doc.path().map(PathBuf::from)
             });
@@ -173,6 +285,8 @@ pub(crate) fn register_hooks() {
     });
 
     register_hook!(move |event: &mut DocumentDidClose<'_>| {
+        let closed = event.doc.id();
+        changes().retain(|(id, ..)| *id != closed);
         queue(PluginEvent {
             event_type: EventType::OnBufferClose,
             data: EventData::Buffer {
@@ -638,4 +752,110 @@ fn modifiers(modifiers: helix_view::keyboard::KeyModifiers) -> String {
     .map(|(_, name)| name)
     .collect::<Vec<_>>()
     .join("-")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use helix_core::Transaction;
+
+    fn change(text: &Rope, edits: Vec<(usize, usize, Option<&str>)>) -> ChangeSet {
+        Transaction::change(
+            text,
+            edits
+                .into_iter()
+                .map(|(from, to, text)| (from, to, text.map(Into::into))),
+        )
+        .changes()
+        .clone()
+    }
+
+    #[test]
+    fn changes_are_given_in_the_new_and_the_old_text() {
+        let text = Rope::from("one\ntwo\nthree\n");
+        // "two" -> "2\n2" (a line more), then "three" removed
+        let set = change(&text, vec![(4, 7, Some("2\n2")), (8, 13, None)]);
+        let changes = text_changes(&text, &set);
+        assert_eq!(changes.len(), 2_usize);
+        assert_eq!(
+            changes[0],
+            TextChange {
+                from: 4,
+                to: 7,
+                old_from: 4,
+                old_to: 7,
+                start_line: 2,
+                end_line: 3,
+                old_start_line: 2,
+                old_end_line: 2,
+                text: "2\n2".into(),
+                removed: "two".into(),
+            }
+        );
+        // after the first one, which was as long: the same chars, a line further down
+        assert_eq!(
+            changes[1],
+            TextChange {
+                from: 8,
+                to: 8,
+                old_from: 8,
+                old_to: 13,
+                start_line: 4,
+                end_line: 4,
+                old_start_line: 3,
+                old_end_line: 3,
+                text: String::new(),
+                removed: "three".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn composed_changes_are_merged_and_shifted() {
+        let text = Rope::from("abc");
+        let first = change(&text, vec![(0, 0, Some("xx"))]);
+        let mut after = text.clone();
+        first.apply(&mut after);
+        // typed further: "xxabc" becomes "xxyab"
+        let second = change(&after, vec![(2, 2, Some("y")), (4, 5, None)]);
+        let changes = text_changes(&text, &first.compose(second));
+        let summary: Vec<(usize, usize, usize, usize, String, String)> = changes
+            .into_iter()
+            .map(|c| (c.from, c.to, c.old_from, c.old_to, c.text, c.removed))
+            .collect();
+        assert_eq!(
+            summary,
+            vec![
+                (0, 3, 0, 0, "xxy".to_string(), String::new()),
+                (5, 5, 2, 3, String::new(), "c".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn too_many_changes_are_one_spanning_them() {
+        let text = Rope::from("a".repeat(MAX_CHANGES * 2 + 2));
+        let edits = (0..=MAX_CHANGES)
+            .map(|i| (i * 2, i * 2 + 1, Some("bb")))
+            .collect();
+        let changes = text_changes(&text, &change(&text, edits));
+        assert_eq!(changes.len(), 1_usize);
+        let change = &changes[0];
+        assert_eq!(
+            (change.from, change.old_from, change.old_to),
+            (0, 0, MAX_CHANGES * 2 + 1)
+        );
+        assert_eq!(change.to, (MAX_CHANGES + 1) * 3 - 1);
+        assert_eq!(change.removed.len(), MAX_CHANGES * 2 + 1);
+        assert!(change.text.starts_with("bbabb"));
+    }
+
+    #[test]
+    fn no_change_is_no_changes() {
+        let text = Rope::from("same");
+        assert_eq!(
+            text_changes(&text, &ChangeSet::new(text.slice(..))),
+            Vec::<TextChange>::new()
+        );
+    }
 }

@@ -28,7 +28,7 @@ pub use lua::LuaEngine;
 pub use permissions::{Permission, Permissions};
 pub use types::{
     EventData, EventType, EventValue, IndividualPluginConfig, Plugin, PluginConfig, PluginEvent,
-    PluginMetadata,
+    PluginMetadata, TextChange,
 };
 
 use helix_view::Editor;

@@ -187,6 +187,31 @@ pub enum EventData {
     },
     /// Named fields (the table handed to the handlers has these keys).
     Fields(Vec<(&'static str, EventValue)>),
+    /// A buffer's text changed: what changed since the last `buffer_changed` of it.
+    BufferChanged {
+        document_id: helix_view::DocumentId,
+        path: Option<PathBuf>,
+        changes: Vec<TextChange>,
+    },
+}
+
+/// One change of a buffer's text, in the text after the changes (`from`, `to`, the lines)
+/// and before them (`old_*`): chars, `to` exclusive; lines 1-based, the last line the
+/// change touches.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TextChange {
+    pub from: usize,
+    pub to: usize,
+    pub old_from: usize,
+    pub old_to: usize,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub old_start_line: usize,
+    pub old_end_line: usize,
+    /// what is now there
+    pub text: String,
+    /// what was there
+    pub removed: String,
 }
 
 /// A field of an event.

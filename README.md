@@ -479,7 +479,9 @@ permissions = ["edit", "commands"]  # what it may do beyond looking ("read") and
   change of their text, close), selections, scrolling,
   windows (open, close, focus), the terminal (resize, focus, paste, mouse), idle, settings,
   theme, working directory, language servers (start, attach, detach, exit, diagnostics), the
-  explorer (cursor, files created, renamed, copied, deleted), exit.
+  explorer (cursor, files created, renamed, copied, deleted), exit. A buffer change lists
+  what changed (ranges in chars and lines, before and after, with the text added and
+  removed), so a plugin re-reads only that.
   Helix does not even queue an event that no plugin listens to.
 
 Plugin code runs in a sandbox (no `io`, no `os.execute`, `require` only from the plugin
