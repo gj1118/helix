@@ -9681,8 +9681,10 @@ fn toggle_textobject_fold(cx: &mut Context) {
             })
         })
     else {
-        cx.editor
-            .set_status("There is no text object at the cursor.");
+        // none there (a Go import block, say): what `z f` falls back to, the language
+        // server's folding range or the block of more indented lines
+        let command: MappableCommand = ":fold --all --auto".parse().unwrap();
+        command.execute(cx);
         return;
     };
 

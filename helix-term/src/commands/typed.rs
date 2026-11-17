@@ -3510,8 +3510,19 @@ fn fold(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow:
     } else {
         let loader = cx.editor.syn_loader.load();
         if !auto || has_textobjects(doc, &loader) {
-            return fold_textobjects(doc, view, &loader, args);
+            let folded = fold_textobjects(doc, view, &loader, args);
+            // with `--auto`, a place no text object covers (a Go import block, say): the
+            // block of more indented lines there, whatever the language server does
+            if folded.is_ok() || !auto {
+                return folded;
+            }
+            if fold_indent(doc, view, document).is_ok() {
+                return Ok(());
+            }
+            return folded;
         }
+        drop(loader);
+        let (view, doc) = current!(cx.editor);
         let has_server = doc
             .language_servers_with_feature(LanguageServerFeature::FoldingRanges)
             .next()

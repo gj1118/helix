@@ -219,3 +219,58 @@ async fn fold_without_arguments_folds_the_text_object_at_the_cursor() -> anyhow:
     assert_eq!(folds(&app), 0_usize);
     Ok(())
 }
+
+const GO: &str = r#"package main
+
+import (
+	"fmt"
+	"os"
+
+	packageprovider "harneet/internal/modules/provider"
+	"harneet/styles"
+)
+
+func main() {
+	fmt.Println(os.Args, packageprovider.X, styles.Y)
+}
+"#;
+
+/// Go's text objects have no import block: `z f`, `z a` and `:fold` inside one fold its
+/// lines (the block of more indented lines), with no language server.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_go_import_block_folds_though_no_text_object_covers_it() -> anyhow::Result<()> {
+    for keys in ["zf", "za", ":fold<ret>"] {
+        let file = tempfile::Builder::new().suffix(".go").tempfile()?;
+        std::fs::write(file.path(), GO)?;
+        let mut app = AppBuilder::new()
+            .with_file(file.path(), None)
+            .with_lang_loader(helpers::test_syntax_loader(None))
+            .build()?;
+        // the cursor on the `packageprovider` line, as in an import block being edited
+        send_keys(&mut app, &format!("7gg{keys}")).await;
+        assert_eq!(
+            folds(&app),
+            1_usize,
+            "{keys}: {:?}",
+            app.editor.get_status()
+        );
+        let (view, doc) = current_ref!(app.editor);
+        let container = doc.fold_container(view.id).unwrap();
+        let fold = container.start_points()[0].fold(container);
+        // the import lines (0-based 3 to 7) hidden, `import (` and `)` shown
+        assert_eq!(
+            (fold.start.line, fold.end.line),
+            (3_usize, 7_usize),
+            "{keys}"
+        );
+        let screen = app.rendered_rows().join("\n");
+        assert!(
+            screen.contains("import ( ▸ 5 lines · block"),
+            "{keys}: {screen}"
+        );
+        // and `z a` opens it again
+        send_keys(&mut app, "za").await;
+        assert_eq!(folds(&app), 0_usize, "{keys}");
+    }
+    Ok(())
+}

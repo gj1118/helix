@@ -75,6 +75,9 @@ and selection: moving over a fold steps past its hidden lines.
 
 (`z c` keeps centering the view, as in Helix: fold with `z f`, `z a` or `z i`.)
 
+Where no text object covers the cursor (a Go `import ( … )` block, a table in a config
+file), `z f`, `z a` and `:fold` fold the block of more indented lines there instead.
+
 `:fold` and `:unfold` without arguments do what `z f` and `z o` do (with `--document`, what
 `z M` and `z R` do); name text objects (`:fold function comment`) or pass `--all` to choose
 what to fold.
