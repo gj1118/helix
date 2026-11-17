@@ -38,11 +38,17 @@ async fn yanked_text_is_highlighted_for_a_moment() -> anyhow::Result<()> {
                 Some("wy"),
                 Some(&|app| {
                     let flash = app.editor.yank_flash.as_ref().expect("a flash");
-                    assert_eq!(flash.ranges, vec![0_usize..6_usize]);
+                    assert_eq!(
+                        flash.ranges,
+                        std::iter::once(0_usize..6_usize).collect::<Vec<_>>()
+                    );
                     let (view, doc) = helix_view::current_ref!(app.editor);
                     let ranges: Option<Vec<std::ops::Range<usize>>> =
                         app.editor.yank_flash_in(view, doc).map(<[_]>::to_vec);
-                    assert_eq!(ranges, Some(vec![0_usize..6_usize]));
+                    assert_eq!(
+                        ranges,
+                        Some(std::iter::once(0_usize..6_usize).collect::<Vec<_>>())
+                    );
                     assert_eq!(
                         first_text_cell_bg(app),
                         helix_view::graphics::Color::Rgb(0xf0, 0xa0, 0x00)
