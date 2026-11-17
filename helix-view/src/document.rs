@@ -3099,6 +3099,16 @@ impl Document {
         });
     }
 
+    /// Removes the diagnostics plugins set (`buffer:set_diagnostics`).
+    pub fn clear_plugin_diagnostics(&mut self) {
+        self.diagnostics.retain(|diagnostic| {
+            !matches!(
+                diagnostic.provider,
+                helix_core::diagnostic::DiagnosticProvider::Plugin { .. }
+            )
+        });
+    }
+
     /// clears diagnostics for a given language server id if set, otherwise all diagnostics are cleared
     pub fn clear_diagnostics_for_language_server(&mut self, id: LanguageServerId) {
         self.diagnostics

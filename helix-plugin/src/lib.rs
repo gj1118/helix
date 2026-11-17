@@ -139,7 +139,16 @@ impl PluginManager {
         for session in &mut editor.diff_sessions {
             session.plugin_marks.clear();
         }
+        for entries in editor.diagnostics.values_mut() {
+            entries.retain(|(_, provider)| {
+                !matches!(
+                    provider,
+                    helix_core::diagnostic::DiagnosticProvider::Plugin { .. }
+                )
+            });
+        }
         for doc in editor.documents.values_mut() {
+            doc.clear_plugin_diagnostics();
             doc.plugin_signs.clear();
             doc.plugin_highlights.clear();
             doc.plugin_annotations.clear();

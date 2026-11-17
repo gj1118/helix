@@ -315,6 +315,32 @@ Buffer methods (they raise an error once the buffer is closed):
 - `get_lines(first, last)`: the lines `first` to `last` (1-based, inclusive; `last`
   defaults to the last line, not counting the empty one after a final line ending), without
   line endings; `get_range(start_line, start_col, end_line, end_col)`: the text between.
+- `set_diagnostics(list)`: diagnostics of the plugin for this buffer, shown like a language
+  server's: underlined in the text, in the gutter, as inline diagnostics, in the diagnostics
+  pickers (`Space d`, `Space D`) and the status line's counts, and stepped through with `]d`.
+  Each is `{ message, severity, source, code }` and where it is: `line` (1-based: the line
+  from its first non-blank character), `start_line`, `start_col`, `end_line`, `end_col`
+  (positions like `delete`) or `from`, `to` (char indices). `severity` is `"error"`,
+  `"warning"` (default), `"info"` or `"hint"`; `source` defaults to the plugin's name; `code` is
+  a number or a string. Replaces the plugin's diagnostics of the buffer (those of other plugins
+  and of language servers stay); returns how many were set. `clear_diagnostics()` removes them.
+  They move with the text as it is edited, and go when the plugins are reloaded (`ui`). A
+  linter that is not a language server can be a plugin:
+
+  ```lua
+  -- a plugin that flags lines longer than 100 characters
+  helix.on("buffer_post_save", function(event)
+      local buffer = helix.buffer.get_by_id(event.document_id)
+      local found = {}
+      for n, line in ipairs(buffer:get_lines(1)) do
+          if #line > 100 then
+              table.insert(found, { line = n, message = "line longer than 100", severity = "hint" })
+          end
+      end
+      local count = buffer:set_diagnostics(found)
+      assert(math.type(count) == "integer" and count == #found)
+  end)
+  ```
 - `set_signs(list)`: gutter signs of the plugin for this buffer, `{ { line, text, ... } }`
   (`line` 1-based, `text` one cell wide, and a [style](#styles)); drawn in the diagnostics
   column (the `diagnostics` gutter) on lines without a diagnostic. Replaces the plugin's

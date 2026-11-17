@@ -237,6 +237,8 @@ fn request_document_diagnostics_for_language_servers(
                         retry_language_servers.insert(server_id);
                     }
                 }
+                // (only language servers are pulled)
+                Some(Some((Err(_), DiagnosticProvider::Plugin { .. }, _))) => {}
                 Some(None) => break,
                 // The request was cancelled.
                 None => return,

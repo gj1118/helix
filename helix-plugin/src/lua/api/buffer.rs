@@ -119,6 +119,188 @@ fn line_col_to_char(text: &helix_core::Rope, line: usize, col: usize) -> usize {
     start + col.min(end - start)
 }
 
+/// Where a plugin's diagnostic is: a whole line, a range of lines and columns, or char
+/// indices.
+enum DiagnosticAt {
+    Line(usize),
+    Range(usize, usize, usize, usize),
+    Chars(usize, usize),
+}
+
+/// A diagnostic as a plugin gives it to `buffer:set_diagnostics`.
+struct PluginDiagnostic {
+    at: DiagnosticAt,
+    message: String,
+    severity: helix_core::diagnostic::Severity,
+    source: Option<String>,
+    code: Option<helix_core::diagnostic::NumberOrString>,
+}
+
+impl PluginDiagnostic {
+    fn read(item: &LuaTable) -> LuaResult<Self> {
+        use helix_core::diagnostic::{NumberOrString, Severity};
+        let get = |key: &str| item.raw_get::<Option<usize>>(key);
+        let at = if let (Some(start_line), Some(end_line)) = (get("start_line")?, get("end_line")?)
+        {
+            DiagnosticAt::Range(
+                start_line,
+                get("start_col")?.unwrap_or(0),
+                end_line,
+                get("end_col")?.unwrap_or(usize::MAX),
+            )
+        } else if let (Some(from), Some(to)) = (get("from")?, get("to")?) {
+            DiagnosticAt::Chars(from, to)
+        } else if let Some(line) = get("line")? {
+            DiagnosticAt::Line(line)
+        } else {
+            return Err(LuaError::RuntimeError(
+                "A diagnostic needs a `line` (1-based), `start_line`/`end_line` or `from`/`to`"
+                    .into(),
+            ));
+        };
+        let message: String = item
+            .raw_get::<Option<String>>("message")?
+            .ok_or_else(|| LuaError::RuntimeError("A diagnostic needs a `message`".into()))?;
+        let severity = match item.raw_get::<Option<String>>("severity")?.as_deref() {
+            Some("error") => Severity::Error,
+            None | Some("warning") => Severity::Warning,
+            Some("info") => Severity::Info,
+            Some("hint") => Severity::Hint,
+            Some(other) => {
+                return Err(LuaError::RuntimeError(format!(
+                    "Unknown severity '{other}': \"error\", \"warning\", \"info\" or \"hint\""
+                )))
+            }
+        };
+        let code = match item.raw_get::<LuaValue>("code")? {
+            LuaValue::Nil => None,
+            LuaValue::Integer(n) => Some(NumberOrString::Number(n as i32)),
+            LuaValue::Number(n) => Some(NumberOrString::Number(n as i32)),
+            LuaValue::String(s) => Some(NumberOrString::String(s.to_str()?.to_string())),
+            _ => {
+                return Err(LuaError::RuntimeError(
+                    "A diagnostic's `code` is a number or a string".into(),
+                ))
+            }
+        };
+        Ok(Self {
+            at,
+            message,
+            severity,
+            source: item.raw_get::<Option<String>>("source")?,
+            code,
+        })
+    }
+}
+
+/// Replaces `plugin`'s diagnostics of buffer `id` (in the buffer, and in the editor's list the
+/// diagnostics pickers show, for a buffer with a file).
+fn set_plugin_diagnostics(
+    editor: &mut helix_view::Editor,
+    id: DocumentId,
+    plugin: &str,
+    items: Vec<PluginDiagnostic>,
+) -> LuaResult<()> {
+    use helix_core::chars::char_is_word;
+    use helix_core::diagnostic::{Diagnostic, DiagnosticProvider, Range, Severity};
+    use helix_lsp::lsp;
+    let provider = DiagnosticProvider::Plugin {
+        name: plugin.into(),
+    };
+    let doc = editor
+        .document_mut(id)
+        .ok_or_else(|| LuaError::RuntimeError(format!("Buffer {id:?} no longer exists")))?;
+    let text = doc.text().clone();
+    let slice = text.slice(..);
+    let len = text.len_chars();
+    let diagnostics: Vec<Diagnostic> = items
+        .into_iter()
+        .map(|item| {
+            let (start, end) = match item.at {
+                DiagnosticAt::Line(line) => {
+                    let row = line
+                        .saturating_sub(1)
+                        .min(text.len_lines().saturating_sub(1));
+                    let line_start = text.line_to_char(row);
+                    let line_end = helix_core::line_ending::line_end_char_index(&slice, row);
+                    let first = slice
+                        .line(row)
+                        .chars()
+                        .position(|c| !c.is_whitespace())
+                        .map_or(line_start, |offset| line_start + offset)
+                        .min(line_end);
+                    (first, line_end)
+                }
+                DiagnosticAt::Range(start_line, start_col, end_line, end_col) => {
+                    let a = line_col_to_char(&text, start_line, start_col);
+                    let b = line_col_to_char(&text, end_line, end_col);
+                    (a.min(b), a.max(b))
+                }
+                DiagnosticAt::Chars(from, to) => {
+                    let (a, b) = (from.min(len), to.min(len));
+                    (a.min(b), a.max(b))
+                }
+            };
+            Diagnostic {
+                range: Range { start, end },
+                ends_at_word: start != end
+                    && end != 0
+                    && slice.get_char(end - 1).is_some_and(char_is_word),
+                starts_at_word: start != end && slice.get_char(start).is_some_and(char_is_word),
+                zero_width: start == end,
+                line: text.char_to_line(start),
+                message: item.message,
+                severity: Some(item.severity),
+                code: item.code,
+                provider: provider.clone(),
+                tags: Vec::new(),
+                source: item.source.or_else(|| Some(plugin.to_string())),
+                data: None,
+            }
+        })
+        .collect();
+
+    // the diagnostics pickers' list: positions as lines and chars
+    let to_lsp = |diagnostic: &Diagnostic| -> lsp::Diagnostic {
+        let position = |char: usize| {
+            let line = text.char_to_line(char);
+            lsp::Position::new(line as u32, (char - text.line_to_char(line)) as u32)
+        };
+        lsp::Diagnostic {
+            range: lsp::Range::new(
+                position(diagnostic.range.start),
+                position(diagnostic.range.end),
+            ),
+            severity: diagnostic.severity.map(|severity| match severity {
+                Severity::Error => lsp::DiagnosticSeverity::ERROR,
+                Severity::Warning => lsp::DiagnosticSeverity::WARNING,
+                Severity::Info => lsp::DiagnosticSeverity::INFORMATION,
+                Severity::Hint => lsp::DiagnosticSeverity::HINT,
+            }),
+            code: diagnostic.code.clone().map(|code| match code {
+                helix_core::diagnostic::NumberOrString::Number(n) => lsp::NumberOrString::Number(n),
+                helix_core::diagnostic::NumberOrString::String(s) => lsp::NumberOrString::String(s),
+            }),
+            source: diagnostic.source.clone(),
+            message: diagnostic.message.clone(),
+            ..Default::default()
+        }
+    };
+    let listed: Vec<(lsp::Diagnostic, DiagnosticProvider)> = diagnostics
+        .iter()
+        .map(|diagnostic| (to_lsp(diagnostic), provider.clone()))
+        .collect();
+    let uri = doc.uri();
+    doc.replace_diagnostics(diagnostics, &[], Some(&provider));
+    if let Some(uri) = uri {
+        let entry = editor.diagnostics.entry(uri).or_default();
+        entry.retain(|(_, from)| from != &provider);
+        entry.extend(listed);
+    }
+    helix_event::request_redraw();
+    Ok(())
+}
+
 /// Build the `{ {anchor=, head=}, ... }` table returned by the selection getters.
 /// Must be called after the editor borrow has ended (table creation can run Lua finalizers).
 pub(crate) fn selections_to_lua(lua: &Lua, ranges: &[(usize, usize)]) -> LuaResult<LuaTable> {
@@ -358,6 +540,34 @@ impl LuaUserData for LuaBuffer {
                 );
                 doc.replace_diagnostics(diagnostics, &[], None);
                 Ok(())
+            })
+        });
+
+        // Diagnostics of the plugin: { {line | start_line,start_col,end_line,end_col | from,to,
+        // message, severity, source, code}, ... }; replaces the plugin's diagnostics of this
+        // buffer (`{}` clears them). Shown like a language server's: underlines, gutter,
+        // inline diagnostics, the diagnostics pickers.
+        methods.add_method("set_diagnostics", |lua, this, list: LuaTable| {
+            require(lua, Permission::Ui, "buffer:set_diagnostics")?;
+            let plugin = crate::lua::current_plugin_name().to_string();
+            let mut items = Vec::new();
+            for i in 1..=list.raw_len() {
+                let item: LuaTable = list.raw_get(i)?;
+                items.push(PluginDiagnostic::read(&item)?);
+            }
+            let count = items.len();
+            crate::lua::with_editor(|editor| {
+                set_plugin_diagnostics(editor, this.document_id, &plugin, items)
+            })?;
+            Ok(count)
+        });
+
+        // Removes the plugin's diagnostics of this buffer.
+        methods.add_method("clear_diagnostics", |lua, this, ()| {
+            require(lua, Permission::Ui, "buffer:clear_diagnostics")?;
+            let plugin = crate::lua::current_plugin_name().to_string();
+            crate::lua::with_editor(|editor| {
+                set_plugin_diagnostics(editor, this.document_id, &plugin, Vec::new())
             })
         });
 

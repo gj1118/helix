@@ -2321,3 +2321,105 @@ fn diffs_are_opened_read_marked_and_closed() {
     let sessions: usize = editor.diff_sessions.len();
     assert_eq!(sessions, 0);
 }
+
+#[test]
+fn a_plugin_publishes_diagnostics_of_its_own() {
+    use helix_core::diagnostic::{DiagnosticProvider, Severity};
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    run(
+        &engine,
+        &mut editor,
+        r#"
+        local b = helix.buffer.get_current()
+        b:set_text("let x = 1\n  todo here\nlast\n")
+        count = b:set_diagnostics({
+            { line = 2, message = "a todo", severity = "info", code = "T1" },
+            { start_line = 1, start_col = 4, end_line = 1, end_col = 5, message = "unused x" },
+            { from = 0, to = 3, message = "keyword", severity = "hint", source = "mine" },
+        })
+        "#,
+    )
+    .unwrap();
+    let count: usize = lua(&engine).globals().get("count").unwrap();
+    assert_eq!(count, 3_usize);
+    let doc = helix_view::doc!(editor);
+    type Found = (usize, usize, String, Option<Severity>, Option<String>);
+    let mut found: Vec<Found> = doc
+        .diagnostics()
+        .iter()
+        .map(|d| {
+            (
+                d.range.start,
+                d.range.end,
+                d.message.clone(),
+                d.severity,
+                d.source.clone(),
+            )
+        })
+        .collect();
+    found.sort_by_key(|d| d.0);
+    let plugin = "p".to_string();
+    assert_eq!(
+        found,
+        vec![
+            (
+                0,
+                3,
+                "keyword".to_string(),
+                Some(Severity::Hint),
+                Some("mine".to_string())
+            ),
+            (
+                4,
+                5,
+                "unused x".to_string(),
+                Some(Severity::Warning),
+                Some(plugin.clone())
+            ),
+            // line 2 from its first non-blank char to its end
+            (
+                12,
+                21,
+                "a todo".to_string(),
+                Some(Severity::Info),
+                Some(plugin.clone())
+            ),
+        ]
+    );
+    assert!(doc.diagnostics().iter().all(|d| matches!(
+        &d.provider,
+        DiagnosticProvider::Plugin { name } if name.as_ref() == plugin
+    )));
+
+    // replaced whole; a bad severity is an error and changes nothing
+    run(
+        &engine,
+        &mut editor,
+        r#"
+        local b = helix.buffer.get_current()
+        b:set_diagnostics({ { line = 3, message = "only one" } })
+        ok, err = pcall(b.set_diagnostics, b, { { line = 1, message = "x", severity = "fatal" } })
+        err = tostring(err)
+        "#,
+    )
+    .unwrap();
+    let messages: Vec<String> = helix_view::doc!(editor)
+        .diagnostics()
+        .iter()
+        .map(|d| d.message.clone())
+        .collect();
+    assert_eq!(messages, vec!["only one".to_string()]);
+    let err: String = lua(&engine).globals().get("err").unwrap();
+    assert!(err.contains("Unknown severity 'fatal'"), "{err}");
+
+    run(
+        &engine,
+        &mut editor,
+        "helix.buffer.get_current():clear_diagnostics()",
+    )
+    .unwrap();
+    assert!(helix_view::doc!(editor).diagnostics().is_empty());
+}
