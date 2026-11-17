@@ -2903,6 +2903,15 @@ impl EditorView {
                     return EventResult::Consumed(None);
                 }
 
+                // the fold column: opens the fold there, or folds the block starting there
+                if let Some((view_id, line)) = fold_column_line(editor, row, column) {
+                    self.clear_completion_on_view_switch(editor, view_id);
+                    editor.focus(view_id);
+                    editor.explorer_panel.focused = false;
+                    commands::toggle_fold_at_line(editor, view_id, line);
+                    return EventResult::Consumed(None);
+                }
+
                 if let Some((coords, view_id)) = gutter_coords_and_view(editor, row, column) {
                     self.clear_completion_on_view_switch(editor, view_id);
                     editor.focus(view_id);
@@ -3459,6 +3468,26 @@ impl Component for EditorView {
             (pos, CursorKind::Underline)
         }
     }
+}
+
+/// The window and line of a click at (`row`, `column`) in a window's fold column.
+fn fold_column_line(editor: &Editor, row: u16, column: u16) -> Option<(ViewId, usize)> {
+    for (view, _) in editor.tree.views() {
+        let Some(doc) = editor.document(view.doc) else {
+            continue;
+        };
+        let inner = view.inner_area(doc);
+        if row < inner.y || row >= inner.bottom() || column < view.area.x || column >= inner.x {
+            continue;
+        }
+        if view.gutter_at(doc, column - view.area.x) != Some(helix_view::editor::GutterType::Folds)
+        {
+            return None;
+        }
+        let pos = view.pos_at_visual_coords(doc, row - inner.y, 0, true)?;
+        return Some((view.id, doc.text().char_to_line(pos)));
+    }
+    None
 }
 
 /// Whether the buffer line is drawn (`bufferline`).

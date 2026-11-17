@@ -398,8 +398,9 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "C-d" | "space" => page_cursor_half_down,
 
             "f" => fold,
-            "F" => unfold,
-            "A-f" => toggle_fold,
+            "F" | "o" => unfold,
+            "O" => unfold_recursive,
+            "a" | "A-f" => toggle_fold,
             "i" => fold_indent,
             "M" => fold_all,
             "R" => unfold_all,
@@ -422,8 +423,9 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "C-d" | "space" => page_cursor_half_down,
 
             "f" => fold,
-            "F" => unfold,
-            "A-f" => toggle_fold,
+            "F" | "o" => unfold,
+            "O" => unfold_recursive,
+            "a" | "A-f" => toggle_fold,
             "i" => fold_indent,
             "M" => fold_all,
             "R" => unfold_all,

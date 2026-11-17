@@ -66,11 +66,35 @@ and selection: moving over a fold steps past its hidden lines.
 | Key                    | Command       | Action                                                          |
 | ---                    | ---           | ---                                                             |
 | `z f` / `Z f`          | `fold`        | Fold the text object under the cursor                           |
-| `z F` / `Z F`          | `unfold`      | Unfold the folds under the cursor                               |
-| `z Alt-f` / `Z Alt-f`  | `toggle_fold` | Fold or unfold the text object at the primary cursor            |
+| `z o`, `z F`           | `unfold`      | Open the fold of the cursor's line (anywhere on it), else the folds under the cursor |
+| `z O`                  | `unfold_recursive` | The same, and the folds inside it                          |
+| `z a`, `z Alt-f`       | `toggle_fold` | Open the fold of the cursor's line, or fold there (the text object, else the indented block), like Vim's `za` |
 | `z i` / `Z i`          | `fold_indent` | Fold the block of more indented lines the cursor is in          |
 | `z M` / `Z M`          | `fold_all`    | Fold everything in the document                                 |
 | `z R` / `Z R`          | `unfold_all`  | Unfold everything                                               |
+
+(`z c` keeps centering the view, as in Helix: fold with `z f`, `z a` or `z i`.)
+
+### On the screen
+
+A closed fold is one line: the line it hangs from (the first line of the function, the
+block's header), on the fold's background (`ui.virtual.fold-decoration`), ending with what is
+hidden, `▸ 12 lines · function`. The **fold column** (`folds` in
+[`[editor.gutters]`](./editor.md#editorgutters-section), next to the text by default) shows
+`▸` on a closed fold and `▾` on a line a block starts at (the next line that is not blank is
+more indented). A click on `▸` opens the fold; a click on `▾` folds the block. Styles:
+`ui.gutter.fold` (`▸`) and `ui.gutter.foldable` (`▾`).
+
+### Opening folds
+
+Any of these opens a fold:
+
+- `z o` (or `z F`) anywhere on its line, the cursor at the start of the line included; `z O`
+  opens the folds inside it too; `z R` opens everything.
+- `z a` on its line (and folds again on the next `z a`).
+- A click on its `▸` in the fold column.
+- Moving the cursor into what it hides: a search, `g` to a line, a jump or a selection that
+  lands there opens it.
 
 Languages without tree-sitter text objects (plain text, YAML, many config formats) fold
 too: there `z f` and `z M` use the folding ranges of the buffer's language server when it has

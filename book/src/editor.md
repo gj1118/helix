@@ -62,7 +62,7 @@
 | `cursorcolumn` | Highlight all columns with a cursor | `false` |
 | `cursor-roundness` | How round the corners of block cursors are, like 4coder's `cursor_roundness`: the corner radius as a percentage of the cursor's width, from `0` to `50` (at `50` the ends are half circles). Any number is accepted: larger values count as `50`, negative ones as `0`. `0` turns it off. The cursors are drawn as images with the kitty graphics protocol (kitty, Ghostty and other terminals that have it), in the colors of the `ui.cursor` scopes. In other terminals, with `bar` or `underline` cursors, and where the cursor's colors are terminal palette colors (`red`, `light-blue`...) rather than hex ones, they stay square, as they do while more than 128 cursors are on screen. The image is sent to the terminal once and moved with the cursor, and freed when Helix exits | `0` |
 | `continue-comments` | if helix should automatically add a line comment token if you create a new line inside a comment. | `true` |
-| `gutters` | Gutters to display: Available are `diagnostics` and `diff` and `line-numbers` and `spacer` and `code-action-hint`, note that `diagnostics` also includes other features like breakpoints, 1-width padding will be inserted if gutters is non-empty | `["diagnostics", "spacer", "line-numbers", "spacer", "diff"]` |
+| `gutters` | Gutters to display: Available are `diagnostics` and `diff` and `line-numbers` and `spacer` and `code-action-hint` and `folds` (the [fold column](./textobjects.md#on-the-screen)), note that `diagnostics` also includes other features like breakpoints, 1-width padding will be inserted if gutters is non-empty | `["diagnostics", "spacer", "line-numbers", "spacer", "diff", "folds"]` |
 | `auto-completion` | Enable automatic pop up of auto-completion | `true` |
 | `path-completion` | Enable filepath completion. Show files and directories if an existing path at the cursor was recognized, either absolute or relative to the current opened document or current working directory (if the buffer is not yet saved). Defaults to true. | `true` |
 | `auto-format` | Enable automatic formatting on save[^3] | `true` |
@@ -1125,7 +1125,7 @@ specific gutter components as subsections.
 
 | Key      | Description                    | Default                                                       |
 | ---      | ---                            | ---                                                           |
-| `layout` | A vector of gutters to display | `["diagnostics", "spacer", "line-numbers", "spacer", "diff"]` |
+| `layout` | A vector of gutters to display | `["diagnostics", "spacer", "line-numbers", "spacer", "diff", "folds"]` |
 
 Example:
 

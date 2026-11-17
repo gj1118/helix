@@ -113,6 +113,7 @@ impl Default for GutterConfig {
                 GutterType::LineNumbers,
                 GutterType::Spacer,
                 GutterType::Diff,
+                GutterType::Folds,
             ],
             line_numbers: GutterLineNumbersConfig::default(),
         }
@@ -1747,6 +1748,9 @@ pub enum GutterType {
     /// The connector of a side-by-side diff, in front of the right side (added by the diff
     /// view, not configured)
     DiffConnector,
+    /// The folds: `▸` on a closed fold, `▾` where a block could be folded; a click opens or
+    /// closes it
+    Folds,
 }
 
 impl std::str::FromStr for GutterType {
@@ -1759,8 +1763,10 @@ impl std::str::FromStr for GutterType {
             "line-numbers" => Ok(Self::LineNumbers),
             "diff" => Ok(Self::Diff),
             "code-action-hint" => Ok(Self::CodeActionHint),
+            "folds" => Ok(Self::Folds),
             _ => anyhow::bail!(
-                "Gutter type can only be `diagnostics`, `spacer`, `line-numbers` or `diff`."
+                "Gutter type can only be `diagnostics`, `spacer`, `line-numbers`, `diff`, \
+                 `code-action-hint` or `folds`."
             ),
         }
     }

@@ -961,6 +961,8 @@ async fn unfold_function() -> anyhow::Result<()> {
                     prev_folds_number.set(container.len());
                 }),
             ),
+            // anywhere on a line, the fold hanging from it opens: the comment that starts
+            // after the `}` and goes on below
             (
                 Some(
                     "g71g\
@@ -968,15 +970,18 @@ async fn unfold_function() -> anyhow::Result<()> {
                     zF",
                 ),
                 Some(&|app| {
-                    let (additional_folds_number, unexpected_fold_headers) = result(app, &[]);
+                    let (additional_folds_number, unexpected_fold_headers) =
+                        result(app, &[(71, 7)]);
 
                     assert!(
                         unexpected_fold_headers.is_empty(),
                         "{unexpected_fold_headers:#?}"
                     );
-                    assert_eq!(additional_folds_number, 0);
+                    assert_eq!(additional_folds_number, -1);
                 }),
             ),
+            // no fold hangs from the line now: the one the cursor is in (the `}` ends the
+            // function)
             (
                 Some(
                     "g71g\

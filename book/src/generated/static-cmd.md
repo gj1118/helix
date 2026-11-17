@@ -411,8 +411,9 @@
 | `rotate_selections_first` | Make the first selection your primary one |  |
 | `rotate_selections_last` | Make the last selection your primary one |  |
 | `fold` | Fold the text object under the cursor (else the language server's folding range, else the indented block) | normal: `` Zf ``, `` zf ``, select: `` Zf ``, `` zf `` |
-| `unfold` | Unfold the folds under the cursor | normal: `` ZF ``, `` zF ``, select: `` ZF ``, `` zF `` |
-| `toggle_fold` | Toggle fold for the text object at the primary cursor | normal: `` Z<A-f> ``, `` z<A-f> ``, select: `` Z<A-f> ``, `` z<A-f> `` |
+| `unfold` | Open the folds at the cursor's line | normal: `` ZF ``, `` Zo ``, `` zF ``, `` zo ``, select: `` ZF ``, `` Zo ``, `` zF ``, `` zo `` |
+| `unfold_recursive` | Open the folds at the cursor's line and the folds inside them | normal: `` ZO ``, `` zO ``, select: `` ZO ``, `` zO `` |
+| `toggle_fold` | Open the fold at the cursor's line, or fold there | normal: `` Za ``, `` za ``, `` Z<A-f> ``, `` z<A-f> ``, select: `` Za ``, `` za ``, `` Z<A-f> ``, `` z<A-f> `` |
 | `fold_all` | Fold every text object of the document (else every folding range, else every indented block) | normal: `` ZM ``, `` zM ``, select: `` ZM ``, `` zM `` |
 | `unfold_all` | Unfold everything | normal: `` ZR ``, `` zR ``, select: `` ZR ``, `` zR `` |
 | `fold_indent` | Fold the block of more indented lines the cursor is in | normal: `` Zi ``, `` zi ``, select: `` Zi ``, `` zi `` |

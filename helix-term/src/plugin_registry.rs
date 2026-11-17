@@ -857,7 +857,7 @@ mod tests {
     fn static_commands_are_classified() {
         let count = crate::commands::MappableCommand::STATIC_COMMAND_LIST.len();
         assert_eq!(
-            count, 416,
+            count, 417,
             "commands were added or removed: check `static_permissions` for them"
         );
         use helix_plugin::types::EditorCommandRegistry;

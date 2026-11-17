@@ -228,8 +228,9 @@ useful when you're simply looking over text and not actively editing it.
 | `Ctrl-u`             | Move cursor and page half page up                         | `page_cursor_half_up`   |
 | `Ctrl-d`             | Move cursor and page half page down                       | `page_cursor_half_down` |
 | `f`                  | Fold the text object under the cursor (without text objects: the folding range or indented block) | `fold` |
-| `F`                  | Unfold the folds under the cursor                         | `unfold`                |
-| `Alt-f`              | Fold or unfold the text object at the primary cursor      | `toggle_fold`           |
+| `o`, `F`             | Open the fold of the cursor's line (anywhere on it)       | `unfold`                |
+| `O`                  | Open it and the folds inside it                           | `unfold_recursive`      |
+| `a`, `Alt-f`         | Open the fold of the cursor's line, or fold there         | `toggle_fold`           |
 | `i`                  | Fold the block of more indented lines the cursor is in    | `fold_indent`           |
 | `M`                  | Fold everything in the document                           | `fold_all`              |
 | `R`                  | Unfold everything                                         | `unfold_all`            |
@@ -521,7 +522,7 @@ keymap (see [Remapping](./remapping.md)).
 | `` ` `` … | normal | `switch_to_*_case` | The [case submode](#case-submode) |
 | `Alt-q` | normal | `add_to_quicklist` | Add the location to the [quicklist](./quicklist.md) |
 | `]q` `[q` `]l` `[l`, `Space q` | normal | `quicklist_*` | Walk and pick the quicklist |
-| `z f`, `z F`, `z Alt-f`, `z i`, `z M`, `z R` | normal | `fold`, `unfold`, `toggle_fold`, `fold_indent`, `fold_all`, `unfold_all` | [Folding](./textobjects.md#folding-text-objects) |
+| `z f`, `z o`/`z F`, `z O`, `z a`/`z Alt-f`, `z i`, `z M`, `z R` | normal | `fold`, `unfold`, `unfold_recursive`, `toggle_fold`, `fold_indent`, `fold_all`, `unfold_all` | [Folding](./textobjects.md#folding-text-objects) |
 | `] <char>`, `[ <char>` | normal | `select_textobject_inside_next_pair`, `..._prev_pair` | Select inside the next / previous pair |
 | `Space A`, `Space o` | normal | `code_lens`, `code_lens_picker` | [Code lenses](./lsp.md#code-lenses) |
 | `Space i` | normal | `snippet_picker` | [Snippets](./snippets.md) |

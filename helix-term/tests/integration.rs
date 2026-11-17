@@ -31,6 +31,7 @@ mod test {
     mod diff;
     mod editorconfig;
     mod explorer;
+    mod fold_ui;
     mod history;
     mod hlslens;
     mod image_preview;

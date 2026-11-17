@@ -39,6 +39,7 @@ impl GutterType {
             GutterType::CodeActionHint => code_action_hint(editor, doc, view, theme, is_focused),
             // blank: the diff view draws the connector over it
             GutterType::DiffConnector => Box::new(|_, _, _, _| None),
+            GutterType::Folds => folds(editor, doc, view, theme, is_focused),
         }
     }
 
@@ -50,8 +51,91 @@ impl GutterType {
             GutterType::Diff => 1,
             GutterType::CodeActionHint => 1,
             GutterType::DiffConnector => doc.config.load().diff.connector_width as usize,
+            GutterType::Folds => 1,
         }
     }
+}
+
+/// The glyphs of the fold column: a closed fold, and a block that could be folded.
+pub const FOLD_CLOSED: &str = "▸";
+pub const FOLD_OPEN: &str = "▾";
+
+/// Lines looked at after a line to tell whether a block starts there.
+const FOLDABLE_LOOKAHEAD: usize = 200;
+
+/// The visible lines (0-based) the closed folds of `view` hang from: the line before the
+/// first one each hides.
+pub fn closed_fold_lines(doc: &Document, view: &View) -> Vec<usize> {
+    let Some(container) = doc.fold_container(view.id) else {
+        return Vec::new();
+    };
+    let mut lines: Vec<usize> = container
+        .start_points()
+        .iter()
+        .filter(|start| start.is_superest())
+        .map(|start| start.fold(container).start.line.saturating_sub(1))
+        .collect();
+    lines.sort_unstable();
+    lines.dedup();
+    lines
+}
+
+/// Whether a block could be folded at `line`: the next line that is not blank is more
+/// indented (the blocks `z i` folds).
+pub fn starts_block(text: helix_core::RopeSlice, line: usize, tab_width: usize) -> bool {
+    fn indent(text: helix_core::RopeSlice, line: usize, tab_width: usize) -> Option<usize> {
+        let mut width = 0;
+        for ch in text.line(line).chars() {
+            match ch {
+                ' ' => width += 1,
+                '\t' => width += tab_width.max(1) - width % tab_width.max(1),
+                '\n' | '\r' => return None,
+                _ => return Some(width),
+            }
+        }
+        None
+    }
+    let Some(own) = indent(text, line, tab_width) else {
+        return false;
+    };
+    let last = text.len_lines().min(line + 1 + FOLDABLE_LOOKAHEAD);
+    (line + 1..last)
+        .find_map(|next| indent(text, next, tab_width))
+        .is_some_and(|next| next > own)
+}
+
+/// The fold column: `▸` (`ui.gutter.fold`) on the line a closed fold hangs from, `▾`
+/// (`ui.gutter.foldable`) where a block could be folded.
+pub fn folds<'doc>(
+    _editor: &'doc Editor,
+    doc: &'doc Document,
+    view: &View,
+    theme: &Theme,
+    _is_focused: bool,
+) -> GutterFn<'doc> {
+    let text = doc.text().slice(..);
+    let tab_width = doc.tab_width();
+    let closed = closed_fold_lines(doc, view);
+    let closed_style = theme
+        .try_get("ui.gutter.fold")
+        .unwrap_or_else(|| theme.get("ui.linenr.selected"));
+    let open_style = theme
+        .try_get("ui.gutter.foldable")
+        .unwrap_or_else(|| theme.get("ui.linenr"));
+    Box::new(move |line, _selected, first_visual_line, out| {
+        if !first_visual_line {
+            return None;
+        }
+        if closed.binary_search(&line).is_ok() {
+            out.push_str(FOLD_CLOSED);
+            return Some(closed_style);
+        }
+        if starts_block(text, line, tab_width) {
+            out.push_str(FOLD_OPEN);
+            return Some(open_style);
+        }
+        None
+    })
 }
 
 /// A plugin's gutter column (`buffer:set_gutter`): the text of its cell on each line, on the
@@ -558,12 +642,24 @@ mod tests {
             Arc::new(ArcSwap::from_pointee(syntax::Loader::default())),
         );
 
-        assert_eq!(view.gutters.layout.len(), 5);
+        assert_eq!(view.gutters.layout.len(), 6);
         assert_eq!(view.gutters.layout[0].width(&view, &doc), 1);
         assert_eq!(view.gutters.layout[1].width(&view, &doc), 1);
         assert_eq!(view.gutters.layout[2].width(&view, &doc), 3);
         assert_eq!(view.gutters.layout[3].width(&view, &doc), 1);
         assert_eq!(view.gutters.layout[4].width(&view, &doc), 1);
+        // the fold column, next to the text
+        assert_eq!(view.gutters.layout[5], GutterType::Folds);
+        assert_eq!(view.gutters.layout[5].width(&view, &doc), 1);
+    }
+
+    #[test]
+    fn a_block_starts_where_the_next_line_is_more_indented() {
+        let text = Rope::from_str("fn a() {\n\n    one\n}\nlast\n\tx\n");
+        let text = text.slice(..);
+        let starts: Vec<bool> = (0..6).map(|line| starts_block(text, line, 4)).collect();
+        // a blank line in between does not end it; a blank line itself starts nothing
+        assert_eq!(starts, vec![true, false, false, false, true, false]);
     }
 
     #[test]

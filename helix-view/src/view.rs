@@ -263,6 +263,28 @@ impl View {
         }
     }
 
+    /// The configured gutter at `column` cells from the window's left edge (`None` in a
+    /// plugin's column, or past the gutters).
+    pub fn gutter_at(&self, doc: &Document, column: u16) -> Option<GutterType> {
+        let mut x: u16 = doc
+            .plugin_gutters
+            .iter()
+            .filter(|gutter| gutter.left)
+            .map(|gutter| gutter.width as u16)
+            .sum();
+        if column < x {
+            return None;
+        }
+        for gutter in self.gutters() {
+            let width = gutter.width(self, doc) as u16;
+            if column < x + width {
+                return Some(*gutter);
+            }
+            x += width;
+        }
+        None
+    }
+
     /// Height in rows taken by the plugins' bar (0 or 1), above the breadcrumb bar.
     pub fn bar_offset(&self) -> u16 {
         u16::from(self.bar)
@@ -780,9 +802,18 @@ mod tests {
     use crate::document::Document;
     use crate::editor::{Config, GutterConfig, GutterLineNumbersConfig, GutterType};
 
+    /// The default gutters before the fold column was added: these tests' positions count
+    /// on them.
+    fn five_gutters() -> GutterConfig {
+        let mut gutters = GutterConfig::default();
+        gutters.layout.retain(|gutter| *gutter != GutterType::Folds);
+        assert_eq!(gutters.layout.len(), 5_usize);
+        gutters
+    }
+
     #[test]
     fn test_text_pos_at_screen_coords() {
-        let mut view = View::new(DocumentId::default(), GutterConfig::default());
+        let mut view = View::new(DocumentId::default(), five_gutters());
         view.area = Rect::new(40, 40, 40, 40);
         let rope = Rope::from_str("abc\n\tdef");
         let mut doc = Document::from(
@@ -1014,7 +1045,7 @@ mod tests {
 
     #[test]
     fn test_text_pos_at_screen_coords_cjk() {
-        let mut view = View::new(DocumentId::default(), GutterConfig::default());
+        let mut view = View::new(DocumentId::default(), five_gutters());
         view.area = Rect::new(40, 40, 40, 40);
         let rope = Rope::from_str("Hi! こんにちは皆さん");
         let mut doc = Document::from(
@@ -1099,7 +1130,7 @@ mod tests {
 
     #[test]
     fn test_text_pos_at_screen_coords_graphemes() {
-        let mut view = View::new(DocumentId::default(), GutterConfig::default());
+        let mut view = View::new(DocumentId::default(), five_gutters());
         view.area = Rect::new(40, 40, 40, 40);
         let rope = Rope::from_str("Hèl̀l̀ò world!");
         let mut doc = Document::from(

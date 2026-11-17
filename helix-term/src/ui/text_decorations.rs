@@ -211,9 +211,23 @@ impl<'a> FoldDecoration<'a> {
     pub(crate) fn new(annotations: &'a TextAnnotations<'a>, theme: &Theme) -> Self {
         Self {
             annotations: annotations.folds.clone(),
-            style: theme.get("ui.virtual.fold-decoration"),
+            style: theme
+                .try_get("ui.virtual.fold-decoration")
+                .unwrap_or_else(|| theme.get("ui.virtual")),
         }
     }
+}
+
+/// What the row of a closed fold says: `▸ 12 lines · function` (the kind of fold left out
+/// for a selection).
+pub(crate) fn fold_label(lines: usize, object: &helix_core::text_folding::FoldObject) -> String {
+    use helix_core::text_folding::FoldObject;
+    let measure = if lines == 1 { "line" } else { "lines" };
+    let mut label = format!("{} {lines} {measure}", helix_view::gutter::FOLD_CLOSED);
+    if !matches!(object, FoldObject::Selection) {
+        label.push_str(&format!(" · {object}"));
+    }
+    label
 }
 
 impl<'a> Decoration for FoldDecoration<'a> {
@@ -223,9 +237,6 @@ impl<'a> Decoration for FoldDecoration<'a> {
         pos: LinePos,
         virt_off: Position,
     ) -> Position {
-        use helix_core::Tendril;
-        use std::fmt::Write;
-
         let Some(fold) = self
             .annotations
             .consume_next(pos.doc_line, |fold| fold.start.line.saturating_sub(1))
@@ -233,20 +244,21 @@ impl<'a> Decoration for FoldDecoration<'a> {
             return Position::new(0, 0);
         };
 
-        let draw_col = virt_off.col as u16 + 1;
+        let len_lines = fold.end.line - fold.start.line + 1;
+        let text = fold_label(len_lines, fold.object());
+        // after the text of the line it hangs from (a space: the cell of the line's end)
+        let draw_col = (virt_off.col as u16).min(renderer.viewport.width);
         let width = renderer.viewport.width;
-        let text = {
-            let mut text = Tendril::new();
-            let len_lines = fold.end.line - fold.start.line + 1;
-            text.write_fmt(format_args!(
-                "...+{len_lines} {object} {measure}",
-                object = fold.object(),
-                measure = if len_lines > 1 { "lines" } else { "line" },
-            ))
-            .unwrap();
-            text
-        };
 
+        // the whole row in the fold's background, so it stands out from the text
+        let row_style = Style {
+            bg: self.style.bg,
+            ..Style::default()
+        };
+        renderer.set_style(
+            helix_view::graphics::Rect::new(renderer.viewport.x, pos.visual_line, width, 1),
+            row_style,
+        );
         renderer.set_string_truncated(
             renderer.viewport.x + draw_col,
             pos.visual_line,

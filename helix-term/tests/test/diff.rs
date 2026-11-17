@@ -124,7 +124,7 @@ async fn a_diff_shows_both_versions_side_by_side() -> anyhow::Result<()> {
     let rows = app.rendered_rows();
     assert!(rows[1].contains("let total = price * count;"), "{rows:#?}");
     assert!(
-        rows[1].contains("let total = cost * count + ta"),
+        rows[1].contains("let total = cost * count + t"),
         "{rows:#?}"
     );
     assert!(rows[3].contains("removed();"), "{rows:#?}");

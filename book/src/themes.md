@@ -327,6 +327,8 @@ These scopes are used for theming the editor interface:
 | `ui.debug.active`                 | Indicator for the line at which debugging execution is paused at, found in the gutter          |
 | `ui.gutter`                       | Gutter                                                                                         |
 | `ui.gutter.selected`              | Gutter for the line the cursor is on                                                           |
+| `ui.gutter.fold`                  | `▸` of a closed fold in the fold column; falls back to `ui.linenr.selected`                    |
+| `ui.gutter.foldable`              | `▾` where a block starts in the fold column; falls back to `ui.linenr`                         |
 | `ui.linenr`                       | Line numbers                                                                                   |
 | `ui.linenr.selected`              | Line number for the line the cursor is on                                                      |
 | `ui.linenr.normal`, `ui.linenr.insert`, `ui.linenr.select` | Line numbers in each mode, used instead of `ui.linenr` and `ui.linenr.selected` with [`gutters.line-numbers.same-color`](./editor.md#editorguttersline-numbers-section). Without them, `ui.linenr` |
@@ -383,7 +385,7 @@ These scopes are used for theming the editor interface:
 | `ui.virtual.jump-label`           | Style for virtual jump labels                                                                  |
 | `ui.virtual.inline-blame`         | Inline blame indicator (see the [`editor.inline-blame` config][editor-section])                |
 | `ui.virtual.inline-completion`    | Inline completion suggestions (ghost text, see [`editor.inline-completion`](./editor.md#editorinline-completion-section)); falls back to `ui.virtual.inlay-hint` |
-| `ui.virtual.fold-decoration`      | The `...+N function lines` label shown for a [fold](./textobjects.md#folding-text-objects) in place of its hidden lines |
+| `ui.virtual.fold-decoration`      | A closed [fold](./textobjects.md#on-the-screen): its `▸ N lines · function` label, and its background on the whole line it hangs from; falls back to `ui.virtual` |
 | `ui.menu`                         | Code and command completion menus                                                              |
 | `ui.menu.selected`                | Selected autocomplete item                                                                     |
 | `ui.menu.scroll`                  | `fg` sets thumb color, `bg` sets track color of scrollbar                                      |

@@ -790,8 +790,9 @@ impl MappableCommand {
         rotate_selections_first, "Make the first selection your primary one",
         rotate_selections_last, "Make the last selection your primary one",
         fold, "Fold the text object under the cursor (else the language server's folding range, else the indented block)",
-        unfold, "Unfold the folds under the cursor",
-        toggle_fold, "Toggle fold for the text object at the primary cursor",
+        unfold, "Open the folds at the cursor's line",
+        unfold_recursive, "Open the folds at the cursor's line and the folds inside them",
+        toggle_fold, "Open the fold at the cursor's line, or fold there",
         fold_all, "Fold every text object of the document (else every folding range, else every indented block)",
         unfold_all, "Unfold everything",
         fold_indent, "Fold the block of more indented lines the cursor is in",
@@ -9557,8 +9558,31 @@ fn fold(cx: &mut Context) {
     command.execute(cx);
 }
 
+/// Opens the folds at the cursors' lines (anywhere on the line a fold hangs from); without
+/// one there, the folds the selections overlap (`:unfold --auto`).
 fn unfold(cx: &mut Context) {
-    let command: MappableCommand = ":unfold --auto".parse().unwrap();
+    unfold_at_cursors(cx, false)
+}
+
+/// Like [`unfold`], the folds inside them too (`z O`).
+fn unfold_recursive(cx: &mut Context) {
+    unfold_at_cursors(cx, true)
+}
+
+fn unfold_at_cursors(cx: &mut Context, recursive: bool) {
+    let (view, doc) = current!(cx.editor);
+    let lines = cursor_lines(doc, view);
+    let folds = folds_at_lines(doc, view, &lines, recursive);
+    if !folds.is_empty() {
+        doc.remove_folds(view, folds);
+        return;
+    }
+    let line = if recursive {
+        ":unfold --auto --recursive"
+    } else {
+        ":unfold --auto"
+    };
+    let command: MappableCommand = line.parse().unwrap();
     command.execute(cx);
 }
 
@@ -9577,7 +9601,30 @@ fn fold_indent(cx: &mut Context) {
     command.execute(cx);
 }
 
+/// Opens the folds at the cursors' lines, or folds there (`z a`, `z Alt-f`): like Vim's `za`.
 fn toggle_fold(cx: &mut Context) {
+    let (view, doc) = current!(cx.editor);
+    let lines = cursor_lines(doc, view);
+    let folds = folds_at_lines(doc, view, &lines, false);
+    if !folds.is_empty() {
+        doc.remove_folds(view, folds);
+        return;
+    }
+    // a text object there, else the block of more indented lines
+    let loader = cx.editor.syn_loader.load();
+    let has_textobjects = doc
+        .syntax()
+        .is_some_and(|syntax| loader.textobject_query(syntax.root_language()).is_some());
+    drop(loader);
+    if has_textobjects {
+        toggle_textobject_fold(cx);
+    } else {
+        fold_indent(cx);
+    }
+}
+
+/// Folds the text object at the primary cursor, or opens its fold (what `z Alt-f` did).
+fn toggle_textobject_fold(cx: &mut Context) {
     use graphemes::ensure_grapheme_boundary_prev;
     use text_folding::{Fold, FoldObject};
 
@@ -9691,6 +9738,105 @@ fn toggle_fold(cx: &mut Context) {
 
     let new_fold = Fold::new_points(text, object, header, &target);
     doc.add_folds(view, vec![new_fold]);
+}
+
+/// The lines of the cursors of `view`.
+fn cursor_lines(doc: &Document, view: &View) -> Vec<usize> {
+    let text = doc.text().slice(..);
+    doc.selection(view.id)
+        .iter()
+        .map(|range| range.cursor_line(text))
+        .collect()
+}
+
+/// The folds of `view` at `lines`: those hanging from one of them (the line before the first
+/// they hide) or holding one; the outermost ones, unless `recursive` (then the ones inside
+/// them too). As start indices, for [`Document::remove_folds`].
+pub(crate) fn folds_at_lines(
+    doc: &Document,
+    view: &View,
+    lines: &[usize],
+    recursive: bool,
+) -> Vec<usize> {
+    let Some(container) = doc.fold_container(view.id) else {
+        return Vec::new();
+    };
+    let points = container.start_points();
+    // the outermost folds at the lines
+    let outer: Vec<(usize, usize)> = points
+        .iter()
+        .filter(|start| start.is_superest())
+        .map(|start| {
+            let fold = start.fold(container);
+            (fold.start.line.saturating_sub(1), fold.end.line)
+        })
+        .filter(|(header, last)| lines.iter().any(|line| header <= line && line <= last))
+        .collect();
+    points
+        .iter()
+        .enumerate()
+        .filter(|(_, start)| start.is_superest() || recursive)
+        .filter(|(_, start)| {
+            let fold = start.fold(container);
+            let (header, last) = (fold.start.line.saturating_sub(1), fold.end.line);
+            outer
+                .iter()
+                .any(|(outer_header, outer_last)| *outer_header <= header && last <= *outer_last)
+        })
+        .map(|(index, _)| index)
+        .collect()
+}
+
+/// Opens the folds at `line` of `view`, or folds the block of more indented lines starting
+/// there (a click in the fold column). Whether something changed.
+pub(crate) fn toggle_fold_at_line(editor: &mut Editor, view_id: ViewId, line: usize) -> bool {
+    use text_folding::{line_fold_points, FoldObject};
+    if !editor.tree.contains(view_id) {
+        return false;
+    }
+    let view = editor.tree.get(view_id);
+    let Some(doc) = editor.documents.get_mut(&view.doc) else {
+        return false;
+    };
+    let folds = folds_at_lines(doc, view, &[line], false);
+    if !folds.is_empty() {
+        doc.remove_folds(view, folds);
+        return true;
+    }
+    let text = doc.text().slice(..);
+    let tab_width = doc.tab_width();
+    if !helix_view::gutter::starts_block(text, line, tab_width) {
+        return false;
+    }
+    // the block: the lines after `line` more indented than it (blank ones in between)
+    let indent = |line: usize| -> Option<usize> {
+        let mut width = 0;
+        for ch in text.line(line).chars() {
+            match ch {
+                ' ' => width += 1,
+                '\t' => width += tab_width.max(1) - width % tab_width.max(1),
+                '\n' | '\r' => return None,
+                _ => return Some(width),
+            }
+        }
+        None
+    };
+    let Some(own) = indent(line) else {
+        return false;
+    };
+    let mut last = line;
+    for next in line + 1..text.len_lines() {
+        match indent(next) {
+            Some(width) if width > own => last = next,
+            Some(_) => break,
+            None => {}
+        }
+    }
+    let Some(points) = line_fold_points(text, FoldObject::Indent, line, last) else {
+        return false;
+    };
+    doc.replace_folds(view, vec![points]);
+    true
 }
 
 #[cfg(test)]

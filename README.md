@@ -1405,11 +1405,17 @@ Neovim's `:edit https://...`. Edit it freely; `:write <path>` keeps it. See
 
 **Code Folding Commands:**
 - `fold` (`z f`) - Fold the text object under the cursor
-- `unfold` (`z F`) - Unfold the folds under the cursor
-- `toggle_fold` (`z Alt-f`) - Toggle fold for the text object at the primary cursor
+- `unfold` (`z o`, `z F`) - Open the fold of the cursor's line, wherever the cursor is on it
+- `unfold_recursive` (`z O`) - The same, and the folds inside it
+- `toggle_fold` (`z a`, `z Alt-f`) - Open the fold of the cursor's line, or fold there (like Vim's `za`)
 - `fold_indent` (`z i`) - Fold the block of more indented lines the cursor is in
 - `fold_all` (`z M`) - Fold everything in the document
 - `unfold_all` (`z R`) - Unfold everything
+
+**On the screen:** a closed fold is the line it hangs from, on the fold's background, ending
+with `▸ 12 lines · function`. The **fold column** (the `folds` gutter, next to the text by
+default) shows `▸` on closed folds and `▾` where a block starts: click `▸` to open a fold,
+`▾` to fold the block. Moving the cursor into a fold (a search, `g` to a line) opens it too.
 
 Languages without tree-sitter text objects (plain text, YAML, config files) fold too: `z f` and
 `z M` use the language server's folding ranges (the `folding-ranges` feature) when it has them,
