@@ -683,6 +683,10 @@ impl MappableCommand {
         vsplit_new, "Vertical right split scratch buffer",
         wclose, "Close window",
         wonly, "Close windows except current",
+        tab_new, "Open the current buffer in a new tab page",
+        tab_close, "Close the tab page (its windows)",
+        tab_next, "Show the next tab page",
+        tab_previous, "Show the previous tab page",
         select_register, "Select register",
         insert_register, "Insert register",
         copy_between_registers, "Copy between two registers",
@@ -7655,6 +7659,30 @@ fn wclose(cx: &mut Context) {
     let view_id = view!(cx.editor).id;
     // close current split
     cx.editor.close(view_id);
+}
+
+fn tab_new(cx: &mut Context) {
+    let doc_id = doc!(cx.editor).id();
+    cx.editor.new_tab(doc_id);
+}
+
+fn tab_close(cx: &mut Context) {
+    if let Err(err) = cx.editor.close_tab() {
+        cx.editor.set_error(err);
+    }
+}
+
+fn tab_next(cx: &mut Context) {
+    let count = cx.editor.tree.tab_count();
+    let next = (cx.editor.tree.active_tab() + cx.count()) % count;
+    cx.editor.switch_tab(next);
+}
+
+fn tab_previous(cx: &mut Context) {
+    let count = cx.editor.tree.tab_count();
+    let back = cx.count() % count;
+    let previous = (cx.editor.tree.active_tab() + count - back) % count;
+    cx.editor.switch_tab(previous);
 }
 
 fn wonly(cx: &mut Context) {

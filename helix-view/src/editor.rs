@@ -3642,7 +3642,7 @@ impl Editor {
             }
         }
 
-        for (view, _) in self.tree.views_mut() {
+        for (view, _) in self.tree.all_views_mut() {
             let doc = doc_mut!(self, &view.doc);
             view.gutters = config.gutters.clone();
             view.ensure_cursor_in_view(doc, config.scrolloff)
@@ -3707,8 +3707,8 @@ impl Editor {
                     let id = doc.id;
                     self.documents.remove(&id);
 
-                    // Remove the scratch buffer from any jumplists
-                    for (view, _) in self.tree.views_mut() {
+                    // Remove the scratch buffer from any jumplists, in every tab
+                    for (view, _) in self.tree.all_views_mut() {
                         view.remove_document(&id);
                     }
                 } else {
@@ -3961,6 +3961,66 @@ impl Editor {
         Ok(id)
     }
 
+    /// Opens a new tab page showing `doc_id` in a window of its own, and shows it.
+    pub fn new_tab(&mut self, doc_id: DocumentId) {
+        if !self.documents.contains_key(&doc_id) {
+            return;
+        }
+        self.enter_normal_mode();
+        self.tree.new_tab();
+        let view = View::new(doc_id, self.config().gutters.clone());
+        let view_id = self.tree.insert(view);
+        let doc = doc_mut!(self, &doc_id);
+        doc.ensure_view_init(view_id);
+        doc.mark_as_focused();
+        self._refresh();
+    }
+
+    /// Shows tab page `index` (0-based); nothing for one that doesn't exist.
+    pub fn switch_tab(&mut self, index: usize) {
+        if index == self.tree.active_tab() || index >= self.tree.tab_count() {
+            return;
+        }
+        self.enter_normal_mode();
+        self.tree.switch_tab(index);
+        let scrolloff = self.config().scrolloff;
+        let (view, doc) = current!(self);
+        doc.mark_as_focused();
+        view.ensure_cursor_in_view(doc, scrolloff);
+    }
+
+    /// Closes the windows of the tab page shown, which closes it; the next one is shown.
+    /// Not the last tab.
+    pub fn close_tab(&mut self) -> Result<(), &'static str> {
+        if self.tree.tab_count() < 2 {
+            return Err("This is the only tab page");
+        }
+        let views = self.tree.tab_views(self.tree.active_tab());
+        for view in views {
+            self.close(view);
+        }
+        Ok(())
+    }
+
+    /// The label of tab page `index`: the file name of the buffer of its focused window (or
+    /// `[scratch]`).
+    pub fn tab_label(&self, index: usize) -> String {
+        let Some(view) = self
+            .tree
+            .tab_focus(index)
+            .and_then(|focus| self.tree.try_get(focus))
+        else {
+            return String::new();
+        };
+        self.documents
+            .get(&view.doc)
+            .map(|doc| match doc.path().and_then(|path| path.file_name()) {
+                Some(name) => name.to_string_lossy().into_owned(),
+                None => doc.display_name().to_string(),
+            })
+            .unwrap_or_default()
+    }
+
     pub fn close(&mut self, id: ViewId) {
         let mut file_locs = Vec::new();
 
@@ -4038,9 +4098,10 @@ impl Editor {
 
         let mut file_locs = Vec::new();
 
+        // the windows of every tab: one in a tab not shown must not keep a closed buffer
         let actions: Vec<Action> = self
             .tree
-            .views_mut()
+            .all_views_mut()
             .filter_map(|(view, _focus)| {
                 view.remove_document(&doc_id);
 

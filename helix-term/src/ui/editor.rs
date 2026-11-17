@@ -72,6 +72,8 @@ pub struct EditorView {
     completion_origin: Option<(ViewId, DocumentId)>,
     spinners: ProgressSpinners,
     bufferline_info: BufferLineInfo,
+    /// Where each tab page's label was drawn on the tab line: (first column, end, tab).
+    tabline_hits: Vec<(u16, u16, usize)>,
     /// Tracks if the terminal window is focused by reaction to terminal focus events
     terminal_focused: bool,
     /// Tracks if there are prompt layers active (updated by compositor)
@@ -168,6 +170,7 @@ impl EditorView {
             completion_origin: None,
             spinners: ProgressSpinners::default(),
             bufferline_info: BufferLineInfo::default(),
+            tabline_hits: Vec::new(),
             terminal_focused: true,
             prompt_active: false,
             terminal_secondary_cursors: Vec::new(),
@@ -1348,6 +1351,50 @@ impl EditorView {
         Some(OverlayHighlights::Homogeneous { highlight, ranges })
     }
 
+    /// The tab line, on the top row while there are several tab pages: each tab's number and
+    /// the buffer of its focused window, the one shown highlighted.
+    pub fn render_tabline(&mut self, editor: &Editor, viewport: Rect, surface: &mut Surface) {
+        let theme = &editor.theme;
+        let background = theme
+            .try_get("ui.tabline.background")
+            .or_else(|| theme.try_get("ui.bufferline.background"))
+            .unwrap_or_else(|| theme.get("ui.statusline"));
+        let active = theme
+            .try_get("ui.tabline.active")
+            .or_else(|| theme.try_get("ui.bufferline.active"))
+            .unwrap_or_else(|| theme.get("ui.statusline.active"));
+        let inactive = theme
+            .try_get("ui.tabline")
+            .or_else(|| theme.try_get("ui.bufferline"))
+            .unwrap_or_else(|| theme.get("ui.statusline.inactive"));
+        surface.clear_with(viewport, background);
+        self.tabline_hits.clear();
+        let shown = editor.tree.active_tab();
+        let mut x = viewport.x;
+        for index in 0..editor.tree.tab_count() {
+            if x >= viewport.right() {
+                break;
+            }
+            let windows = editor.tree.tab_views(index).len();
+            let windows = if windows > 1 {
+                format!(" +{}", windows - 1)
+            } else {
+                String::new()
+            };
+            let label = format!(" {} {}{windows} ", index + 1, editor.tab_label(index));
+            let style = if index == shown { active } else { inactive };
+            let (end, _) = surface.set_stringn(
+                x,
+                viewport.y,
+                &label,
+                (viewport.right() - x) as usize,
+                style,
+            );
+            self.tabline_hits.push((x, end, index));
+            x = end;
+        }
+    }
+
     /// Render bufferline at the top
     pub fn render_bufferline(&mut self, editor: &Editor, viewport: Rect, surface: &mut Surface) {
         surface.clear_with(
@@ -2473,7 +2520,20 @@ impl EditorView {
                     }
                     _ => false,
                 };
-                if bufferline_visible && row == 0 {
+                let tab_rows = tabline_rows(editor);
+                if tab_rows > 0 && row == 0 {
+                    let clicked = self
+                        .tabline_hits
+                        .iter()
+                        .find(|(start, end, _)| (*start..*end).contains(&column))
+                        .map(|(_, _, tab)| *tab);
+                    if let Some(tab) = clicked {
+                        self.clear_completion(editor);
+                        editor.switch_tab(tab);
+                    }
+                    return EventResult::Consumed(None);
+                }
+                if bufferline_visible && row == tab_rows {
                     let clicked = self
                         .bufferline_info
                         .get_clicked_buffer(column)
@@ -2913,16 +2973,22 @@ impl Component for EditorView {
         surface.set_style(area, cx.editor.theme.get("ui.background"));
 
         let use_bufferline = uses_bufferline(cx.editor);
+        let tabline_rows = tabline_rows(cx.editor);
         // The views' frame, and in it the views: above the quickfix panel, when it is shown.
         let editor_area = crate::ui::quickfix::layout(cx.editor, frame(cx.editor, area));
 
         // if the terminal size suddenly changed, we need to trigger a resize
         cx.editor.resize(editor_area);
 
+        if tabline_rows > 0 {
+            let tabline_area = crate::ui::explorer::layout(cx.editor, area.with_height(1));
+            self.render_tabline(cx.editor, tabline_area, surface);
+        }
         if use_bufferline {
             // The pinned explorer owns the full height, so the buffer line
             // only spans the columns beside it.
-            let bufferline_area = crate::ui::explorer::layout(cx.editor, area.with_height(1));
+            let bufferline_area =
+                crate::ui::explorer::layout(cx.editor, area.clip_top(tabline_rows).with_height(1));
             self.render_bufferline(cx.editor, bufferline_area, surface);
         }
 
@@ -3064,6 +3130,11 @@ impl Component for EditorView {
 }
 
 /// Whether the buffer line is drawn (`bufferline`).
+/// The rows of the tab line: one while there are several tab pages.
+fn tabline_rows(editor: &Editor) -> u16 {
+    u16::from(editor.tree.tab_count() > 1)
+}
+
 fn uses_bufferline(editor: &Editor) -> bool {
     use helix_view::editor::BufferLineRenderMode;
     match editor.config().bufferline.render_mode {
@@ -3086,6 +3157,7 @@ pub fn frame(editor: &Editor, area: Rect) -> Rect {
     } else {
         area.clip_bottom(1)
     };
+    frame = frame.clip_top(tabline_rows(editor));
     if uses_bufferline(editor) {
         frame = frame.clip_top(1);
     }

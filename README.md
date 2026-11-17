@@ -1354,6 +1354,23 @@ with `--server`. With no Helix running, `hx --remote file` just opens the file, 
 `EDITOR`. `[editor] remote-control = false` turns the socket off. Unix only. See
 [Remote control](book/src/remote.md) in the book.
 
+## Tab Pages
+
+Several layouts of windows, like Vim's tab pages: one tab for the code, another for a diff or
+the tests, each with its own splits. A tab line on the top row shows them while there is more
+than one (number, file of the focused window, `+N` other windows); click one to show it.
+
+| Keys / command | Action |
+| --- | --- |
+| `Ctrl-w T` / `Space w T` | The current buffer in a new tab page |
+| `Ctrl-w ]`, `Ctrl-w [` | Next / previous tab page |
+| `Ctrl-w X` | Close the tab page |
+| `:tab-new [file]`, `:tab-close`, `:tab-only`, `:tab-next [N]`, `:tab-previous`, `:tab-move [N]` | The same from the command line (Vim's `:tabnew`, `:tabc`, `:tabo`, `:tabn`, `:tabp` work too) |
+
+Buffers are shared by the tabs. Closing a tab's last window closes the tab; `:qa` closes every
+tab. Theme keys: `ui.tabline`, `ui.tabline.active`, `ui.tabline.background`. See
+[Tab pages](book/src/keymap.md#tab-pages) in the book.
+
 ## Code Folding
 
 **Code Folding Commands:**

@@ -110,6 +110,12 @@
 | `:quickfix` | Show the quickfix panel with the focus (the last list it showed, or the quicklist), or hide it when it is open |
 | `:copen`, `:quickfix-open` | Show the quickfix panel: focus it, or show the last list it showed again, or the quicklist. |
 | `:cclose`, `:quickfix-close` | Close the quickfix panel. |
+| `:tab-new`, `:tabnew`, `:tabedit`, `:tabe` | Open a new tab page, with the file given or an empty buffer. |
+| `:tab-close`, `:tabclose`, `:tabc` | Close the tab page shown (its windows; not the last tab). |
+| `:tab-only`, `:tabonly`, `:tabo` | Close every tab page but the one shown. |
+| `:tab-next`, `:tabnext`, `:tabn` | Show the next tab page, or tab page N (1-based) when given. |
+| `:tab-previous`, `:tabprevious`, `:tabp`, `:tabN` | Show the previous tab page (N tab pages back when given). |
+| `:tab-move`, `:tabmove` | Move the tab page shown to position N (1-based; the last without N). |
 | `:undo-tree`, `:undotree` | Show the undo tree: every revision of the buffer, branches included. Moving through it shows each one; Enter keeps it, Esc goes back. |
 | `:notifications-history`, `:notif-history`, `:nh` | Show notification history. |
 | `:notifications-clear`, `:notif-clear`, `:nc` | Clear notification history. |

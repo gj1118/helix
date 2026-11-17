@@ -339,6 +339,9 @@ These scopes are used for theming the editor interface:
 | `ui.bufferline`                   | Style for the buffer line                                                                      |
 | `ui.bufferline.active`            | Style for the active buffer in buffer line                                                     |
 | `ui.bufferline.background`        | Style for bufferline background                                                                |
+| `ui.tabline`                      | The tab line (shown while there are several tab pages); falls back to `ui.bufferline`         |
+| `ui.tabline.active`               | The tab page shown in the tab line; falls back to `ui.bufferline.active`                       |
+| `ui.tabline.background`           | The tab line's background; falls back to `ui.bufferline.background`                            |
 | `ui.breadcrumb`                   | The [breadcrumb bar](./editor.md#editorbreadcrumb-section) (falls back to `ui.text`)           |
 | `ui.breadcrumb.separator`         | The ` > ` separators and the `…` of the breadcrumb bar                                         |
 | `ui.popup`                        | Documentation popups (e.g. Space + k), notification popups, and cmdline popup background       |

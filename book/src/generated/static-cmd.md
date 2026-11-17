@@ -305,6 +305,10 @@
 | `vsplit_new` | Vertical right split scratch buffer | normal: `` <C-w>nv ``, `` <space>wnv ``, `` <C-w>n<C-v> ``, `` <space>wn<C-v> ``, select: `` <C-w>nv ``, `` <space>wnv ``, `` <C-w>n<C-v> ``, `` <space>wn<C-v> `` |
 | `wclose` | Close window | normal: `` <C-w>q ``, `` <space>wq ``, `` <C-w><C-q> ``, `` <space>w<C-q> ``, select: `` <C-w>q ``, `` <space>wq ``, `` <C-w><C-q> ``, `` <space>w<C-q> `` |
 | `wonly` | Close windows except current | normal: `` <C-w>o ``, `` <space>wo ``, `` <C-w><C-o> ``, `` <space>w<C-o> ``, select: `` <C-w>o ``, `` <space>wo ``, `` <C-w><C-o> ``, `` <space>w<C-o> `` |
+| `tab_new` | Open the current buffer in a new tab page | normal: `` <C-w>T ``, `` <space>wT ``, select: `` <C-w>T ``, `` <space>wT `` |
+| `tab_close` | Close the tab page (its windows) | normal: `` <C-w>X ``, `` <space>wX ``, select: `` <C-w>X ``, `` <space>wX `` |
+| `tab_next` | Show the next tab page | normal: `` <C-w>] ``, `` <space>w] ``, select: `` <C-w>] ``, `` <space>w] `` |
+| `tab_previous` | Show the previous tab page | normal: `` <C-w>[ ``, `` <space>w[ ``, select: `` <C-w>[ ``, `` <space>w[ `` |
 | `select_register` | Select register | normal: `` " ``, select: `` " `` |
 | `insert_register` | Insert register | insert: `` <C-r> `` |
 | `copy_between_registers` | Copy between two registers |  |

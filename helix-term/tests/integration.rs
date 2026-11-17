@@ -54,6 +54,7 @@ mod test {
     mod rounded_cursor;
     mod snippets;
     mod splits;
+    mod tabs;
     mod todos;
     mod undo_tree;
     mod welcome;

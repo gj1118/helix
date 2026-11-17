@@ -321,6 +321,32 @@ This layer is similar to Vim keybindings as Kakoune does not support windows.
 | `ns`, `nCtrl-s`        | New horizontal split with a scratch buffer           | `hsplit_new`      |
 | `nv`, `nCtrl-v`        | New vertical split with a scratch buffer             | `vsplit_new`      |
 | `x`                    | Move focus to the [explorer](./editor.md#editorexplorer-section), opening it if hidden | `explorer_focus` |
+| `T`                    | Open the current buffer in a new [tab page](#tab-pages) | `tab_new`         |
+| `X`                    | Close the tab page (its windows)                     | `tab_close`       |
+| `]`                    | Show the next tab page (a count goes that many on)   | `tab_next`        |
+| `[`                    | Show the previous tab page                           | `tab_previous`    |
+
+#### Tab pages
+
+A tab page is a layout of windows of its own, like Vim's: one tab for the code, another for a
+diff review or the tests, each with its own splits and focused window. While there is more than
+one, a tab line on the top row shows them: each tab's number, the file of its focused window, and
+`+N` for its other windows. Click a tab to show it.
+
+| Command | Action |
+| --- | --- |
+| `:tab-new [file]` (`:tabnew`, `:tabe`) | Open a new tab page with the file, or an empty buffer |
+| `:tab-close` (`:tabc`) | Close the tab page shown, with its windows (not the last one) |
+| `:tab-only` (`:tabo`) | Close every other tab page |
+| `:tab-next [N]` (`:tabn`) | Show the next tab page, or tab page N |
+| `:tab-previous [N]` (`:tabp`) | Show the previous tab page (N back) |
+| `:tab-move [N]` | Move the tab page shown to position N (the end without N) |
+
+Buffers are shared by all tab pages: a buffer can be shown in windows of several tabs, and
+closing a buffer closes the windows of every tab that show only it. Closing a tab's last window
+(`:q`, `Ctrl-w q`) closes the tab; quitting Helix (`:qa`) closes the windows of every tab. The
+tab line is styled with `ui.tabline`, `ui.tabline.active` and `ui.tabline.background`, and
+takes the buffer line's styles when the theme has none.
 
 #### Space mode
 

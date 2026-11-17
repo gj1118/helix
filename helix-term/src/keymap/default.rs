@@ -253,6 +253,10 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
         "C-j" => move_lines_down,
 
         "C-w" => { "Window"
+            "T" => tab_new,
+            "X" => tab_close,
+            "]" => tab_next,
+            "[" => tab_previous,
             "C-w" | "w" => rotate_view,
             "C-s" | "s" => hsplit,
             "C-v" | "v" => vsplit,
@@ -335,6 +339,10 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
                 "E" => dap_disable_exceptions,
             },
             "w" => { "Window"
+                "T" => tab_new,
+                "X" => tab_close,
+                "]" => tab_next,
+                "[" => tab_previous,
                 "C-w" | "w" => rotate_view,
                 "C-s" | "s" => hsplit,
                 "C-v" | "v" => vsplit,

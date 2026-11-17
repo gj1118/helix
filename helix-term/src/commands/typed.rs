@@ -1293,8 +1293,13 @@ fn quit_all_impl(cx: &mut compositor::Context, force: bool) -> anyhow::Result<()
         buffers_remaining_impl(cx.editor)?;
     }
 
-    // close all views
-    let views: Vec<_> = cx.editor.tree.views().map(|(view, _)| view.id).collect();
+    // close all views, of every tab page
+    let views: Vec<_> = cx
+        .editor
+        .tree
+        .all_views()
+        .map(|(view, _)| view.id)
+        .collect();
     for view_id in views {
         cx.editor.close(view_id);
     }
@@ -4202,6 +4207,104 @@ fn quickfix_close(
     Ok(())
 }
 
+/// A 1-based tab page number argument.
+fn tab_number(arg: &str) -> anyhow::Result<usize> {
+    match arg.parse::<usize>() {
+        Ok(number) if number > 0 => Ok(number - 1),
+        _ => Err(anyhow!(
+            "A tab page number (1 or more) was expected, not '{arg}'"
+        )),
+    }
+}
+
+fn tab_new(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let doc_id = match args.first() {
+        Some(path) => {
+            let path = helix_stdx::path::expand_tilde(Path::new(path));
+            cx.editor
+                .open(&path, Action::Load)
+                .map_err(|err| anyhow!("Failed to open {}: {err}", path.display()))?
+        }
+        None => cx.editor.new_file(Action::Load),
+    };
+    cx.editor.new_tab(doc_id);
+    Ok(())
+}
+
+fn tab_close(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    cx.editor.close_tab().map_err(|err| anyhow!(err))
+}
+
+fn tab_only(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let shown = cx.editor.tree.active_tab();
+    let others: Vec<ViewId> = (0..cx.editor.tree.tab_count())
+        .filter(|tab| *tab != shown)
+        .flat_map(|tab| cx.editor.tree.tab_views(tab))
+        .collect();
+    for view in others {
+        cx.editor.close(view);
+    }
+    Ok(())
+}
+
+fn tab_next(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let count = cx.editor.tree.tab_count();
+    let index = match args.first() {
+        Some(number) => {
+            let index = tab_number(number)?;
+            if index >= count {
+                return Err(anyhow!("There are {count} tab pages"));
+            }
+            index
+        }
+        None => (cx.editor.tree.active_tab() + 1) % count,
+    };
+    cx.editor.switch_tab(index);
+    Ok(())
+}
+
+fn tab_previous(
+    cx: &mut compositor::Context,
+    args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let count = cx.editor.tree.tab_count();
+    let back = match args.first() {
+        Some(number) => tab_number(number)? + 1,
+        None => 1,
+    } % count;
+    cx.editor
+        .switch_tab((cx.editor.tree.active_tab() + count - back) % count);
+    Ok(())
+}
+
+fn tab_move(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    let index = match args.first() {
+        Some(number) => tab_number(number)?,
+        None => usize::MAX,
+    };
+    cx.editor.tree.move_tab(index);
+    Ok(())
+}
+
 fn undo_tree(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
         return Ok(());
@@ -5577,6 +5680,72 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "tab-new",
+        aliases: &["tabnew", "tabedit", "tabe"],
+        doc: "Open a new tab page, with the file given or an empty buffer.",
+        fun: tab_new,
+        completer: CommandCompleter::positional(&[completers::filename]),
+        signature: Signature {
+            positionals: (0, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "tab-close",
+        aliases: &["tabclose", "tabc"],
+        doc: "Close the tab page shown (its windows; not the last tab).",
+        fun: tab_close,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "tab-only",
+        aliases: &["tabonly", "tabo"],
+        doc: "Close every tab page but the one shown.",
+        fun: tab_only,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "tab-next",
+        aliases: &["tabnext", "tabn"],
+        doc: "Show the next tab page, or tab page N (1-based) when given.",
+        fun: tab_next,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "tab-previous",
+        aliases: &["tabprevious", "tabp", "tabN"],
+        doc: "Show the previous tab page (N tab pages back when given).",
+        fun: tab_previous,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(1)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "tab-move",
+        aliases: &["tabmove"],
+        doc: "Move the tab page shown to position N (1-based; the last without N).",
+        fun: tab_move,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(1)),
             ..Signature::DEFAULT
         },
     },

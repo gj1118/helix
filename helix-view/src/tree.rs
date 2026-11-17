@@ -5,9 +5,15 @@ use slotmap::SlotMap;
 //
 #[derive(Debug)]
 pub struct Tree {
+    /// The root container of the tab shown.
     root: ViewId,
     // (container, index inside the container)
     pub focus: ViewId,
+    /// The tab pages: each a root container (its own split layout) and the view focused in
+    /// it. The entry of the tab shown is out of date: `root` and `focus` are its own.
+    tabs: Vec<(ViewId, ViewId)>,
+    /// The index of the tab shown in `tabs`.
+    active: usize,
     // fullscreen: bool,
     area: Rect,
 
@@ -220,6 +226,8 @@ impl Tree {
         Self {
             root,
             focus: root,
+            tabs: vec![(root, root)],
+            active: 0,
             // fullscreen: false,
             area,
             nodes,
@@ -451,7 +459,164 @@ impl Tree {
         }
     }
 
+    /// The root container of the tab `id` is in.
+    fn root_of(&self, mut id: ViewId) -> ViewId {
+        loop {
+            let parent = self.nodes[id].parent;
+            if parent == id {
+                return id;
+            }
+            id = parent;
+        }
+    }
+
+    /// How many tab pages there are (at least one).
+    pub fn tab_count(&self) -> usize {
+        self.tabs.len()
+    }
+
+    /// The index of the tab shown.
+    pub fn active_tab(&self) -> usize {
+        self.active
+    }
+
+    /// The index of the tab `id` (a view of any tab) is in.
+    pub fn tab_of(&self, id: ViewId) -> Option<usize> {
+        if !self.nodes.contains_key(id) {
+            return None;
+        }
+        let root = self.root_of(id);
+        if root == self.root {
+            return Some(self.active);
+        }
+        self.tabs.iter().position(|(tab_root, _)| *tab_root == root)
+    }
+
+    /// The view focused in tab `index` (the root container when the tab has none).
+    pub fn tab_focus(&self, index: usize) -> Option<ViewId> {
+        if index == self.active {
+            return Some(self.focus);
+        }
+        self.tabs.get(index).map(|(_, focus)| *focus)
+    }
+
+    /// Opens a new, empty tab page after the one shown, and shows it: insert a view next.
+    pub fn new_tab(&mut self) {
+        let mut root = Node::container(Layout::Vertical);
+        root.parent = ViewId::default();
+        let root = self.nodes.insert(root);
+        // a root is its own parent
+        self.nodes[root].parent = root;
+        self.tabs[self.active] = (self.root, self.focus);
+        self.active += 1;
+        self.tabs.insert(self.active, (root, root));
+        self.root = root;
+        self.focus = root;
+        self.recalculate();
+    }
+
+    /// Shows tab `index`. Nothing for the tab shown or one that doesn't exist.
+    pub fn switch_tab(&mut self, index: usize) {
+        if index == self.active || index >= self.tabs.len() {
+            return;
+        }
+        self.tabs[self.active] = (self.root, self.focus);
+        self.active = index;
+        (self.root, self.focus) = self.tabs[index];
+        self.recalculate();
+    }
+
+    /// Moves the tab shown to `index` among the tabs (clamped).
+    pub fn move_tab(&mut self, index: usize) {
+        let index = index.min(self.tabs.len() - 1);
+        let tab = self.tabs.remove(self.active);
+        self.tabs.insert(index, tab);
+        self.active = index;
+    }
+
+    /// The views of every tab, the ones shown or not.
+    pub fn all_views(&self) -> impl Iterator<Item = (&View, bool)> {
+        let focus = self.focus;
+        self.nodes.iter().filter_map(move |(key, node)| match node {
+            Node {
+                content: Content::View(view),
+                ..
+            } => Some((view.as_ref(), focus == key)),
+            _ => None,
+        })
+    }
+
+    /// The views of every tab, the ones shown or not.
+    pub fn all_views_mut(&mut self) -> impl Iterator<Item = (&mut View, bool)> {
+        let focus = self.focus;
+        self.nodes
+            .iter_mut()
+            .filter_map(move |(key, node)| match node {
+                Node {
+                    content: Content::View(view),
+                    ..
+                } => Some((view.as_mut(), focus == key)),
+                _ => None,
+            })
+    }
+
+    /// The views of tab `index`, in order.
+    pub fn tab_views(&self, index: usize) -> Vec<ViewId> {
+        let Some(root) = (if index == self.active {
+            Some(self.root)
+        } else {
+            self.tabs.get(index).map(|(root, _)| *root)
+        }) else {
+            return Vec::new();
+        };
+        let mut views = Vec::new();
+        let mut stack = vec![root];
+        while let Some(key) = stack.pop() {
+            match &self.nodes[key].content {
+                Content::View(_) => views.push(key),
+                Content::Container(container) => stack.extend(container.children.iter().rev()),
+            }
+        }
+        views
+    }
+
+    /// Removes view `index`, of any tab. A tab whose last view goes is closed (unless it is
+    /// the only one): the tab after it is shown in its place (the one before, for the last).
     pub fn remove(&mut self, index: ViewId) {
+        let root = self.root_of(index);
+        if root == self.root {
+            self.remove_in_active(index);
+            return;
+        }
+        // A view of a tab not shown: removed in it, then back to the tab shown.
+        let shown = self.root;
+        let Some(tab) = self.tabs.iter().position(|(tab_root, _)| *tab_root == root) else {
+            return;
+        };
+        self.switch_tab(tab);
+        self.remove_in_active(index);
+        if let Some(back) = self
+            .tabs
+            .iter()
+            .position(|(tab_root, _)| *tab_root == shown)
+        {
+            self.switch_tab(back);
+        }
+    }
+
+    fn remove_in_active(&mut self, index: ViewId) {
+        self.remove_view(index);
+        if self.is_empty() && self.tabs.len() > 1 {
+            // the tab's last view went: the tab goes
+            self.nodes.remove(self.root);
+            self.tabs.remove(self.active);
+            self.active = self.active.min(self.tabs.len() - 1);
+            (self.root, self.focus) = self.tabs[self.active];
+            self.recalculate();
+        }
+    }
+
+    fn remove_view(&mut self, index: ViewId) {
         if self.focus == index {
             // focus on something else
             self.focus = self.prev();
@@ -488,21 +653,30 @@ impl Tree {
         self.recalculate()
     }
 
+    /// The views of the tab shown (see [`Self::all_views`] for every tab's).
     pub fn views(&self) -> impl Iterator<Item = (&View, bool)> {
         let focus = self.focus;
-        self.nodes.iter().filter_map(move |(key, node)| match node {
-            Node {
-                content: Content::View(view),
-                ..
-            } => Some((view.as_ref(), focus == key)),
-            _ => None,
-        })
+        let single_tab = self.tabs.len() == 1;
+        self.nodes
+            .iter()
+            .filter(move |(key, _)| single_tab || self.root_of(*key) == self.root)
+            .filter_map(move |(key, node)| match node {
+                Node {
+                    content: Content::View(view),
+                    ..
+                } => Some((view.as_ref(), focus == key)),
+                _ => None,
+            })
     }
 
+    /// The views of the tab shown (see [`Self::all_views_mut`] for every tab's).
     pub fn views_mut(&mut self) -> impl Iterator<Item = (&mut View, bool)> {
         let focus = self.focus;
+        let shown: Option<std::collections::HashSet<ViewId>> =
+            (self.tabs.len() > 1).then(|| self.tab_views(self.active).into_iter().collect());
         self.nodes
             .iter_mut()
+            .filter(move |(key, _)| shown.as_ref().is_none_or(|shown| shown.contains(key)))
             .filter_map(move |(key, node)| match node {
                 Node {
                     content: Content::View(view),
@@ -1203,6 +1377,90 @@ mod test {
     use super::*;
     use crate::editor::GutterConfig;
     use crate::DocumentId;
+
+    fn new_view() -> View {
+        View::new(DocumentId::default(), GutterConfig::default())
+    }
+
+    #[test]
+    fn tabs_have_their_own_views_layout_and_focus() {
+        let mut tree = Tree::new(Rect::new(0, 0, 100, 40));
+        let first = tree.insert(new_view());
+        let second = tree.split(new_view(), Layout::Vertical);
+        assert_eq!((tree.tab_count(), tree.active_tab()), (1_usize, 0_usize));
+
+        tree.new_tab();
+        assert!(
+            tree.is_empty(),
+            "a new tab has no views until one is inserted"
+        );
+        let third = tree.insert(new_view());
+        assert_eq!((tree.tab_count(), tree.active_tab()), (2_usize, 1_usize));
+        // only the tab shown: one view, the whole area
+        let shown: Vec<ViewId> = tree.views().map(|(view, _)| view.id).collect();
+        assert_eq!(shown, vec![third]);
+        assert_eq!(tree.get(third).area.width, 100_u16);
+        assert_eq!(tree.views_mut().count(), 1_usize);
+        assert_eq!(tree.all_views().count(), 3_usize);
+        assert_eq!(tree.tab_of(first), Some(0_usize));
+        assert_eq!(tree.tab_of(third), Some(1_usize));
+
+        // back: the first tab's focus and split come back
+        tree.switch_tab(0);
+        assert_eq!(tree.focus, second);
+        let mut shown: Vec<ViewId> = tree.views().map(|(view, _)| view.id).collect();
+        shown.sort();
+        let mut expected = vec![first, second];
+        expected.sort();
+        assert_eq!(shown, expected);
+        assert_eq!(tree.tab_views(0), vec![first, second]);
+        assert_eq!(tree.tab_focus(1), Some(third));
+        tree.switch_tab(7);
+        assert_eq!(tree.active_tab(), 0_usize, "no such tab: nothing changes");
+    }
+
+    #[test]
+    fn a_tab_whose_last_view_goes_is_closed() {
+        let mut tree = Tree::new(Rect::new(0, 0, 100, 40));
+        let first = tree.insert(new_view());
+        tree.new_tab();
+        let second = tree.insert(new_view());
+        tree.new_tab();
+        let third = tree.insert(new_view());
+        assert_eq!(tree.tab_count(), 3_usize);
+
+        // a view of a tab not shown: that tab closes, the one shown stays shown
+        tree.remove(second);
+        assert_eq!(tree.tab_count(), 2_usize);
+        assert_eq!(tree.focus, third);
+        assert_eq!(tree.active_tab(), 1_usize);
+        assert!(!tree.contains(second));
+
+        // the shown tab's last view: the tab before it is shown
+        tree.remove(third);
+        assert_eq!(tree.tab_count(), 1_usize);
+        assert_eq!(tree.focus, first);
+        assert!(!tree.is_empty());
+
+        // the last tab's last view: the tree is empty (Helix quits)
+        tree.remove(first);
+        assert_eq!(tree.tab_count(), 1_usize);
+        assert!(tree.is_empty());
+    }
+
+    #[test]
+    fn a_tab_can_move() {
+        let mut tree = Tree::new(Rect::new(0, 0, 100, 40));
+        let first = tree.insert(new_view());
+        tree.new_tab();
+        let second = tree.insert(new_view());
+        tree.move_tab(0);
+        assert_eq!(tree.active_tab(), 0_usize);
+        assert_eq!(tree.tab_views(0), vec![second]);
+        assert_eq!(tree.tab_views(1), vec![first]);
+        tree.move_tab(9);
+        assert_eq!(tree.active_tab(), 1_usize);
+    }
 
     #[test]
     fn find_split_in_direction() {
