@@ -395,6 +395,14 @@ impl EditorCommandRegistry for TermCommandRegistry {
         let mut needed = typable_permissions(cmd.name)
             .map(<[Permission]>::to_vec)
             .unwrap_or_else(|| vec![Permission::Shell]);
+        // Opening a URL runs curl, and reaches the network.
+        if matches!(cmd.name, "open" | "vsplit" | "hsplit")
+            && args
+                .iter()
+                .any(|arg| crate::commands::url_buffer::is_url(arg))
+        {
+            needed.push(Permission::Shell);
+        }
         // Settings that run programs.
         if matches!(cmd.name, "set-option" | "toggle-option")
             && args.first().is_some_and(|key| {

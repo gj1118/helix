@@ -1371,6 +1371,13 @@ Buffers are shared by the tabs. Closing a tab's last window closes the tab; `:qa
 tab. Theme keys: `ui.tabline`, `ui.tabline.active`, `ui.tabline.background`. See
 [Tab pages](book/src/keymap.md#tab-pages) in the book.
 
+## Opening URLs
+
+`:open https://...` (also `:e`, `:vsplit`, `:hsplit`) fetches the page with `curl` and shows it in
+a buffer of its own, titled with the URL and highlighted by its extension or content type, like
+Neovim's `:edit https://...`. Edit it freely; `:write <path>` keeps it. See
+[Opening URLs](book/src/command-line.md#opening-urls) in the book.
+
 ## Code Folding
 
 **Code Folding Commands:**

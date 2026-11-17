@@ -57,6 +57,7 @@ mod test {
     mod tabs;
     mod todos;
     mod undo_tree;
+    mod url_buffer;
     mod welcome;
     mod window_title;
 }

@@ -196,6 +196,11 @@ fn open(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow:
 
 fn open_impl(cx: &mut compositor::Context, args: Args, action: Action) -> anyhow::Result<()> {
     for arg in args {
+        // `:open https://...`: the page in a buffer of its own
+        if super::url_buffer::is_url(&arg) {
+            super::url_buffer::open(cx.editor, cx.jobs, arg.to_string(), action);
+            continue;
+        }
         let (path, pos) = crate::args::parse_file(&arg);
         let path = helix_stdx::path::expand_tilde(path);
         // If the path is a directory, open a file picker on that directory and update the status
@@ -4454,7 +4459,7 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
     TypableCommand {
         name: "open",
         aliases: &["o", "edit", "e"],
-        doc: "Open a file from disk into the current view.",
+        doc: "Open a file from disk into the current view, or an http(s) URL in a buffer of its own.",
         fun: open,
         completer: CommandCompleter::all(completers::filename),
         signature: Signature {

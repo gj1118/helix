@@ -90,6 +90,25 @@ When providing multiple values to `:toggle-option` there should be no duplicates
 
 `:lsp-workspace-command` works similarly to `:toggle-option`. The first argument (if present) is parsed according to normal rules. The rest of the line is parsed as JSON values. Unlike `:toggle-option`, string arguments for a command must be quoted. For example `:lsp-workspace-command lsp.Command "foo" "bar"`.
 
+## Opening URLs
+
+`:open` (`:o`, `:e`) takes `http://` and `https://` URLs too, like Neovim's `:edit https://...`:
+the page is fetched in the background with `curl` (which must be installed) and shown in a buffer
+of its own, titled with the URL. Its language comes from the URL's file extension, else from
+the server's content type (`application/json`, `text/markdown`, ...), so it is highlighted.
+
+```text
+:open https://raw.githubusercontent.com/helix-editor/helix/master/README.md
+:vsplit https://api.github.com/repos/helix-editor/helix
+```
+
+- The buffer has no file: edit it freely, and `:write <path>` to keep it.
+- Redirects are followed; a fetch takes at most 30 seconds and 20 MiB. A failed one (a 404, no
+  network) is reported in the status line and opens nothing; a response that is not text is
+  refused.
+- `:vsplit` and `:hsplit` open URLs too. A [plugin](./plugins.md) needs the `shell` permission
+  to open one (it runs `curl` and reaches the network).
+
 ## Popup style
 
 By default the command line sits on the bottom line. With `[editor.cmdline] style = "popup"` it

@@ -10,6 +10,7 @@ pub(crate) mod quicklist;
 pub(crate) mod snippets;
 pub(crate) mod syntax;
 pub(crate) mod todos;
+pub(crate) mod url_buffer;
 pub(crate) use diff::{
     diff_align_bottom, diff_align_top, diff_apply_left_to_right, diff_close, diff_commit,
     diff_next_change, diff_next_file, diff_previous_change, diff_previous_file, diff_snap,
