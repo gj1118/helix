@@ -5731,7 +5731,7 @@ fn run_static(
     Ok(())
 }
 
-fn execute_command_line(
+pub(crate) fn execute_command_line(
     cx: &mut compositor::Context,
     input: &str,
     event: PromptEvent,

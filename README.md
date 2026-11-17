@@ -1337,6 +1337,23 @@ Moving with `j`/`k` turns the buffer into that revision, so you see its text beh
 [persistent undo](#persistent-undo), the tree holds the edits of earlier sessions too. See
 [Undo tree](book/src/keymap.md#undo-tree) in the book.
 
+## Remote Control
+
+Open files and run commands in a running Helix from outside, like Neovim's `--remote`:
+
+```sh
+hx --remote src/main.rs:42          # open it at line 42 in the running Helix
+hx --remote --vsplit a.rs b.rs      # in vertical splits
+hx --remote-command 'write-all'     # run a `:` command there
+```
+
+Each Helix listens on a socket of its own (readable by your user only) and puts its path in
+`HELIX_LISTEN` for the programs it starts, so a file manager or git tool run from Helix opens
+files in that Helix. From elsewhere, the most recently started one is used, or the one given
+with `--server`. With no Helix running, `hx --remote file` just opens the file, so it works as
+`EDITOR`. `[editor] remote-control = false` turns the socket off. Unix only. See
+[Remote control](book/src/remote.md) in the book.
+
 ## Code Folding
 
 **Code Folding Commands:**

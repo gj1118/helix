@@ -14,6 +14,7 @@ pub mod keymap;
 pub mod logging;
 mod plugin_events;
 pub mod plugin_registry;
+pub mod remote;
 pub mod ui;
 
 #[cfg(not(windows))]

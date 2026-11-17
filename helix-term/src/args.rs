@@ -22,6 +22,14 @@ pub struct Args {
     pub config_file: Option<PathBuf>,
     pub files: IndexMap<PathBuf, Option<Vec<Position>>>,
     pub working_directory: Option<PathBuf>,
+    /// `--remote`: open the files in a running Helix.
+    pub remote: bool,
+    /// `--remote-command <cmd>`: run a `:` command in a running Helix.
+    pub remote_command: Option<String>,
+    /// `--server <socket>`: the running Helix to talk to.
+    pub server: Option<PathBuf>,
+    /// `--listen <socket>`: where this Helix listens.
+    pub listen: Option<PathBuf>,
 }
 
 impl Args {
@@ -57,6 +65,19 @@ impl Args {
                 "--strict" => args.strict = true,
                 "--tutor" => args.load_tutor = true,
                 "--diff" => args.diff = true,
+                "--remote" => args.remote = true,
+                "--remote-command" => match argv.next() {
+                    Some(command) => args.remote_command = Some(command),
+                    None => anyhow::bail!("--remote-command must be followed by a command"),
+                },
+                "--server" => match argv.next() {
+                    Some(path) => args.server = Some(path.into()),
+                    None => anyhow::bail!("--server must be followed by a socket path"),
+                },
+                "--listen" => match argv.next() {
+                    Some(path) => args.listen = Some(path.into()),
+                    None => anyhow::bail!("--listen must be followed by a socket path"),
+                },
                 "--vsplit" => match args.split {
                     Some(_) => anyhow::bail!("can only set a split once of a specific type"),
                     None => args.split = Some(Layout::Vertical),

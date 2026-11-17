@@ -455,6 +455,8 @@ impl Default for ScrolloffConfig {
 pub struct Config {
     /// Whether to enable the welcome screen
     pub welcome_screen: bool,
+    /// Whether Helix listens on a socket of its own for `hx --remote` (Unix only).
+    pub remote_control: bool,
     /// Whether Helix sets the window title of the terminal (to `title_format`). Off by default:
     /// the terminal (or the shell) keeps its own.
     pub set_title: bool,
@@ -2156,6 +2158,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             welcome_screen: true,
+            remote_control: true,
             set_title: false,
             title_format: DEFAULT_TITLE_FORMAT.to_string(),
             scrolloff: ScrolloffConfig::default(),

@@ -48,6 +48,8 @@ mod test {
     mod quickfix;
     mod quicklist;
     mod recent_files;
+    #[cfg(unix)]
+    mod remote;
     mod responsiveness;
     mod rounded_cursor;
     mod snippets;

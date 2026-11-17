@@ -67,6 +67,13 @@ FLAGS:
     --vsplit                       Split all given files vertically into different windows
     --hsplit                       Split all given files horizontally into different windows
     -w, --working-dir <path>       Specify an initial working directory
+    --remote <files>...            Open the files in a running Helix (the one that started this
+                                   program, else the last one started); without one, open them
+                                   here
+    --remote-command <command>     Run a `:` command in a running Helix
+    --server <socket>              The running Helix for --remote (default: $HELIX_LISTEN)
+    --listen <socket>              Where this Helix listens for --remote (default: a socket of
+                                   its own in $XDG_RUNTIME_DIR/helix)
     +[N]                           Open the first given file at line number N, or the last line, if
                                    N is not specified.
 ",
@@ -107,6 +114,12 @@ FLAGS:
     }
 
     setup_logging(args.verbosity).context("failed to initialize logging")?;
+
+    if args.remote || args.remote_command.is_some() {
+        if let Some(code) = helix_term::remote::run_client(&args).await {
+            return Ok(code);
+        }
+    }
 
     // NOTE: Set the working directory early so the correct configuration is loaded. Be aware that
     // Application::new() depends on this logic so it must be updated if this changes.
@@ -150,8 +163,21 @@ FLAGS:
         });
 
     // TODO: use the thread local executor to spawn the application task separately from the work pool
+    let listen = (config.editor.remote_control || args.listen.is_some()).then(|| {
+        args.listen
+            .clone()
+            .unwrap_or_else(helix_term::remote::default_socket)
+    });
     let mut app = Application::new(args, config, lang_loader, workspace_trust)
         .context("unable to start Helix")?;
+    #[cfg(unix)]
+    if let Some(path) = listen {
+        if let Err(err) = app.listen(&path) {
+            log::warn!("not listening for --remote on {}: {err}", path.display());
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = listen;
     let mut events = app.event_stream();
 
     let exit_code = app.run(&mut events).await?;

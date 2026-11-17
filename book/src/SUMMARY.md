@@ -23,6 +23,7 @@
   - [Language servers](./lsp.md)
   - [Language support](./lang-support.md)
   - [Workspace trust](./workspace-trust.md)
+  - [Remote control](./remote.md)
   - [Plugins](./plugins.md)
 - [Ecosystem](./ecosystem.md)
   - [Migrating from Vim](./from-vim.md)

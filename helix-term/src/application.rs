@@ -119,6 +119,21 @@ pub struct Application {
     ui_receiver: tokio::sync::mpsc::UnboundedReceiver<crate::plugin_registry::UiRequest>,
 
     theme_mode: Option<theme::Mode>,
+    /// The socket of `hx --remote` (see [`crate::remote`]).
+    remote: Option<crate::remote::Server>,
+}
+
+/// The next request of `hx --remote`; never, without a socket.
+async fn next_remote_or_never(
+    remote: &mut Option<crate::remote::Server>,
+) -> crate::remote::Incoming {
+    match remote {
+        Some(server) => match server.requests.recv().await {
+            Some(incoming) => incoming,
+            None => std::future::pending().await,
+        },
+        None => std::future::pending().await,
+    }
 }
 
 #[cfg(feature = "integration")]
@@ -503,6 +518,7 @@ impl Application {
             plugin_popup: None,
             title_error: None,
             ui_receiver,
+            remote: None,
             theme_mode,
         };
         // Bindings plugins set while loading.
@@ -780,6 +796,10 @@ impl Application {
                 }
                 Some(request) = self.ui_receiver.recv() => {
                     self.handle_ui_request(request).await;
+                    self.render().await;
+                }
+                incoming = next_remote_or_never(&mut self.remote) => {
+                    self.handle_remote(incoming);
                     self.render().await;
                 }
                 event = self.editor.wait_event() => {
@@ -2290,6 +2310,121 @@ impl Application {
     #[cfg(feature = "integration")]
     pub fn set_kitty_graphics(&mut self, supported: bool) {
         self.terminal.backend_mut().kitty_graphics = supported;
+    }
+
+    /// Listens for `hx --remote` on `path`, and tells the programs Helix starts where
+    /// (`HELIX_LISTEN`).
+    #[cfg(unix)]
+    pub fn listen(&mut self, path: &std::path::Path) -> std::io::Result<()> {
+        let server = crate::remote::listen(path)?;
+        std::env::set_var(crate::remote::ENV_VAR, server.path());
+        self.remote = Some(server);
+        Ok(())
+    }
+
+    /// The socket `hx --remote` reaches this Helix on, if it listens.
+    pub fn remote_socket(&self) -> Option<&std::path::Path> {
+        #[cfg(unix)]
+        return self.remote.as_ref().map(|server| server.path());
+        #[cfg(not(unix))]
+        return None;
+    }
+
+    /// Does what `hx --remote` asked, and answers.
+    fn handle_remote(&mut self, incoming: crate::remote::Incoming) {
+        use crate::remote::{Request, Response};
+        let response = match incoming.request {
+            Request::Ping => Response::ok("pong"),
+            Request::Open { files, how } => self.remote_open(files, how),
+            Request::Command { line } => {
+                let mut cx = crate::compositor::Context {
+                    editor: &mut self.editor,
+                    jobs: &mut self.jobs,
+                    scroll: None,
+                    plugin_manager: Some(self.plugin_manager.clone()),
+                };
+                match crate::commands::typed::execute_command_line(
+                    &mut cx,
+                    &line,
+                    crate::ui::PromptEvent::Validate,
+                ) {
+                    Ok(()) => Response::ok(
+                        self.editor
+                            .get_status()
+                            .filter(|(_, severity)| **severity != Severity::Error)
+                            .map(|(message, _)| message.to_string())
+                            .unwrap_or_default(),
+                    ),
+                    Err(err) => {
+                        self.editor.set_error(err.to_string());
+                        Response::error(err.to_string())
+                    }
+                }
+            }
+        };
+        let _ = incoming.reply.send(response);
+    }
+
+    /// Opens files for `hx --remote`, at the positions given.
+    fn remote_open(
+        &mut self,
+        files: Vec<(PathBuf, Vec<(usize, usize)>)>,
+        how: crate::remote::OpenHow,
+    ) -> crate::remote::Response {
+        use crate::remote::{OpenHow, Response};
+        let action = match how {
+            OpenHow::Replace => helix_view::editor::Action::Replace,
+            OpenHow::VerticalSplit => helix_view::editor::Action::VerticalSplit,
+            OpenHow::HorizontalSplit => helix_view::editor::Action::HorizontalSplit,
+        };
+        let mut opened = Vec::new();
+        let mut errors = Vec::new();
+        for (path, positions) in files {
+            if path.is_dir() {
+                errors.push(format!("{} is a folder", path.display()));
+                continue;
+            }
+            match self.editor.open(&path, action) {
+                Ok(doc_id) => {
+                    if !positions.is_empty() {
+                        let view_id = self.editor.tree.focus;
+                        let doc = doc_mut!(self.editor, &doc_id);
+                        let selection = positions
+                            .into_iter()
+                            .map(|(row, col)| {
+                                Range::point(pos_at_coords(
+                                    doc.text().slice(..),
+                                    helix_core::Position::new(row, col),
+                                    true,
+                                ))
+                            })
+                            .collect();
+                        doc.set_selection(view_id, selection);
+                    }
+                    let (view, doc) = current!(self.editor);
+                    align_view(doc, view, Align::Center);
+                    opened.push(path);
+                }
+                Err(err) => errors.push(format!("{}: {err}", path.display())),
+            }
+        }
+        // the keyboard goes to the file opened, not a panel
+        if !opened.is_empty() {
+            self.editor.explorer_panel.focused = false;
+        }
+        let message = match opened.as_slice() {
+            [] => String::new(),
+            [one] => format!("Opened {}", one.display()),
+            many => format!("Opened {} files", many.len()),
+        };
+        if errors.is_empty() {
+            self.editor.set_status(message.clone());
+            Response::ok(message)
+        } else {
+            let error = errors.join("; ");
+            self.editor.set_error(error.clone());
+            Response::error(error)
+        }
     }
 
     pub async fn close(&mut self) -> Vec<anyhow::Error> {

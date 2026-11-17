@@ -100,6 +100,7 @@
 | `picker-symbol` | Drawn before the selected row of pickers and of the command line popup's completions | `">"` |
 | `fullscreen-overlay` | Pickers (and the command palette) take the whole screen on terminals narrower than 200 columns, instead of 90% of it. The file picker with [`file-picker.hide-preview`](#editorfile-picker-section) keeps its own size | `false` |
 | `welcome-screen` | Show the [welcome screen](#welcome-screen) when Helix starts without a file | `true` |
+| `remote-control` | Listen on a socket of its own, so `hx --remote` and `hx --remote-command` can reach this Helix (Unix only; see [Remote control](./remote.md)) | `true` |
 | `set-title` | Set the window title of the terminal, see [Window title](#window-title) | `false` |
 | `title-format` | The window title when `set-title` is on; supports [expansions](./command-line.md#expansions) | `"hx %{buffer_name}:%{cursor_line}:%{cursor_column}"` |
 | `ruler-char` | Character used to draw the rulers, see [Ruler character](#ruler-character) | `""` |
