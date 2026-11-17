@@ -4316,15 +4316,16 @@ fn undo_tree(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> a
     }
     let (view, doc) = current_ref!(cx.editor);
     let (view_id, doc_id) = (view.id, doc.id());
-    if let Some(tree) = crate::ui::undo_tree::UndoTree::new(cx.editor, doc_id, view_id) {
-        cx.jobs.callback(async move {
-            let call: crate::job::Callback =
-                crate::job::Callback::EditorCompositor(Box::new(move |_editor, compositor| {
-                    compositor.push(Box::new(tree));
-                }));
-            Ok(call)
-        });
-    }
+    // (shown once the command line is gone)
+    cx.jobs.callback(async move {
+        let call: crate::job::Callback =
+            crate::job::Callback::EditorCompositor(Box::new(move |editor, compositor| {
+                if let Some(picker) = crate::ui::undo_tree::picker(editor, doc_id, view_id) {
+                    crate::ui::quickfix::show(compositor, editor, picker);
+                }
+            }));
+        Ok(call)
+    });
     Ok(())
 }
 
@@ -5757,7 +5758,7 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
     TypableCommand {
         name: "undo-tree",
         aliases: &["undotree"],
-        doc: "Show the undo tree: every revision of the buffer, branches included. Moving through it shows each one; Enter keeps it, Esc goes back.",
+        doc: "Show the undo tree in a picker: every revision of the buffer, branches included, each previewed. Enter turns the buffer into the one under the cursor.",
         fun: undo_tree,
         completer: CommandCompleter::none(),
         signature: Signature {

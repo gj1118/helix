@@ -91,6 +91,18 @@ impl From<DocumentId> for PathOrId<'_> {
 
 type FileCallback<T> = Box<dyn for<'a> Fn(&'a Editor, &'a T) -> Option<FileLocation<'a>>>;
 
+/// A text an item is previewed with (see [`Picker::with_text_preview`]), in `language` (a
+/// language id) when it has one.
+pub struct TextPreview {
+    pub text: String,
+    pub language: Option<String>,
+}
+
+/// The key a generated preview is cached by (one per text) and the lines to show and
+/// highlight in it.
+type TextKeyFn<T> = Box<dyn Fn(&Editor, &T) -> Option<(String, Option<(usize, usize)>)>>;
+type TextFn<T> = Box<dyn Fn(&Editor, &T) -> Option<TextPreview>>;
+
 /// File path and range of lines (used to align and highlight lines)
 pub type FileLocation<'a> = (PathOrId<'a>, Option<(usize, usize)>);
 
@@ -390,6 +402,8 @@ pub struct Picker<T: 'static + Send + Sync, D: 'static> {
     read_buffer: Vec<u8>,
     /// Given an item in the picker, return the file path and line number to display.
     file_fn: Option<FileCallback<T>>,
+    /// Previews generated from the items instead of files (see [`Picker::with_text_preview`]).
+    text_preview: Option<(TextKeyFn<T>, TextFn<T>)>,
     /// An event handler for syntax highlighting the currently previewed file.
     preview_highlight_handler: Sender<Arc<Path>>,
     dynamic_query_handler: Option<Sender<DynamicQueryChange>>,
@@ -551,6 +565,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             custom_key_handlers: HashMap::new(),
             read_buffer: Vec::with_capacity(1024),
             file_fn: None,
+            text_preview: None,
             preview_highlight_handler: PreviewHighlightHandler::<T, D>::default().spawn(),
             dynamic_query_handler: None,
             preview_scroll_offset: 0,
@@ -847,6 +862,19 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         self
     }
 
+    /// Previews the items with a text made for them (the state of a buffer at a revision,
+    /// say) rather than a file: `key` names an item's text, cheaply, with the lines to show
+    /// and highlight (0-based, inclusive); `text` makes the text, once per key (previews are
+    /// cached like files'). The text is highlighted in its language like a file's.
+    pub fn with_text_preview(
+        mut self,
+        key: impl Fn(&Editor, &T) -> Option<(String, Option<(usize, usize)>)> + 'static,
+        text: impl Fn(&Editor, &T) -> Option<TextPreview> + 'static,
+    ) -> Self {
+        self.text_preview = Some((Box::new(key), Box::new(text)));
+        self
+    }
+
     pub fn with_history_register(mut self, history_register: Option<char>) -> Self {
         self.prompt.with_history_register(history_register);
         self
@@ -910,7 +938,12 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
     /// callback (no `file_fn`) or with the preview toggled off route preview-scroll keys
     /// back to result-list navigation.
     fn preview_shown(&self) -> bool {
-        self.show_preview && self.file_fn.is_some()
+        self.show_preview && self.has_preview()
+    }
+
+    /// Whether the items have a preview: a file location or a generated text.
+    fn has_preview(&self) -> bool {
+        self.file_fn.is_some() || self.text_preview.is_some()
     }
 
     /// Move the cursor by a number of lines, either down (`Forward`) or up (`Backward`)
@@ -1082,6 +1115,47 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         editor: &'editor Editor,
     ) -> Option<(Preview<'picker, 'editor>, Option<(usize, usize)>)> {
         let current = self.selection()?;
+        if let Some((key_fn, _)) = &self.text_preview {
+            let (key, _) = key_fn(editor, current)?;
+            // a path that is no file's: `text-preview:` is not a directory of the cwd
+            let path: Arc<Path> = Path::new(&format!("text-preview:{key}")).into();
+            if !self.preview_cache.contains_key(&path) {
+                let (_, text_fn) = self.text_preview.as_ref()?;
+                let preview = match text_fn(editor, current) {
+                    Some(TextPreview { text, language }) => {
+                        let mut doc = Document::from(
+                            helix_core::Rope::from(text),
+                            None,
+                            editor.config.clone(),
+                            editor.syn_loader.clone(),
+                        );
+                        if let Some(language) = language {
+                            let loader = editor.syn_loader.load();
+                            if let Some(language) = loader.language_for_name(language.as_str()) {
+                                doc.language = Some(loader.language(language).config().clone());
+                                helix_event::send_blocking(
+                                    &self.preview_highlight_handler,
+                                    path.clone(),
+                                );
+                            }
+                        }
+                        CachedPreview::Document(Box::new(doc))
+                    }
+                    None => CachedPreview::NotFound,
+                };
+                self.cache_preview(path.clone(), preview);
+            }
+            // (asked again: making the text may have found the lines to show)
+            let current = self.selection()?;
+            let (key_fn, _) = self.text_preview.as_ref()?;
+            let range = key_fn(editor, current).and_then(|(_, range)| range);
+            let preview = &self.preview_cache[&path];
+            if matches!(preview, CachedPreview::Document(doc) if doc.language_config().is_some() && doc.syntax().is_none())
+            {
+                helix_event::send_blocking(&self.preview_highlight_handler, path.clone());
+            }
+            return Some((Preview::Cached(preview), range));
+        }
         let (path_or_id, range) = (self.file_fn.as_ref()?)(editor, current)?;
 
         match path_or_id {
@@ -1956,7 +2030,7 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
         // +---------+
 
         let render_preview = self.show_preview
-            && self.file_fn.is_some()
+            && self.has_preview()
             && area.width >= MIN_AREA_WIDTH_FOR_PREVIEW
             && area.height >= MIN_AREA_HEIGHT_FOR_PREVIEW;
         let stack_vertically = area.width / 2 < MIN_AREA_WIDTH_FOR_PREVIEW;
@@ -2194,7 +2268,7 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
 
         // prompt area
         let render_preview = self.show_preview
-            && self.file_fn.is_some()
+            && self.has_preview()
             && area.width >= MIN_AREA_WIDTH_FOR_PREVIEW
             && area.height >= MIN_AREA_HEIGHT_FOR_PREVIEW;
         let stack_vertically = area.width / 2 < MIN_AREA_WIDTH_FOR_PREVIEW;
@@ -2317,7 +2391,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         if ui::quickfix::focused(cx.editor)
             && config.quickfix.preview
             && self.show_preview
-            && self.file_fn.is_some()
+            && self.has_preview()
         {
             // The statusline above the panel stays.
             let views = ui::quickfix::layout(cx.editor, frame).clip_bottom(1);

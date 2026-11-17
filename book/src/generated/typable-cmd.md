@@ -116,7 +116,7 @@
 | `:tab-next`, `:tabnext`, `:tabn` | Show the next tab page, or tab page N (1-based) when given. |
 | `:tab-previous`, `:tabprevious`, `:tabp`, `:tabN` | Show the previous tab page (N tab pages back when given). |
 | `:tab-move`, `:tabmove` | Move the tab page shown to position N (1-based; the last without N). |
-| `:undo-tree`, `:undotree` | Show the undo tree: every revision of the buffer, branches included. Moving through it shows each one; Enter keeps it, Esc goes back. |
+| `:undo-tree`, `:undotree` | Show the undo tree in a picker: every revision of the buffer, branches included, each previewed. Enter turns the buffer into the one under the cursor. |
 | `:notifications-history`, `:notif-history`, `:nh` | Show notification history. |
 | `:notifications-clear`, `:notif-clear`, `:nc` | Clear notification history. |
 | `:notifications-dismiss`, `:notif-dismiss`, `:nd` | Dismiss all active notifications. |

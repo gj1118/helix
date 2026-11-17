@@ -4821,8 +4821,8 @@ fn quicklist_picker(cx: &mut Context) {
 pub fn undo_tree(cx: &mut Context) {
     let (view, doc) = current_ref!(cx.editor);
     let (view_id, doc_id) = (view.id, doc.id());
-    if let Some(tree) = ui::undo_tree::UndoTree::new(cx.editor, doc_id, view_id) {
-        cx.push_layer(Box::new(tree));
+    if let Some(picker) = ui::undo_tree::picker(cx.editor, doc_id, view_id) {
+        crate::ui::quickfix::show_from_command(cx, picker);
     }
 }
 

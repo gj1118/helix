@@ -399,27 +399,25 @@ This layer is a kludge of mappings, mostly pickers.
 
 #### Undo tree
 
-`Space u` (or `:undo-tree`) shows every revision of the buffer in a panel at the right,
-including the branches that `u` and `U` can no longer reach (edits made after an undo leave
-the undone ones on a branch of their own). The first row is the text before any edit; each
-other row is a revision, with what it changed (`+2 −1 lines`, `+5` chars) and how long ago.
-Branches left behind are indented under the revision they started from (`├─`); the revision
-`U` goes to continues in the same column. `●` marks the revision the buffer shows, `saved` the
-one last written.
+`Space u` (or `:undo-tree`) lists every revision of the buffer in a picker (in the
+[quickfix panel](./quicklist.md#quickfix-panel) when `[editor.quickfix] enable` is on), including the
+branches that `u` and `U` can no longer reach (edits made after an undo leave the undone ones
+on a branch of their own). The rows are in the order of the tree: the first is the text
+before any edit (`original`); each other is a revision, with what it changed (`+2 −1 lines`,
+`+5` chars), the start of the text it added and how long ago. Branches left behind are
+indented under the revision they started from (`├─`); the revision `U` goes to continues in
+the same column. `●` marks the revision the buffer shows, `saved` the one last written. The
+cursor starts on the revision shown.
 
-| Key | Action |
-| --- | --- |
-| `j` / `k`, `Down` / `Up`, `Ctrl-n` / `Ctrl-p` | Move: the buffer turns into that revision, so its text shows behind the panel |
-| `Ctrl-d` / `Ctrl-u`, `PageDown` / `PageUp` | Move by half a page / a page |
-| `g` / `G`, `Home` / `End` | The first (original) / last row |
-| `o` | Back to the revision the tree was opened on |
-| `Enter` | Keep the revision under the cursor and close |
-| `Esc`, `q`, `Ctrl-c` | Go back to the revision the tree was opened on and close |
+The preview shows the buffer's text at the revision under the cursor, at the lines it
+changed (highlighted); the buffer itself does not change while you look. The picker's keys
+apply: `Up`/`Down` (`j`/`k` in the quickfix panel) move, typing filters the revisions by
+what they changed (`original`, `#12`, a word they added), `Enter` turns the buffer into the
+revision under the cursor, `Esc` closes without changing anything.
 
-The mouse wheel moves too, and a click selects a row. Keeping an older revision is not an
-edit: the history keeps every branch, so `u`, `U` and the tree still reach the others. With
-[persistent undo](./editor.md#persistent-undo) the tree also holds the edits of earlier
-sessions.
+Going to an older revision is not an edit: the history keeps every branch, so `u`, `U` and
+the tree still reach the others. With [persistent undo](./editor.md#persistent-undo) the
+tree also holds the edits of earlier sessions.
 
 For the full commit behind a line, run `:blame` (or bind `blame_details`): a popup
 shows the full commit ID, author name and email, date and commit message. `y` copies

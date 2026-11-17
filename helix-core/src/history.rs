@@ -47,7 +47,7 @@ pub struct State {
 ///    delete, we also store an inversion of the transaction.
 ///
 /// Using time to navigate the history: <https://github.com/helix-editor/helix/pull/194>
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct History {
     revisions: Vec<Revision>,
     current: usize,
@@ -517,6 +517,26 @@ impl History {
     /// The transactions that turn the text of the current revision into that of `revision`
     /// (undoing up to their common ancestor, then redoing down), which becomes the current
     /// one. Nothing for a revision that doesn't exist.
+    /// The chars `revision` changed, in the text of that revision (`to` exclusive): from the
+    /// first change to the end of the last. `None` for the root, or a revision that changed
+    /// nothing.
+    pub fn changed_range(&self, revision: usize) -> Option<(usize, usize)> {
+        let revision = self.revisions.get(revision).filter(|_| revision > 0)?;
+        let mut delta: isize = 0;
+        let mut range: Option<(usize, usize)> = None;
+        for (from, to, text) in revision.transaction.changes().changes_iter() {
+            let inserted = text.map_or(0, |text| text.chars().count());
+            let new_from = (from as isize + delta) as usize;
+            let new_to = new_from + inserted;
+            delta += inserted as isize - (to - from) as isize;
+            range = Some(match range {
+                None => (new_from, new_to),
+                Some((start, _)) => (start, new_to),
+            });
+        }
+        range
+    }
+
     pub fn jump_to_revision(&mut self, revision: usize) -> Vec<Transaction> {
         if revision >= self.revisions.len() {
             return Vec::new();
@@ -791,6 +811,15 @@ mod test {
         assert_eq!(summary.excerpt, "you".to_string());
         assert_eq!(history.summary(0).excerpt, String::new());
         assert_eq!(history.summary(99).inserted_chars, 0_usize);
+    }
+
+    #[test]
+    fn the_range_a_revision_changed_is_in_its_own_text() {
+        let (history, _) = branched_history();
+        // revision 3: "hello world" -> "hello you": "you" is chars 6..9 of its text
+        assert_eq!(history.changed_range(3), Some((6_usize, 9_usize)));
+        assert_eq!(history.changed_range(0), None);
+        assert_eq!(history.changed_range(99), None);
     }
 
     #[test]

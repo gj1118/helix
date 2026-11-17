@@ -1348,15 +1348,17 @@ history, so old edits are never applied to a different text. See
 
 ## Undo Tree
 
-`Space u` (or `:undo-tree`) shows every revision of the buffer in a panel at the right,
-branches included: edits made after an undo leave the undone ones on a branch that `u` and `U`
-can't reach any more, and the tree can. Each row shows what the revision changed and how long
-ago; branches are indented under the revision they started from.
+`Space u` (or `:undo-tree`) lists every revision of the buffer in a picker (or the quickfix
+panel, when it is on), branches included: edits made after an undo leave the undone ones on a
+branch that `u` and `U` can't reach any more, and the tree can. Each row shows what the
+revision changed, the text it added and how long ago; branches are indented under the
+revision they started from.
 
-Moving with `j`/`k` turns the buffer into that revision, so you see its text behind the panel.
-`Enter` keeps it, `Esc` goes back to where you were. With
-[persistent undo](#persistent-undo), the tree holds the edits of earlier sessions too. See
-[Undo tree](book/src/keymap.md#undo-tree) in the book.
+The preview shows the buffer's text at the revision under the cursor, at what it changed,
+without touching the buffer. Typing filters the revisions; `Enter` turns the buffer into the
+one under the cursor, `Esc` changes nothing. With [persistent undo](#persistent-undo), the
+tree holds the edits of earlier sessions too. See [Undo tree](book/src/keymap.md#undo-tree)
+in the book.
 
 ## Remote Control
 
