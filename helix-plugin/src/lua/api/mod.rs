@@ -15,6 +15,7 @@ pub mod process;
 pub mod quickfix;
 pub mod statusline;
 pub(crate) mod style;
+pub mod treesitter;
 pub mod ui;
 pub mod window;
 

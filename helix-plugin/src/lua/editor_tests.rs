@@ -2510,3 +2510,125 @@ fn completion_sources_are_registered_asked_and_removed() {
     assert_eq!((removed, again), (true, false));
     assert_eq!(editor.plugin_completion_sources.len(), 1_usize);
 }
+
+#[test]
+fn the_syntax_tree_is_walked_and_queried() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    let result = result_of(
+        &engine,
+        &mut editor,
+        r#"
+        local b = helix.buffer.get_current()
+        assert(b:has_syntax() == false)
+        local ok, err = pcall(b.syntax_root, b)
+        assert(not ok and tostring(err):find("no syntax tree", 1, true), tostring(err))
+        b:set_language("rust")
+        -- "é" is two bytes: the chars and the bytes of the nodes differ after it
+        b:set_text("fn main() {\n    let é = add(1, 2);\n}\n")
+        assert(b:has_syntax() == true)
+
+        local root = b:syntax_root()
+        assert(root.type == "source_file" and root.from == 0 and root.named == true)
+
+        -- the identifier `add`: line 2, col 12 (chars)
+        local at = b:line_to_char(1) + 12
+        local node = b:syntax_node(at)
+        assert(node.type == "identifier" and b:syntax_text(node) == "add", node.type)
+        assert(math.type(node.from) == "integer" and node.from == at and node.to == at + 3)
+        assert(node.start_line == 2 and node.start_col == 12 and node.end_col == 15)
+        assert(node.start_byte == node.from + 1, "a byte more than chars after é")
+
+        local call = b:syntax_parent(node)
+        assert(call.type == "call_expression", call.type)
+        local args = b:syntax_children(call, { named = true })
+        assert(#args == 2 and args[2].type == "arguments", #args)
+        local all = b:syntax_children(args[2])
+        local kinds = {}
+        for _, child in ipairs(all) do table.insert(kinds, child.type) end
+        assert(table.concat(kinds, " ") == "( integer_literal , integer_literal )", table.concat(kinds, " "))
+
+        -- an anonymous node with named = false; a range
+        local paren = b:syntax_node(at + 3, { named = false })
+        assert(paren.type == "(" and paren.named == false, paren.type)
+        local spanning = b:syntax_node(at, { to = at + 9 })
+        assert(spanning.type == "call_expression", spanning.type)
+
+        -- queries: matches in the document's order, patterns 1-based, text predicates
+        local matches = b:syntax_query([[
+            (function_item name: (identifier) @name)
+            ((integer_literal) @int (#eq? @int "2"))
+        ]])
+        assert(#matches == 2, #matches)
+        assert(matches[1].pattern == 1 and matches[1].captures[1].name == "name")
+        assert(b:syntax_text(matches[1].captures[1].node) == "main")
+        assert(matches[2].pattern == 2 and b:syntax_text(matches[2].captures[1].node) == "2")
+        local ranged = b:syntax_query("(integer_literal) @int", { from = 0, to = at + 5 })
+        assert(#ranged == 1, #ranged)
+        assert(#b:syntax_query("(integer_literal) @int", { max = 1 }) == 1)
+        local bad_ok, bad = pcall(b.syntax_query, b, "(no_such_node) @x")
+        assert(not bad_ok and tostring(bad):find("Invalid query", 1, true), tostring(bad))
+
+        -- a node from before an edit that removed it is an error
+        b:set_text("fn main() {}\n")
+        local gone_ok, gone = pcall(b.syntax_parent, b, node)
+        assert(not gone_ok and tostring(gone):find("no longer in the tree", 1, true), tostring(gone))
+        result = table.concat({ root.type, node.type, call.type, tostring(#matches) }, "|")
+        "#,
+    );
+    assert_eq!(
+        result,
+        "source_file|identifier|call_expression|2".to_string()
+    );
+}
+
+#[test]
+fn a_syntax_node_is_found_in_an_injected_language() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    let result = result_of(
+        &engine,
+        &mut editor,
+        r##"
+        local b = helix.buffer.get_current()
+        b:set_language("markdown")
+        b:set_text("# Title\n\n```rust\nlet value = 1;\n```\n")
+        local node = b:syntax_node(b:line_to_char(3) + 5)
+        assert(type(node) == "table" and math.type(node.start_line) == "integer")
+        result = node.type .. "|" .. b:syntax_text(node) .. "|" .. node.start_line
+        "##,
+    );
+    assert_eq!(result, "identifier|value|4".to_string());
+}
+
+#[test]
+fn the_syntax_tree_example_of_the_book_runs() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    let result = result_of(
+        &engine,
+        &mut editor,
+        r#"
+local buffer = helix.buffer.get_current()
+buffer:set_language("rust") -- needs `edit`
+buffer:set_text("fn main() {\n    let total = add(1, 2);\n}\n")
+local add = buffer:syntax_node(buffer:line_to_char(1) + 16)
+assert(type(add) == "table" and add.type == "identifier")
+assert(math.type(add.start_line) == "integer" and add.start_line == 2)
+assert(buffer:syntax_text(add) == "add")
+local call = buffer:syntax_parent(add)
+assert(call.type == "call_expression")
+local matches = buffer:syntax_query("(function_item name: (identifier) @name)")
+assert(#matches == 1 and matches[1].captures[1].name == "name")
+assert(buffer:syntax_text(matches[1].captures[1].node) == "main")
+result = "ran"
+        "#,
+    );
+    assert_eq!(result, "ran".to_string());
+}

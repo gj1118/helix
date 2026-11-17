@@ -1,4 +1,5 @@
 use crate::error::Result;
+use crate::lua::api::treesitter as ts;
 use crate::permissions::{require, Permission};
 use helix_core::Position;
 use helix_view::DocumentId;
@@ -848,6 +849,82 @@ impl LuaUserData for LuaBuffer {
                 Ok(())
             })
         });
+
+        // The syntax tree (see `treesitter.rs`): nodes are snapshot tables.
+        methods.add_method("has_syntax", |lua, this, ()| {
+            require(lua, Permission::Read, "buffer:has_syntax")?;
+            with_doc(this.document_id, |doc| Ok(doc.syntax().is_some()))
+        });
+        methods.add_method("syntax_root", |lua, this, ()| {
+            require(lua, Permission::Read, "buffer:syntax_root")?;
+            let node = with_doc(this.document_id, ts::root)?;
+            node.into_lua(lua)
+        });
+        methods.add_method(
+            "syntax_node",
+            |lua, this, (from, options): (usize, Option<LuaTable>)| {
+                require(lua, Permission::Read, "buffer:syntax_node")?;
+                let (to, named) = match &options {
+                    Some(options) => (
+                        options.get::<Option<usize>>("to")?,
+                        options.get::<Option<bool>>("named")?,
+                    ),
+                    None => (None, None),
+                };
+                let node = with_doc(this.document_id, |doc| {
+                    ts::node_at(doc, from, to.unwrap_or(from), named.unwrap_or(true))
+                })?;
+                node.into_lua(lua)
+            },
+        );
+        methods.add_method("syntax_parent", |lua, this, node: LuaTable| {
+            require(lua, Permission::Read, "buffer:syntax_parent")?;
+            let node = ts::NodeRef::from_lua(&node)?;
+            let parent = with_doc(this.document_id, |doc| ts::parent(doc, &node))?;
+            parent.map(|parent| parent.into_lua(lua)).transpose()
+        });
+        methods.add_method(
+            "syntax_children",
+            |lua, this, (node, options): (LuaTable, Option<LuaTable>)| {
+                require(lua, Permission::Read, "buffer:syntax_children")?;
+                let node = ts::NodeRef::from_lua(&node)?;
+                let named = match &options {
+                    Some(options) => options.get::<Option<bool>>("named")?,
+                    None => None,
+                }
+                .unwrap_or(false);
+                let children = with_doc(this.document_id, |doc| ts::children(doc, &node, named))?;
+                ts::nodes_into_lua(lua, children)
+            },
+        );
+        methods.add_method("syntax_text", |lua, this, node: LuaTable| {
+            require(lua, Permission::Read, "buffer:syntax_text")?;
+            let node = ts::NodeRef::from_lua(&node)?;
+            with_doc(this.document_id, |doc| ts::node_text(doc, &node))
+        });
+        methods.add_method(
+            "syntax_query",
+            |lua, this, (source, options): (String, Option<LuaTable>)| {
+                require(lua, Permission::Read, "buffer:syntax_query")?;
+                let (from, to, max) = match &options {
+                    Some(options) => (
+                        options.get::<Option<usize>>("from")?,
+                        options.get::<Option<usize>>("to")?,
+                        options.get::<Option<usize>>("max")?,
+                    ),
+                    None => (None, None, None),
+                };
+                let max = max.unwrap_or(ts::QUERY_DEFAULT_MAX).min(ts::QUERY_MAX);
+                let matches = with_doc(this.document_id, |doc| {
+                    let range = match (from, to) {
+                        (None, None) => None,
+                        (from, to) => Some((from.unwrap_or(0), to.unwrap_or(usize::MAX))),
+                    };
+                    ts::query(doc, &source, range, max)
+                })?;
+                ts::matches_into_lua(lua, matches)
+            },
+        );
 
         // Get cursor position (char index)
         methods.add_method("get_cursor", |lua, this, ()| {

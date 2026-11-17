@@ -321,6 +321,46 @@ Buffer methods (they raise an error once the buffer is closed):
   local exact = buffer:find_all("Two") -- an uppercase letter: the case matters
   assert(#exact == 1 and exact[1].from == 8)
   ```
+- `has_syntax()`: whether the buffer has a syntax tree (a language with a tree-sitter
+  grammar) (`read`).
+- The syntax tree (`read`; an error without one). A node is a table, a snapshot of the tree
+  when it was asked: `{ type, named, missing, extra, from, to, start_byte, end_byte,
+  start_line, start_col, end_line, end_col, child_count, named_child_count }` (`from`/`to`
+  char indices, `to` exclusive; lines 1-based, columns 0-based in chars). A method given a
+  node finds it again in the current tree by its range and type, and is an error once an
+  edit removed it.
+  - `syntax_root()`: the root node.
+  - `syntax_node(char, options)`: the smallest named node at the char index (in the
+    language injected there: the code of a Markdown fence is Rust's), or the smallest
+    spanning `char..options.to`; `options.named = false` includes anonymous nodes (`(`,
+    keywords).
+  - `syntax_parent(node)`: the parent node, or `nil` for the root.
+  - `syntax_children(node, options)`: the children, only the named ones with
+    `options.named = true`.
+  - `syntax_text(node)`: the text of the node.
+  - `syntax_query(query, options)`: the matches of a tree-sitter query (the
+    S-expressions of the `runtime/queries` files) in the buffer's language (its root
+    layer), in the document's order: `{ { pattern = n, captures = { { name = "name", node =
+    node }, ... } }, ... }` (`pattern` 1-based in the order of the query's patterns). Text
+    predicates (`#eq?`, `#match?`, `#any-of?`...) are applied, others are ignored.
+    `options.from`/`options.to` (char indices) limit it to a range, `options.max` to
+    a number of matches (default 10 000). An invalid query is an error. Compiled queries
+    are kept, so running one on every change costs only the matching.
+
+  ```lua
+  local buffer = helix.buffer.get_current()
+  buffer:set_language("rust") -- needs `edit`
+  buffer:set_text("fn main() {\n    let total = add(1, 2);\n}\n")
+  local add = buffer:syntax_node(buffer:line_to_char(1) + 16)
+  assert(type(add) == "table" and add.type == "identifier")
+  assert(math.type(add.start_line) == "integer" and add.start_line == 2)
+  assert(buffer:syntax_text(add) == "add")
+  local call = buffer:syntax_parent(add)
+  assert(call.type == "call_expression")
+  local matches = buffer:syntax_query("(function_item name: (identifier) @name)")
+  assert(#matches == 1 and matches[1].captures[1].name == "name")
+  assert(buffer:syntax_text(matches[1].captures[1].node) == "main")
+  ```
 - `set_panel(panel)` (focused buffer only): shows a panel in the focused window, after the
   end of a line, drawn over the text: unlike annotations it takes no rows, so the lines
   below never move and the view does not scroll for it. `set_panel(nil)` removes it; a

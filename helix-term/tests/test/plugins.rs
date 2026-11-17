@@ -1663,3 +1663,51 @@ helix.completion.register_source({
     assert_eq!(doc.text().to_string(), "the crimson!".to_string());
     Ok(())
 }
+
+/// A plugin command reads the syntax tree of the file under the cursor: the node there, its
+/// parent, and a query's captures.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plugin_reads_the_syntax_tree_at_the_cursor() -> anyhow::Result<()> {
+    let init = r#"
+        helix.register_command{ name = "node-here", handler = function()
+            local buffer = helix.buffer.get_current()
+            local node = buffer:syntax_node(buffer:get_cursor())
+            local parent = buffer:syntax_parent(node)
+            local names = {}
+            for _, found in ipairs(buffer:syntax_query("(function_item name: (identifier) @fn)")) do
+                table.insert(names, buffer:syntax_text(found.captures[1].node))
+            end
+            helix.editor.set_register("y", {
+                node.type .. "|" .. buffer:syntax_text(node) .. "|" .. parent.type .. "|"
+                    .. node.start_line .. "|" .. table.concat(names, ",")
+            })
+        end }
+    "#;
+    let dir = plugin_dir(&[("tree", init, None)])?;
+    let config = plugin_config(
+        dir.path(),
+        r#"
+        [[plugins]]
+        name = "tree"
+        permissions = ["edit", "commands"]
+        "#,
+    )?;
+    let file = tempfile::Builder::new().suffix(".rs").tempfile()?;
+    std::fs::write(file.path(), "fn one() {}\nfn two() {\n    one();\n}\n")?;
+    let mut app = helpers::AppBuilder::new()
+        .with_file(file.path(), None)
+        .with_config(config)
+        .build()?;
+    assert!(app.plugins_enabled());
+
+    // the cursor on `one` in `one();`
+    send_keys(&mut app, "3gg4l:node-here<ret>").await?;
+    assert_eq!(
+        register(&app, 'y'),
+        vec!["identifier", "one", "call_expression", "3", "one,two"]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<String>>()
+    );
+    Ok(())
+}

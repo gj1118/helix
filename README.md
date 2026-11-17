@@ -452,6 +452,9 @@ permissions = ["edit", "commands"]  # what it may do beyond looking ("read") and
   pickers), and completion sources whose items join the completion menu
   (`helix.completion.register_source{ name = "emoji", complete = function(ctx) ... end }`,
   limited to languages, asked on trigger characters, while typing and with `C-x`).
+- **Syntax tree** - the tree-sitter node at a position (in injected languages too), its
+  parent, children and text, and tree-sitter queries run on a buffer
+  (`buffer:syntax_query("(function_item name: (identifier) @name)")`, text predicates applied).
 - **Search** - the matches of a regex found like Helix's search (`buffer:find_all`) and the
   last search pattern (`helix.editor.last_search()`).
 - **Examples** - `contrib/plugins/` has `auto-save`, `inline-diagnostic` (the diagnostics of
