@@ -2423,3 +2423,90 @@ fn a_plugin_publishes_diagnostics_of_its_own() {
     .unwrap();
     assert!(helix_view::doc!(editor).diagnostics().is_empty());
 }
+
+#[test]
+fn completion_sources_are_registered_asked_and_removed() {
+    use helix_view::plugin_ui::PluginCompletionRequest;
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    run(
+        &engine,
+        &mut editor,
+        r#"
+        helix.completion.register_source({
+            name = "words",
+            languages = { "markdown" },
+            triggers = ":",
+            complete = function(ctx)
+                return { "plain", { label = "rich", insert = "RICH", kind = "k", documentation = "d" } }
+            end,
+        })
+        -- the same name again: replaced
+        helix.completion.register_source({
+            name = "words",
+            complete = function(ctx) return { ctx.prefix .. "-" .. ctx.line .. "-" .. ctx.col } end,
+        })
+        listed = helix.completion.list_sources()
+        "#,
+    )
+    .unwrap();
+    let listed: mlua::Table = lua(&engine).globals().get("listed").unwrap();
+    assert_eq!(listed.raw_len(), 1_usize);
+    assert_eq!(editor.plugin_completion_sources.len(), 1_usize);
+    let source = editor.plugin_completion_sources[0].clone();
+    assert!(source.languages.is_empty(), "the second registration's");
+
+    let request = PluginCompletionRequest {
+        document: helix_view::doc!(editor).id(),
+        line: 2,
+        col: 5,
+        prefix: "wor".into(),
+        before: "  wor".into(),
+        manual: false,
+    };
+    let items = engine
+        .complete(&mut editor, "p", source.id, &request)
+        .unwrap();
+    let labels: Vec<String> = items.into_iter().map(|item| item.label).collect();
+    assert_eq!(
+        labels,
+        vec!["wor-3-5".to_string()],
+        "lines are 1-based for the plugin"
+    );
+
+    // a bad item is an error; removing the source
+    run(
+        &engine,
+        &mut editor,
+        r#"
+        helix.completion.register_source({ name = "bad", complete = function() return { 42 } end })
+        "#,
+    )
+    .unwrap();
+    let bad = editor
+        .plugin_completion_sources
+        .iter()
+        .find(|s| s.name == "bad")
+        .unwrap()
+        .id;
+    let err = engine
+        .complete(&mut editor, "p", bad, &request)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("a completion item is a string or a table"),
+        "{err}"
+    );
+    run(
+        &engine,
+        &mut editor,
+        r#"removed = helix.completion.remove_source("bad"); again = helix.completion.remove_source("bad")"#,
+    )
+    .unwrap();
+    let removed: bool = lua(&engine).globals().get("removed").unwrap();
+    let again: bool = lua(&engine).globals().get("again").unwrap();
+    assert_eq!((removed, again), (true, false));
+    assert_eq!(editor.plugin_completion_sources.len(), 1_usize);
+}

@@ -689,6 +689,7 @@ impl LuaEngine {
         api::register_statusline_api(&lua, &helix)?;
         api::register_process_api(&lua, &helix)?;
         api::register_log_api(&lua, &helix)?;
+        api::register_completion_api(&lua, &helix)?;
         helix.set("version", env!("CARGO_PKG_VERSION"))?;
         lua.globals().set("helix", helix)?;
         Ok(lua)
@@ -1092,6 +1093,21 @@ impl LuaEngine {
                 function.call::<()>(context)
             })
             .map_err(PluginError::LuaError)
+        })
+    }
+
+    /// Asks completion source `id` of `plugin` (see [`api::completion::complete`]).
+    pub fn complete(
+        &self,
+        editor: &mut Editor,
+        plugin: &str,
+        id: u64,
+        request: &helix_view::plugin_ui::PluginCompletionRequest,
+    ) -> Result<Vec<helix_view::plugin_ui::PluginCompletionItem>> {
+        let lua = self.plugin_lua(plugin)?;
+        with_plugin(&Arc::from(plugin), || {
+            with_editor_context(editor, || api::completion::complete(lua, id, request))
+                .map_err(PluginError::LuaError)
         })
     }
 

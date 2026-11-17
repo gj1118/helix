@@ -4,6 +4,7 @@
 /// Helix functionality to Lua plugins.
 pub(crate) mod actions;
 pub mod buffer;
+pub mod completion;
 pub mod diff;
 pub mod editor;
 pub mod explorer;
@@ -19,6 +20,7 @@ pub mod window;
 
 // Re-exports for convenience
 pub use buffer::*;
+pub use completion::register_completion_api;
 pub use diff::register_diff_api;
 pub use editor::*;
 pub use explorer::*;

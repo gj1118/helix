@@ -28,6 +28,7 @@ pub use resolve::ResolveHandler;
 
 mod item;
 mod path;
+mod plugin;
 mod request;
 mod resolve;
 mod snippets;

@@ -28,7 +28,7 @@ use crate::job::{dispatch, dispatch_blocking};
 use crate::ui;
 use crate::ui::editor::InsertEvent;
 
-use super::{snippets, word};
+use super::{plugin, snippets, word};
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub(super) enum TriggerKind {
@@ -189,7 +189,14 @@ fn request_completions(
     // rely on the trigger offset and primary cursor matching for multi-cursor completions so this
     // is definitely necessary from our side too.
     trigger.pos = cursor;
-    let doc = doc_mut!(editor, &doc.id());
+    let doc_id = doc.id();
+    // The plugins' sources run now, on this thread, before the requests are sent.
+    let plugin_results = plugin::ask(editor, trigger);
+    let (view, _) = current_ref!(editor);
+    if view.id != trigger.view || view.doc != doc_id {
+        return;
+    }
+    let doc = doc_mut!(editor, &doc_id);
     let savepoint = doc.savepoint(view);
     let text = doc.text();
     let trigger_text = text.slice(..cursor);
@@ -252,6 +259,10 @@ fn request_completions(
         snippets::completion(editor, trigger, savepoint.clone())
     {
         requests.spawn_blocking(snippet_completion_request);
+    }
+    if let Some((results, prefix_len)) = plugin_results {
+        let response = plugin::response(editor, results, prefix_len, savepoint.clone());
+        requests.spawn_blocking(move || response);
     }
     if let Some(word_completion_request) =
         word::completion(editor, trigger, handle.clone(), savepoint)

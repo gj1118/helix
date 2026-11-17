@@ -467,6 +467,14 @@ impl Application {
         if plugin_manager.is_enabled() {
             plugin_events::register_hooks();
             editor.pre_save_hook = Some(Self::plugin_pre_save_hook(plugin_manager.clone()));
+            let completions = plugin_manager.clone();
+            editor.plugin_completion_hook = Some(Box::new(move |editor, request| {
+                // Plugin code that is running already holds the engine: no completions then.
+                if completions.engine().try_write().is_none() {
+                    return Vec::new();
+                }
+                completions.complete(editor, request)
+            }));
         }
 
         // Fire OnBufferOpen for already opened documents

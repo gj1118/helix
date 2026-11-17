@@ -557,6 +557,49 @@ helix.on("buffer_post_save", function()
 end)
 ```
 
+### `helix.completion`
+
+Completion sources: a function of the plugin asked for items while you type, whose items join
+the completion menu beside the language servers', the words and the snippets (dictionary words,
+emoji, issue numbers, an AI model's suggestions...).
+
+- `register_source{ name, complete, languages, triggers }`: `complete(ctx)` returns a list of
+  items, each a string (its label, inserted as is) or `{ label, insert, kind, documentation }`
+  (`insert` replaces the word before the cursor, `label` when not set; `kind` is shown at the
+  right of the menu, the source's name when not set; `documentation` is Markdown shown beside
+  the menu). `ctx` is `{ buffer, line (1-based), col (0-based, chars), prefix (the word before
+  the cursor), before (the line up to the cursor), manual (asked with `C-x`) }`. `languages`
+  (a language id or a list) limits the source to buffers of those languages; `triggers` (a
+  string or a list) are characters that ask it right after they are typed. Without a trigger,
+  a source is asked when a word is being typed, and with `C-x`. A source of the same name of
+  the plugin is replaced (`ui`).
+- `remove_source(name)`: removes the plugin's source; returns whether there was one (`ui`).
+- `list_sources()`: every plugin's: `{ { name, plugin, languages, triggers } }` (`read`).
+
+The function runs on the editor's thread while you type, with the time limit: keep it quick
+(filter a list in memory). The menu filters the items by what is typed as usual; an error in
+the function is logged and the source skipped.
+
+```lua
+local words = { "crimson", "cyan", "coral" }
+helix.completion.register_source({
+    name = "colors",
+    languages = { "markdown", "css" },
+    complete = function(ctx)
+        assert(type(ctx.prefix) == "string" and math.type(ctx.line) == "integer")
+        local items = {}
+        for _, word in ipairs(words) do
+            if word:sub(1, #ctx.prefix) == ctx.prefix then
+                table.insert(items, { label = word, documentation = "a color" })
+            end
+        end
+        return items
+    end,
+})
+local sources = helix.completion.list_sources()
+assert(type(sources) == "table" and #sources >= 1 and sources[1].name == "colors")
+```
+
 ### Styles
 
 A style is written like in a theme: `fg` and `bg` (a color name such as `"red"` or

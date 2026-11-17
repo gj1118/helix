@@ -135,6 +135,7 @@ impl PluginManager {
         editor.plugin_statusline.clear();
         editor.plugin_explorer.decorations.clear();
         editor.plugin_actions.clear();
+        editor.plugin_completion_sources.clear();
         editor.plugin_quickfix_marks.clear();
         for session in &mut editor.diff_sessions {
             session.plugin_marks.clear();
@@ -218,6 +219,48 @@ impl PluginManager {
         context: &helix_view::plugin_ui::ActionContext,
     ) -> Result<()> {
         self.engine.read().run_action(editor, plugin, id, context)
+    }
+
+    /// Asks the completion sources of the plugins that want `request` (see
+    /// [`helix_view::plugin_ui::PluginCompletionSource::wanted`]): the items of each, with the
+    /// source's name. A source that fails is logged and skipped.
+    pub fn complete(
+        &self,
+        editor: &mut Editor,
+        request: &helix_view::plugin_ui::PluginCompletionRequest,
+    ) -> Vec<(String, Vec<helix_view::plugin_ui::PluginCompletionItem>)> {
+        let language = editor
+            .document(request.document)
+            .and_then(|doc| doc.language_name().map(String::from));
+        let sources: Vec<_> = editor
+            .plugin_completion_sources
+            .iter()
+            .filter(|source| {
+                source.wanted(
+                    language.as_deref(),
+                    &request.before,
+                    &request.prefix,
+                    request.manual,
+                )
+            })
+            .cloned()
+            .collect();
+        let mut found = Vec::new();
+        for source in sources {
+            match self
+                .engine
+                .read()
+                .complete(editor, &source.plugin, source.id, request)
+            {
+                Ok(items) => found.push((source.name, items)),
+                Err(err) => log::error!(
+                    "completion source '{}' of {} failed: {err}",
+                    source.name,
+                    source.plugin
+                ),
+            }
+        }
+        found
     }
 
     /// Get registered commands

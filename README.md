@@ -447,6 +447,11 @@ permissions = ["edit", "commands"]  # what it may do beyond looking ("read") and
   run on the editor's thread when the result is in.
 - **Popups** - text, styled lines or markdown, at the cursor, centered or anywhere, updated
   and closed through a handle.
+- **Diagnostics and completion** - diagnostics of the plugin's own on any buffer
+  (`buffer:set_diagnostics{...}`, shown like a language server's, in the gutter and the
+  pickers), and completion sources whose items join the completion menu
+  (`helix.completion.register_source{ name = "emoji", complete = function(ctx) ... end }`,
+  limited to languages, asked on trigger characters, while typing and with `C-x`).
 - **Search** - the matches of a regex found like Helix's search (`buffer:find_all`) and the
   last search pattern (`helix.editor.last_search()`).
 - **Examples** - `contrib/plugins/` has `auto-save`, `inline-diagnostic` (the diagnostics of

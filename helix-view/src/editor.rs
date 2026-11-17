@@ -2614,6 +2614,10 @@ pub struct Editor {
     pub plugin_explorer: crate::explorer::PluginExplorer,
     /// The keys plugins added to the diff viewer, the explorer and the quickfix panel.
     pub plugin_actions: crate::plugin_ui::PluginActions,
+    /// The completion sources of plugins (`helix.completion.register_source`).
+    pub plugin_completion_sources: Vec<crate::plugin_ui::PluginCompletionSource>,
+    /// Asks the plugins' completion sources (set by the application when plugins load).
+    pub plugin_completion_hook: Option<crate::plugin_ui::PluginCompletionHook>,
     /// The marks plugins show on the quickfix panel's rows.
     pub plugin_quickfix_marks: crate::plugin_ui::QuickfixMarks,
     /// The side-by-side diffs shown (see [`crate::diff_view`]).
@@ -2907,6 +2911,8 @@ impl Editor {
             explorer_panel: crate::explorer::ExplorerState::default(),
             plugin_explorer: crate::explorer::PluginExplorer::default(),
             plugin_actions: Default::default(),
+            plugin_completion_sources: Vec::new(),
+            plugin_completion_hook: None,
             plugin_quickfix_marks: Default::default(),
             diff_sessions: Vec::new(),
             diff_review: None,

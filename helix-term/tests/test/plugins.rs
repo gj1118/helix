@@ -1597,3 +1597,69 @@ async fn plugins_open_follow_mark_and_add_keys_to_diffs() -> anyhow::Result<()> 
     assert_eq!(sessions, 0);
     Ok(())
 }
+
+/// A plugin's completion source: asked while typing (here by hand, `C-x`), its items join the
+/// completion menu, and accepting one replaces the word typed.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plugin_completion_source_fills_the_menu() -> anyhow::Result<()> {
+    let plugins = tempfile::tempdir()?;
+    let source = plugins.path().join("colors");
+    std::fs::create_dir(&source)?;
+    std::fs::write(
+        source.join("init.lua"),
+        r#"
+helix.completion.register_source({
+    name = "colors",
+    complete = function(ctx)
+        helix.editor.set_register("z", { ctx.prefix .. "|" .. ctx.line .. "|" .. ctx.col .. "|" .. tostring(ctx.manual) })
+        local items = {}
+        for _, color in ipairs({ "crimson", "cyan", "coral" }) do
+            if color:sub(1, #ctx.prefix) == ctx.prefix then
+                table.insert(items, { label = color, insert = color .. "!", documentation = "a **color**" })
+            end
+        end
+        return items
+    end,
+})
+"#,
+    )?;
+    let mut config = helpers::test_config();
+    config.plugins = Some(toml::from_str(&format!(
+        r#"
+        plugin_dirs = [{:?}]
+        [[plugins]]
+        name = "colors"
+        permissions = ["edit"]
+        "#,
+        plugins.path()
+    ))?);
+    let file = helpers::temp_file_with_contents("")?;
+    let mut app = helpers::AppBuilder::new()
+        .with_config(config)
+        .with_file(file.path(), None)
+        .build()?;
+    assert!(app.plugins_enabled());
+    assert_eq!(app.editor.plugin_completion_sources.len(), 1_usize);
+
+    send_keys(&mut app, "ithe cr<C-x>").await?;
+    for _ in 0..40 {
+        if app.rendered_rows().join("\n").contains("crimson") {
+            break;
+        }
+        send_keys(&mut app, "").await?;
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert_eq!(recorded(&app), vec!["cr|1|6|true".to_string()]);
+    let screen = app.rendered_rows().join("\n");
+    assert!(screen.contains("crimson"), "{screen}");
+    assert!(
+        screen.contains("colors"),
+        "the source's name is the kind: {screen}"
+    );
+    assert!(!screen.contains("cyan"), "{screen}");
+
+    send_keys(&mut app, "<C-n><ret><esc>").await?;
+    let (_, doc) = helix_view::current_ref!(app.editor);
+    assert_eq!(doc.text().to_string(), "the crimson!".to_string());
+    Ok(())
+}

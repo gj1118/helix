@@ -333,3 +333,108 @@ mod tests {
         assert!(empty);
     }
 }
+
+/// A completion source of a plugin (`helix.completion.register_source`): its function stays
+/// in the plugin's Lua state, by `id`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginCompletionSource {
+    pub plugin: String,
+    pub id: u64,
+    pub name: String,
+    /// The languages it completes in (language ids); every one when empty.
+    pub languages: Vec<String>,
+    /// Characters that ask it for completions right away when typed (`.`, `:`).
+    pub triggers: Vec<String>,
+}
+
+impl PluginCompletionSource {
+    /// Whether it is asked in a buffer of `language`, typed `before` the cursor (the text of
+    /// the line up to it), asked by hand (`manual`) or not.
+    pub fn wanted(&self, language: Option<&str>, before: &str, prefix: &str, manual: bool) -> bool {
+        let language_fits = self.languages.is_empty()
+            || language.is_some_and(|language| self.languages.iter().any(|l| l == language));
+        language_fits
+            && (manual
+                || !prefix.is_empty()
+                || self
+                    .triggers
+                    .iter()
+                    .any(|trigger| before.ends_with(trigger.as_str())))
+    }
+}
+
+/// What a completion source is asked with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginCompletionRequest {
+    pub document: crate::DocumentId,
+    /// The primary cursor: its line (0-based) and column (chars, 0-based).
+    pub line: usize,
+    pub col: usize,
+    /// The word typed before the cursor (what an item replaces).
+    pub prefix: String,
+    /// The line up to the cursor.
+    pub before: String,
+    /// Asked by hand (`C-x`), not by typing.
+    pub manual: bool,
+}
+
+/// An item a completion source gave.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PluginCompletionItem {
+    pub label: String,
+    /// What is inserted in place of the prefix (`label` when not set).
+    pub insert: Option<String>,
+    /// Shown at the right of the menu (the source's name when not set).
+    pub kind: Option<String>,
+    /// Markdown shown beside the menu.
+    pub documentation: Option<String>,
+}
+
+/// Asks the plugins' completion sources (set by the application when plugins are loaded):
+/// the items of each source asked, with the source's name.
+pub type PluginCompletionHook = Box<
+    dyn FnMut(
+        &mut crate::Editor,
+        &PluginCompletionRequest,
+    ) -> Vec<(String, Vec<PluginCompletionItem>)>,
+>;
+
+#[cfg(test)]
+mod completion_source_tests {
+    use super::*;
+
+    #[test]
+    fn a_source_is_asked_for_its_languages_words_and_triggers() {
+        let source = PluginCompletionSource {
+            plugin: "p".into(),
+            id: 1,
+            name: "emoji".into(),
+            languages: vec!["markdown".into()],
+            triggers: vec![":".into()],
+        };
+        assert!(source.wanted(Some("markdown"), "hello wor", "wor", false));
+        assert!(
+            source.wanted(Some("markdown"), "smile :", "", false),
+            "a trigger"
+        );
+        assert!(
+            !source.wanted(Some("markdown"), "hello ", "", false),
+            "nothing typed"
+        );
+        assert!(
+            source.wanted(Some("markdown"), "hello ", "", true),
+            "asked by hand"
+        );
+        assert!(
+            !source.wanted(Some("rust"), "wor", "wor", false),
+            "another language"
+        );
+        assert!(!source.wanted(None, "wor", "wor", true));
+        let everywhere = PluginCompletionSource {
+            languages: Vec::new(),
+            ..source
+        };
+        let wanted: bool = everywhere.wanted(None, "wor", "wor", false);
+        assert!(wanted);
+    }
+}

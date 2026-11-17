@@ -21,6 +21,8 @@ pub enum CompletionProvider {
     Path,
     Word,
     Snippet,
+    /// The completion sources of plugins (`helix.completion.register_source`).
+    Plugin,
 }
 
 impl From<LanguageServerId> for CompletionProvider {
