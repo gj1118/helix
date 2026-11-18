@@ -595,48 +595,60 @@ impl Watch {
             self.focus = focus;
         }
 
-        // buffers (a new one has `buffer_open`, a closed one `buffer_close`)
-        let mut docs = HashMap::with_capacity(self.docs.len());
+        // buffers (a new one has `buffer_open`, a closed one `buffer_close`), compared in
+        // place: a frame allocates only for what changed
         for doc in editor.documents() {
-            let state = Self::doc_state(doc);
-            let old = self.docs.get(&doc.id());
             let id = doc.id();
-            if let Some(old) = old {
-                if old.path != state.path {
-                    push(
-                        EventType::OnBufferRename,
-                        vec![
-                            ("document_id", id.into()),
-                            ("path", path_value(state.path.as_deref())),
-                            ("old_path", path_value(old.path.as_deref())),
-                        ],
-                    );
+            // a new buffer: its servers are attached, nothing else changed
+            let old = self.docs.entry(id).or_insert_with(|| DocState {
+                servers: Vec::new(),
+                ..Self::doc_state(doc)
+            });
+            let path: Option<&std::path::Path> = doc.path().map(AsRef::as_ref);
+            if old.path.as_deref() != path {
+                push(
+                    EventType::OnBufferRename,
+                    vec![
+                        ("document_id", id.into()),
+                        ("path", path_value(path)),
+                        ("old_path", path_value(old.path.as_deref())),
+                    ],
+                );
+                old.path = path.map(PathBuf::from);
+            }
+            let language = doc.language_name();
+            if old.language.as_deref() != language {
+                push(
+                    EventType::OnLanguageChange,
+                    vec![
+                        ("document_id", id.into()),
+                        ("language", language.map(String::from).into()),
+                        ("old_language", old.language.clone().into()),
+                    ],
+                );
+                old.language = language.map(String::from);
+            }
+            if !doc
+                .language_servers()
+                .map(|ls| ls.id())
+                .eq(old.servers.iter().copied())
+            {
+                let servers: Vec<LanguageServerId> =
+                    doc.language_servers().map(|ls| ls.id()).collect();
+                for &server in servers.iter().filter(|s| !old.servers.contains(s)) {
+                    let mut fields = vec![("document_id", id.into())];
+                    fields.extend(server_fields(editor, server));
+                    push(EventType::OnLspAttach, fields);
                 }
-                if old.language != state.language {
-                    push(
-                        EventType::OnLanguageChange,
-                        vec![
-                            ("document_id", id.into()),
-                            ("language", state.language.clone().into()),
-                            ("old_language", old.language.clone().into()),
-                        ],
-                    );
+                for &server in old.servers.iter().filter(|s| !servers.contains(s)) {
+                    let mut fields = vec![("document_id", id.into())];
+                    fields.extend(server_fields(editor, server));
+                    push(EventType::OnLspDetach, fields);
                 }
+                old.servers = servers;
             }
-            let old_servers: &[LanguageServerId] = old.map_or(&[], |old| &old.servers);
-            for &server in state.servers.iter().filter(|s| !old_servers.contains(s)) {
-                let mut fields = vec![("document_id", id.into())];
-                fields.extend(server_fields(editor, server));
-                push(EventType::OnLspAttach, fields);
-            }
-            for &server in old_servers.iter().filter(|s| !state.servers.contains(s)) {
-                let mut fields = vec![("document_id", id.into())];
-                fields.extend(server_fields(editor, server));
-                push(EventType::OnLspDetach, fields);
-            }
-            docs.insert(id, state);
         }
-        self.docs = docs;
+        self.docs.retain(|id, _| editor.documents.contains_key(id));
 
         let theme = editor.theme.name();
         if theme != self.theme {

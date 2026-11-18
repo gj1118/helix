@@ -2,33 +2,6 @@ use super::*;
 
 use helix_term::application::Application;
 use helix_view::view::ViewPosition;
-use tokio_stream::wrappers::UnboundedReceiverStream;
-
-fn keys(keys: &str) -> Vec<termina::Event> {
-    helix_view::input::parse_macro(keys)
-        .unwrap()
-        .into_iter()
-        .map(|key| termina::Event::Key(key.into()))
-        .collect()
-}
-
-/// Sends `events` to the application and runs it until it is idle.
-async fn send(app: &mut Application, events: Vec<termina::Event>) -> anyhow::Result<()> {
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut stream = UnboundedReceiverStream::new(rx);
-    for event in events {
-        tx.send(Ok(event))?;
-    }
-    app.event_loop_until_idle(&mut stream).await;
-    Ok(())
-}
-
-async fn quit(mut app: Application) -> anyhow::Result<()> {
-    send(&mut app, keys(":q!<ret>")).await?;
-    let errs = app.close().await;
-    assert!(errs.is_empty(), "{errs:?}");
-    Ok(())
-}
 
 fn config(smooth_scroll: &str) -> Config {
     let raw: helix_term::config::ConfigRaw =
@@ -86,7 +59,7 @@ async fn smooth_scroll_animates_only_the_drawing() -> anyhow::Result<()> {
 
     // without it: where `C-d` goes
     let mut plain = app_with("enable = false", &file).await?;
-    send(&mut plain, keys("<C-d>")).await?;
+    send_keys(&mut plain, "<C-d>").await?;
     let expected = state(&plain);
     let expected_top = top_line(&plain);
     assert!(plain.editor.scroll_animation.is_none());
@@ -99,7 +72,7 @@ async fn smooth_scroll_animates_only_the_drawing() -> anyhow::Result<()> {
         &file,
     )
     .await?;
-    send(&mut app, keys("<C-d>")).await?;
+    send_keys(&mut app, "<C-d>").await?;
     assert_eq!(state(&app), expected);
     let animation = app
         .editor
@@ -114,7 +87,7 @@ async fn smooth_scroll_animates_only_the_drawing() -> anyhow::Result<()> {
     assert!(shown < expected_top, "shown {shown}, final {expected_top}");
 
     // another `C-d` on its way: from what the screen shows, to two half pages down
-    send(&mut app, keys("<C-d>")).await?;
+    send_keys(&mut app, "<C-d>").await?;
     let second = app
         .editor
         .scroll_animation
@@ -126,12 +99,12 @@ async fn smooth_scroll_animates_only_the_drawing() -> anyhow::Result<()> {
     assert!(offset.anchor > animation.to.anchor, "{second:?}");
 
     // a jump ends it: the screen shows the view where it is
-    send(&mut app, keys("gg")).await?;
+    send_keys(&mut app, "gg").await?;
     assert!(app.editor.scroll_animation.is_none());
     assert_eq!(top_line(&app), 1_usize);
 
     // `zt` glides too: the line of the cursor to the top (less the scrolloff)
-    send(&mut app, keys("40jzt")).await?;
+    send_keys(&mut app, "40jzt").await?;
     let align = app
         .editor
         .scroll_animation
@@ -145,14 +118,14 @@ async fn smooth_scroll_animates_only_the_drawing() -> anyhow::Result<()> {
 
     // a short animation ends on the final position
     let mut app = app_with("enable = true\nduration = 30", &file).await?;
-    send(&mut app, keys("<C-d>")).await?;
+    send_keys(&mut app, "<C-d>").await?;
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    send(&mut app, keys("")).await?;
+    send_keys(&mut app, "").await?;
     assert!(app.editor.scroll_animation.is_none());
     assert_eq!(state(&app), expected);
     assert_eq!(top_line(&app), expected_top);
     // one row at a time (`z j`) does not animate
-    send(&mut app, keys("zj")).await?;
+    send_keys(&mut app, "zj").await?;
     assert!(app.editor.scroll_animation.is_none());
     quit(app).await?;
     Ok(())

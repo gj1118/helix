@@ -83,24 +83,31 @@ pub fn closed_fold_lines(doc: &Document, view: &View) -> Vec<usize> {
 /// Whether a block could be folded at `line`: the next line that is not blank is more
 /// indented (the blocks `z i` folds).
 pub fn starts_block(text: helix_core::RopeSlice, line: usize, tab_width: usize) -> bool {
-    fn indent(text: helix_core::RopeSlice, line: usize, tab_width: usize) -> Option<usize> {
+    let tab_width = tab_width.max(1);
+    // the indentation of a line, `None` for a blank one
+    let indent = |line: helix_core::RopeSlice| {
         let mut width = 0;
-        for ch in text.line(line).chars() {
+        for ch in line.chars() {
             match ch {
                 ' ' => width += 1,
-                '\t' => width += tab_width.max(1) - width % tab_width.max(1),
+                '\t' => width += tab_width - width % tab_width,
                 '\n' | '\r' => return None,
                 _ => return Some(width),
             }
         }
         None
+    };
+    if line >= text.len_lines() {
+        return false;
     }
-    let Some(own) = indent(text, line, tab_width) else {
+    // one seek, then line after line
+    let mut lines = text.lines_at(line);
+    let Some(own) = lines.next().and_then(indent) else {
         return false;
     };
-    let last = text.len_lines().min(line + 1 + FOLDABLE_LOOKAHEAD);
-    (line + 1..last)
-        .find_map(|next| indent(text, next, tab_width))
+    lines
+        .take(FOLDABLE_LOOKAHEAD)
+        .find_map(indent)
         .is_some_and(|next| next > own)
 }
 
@@ -660,6 +667,20 @@ mod tests {
         let starts: Vec<bool> = (0..6).map(|line| starts_block(text, line, 4)).collect();
         // a blank line in between does not end it; a blank line itself starts nothing
         assert_eq!(starts, vec![true, false, false, false, true, false]);
+        // past the end: nothing (the last line is the empty one after the final newline)
+        assert!(!starts_block(text, 6, 4));
+        assert!(!starts_block(text, 100, 4));
+        // CRLF line endings, and a tab width of 0 taken as 1
+        let crlf = Rope::from_str("if x {\r\n\r\n\ty\r\n}\r\n");
+        let starts: Vec<bool> = (0..4)
+            .map(|line| starts_block(crlf.slice(..), line, 0))
+            .collect();
+        assert_eq!(starts, vec![true, false, false, false]);
+        // the next line that is not blank is looked for so far, and no further
+        let far = format!("a\n{}  b\n", "\n".repeat(FOLDABLE_LOOKAHEAD - 1));
+        let too_far = format!("a\n{}  b\n", "\n".repeat(FOLDABLE_LOOKAHEAD));
+        assert!(starts_block(Rope::from_str(&far).slice(..), 0, 4));
+        assert!(!starts_block(Rope::from_str(&too_far).slice(..), 0, 4));
     }
 
     #[test]

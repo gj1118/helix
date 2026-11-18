@@ -1900,3 +1900,32 @@ async fn text_objects_come_first_and_unfold_all_takes_them_too() -> anyhow::Resu
     .await?;
     Ok(())
 }
+
+/// A `fold-textobjects` value that does not parse (a stray flag, an unclosed quote) is
+/// reported when a file opens, instead of crashing the editor.
+#[tokio::test(flavor = "multi_thread")]
+async fn default_folding_with_a_bad_setting() -> anyhow::Result<()> {
+    for (setting, error) in [
+        ("--nope", "fold-textobjects: unknown flag '--nope'"),
+        ("\"class", "fold-textobjects: unterminated token class"),
+    ] {
+        let mut config = helpers::test_config();
+        config.editor.fold_textobjects = vec![setting.into()];
+        // (in the status line, not a notification popup)
+        config.editor.notifications.enable = false;
+        // (opened with the file at startup: the status is replaced by "Loaded 1 file.")
+        let mut app = AppBuilder::new()
+            .with_file(RUST_CODE, None)
+            .with_lang_loader(helpers::test_syntax_loader(None))
+            .with_config(config)
+            .build()?;
+        helix_term::ui::default_folding(&mut app.editor);
+        let (view, doc) = current_ref!(&app.editor);
+        let folds: usize = doc.fold_container(view.id).map_or(0, |c| c.len());
+        assert_eq!(folds, 0_usize);
+        let status = app.editor.get_status().map(|(s, _)| s.to_string());
+        assert_eq!(status.as_deref(), Some(error));
+        quit(app).await?;
+    }
+    Ok(())
+}

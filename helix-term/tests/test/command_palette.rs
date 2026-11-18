@@ -3,22 +3,6 @@
 use super::*;
 use helix_term::application::Application;
 
-async fn send(app: &mut Application, keys: &str) -> anyhow::Result<()> {
-    #[cfg(windows)]
-    use crossterm::event::{Event, KeyEvent};
-    #[cfg(not(windows))]
-    use termina::event::{Event, KeyEvent};
-
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    for key in helix_view::input::parse_macro(keys)? {
-        tx.send(Ok(Event::Key(KeyEvent::from(key))))?;
-    }
-    let mut stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
-    app.editor.reset_idle_timer();
-    app.event_loop_until_idle(&mut stream).await;
-    Ok(())
-}
-
 /// The text of the screen, without the trailing spaces of its rows.
 fn screen(app: &Application) -> Vec<String> {
     app.rendered_rows()
@@ -33,7 +17,7 @@ fn screen(app: &Application) -> Vec<String> {
 async fn commands_are_found_by_their_aliases() -> anyhow::Result<()> {
     let mut app = helpers::AppBuilder::new().build()?;
     app.resize_terminal(140, 30).await;
-    send(&mut app, "<space>?quickfix").await?;
+    send_keys(&mut app, "<space>?quickfix").await?;
     let rows = screen(&app);
     let found = |text: &str| rows.iter().any(|row| row.contains(text));
     let (copen, cclose, focus): (bool, bool, bool) = (
@@ -51,7 +35,7 @@ async fn commands_are_found_by_their_aliases() -> anyhow::Result<()> {
 async fn the_selected_description_is_shown_in_full() -> anyhow::Result<()> {
     let mut app = helpers::AppBuilder::new().build()?;
     app.resize_terminal(100, 30).await;
-    send(&mut app, "<space>?:copen").await?;
+    send_keys(&mut app, "<space>?:copen").await?;
     let rows = screen(&app);
     let doc = "Show the quickfix panel: focus it, or show the last list it showed again, or the quicklist.";
     let start = rows
@@ -100,7 +84,7 @@ async fn the_selected_description_is_shown_in_full() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_quickfix_panel_is_focused_from_the_palette() -> anyhow::Result<()> {
     let mut app = helpers::AppBuilder::new().build()?;
-    send(&mut app, "<space>?quickfix_focus<ret>").await?;
+    send_keys(&mut app, "<space>?quickfix_focus<ret>").await?;
     let status: Option<String> = app.editor.get_status().map(|(s, _)| s.to_string());
     assert_eq!(
         status.as_deref(),

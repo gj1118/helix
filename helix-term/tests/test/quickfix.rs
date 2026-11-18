@@ -3,7 +3,6 @@
 
 use super::*;
 use helix_term::application::Application;
-use tokio_stream::wrappers::UnboundedReceiverStream;
 
 fn config(toml: &str) -> Config {
     let raw: helix_term::config::ConfigRaw = toml::from_str(toml).unwrap();
@@ -16,16 +15,6 @@ fn config(toml: &str) -> Config {
 /// The panel on, without notifications (their popups would sit over the code).
 fn enabled() -> Config {
     config("[editor.quickfix]\nenable = true\n[editor.notifications]\nenable = false\n")
-}
-
-async fn send(app: &mut Application, keys: &str) -> anyhow::Result<()> {
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    for key in helix_view::input::parse_macro(keys)? {
-        tx.send(Ok(termina::Event::Key(key.into())))?;
-    }
-    let mut stream = UnboundedReceiverStream::new(rx);
-    app.event_loop_until_idle(&mut stream).await;
-    Ok(())
 }
 
 /// Thirty lines, `row 00` to `row 29`.
@@ -56,7 +45,7 @@ async fn app_with_quicklist(
         .with_config(config)
         .build()?;
     app.resize_terminal(80, 30).await;
-    send(&mut app, "3gg<A-q>10gg<A-q>20gg<A-q>gg").await?;
+    send_keys(&mut app, "3gg<A-q>10gg<A-q>20gg<A-q>gg").await?;
     assert_eq!(app.editor.quicklist.len(), 3);
     assert_eq!(cursor_line(&app), 0);
     Ok((app, file))
@@ -72,7 +61,7 @@ async fn a_list_of_locations_opens_in_the_panel() -> anyhow::Result<()> {
     // the screen is 30 rows: 29 for the views above the command line
     assert_eq!(view_bottom(&app), 29);
 
-    send(&mut app, "<space>q").await?;
+    send_keys(&mut app, "<space>q").await?;
     assert_eq!(
         app.editor.quickfix_panel,
         helix_view::quicklist::QuickfixPanel {
@@ -98,27 +87,27 @@ async fn a_list_of_locations_opens_in_the_panel() -> anyhow::Result<()> {
     );
 
     // Enter: to the first entry, the focus to the code (`j` moves the cursor there)
-    send(&mut app, "<ret>").await?;
+    send_keys(&mut app, "<ret>").await?;
     assert_eq!(cursor_line(&app), 2);
     assert!(app.editor.quickfix_panel.visible);
     assert!(!app.editor.quickfix_panel.focused);
-    send(&mut app, "j").await?;
+    send_keys(&mut app, "j").await?;
     assert_eq!(cursor_line(&app), 3);
 
     // Ctrl-w j: back to the panel, where `j` moves through the list
-    send(&mut app, "<C-w>j").await?;
+    send_keys(&mut app, "<C-w>j").await?;
     assert!(app.editor.quickfix_panel.focused);
-    send(&mut app, "j<ret>").await?;
+    send_keys(&mut app, "j<ret>").await?;
     assert_eq!(cursor_line(&app), 9);
 
     // ]q from the code: the next entry of the panel
-    send(&mut app, "]q").await?;
+    send_keys(&mut app, "]q").await?;
     assert_eq!(cursor_line(&app), 19);
     let (status, _) = app.editor.get_status().expect("a status");
     assert_eq!(status, "Quickfix 3/3");
 
     // q closes it, and the views have their rows back
-    send(&mut app, "<C-w>jq").await?;
+    send_keys(&mut app, "<C-w>jq").await?;
     assert!(!app.editor.quickfix_panel.visible);
     assert_eq!(view_bottom(&app), 29);
     assert!(!app
@@ -127,14 +116,14 @@ async fn a_list_of_locations_opens_in_the_panel() -> anyhow::Result<()> {
         .any(|row| row.contains("Quicklist")));
 
     // :copen shows it again, focused
-    send(&mut app, ":copen<ret>").await?;
+    send_keys(&mut app, ":copen<ret>").await?;
     assert!(app.editor.quickfix_panel.visible && app.editor.quickfix_panel.focused);
     assert_eq!(view_bottom(&app), 17);
     assert!(app.rendered_rows()[17].contains("Quicklist"));
-    send(&mut app, ":cclose<ret>").await?;
+    send_keys(&mut app, ":cclose<ret>").await?;
     assert!(!app.editor.quickfix_panel.visible);
 
-    send(&mut app, ":q!<ret>").await?;
+    send_keys(&mut app, ":q!<ret>").await?;
     Ok(())
 }
 
@@ -143,10 +132,10 @@ async fn a_list_of_locations_opens_in_the_panel() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn slash_filters_the_list_in_the_panel() -> anyhow::Result<()> {
     let (mut app, _file) = app_with_quicklist(enabled()).await?;
-    send(&mut app, "<space>q").await?;
+    send_keys(&mut app, "<space>q").await?;
 
     // after `/`, the keys are typed (`j` would move through the list): the text column
-    send(&mut app, "/%text row 19").await?;
+    send_keys(&mut app, "/%text row 19").await?;
     let panel: Vec<String> = app.rendered_rows()[17..29].to_vec();
     assert!(panel.iter().any(|row| row.contains("1/3")), "{panel:#?}");
     assert!(
@@ -163,18 +152,18 @@ async fn slash_filters_the_list_in_the_panel() -> anyhow::Result<()> {
     assert_eq!((cursor.row, cursor.col), (18, query_end));
 
     // Esc: the list again (the query stays), Enter visits the entry left
-    send(&mut app, "<esc><ret>").await?;
+    send_keys(&mut app, "<esc><ret>").await?;
     assert_eq!(cursor_line(&app), 19);
     assert!(app.editor.quickfix_panel.visible);
 
     // Esc in the list gives the focus back to the code, the panel stays; `q` closes it
-    send(&mut app, "<C-w>j<esc>").await?;
+    send_keys(&mut app, "<C-w>j<esc>").await?;
     assert!(app.editor.quickfix_panel.visible);
     assert!(!app.editor.quickfix_panel.focused);
-    send(&mut app, "<C-w>jq").await?;
+    send_keys(&mut app, "<C-w>jq").await?;
     assert!(!app.editor.quickfix_panel.visible);
 
-    send(&mut app, ":q!<ret>").await?;
+    send_keys(&mut app, ":q!<ret>").await?;
     Ok(())
 }
 
@@ -184,13 +173,13 @@ async fn slash_filters_the_list_in_the_panel() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_panel_previews_over_the_code_while_focused() -> anyhow::Result<()> {
     let (mut app, _file) = app_with_quicklist(enabled()).await?;
-    send(&mut app, "<space>q").await?;
+    send_keys(&mut app, "<space>q").await?;
     let focused = app.rendered_rows();
     assert!(focused[0].starts_with(" row 00"), "{focused:#?}");
     let statusline = &focused[16];
     assert!(statusline.contains("NOR"), "{focused:#?}");
 
-    send(&mut app, "<C-w>k").await?;
+    send_keys(&mut app, "<C-w>k").await?;
     assert!(!app.editor.quickfix_panel.focused);
     let unfocused = app.rendered_rows();
     // the code, with its gutter
@@ -203,7 +192,7 @@ async fn the_panel_previews_over_the_code_while_focused() -> anyhow::Result<()> 
     // the panel is still there
     assert!(unfocused[17].contains("Quicklist"));
 
-    send(&mut app, ":q!<ret>").await?;
+    send_keys(&mut app, ":q!<ret>").await?;
     Ok(())
 }
 
@@ -213,7 +202,7 @@ async fn without_enable_the_lists_are_pickers() -> anyhow::Result<()> {
     let config = config("[editor.notifications]\nenable = false\n");
     assert!(!config.editor.quickfix.enable);
     let (mut app, _file) = app_with_quicklist(config).await?;
-    send(&mut app, "<space>q").await?;
+    send_keys(&mut app, "<space>q").await?;
     assert!(!app.editor.quickfix_panel.visible);
     assert_eq!(view_bottom(&app), 29);
     // a picker over the editor: its title near the top
@@ -224,7 +213,7 @@ async fn without_enable_the_lists_are_pickers() -> anyhow::Result<()> {
         .unwrap_or_else(|| panic!("{rows:#?}"));
     assert!(title < 5, "{rows:#?}");
     // Enter visits and closes the picker (its column header goes)
-    send(&mut app, "<ret>").await?;
+    send_keys(&mut app, "<ret>").await?;
     assert_eq!(cursor_line(&app), 2);
     assert!(!app
         .rendered_rows()
@@ -232,11 +221,11 @@ async fn without_enable_the_lists_are_pickers() -> anyhow::Result<()> {
         .any(|row| row.contains("location")));
 
     // :copen asks for the panel, whatever `enable` says
-    send(&mut app, ":copen<ret>").await?;
+    send_keys(&mut app, ":copen<ret>").await?;
     assert!(app.editor.quickfix_panel.visible);
     assert_eq!(view_bottom(&app), 17);
 
-    send(&mut app, ":q!<ret>").await?;
+    send_keys(&mut app, ":q!<ret>").await?;
     Ok(())
 }
 
@@ -259,19 +248,19 @@ async fn a_global_search_in_the_panel_starts_with_its_query() -> anyhow::Result<
         app.compositor.cursor(area, &app.editor).1
     };
 
-    send(&mut app, "<space>/").await?;
+    send_keys(&mut app, "<space>/").await?;
     assert!(app.editor.quickfix_panel.focused);
     let rows = app.rendered_rows();
     assert!(rows[17].contains("Global Search"), "{rows:#?}");
     assert_ne!(cursor_kind(&app), helix_view::graphics::CursorKind::Hidden);
 
     // the quicklist replaces it in the panel, with the list to move through
-    send(&mut app, "<esc><esc><space>q").await?;
+    send_keys(&mut app, "<esc><esc><space>q").await?;
     assert!(app.editor.quickfix_panel.visible);
     assert!(app.rendered_rows()[17].contains("Quicklist"));
     assert_eq!(cursor_kind(&app), helix_view::graphics::CursorKind::Hidden);
 
-    send(&mut app, "<C-w>k:q!<ret>").await?;
+    send_keys(&mut app, "<C-w>k:q!<ret>").await?;
     Ok(())
 }
 
@@ -295,7 +284,7 @@ async fn the_panel_has_no_border() -> anyhow::Result<()> {
     let gradient = "[editor.gradient-borders]\nenable = true\n";
     let with_panel = format!("{gradient}[editor.quickfix]\nenable = true\n");
     let (mut app, _file) = app_with_quicklist(config(&with_panel)).await?;
-    send(&mut app, "<space>q").await?;
+    send_keys(&mut app, "<space>q").await?;
     assert!(app.editor.quickfix_panel.focused);
     let rows = app.rendered_rows();
     // the rule with the title, across the panel, in one color
@@ -309,11 +298,11 @@ async fn the_panel_has_no_border() -> anyhow::Result<()> {
         assert!(first == ' ' || first == '>', "row {y}: {row:?}");
     }
     assert!(rows[0].starts_with(" row 00"), "{rows:#?}");
-    send(&mut app, ":q!<ret>").await?;
+    send_keys(&mut app, ":q!<ret>").await?;
 
     // a picker over the editor: its gradient
     let (mut app, _file) = app_with_quicklist(config(gradient)).await?;
-    send(&mut app, "<space>q").await?;
+    send_keys(&mut app, "<space>q").await?;
     let rows = app.rendered_rows();
     let top = rows
         .iter()
@@ -321,7 +310,7 @@ async fn the_panel_has_no_border() -> anyhow::Result<()> {
         .expect("the picker") as u16;
     let border = colors(&app, top, 30, 80);
     assert!(border.len() > 2, "{border:?}");
-    send(&mut app, "<esc>:q!<ret>").await?;
+    send_keys(&mut app, "<esc>:q!<ret>").await?;
     Ok(())
 }
 
@@ -342,49 +331,49 @@ async fn space_q_toggles_the_panel_and_window_keys_move_between_the_panels() -> 
         (panel.visible, panel.focused)
     };
 
-    send(&mut app, "<space>Q").await?;
+    send_keys(&mut app, "<space>Q").await?;
     assert_eq!(quickfix(&app), (true, true));
     assert!(app.rendered_rows()[17].contains("Quicklist"));
     // from the panel too
-    send(&mut app, "<space>Q").await?;
+    send_keys(&mut app, "<space>Q").await?;
     assert_eq!(quickfix(&app), (false, false));
-    send(&mut app, ":quickfix<ret>").await?;
+    send_keys(&mut app, ":quickfix<ret>").await?;
     assert_eq!(quickfix(&app), (true, true));
-    send(&mut app, "<esc>:quickfix<ret>").await?;
+    send_keys(&mut app, "<esc>:quickfix<ret>").await?;
     assert_eq!(quickfix(&app), (false, false));
 
     // both panels: each key toggles its own
-    send(&mut app, "<space>Q<esc><space>x").await?;
+    send_keys(&mut app, "<space>Q<esc><space>x").await?;
     assert_eq!(explorer(&app), (true, true));
     assert!(quickfix(&app).0);
-    send(&mut app, "<C-w>l").await?;
+    send_keys(&mut app, "<C-w>l").await?;
     assert_eq!(explorer(&app), (true, false));
     assert_eq!(quickfix(&app), (true, false));
 
     // the code, the panel, the explorer on its left, the code
-    send(&mut app, "<C-w>j").await?;
+    send_keys(&mut app, "<C-w>j").await?;
     assert_eq!(quickfix(&app), (true, true));
-    send(&mut app, "<C-w>h").await?;
+    send_keys(&mut app, "<C-w>h").await?;
     assert_eq!(explorer(&app), (true, true));
     assert!(!app.editor.quickfix_panel.focused);
-    send(&mut app, "<C-w>l").await?;
+    send_keys(&mut app, "<C-w>l").await?;
     assert_eq!(explorer(&app), (true, false));
     assert_eq!(quickfix(&app), (true, false));
     // from the panel, `C-l` goes back to the code and `C-h` to the explorer
-    send(&mut app, "<C-w>j<C-l>").await?;
+    send_keys(&mut app, "<C-w>j<C-l>").await?;
     assert_eq!(quickfix(&app), (true, false));
     assert_eq!(explorer(&app), (true, false));
-    send(&mut app, "<C-w>j<C-h>").await?;
+    send_keys(&mut app, "<C-w>j<C-h>").await?;
     assert_eq!(explorer(&app), (true, true));
     assert!(!app.editor.quickfix_panel.focused);
 
     // `<space>x` hides only the explorer, `<space>Q` only the panel
-    send(&mut app, "<space>x").await?;
+    send_keys(&mut app, "<space>x").await?;
     assert_eq!(explorer(&app), (false, false));
     assert!(quickfix(&app).0);
-    send(&mut app, "<space>Q").await?;
+    send_keys(&mut app, "<space>Q").await?;
     assert_eq!(quickfix(&app), (false, false));
 
-    send(&mut app, ":q!<ret>").await?;
+    send_keys(&mut app, ":q!<ret>").await?;
     Ok(())
 }

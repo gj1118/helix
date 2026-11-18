@@ -450,6 +450,39 @@ impl AppBuilder {
     }
 }
 
+/// The events of the keys of `keys`, a key macro (`"ihello<esc>"`).
+pub fn key_events(keys: &str) -> Vec<Event> {
+    parse_macro(keys)
+        .expect("a valid key macro")
+        .into_iter()
+        .map(|key| Event::Key(KeyEvent::from(key)))
+        .collect()
+}
+
+/// Sends `events` to `app` and runs it until it is idle (without any, a frame passes).
+pub async fn send_events(app: &mut Application, events: Vec<Event>) -> anyhow::Result<()> {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    for event in events {
+        tx.send(Ok(event))?;
+    }
+    app.event_loop_until_idle(&mut UnboundedReceiverStream::new(rx))
+        .await;
+    Ok(())
+}
+
+/// Sends the keys of `keys` (see [`key_events`]) and runs `app` until it is idle.
+pub async fn send_keys(app: &mut Application, keys: &str) -> anyhow::Result<()> {
+    send_events(app, key_events(keys)).await
+}
+
+/// Quits `app` (`:q!`, out of any mode or popup first) and checks that it closes cleanly.
+pub async fn quit(mut app: Application) -> anyhow::Result<()> {
+    send_keys(&mut app, "<esc><esc>:q!<ret>").await?;
+    let errors = app.close().await;
+    anyhow::ensure!(errors.is_empty(), "errors closing the app: {errors:?}");
+    Ok(())
+}
+
 pub async fn run_event_loop_until_idle(app: &mut Application) {
     let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let mut rx_stream = UnboundedReceiverStream::new(rx);

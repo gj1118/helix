@@ -717,7 +717,14 @@ pub fn default_folding(editor: &mut Editor) {
     let loader = editor.syn_loader.load();
 
     let str = format!("--document {textobjects}");
-    let args = Args::parse(&str, FOLD_SIGNATURE, true, |token| Ok(token.content)).unwrap();
+    // (`fold-textobjects` comes from the config: a stray flag or quote is reported, not fatal)
+    let args = match Args::parse(&str, FOLD_SIGNATURE, true, |token| Ok(token.content)) {
+        Ok(args) => args,
+        Err(err) => {
+            editor.set_error(format!("fold-textobjects: {err}"));
+            return;
+        }
+    };
 
     let (view, doc) = current!(editor);
     _ = fold_textobjects(doc, view, &loader, args);

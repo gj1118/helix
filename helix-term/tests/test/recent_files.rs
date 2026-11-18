@@ -4,21 +4,6 @@ use super::*;
 use helix_term::application::Application;
 use std::path::{Path, PathBuf};
 
-async fn send(app: &mut Application, keys: &str) -> anyhow::Result<()> {
-    #[cfg(windows)]
-    use crossterm::event::{Event, KeyEvent};
-    #[cfg(not(windows))]
-    use termina::event::{Event, KeyEvent};
-
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    for key in helix_view::input::parse_macro(keys)? {
-        tx.send(Ok(Event::Key(KeyEvent::from(key))))?;
-    }
-    let mut stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
-    app.event_loop_until_idle(&mut stream).await;
-    Ok(())
-}
-
 /// The test config, the recent files kept in `recents`.
 fn config(recents: &Path, enable: bool) -> Config {
     let mut config = helpers::test_config();
@@ -70,19 +55,19 @@ async fn opened_and_saved_files_are_recorded() -> anyhow::Result<()> {
         .with_config(config(&recents, true))
         .build()?;
 
-    send(&mut app, &format!(":open {}<ret>", b.path().display())).await?;
-    send(&mut app, &format!(":open {}<ret>", a.path().display())).await?;
+    send_keys(&mut app, &format!(":open {}<ret>", b.path().display())).await?;
+    send_keys(&mut app, &format!(":open {}<ret>", a.path().display())).await?;
     assert_eq!(written(&app, &recents), [canonical(&a), canonical(&b)]);
 
     // saved under a new name: the newest
     let saved = dir.path().join("saved.txt");
-    send(&mut app, &format!(":w {}<ret>", saved.display())).await?;
+    send_keys(&mut app, &format!(":w {}<ret>", saved.display())).await?;
     let files = written(&app, &recents);
     assert_eq!(files.len(), 3, "{files:?}");
     assert_eq!(files[0], helix_stdx::path::canonicalize(&saved));
     assert_eq!(files[1..], [canonical(&a), canonical(&b)]);
 
-    send(&mut app, ":q!<ret>").await?;
+    send_keys(&mut app, ":q!<ret>").await?;
     Ok(())
 }
 
@@ -109,9 +94,9 @@ async fn the_picker_lists_the_recent_files() -> anyhow::Result<()> {
         .with_config(config(&recents, true))
         .build()?;
     app.resize_terminal(200, 30).await;
-    send(&mut app, &format!(":open {}<ret>", b.path().display())).await?;
+    send_keys(&mut app, &format!(":open {}<ret>", b.path().display())).await?;
 
-    send(&mut app, "<space>O").await?;
+    send_keys(&mut app, "<space>O").await?;
     let name = |file: &tempfile::NamedTempFile| {
         file.path()
             .file_name()
@@ -132,11 +117,11 @@ async fn the_picker_lists_the_recent_files() -> anyhow::Result<()> {
     assert!(rows.iter().any(|row| row.contains("2/2")), "{rows:#?}");
     assert!(position("gone.txt").is_none(), "{rows:#?}");
 
-    send(&mut app, "<ret>").await?;
+    send_keys(&mut app, "<ret>").await?;
     let path = helix_view::doc!(app.editor).path().map(Path::to_path_buf);
     assert_eq!(path, Some(canonical(&a)));
 
-    send(&mut app, ":q!<ret>").await?;
+    send_keys(&mut app, ":q!<ret>").await?;
     Ok(())
 }
 
@@ -150,10 +135,10 @@ async fn nothing_is_recorded_when_off() -> anyhow::Result<()> {
         .with_file(a.path(), None)
         .with_config(config(&recents, false))
         .build()?;
-    send(&mut app, ":w<ret>").await?;
+    send_keys(&mut app, ":w<ret>").await?;
     assert_eq!(written(&app, &recents), Vec::<PathBuf>::new());
     assert!(!recents.exists());
-    send(&mut app, ":q!<ret>").await?;
+    send_keys(&mut app, ":q!<ret>").await?;
     Ok(())
 }
 

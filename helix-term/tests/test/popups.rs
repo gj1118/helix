@@ -2,9 +2,7 @@
 #![cfg(not(windows))]
 
 use super::*;
-use helix_term::{application::Application, compositor::Component};
-use std::time::Duration;
-use tokio_stream::wrappers::UnboundedReceiverStream;
+use helix_term::compositor::Component;
 
 fn config(toml: &str) -> Config {
     let raw: helix_term::config::ConfigRaw = toml::from_str(toml).unwrap();
@@ -12,38 +10,6 @@ fn config(toml: &str) -> Config {
         editor: raw.editor.unwrap().try_into().unwrap(),
         ..Default::default()
     }
-}
-
-fn keys(keys: &str) -> Vec<termina::Event> {
-    helix_view::input::parse_macro(keys)
-        .unwrap()
-        .into_iter()
-        .map(|key| termina::Event::Key(key.into()))
-        .collect()
-}
-
-/// Sends `events` to the application and runs it until it is idle.
-async fn send(app: &mut Application, events: Vec<termina::Event>) -> anyhow::Result<()> {
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut stream = UnboundedReceiverStream::new(rx);
-    for event in events {
-        tx.send(Ok(event))?;
-    }
-    app.event_loop_until_idle(&mut stream).await;
-    Ok(())
-}
-
-/// Quits the application.
-async fn quit(mut app: Application) -> anyhow::Result<()> {
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut stream = UnboundedReceiverStream::new(rx);
-    for event in keys("<esc><esc>:q!<ret>") {
-        tx.send(Ok(event))?;
-    }
-    tokio::time::timeout(Duration::from_millis(500), app.event_loop(&mut stream)).await?;
-    let errors = app.close().await;
-    anyhow::ensure!(errors.is_empty(), "errors closing the app: {errors:?}");
-    Ok(())
 }
 
 /// An option of a [`helix_term::ui::Select`].
@@ -163,7 +129,7 @@ async fn command_line_popup_lists_completions_inside_the_screen() -> anyhow::Res
     let mut app = helpers::AppBuilder::new()
         .with_config(config("[editor.cmdline]\nstyle = \"popup\"\n"))
         .build()?;
-    send(&mut app, keys(":w")).await?;
+    send_keys(&mut app, ":w").await?;
     let screen = app.rendered_rows();
     // the completions of `w` are listed below the input
     assert!(
@@ -172,7 +138,7 @@ async fn command_line_popup_lists_completions_inside_the_screen() -> anyhow::Res
         screen.join("\n")
     );
     // move through them, with the list scrolling
-    send(&mut app, keys(&"<tab>".repeat(15))).await?;
+    send_keys(&mut app, &"<tab>".repeat(15)).await?;
     quit(app).await
 }
 
@@ -190,7 +156,7 @@ async fn command_line_popup_help_follows_the_gradient_border() -> anyhow::Result
                  start-color = \"#ff0000\"\nend-color = \"#ff0000\"\nanimation-speed = 0\n"
             )))
             .build()?;
-        send(&mut app, keys(":config-reload")).await?;
+        send_keys(&mut app, ":config-reload").await?;
         let rows = app.rendered_rows();
         let (y, row) = rows
             .iter()
@@ -237,7 +203,7 @@ async fn prompt_cursor_follows_its_label_with_the_popup_command_line() -> anyhow
         let mut app = helpers::AppBuilder::new()
             .with_config(config(&format!("[editor.cmdline]\nstyle = \"{style}\"\n")))
             .build()?;
-        send(&mut app, keys("<A-r>abc")).await?;
+        send_keys(&mut app, "<A-r>abc").await?;
         let rows = app.rendered_rows();
         let (y, row) = rows
             .iter()
@@ -286,7 +252,7 @@ async fn a_popup_at_the_cursor_stays_within_its_view() -> anyhow::Result<()> {
         .with_input_text("#[f|]#mt.Println()\nsecond\nthird\n")
         .build()?;
     app.resize_terminal(160, 40).await;
-    send(&mut app, keys(":vsplit<ret>A")).await?;
+    send_keys(&mut app, ":vsplit<ret>A").await?;
 
     let screen = app.compositor.size();
     let (view, _) = helix_view::current_ref!(app.editor);
@@ -305,7 +271,7 @@ async fn a_popup_at_the_cursor_stays_within_its_view() -> anyhow::Result<()> {
     );
 
     // the left view: within it too
-    send(&mut app, keys("<esc><C-w>hA")).await?;
+    send_keys(&mut app, "<esc><C-w>hA").await?;
     let (view, _) = helix_view::current_ref!(app.editor);
     let view_area = view.area;
     assert_eq!(view_area.left(), 0u16);
@@ -318,23 +284,23 @@ async fn a_popup_at_the_cursor_stays_within_its_view() -> anyhow::Result<()> {
 
     // one view of 160 columns: 60% of it by default (`popup-max-width-percent`), border
     // included
-    send(&mut app, keys("<esc><C-w>oA")).await?;
+    send_keys(&mut app, "<esc><C-w>oA").await?;
     let mut popup = signature_help(&app.editor);
     let area = popup.area(screen, &app.editor);
     assert_eq!(area.width, 96u16, "{area:?}");
     // the share can be set: 120 columns at most, and 40 at least
     for (percent, width) in [(100u8, 120u16), (50, 80), (25, 40), (10, 40)] {
         let set = format!("<esc>:set popup-max-width-percent {percent}<ret>A");
-        send(&mut app, keys(&set)).await?;
+        send_keys(&mut app, &set).await?;
         let mut popup = signature_help(&app.editor);
         let area = popup.area(screen, &app.editor);
         assert_eq!(area.width, width, "{percent}%: {area:?}");
     }
 
     // views too narrow to read a popup in: it spreads over its neighbours
-    send(
+    send_events(
         &mut app,
-        keys("<esc>:vsplit<ret>:vsplit<ret>:vsplit<ret>:vsplit<ret>A"),
+        key_events("<esc>:vsplit<ret>:vsplit<ret>:vsplit<ret>:vsplit<ret>A"),
     )
     .await?;
     let (view, _) = helix_view::current_ref!(app.editor);
@@ -346,7 +312,7 @@ async fn a_popup_at_the_cursor_stays_within_its_view() -> anyhow::Result<()> {
     assert!(area.right() <= screen.right(), "{area:?}");
 
     // one view left, for `quit`
-    send(&mut app, keys("<esc><C-w>o")).await?;
+    send_keys(&mut app, "<esc><C-w>o").await?;
     quit(app).await
 }
 
@@ -361,7 +327,7 @@ async fn clicking_another_view_closes_the_signature_help() -> anyhow::Result<()>
         .with_input_text("#[f|]#mt.Println()\nsecond\nthird\n")
         .build()?;
     app.resize_terminal(160, 40).await;
-    send(&mut app, keys(":vsplit<ret>A")).await?;
+    send_keys(&mut app, ":vsplit<ret>A").await?;
     let origin = app.editor.tree.focus;
     let popup = signature_help(&app.editor);
     app.compositor.push(Box::new(popup));
@@ -379,7 +345,7 @@ async fn clicking_another_view_closes_the_signature_help() -> anyhow::Result<()>
     };
     let (view, doc) = helix_view::current_ref!(app.editor);
     let inner = view.inner_area(doc);
-    send(&mut app, click(inner.x + 3, inner.y + 30)).await?;
+    send_events(&mut app, click(inner.x + 3, inner.y + 30)).await?;
     assert_eq!(app.editor.tree.focus, origin);
     assert!(app.compositor.has_id(SignatureHelp::ID));
 
@@ -392,10 +358,10 @@ async fn clicking_another_view_closes_the_signature_help() -> anyhow::Result<()>
         .find(|view| view.id != origin)
         .map(|view| (view.id, view.area))
         .unwrap();
-    send(&mut app, click(other.1.x + 12, other.1.y + 30)).await?;
+    send_events(&mut app, click(other.1.x + 12, other.1.y + 30)).await?;
     assert_eq!(app.editor.tree.focus, other.0);
     assert!(!app.compositor.has_id(SignatureHelp::ID));
-    send(&mut app, keys("<esc><C-w>o")).await?;
+    send_keys(&mut app, "<esc><C-w>o").await?;
     quit(app).await
 }
 
@@ -415,7 +381,7 @@ async fn popup_command_line_full_height_takes_the_bottom_row() -> anyhow::Result
                  [editor.bufferline]\nrender-mode = \"always\"\n"
             )))
             .build()?;
-        send(&mut app, keys("ihello<esc>")).await?;
+        send_keys(&mut app, "ihello<esc>").await?;
         let rows = app.rendered_rows();
         let last = rows.len() - 1;
         let status_row = rows

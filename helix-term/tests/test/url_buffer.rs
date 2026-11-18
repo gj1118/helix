@@ -47,17 +47,6 @@ async fn wait_until(
     anyhow::bail!("timed out")
 }
 
-async fn send(app: &mut Application, keys: &str) -> anyhow::Result<()> {
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    for key in helix_view::input::parse_macro(keys)? {
-        tx.send(Ok(termina::Event::Key(key.into())))?;
-    }
-    drop(tx);
-    let mut stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
-    app.event_loop_until_idle(&mut stream).await;
-    Ok(())
-}
-
 fn shown(app: &Application) -> (String, String, Option<String>) {
     let (_, doc) = helix_view::current_ref!(app.editor);
     (
@@ -80,7 +69,7 @@ async fn a_url_opens_in_a_buffer_of_its_own() -> anyhow::Result<()> {
     let mut app = helpers::AppBuilder::new()
         .with_file(helpers::temp_file_with_contents("local\n")?.path(), None)
         .build()?;
-    send(&mut app, &format!(":open {url}<ret>")).await?;
+    send_keys(&mut app, &format!(":open {url}<ret>")).await?;
     let wanted = url.clone();
     wait_until(&mut app, move |app| shown(app).0 == wanted).await?;
     let (name, text, language) = shown(&app);
@@ -96,7 +85,7 @@ async fn a_url_opens_in_a_buffer_of_its_own() -> anyhow::Result<()> {
 
     // a 404 is an error, and the buffer stays
     let missing = format!("http://127.0.0.1:{port}/missing");
-    send(&mut app, &format!(":open {missing}<ret>")).await?;
+    send_keys(&mut app, &format!(":open {missing}<ret>")).await?;
     let prefix = format!("Failed to open {missing}: ");
     wait_until(&mut app, move |app| {
         app.editor

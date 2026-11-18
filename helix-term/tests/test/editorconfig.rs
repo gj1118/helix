@@ -7,24 +7,6 @@ use helix_term::application::Application;
 use helix_view::Document;
 use std::path::Path;
 
-async fn send(app: &mut Application, keys: &str) -> anyhow::Result<()> {
-    #[cfg(windows)]
-    use crossterm::event::{Event, KeyEvent};
-    #[cfg(not(windows))]
-    use termina::event::{Event, KeyEvent};
-
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    for key in helix_view::input::parse_macro(keys)? {
-        tx.send(Ok(Event::Key(KeyEvent::from(key))))?;
-    }
-    let mut stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
-    // The loop returns on the idle timer, which it clears: armed again, a call without keys
-    // (or one after the last returned idle) returns too instead of waiting for an event.
-    app.editor.reset_idle_timer();
-    app.event_loop_until_idle(&mut stream).await;
-    Ok(())
-}
-
 fn config(editor_config: bool) -> Config {
     let mut config = helpers::test_config();
     config.editor.notifications.enable = false;
@@ -59,7 +41,7 @@ async fn wait_for_write(app: &mut Application, path: &Path, expected: &[u8]) -> 
             return bytes;
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        send(app, "").await.expect("no keys");
+        send_keys(app, "").await.expect("no keys");
     }
     std::fs::read(path).unwrap_or_default()
 }
@@ -101,7 +83,7 @@ async fn the_properties_apply_on_open_and_on_write() -> anyhow::Result<()> {
         (doc.trim_trailing_whitespace(), doc.insert_final_newline());
     assert_eq!((trim, final_newline), (true, true));
 
-    send(&mut app, ":w<ret>").await?;
+    send_keys(&mut app, ":w<ret>").await?;
     let written: Vec<u8> = wait_for_write(&mut app, &path, b"one\r\ntwo\r\n").await;
     assert_eq!(String::from_utf8(written)?, "one\r\ntwo\r\n");
     helpers::assert_status_not_error(&app.editor);
@@ -121,7 +103,7 @@ async fn indent_size_alone_sets_the_width_of_the_spaces() -> anyhow::Result<()> 
         .with_file(&spaces, None)
         .with_config(config(true))
         .build()?;
-    send(&mut app, &format!(":open {}<ret>", tabs.display())).await?;
+    send_keys(&mut app, &format!(":open {}<ret>", tabs.display())).await?;
 
     let spaces_style: IndentStyle = doc(&app, &spaces).indent_style;
     assert_eq!(spaces_style, IndentStyle::Spaces(2));
@@ -145,7 +127,7 @@ async fn utf_8_bom_gives_a_new_file_the_mark() -> anyhow::Result<()> {
 
     let encoding: &str = doc(&app, &path).encoding().name();
     assert_eq!(encoding, "UTF-8");
-    send(&mut app, "ihi<esc>:w<ret>").await?;
+    send_keys(&mut app, "ihi<esc>:w<ret>").await?;
     let expected: &[u8] = b"\xEF\xBB\xBFhi\n";
     let written: Vec<u8> = wait_for_write(&mut app, &path, expected).await;
     assert_eq!(written, expected);
@@ -170,7 +152,7 @@ async fn number_ranges_and_a_broken_section() -> anyhow::Result<()> {
         .with_file(&in_range, None)
         .with_config(config(true))
         .build()?;
-    send(&mut app, &format!(":open {}<ret>", out_of_range.display())).await?;
+    send_keys(&mut app, &format!(":open {}<ret>", out_of_range.display())).await?;
 
     let in_range = doc(&app, &in_range);
     let (style, ending): (IndentStyle, LineEnding) = (in_range.indent_style, in_range.line_ending);
@@ -197,12 +179,12 @@ async fn saving_an_editorconfig_applies_it_to_the_open_files() -> anyhow::Result
         .with_file(&a, None)
         .with_config(config(true))
         .build()?;
-    send(&mut app, &format!(":open {}<ret>", b.display())).await?;
+    send_keys(&mut app, &format!(":open {}<ret>", b.display())).await?;
     let before: IndentStyle = doc(&app, &a).indent_style;
     assert_eq!(before, IndentStyle::Tabs);
 
-    send(&mut app, &format!(":open {}<ret>", editorconfig.display())).await?;
-    send(
+    send_keys(&mut app, &format!(":open {}<ret>", editorconfig.display())).await?;
+    send_keys(
         &mut app,
         ":set auto-pairs false<ret>%croot = true<ret>[*]<ret>indent_style = space<ret>\
          indent_size = 2<ret>end_of_line = crlf<esc>:w<ret>",
@@ -213,7 +195,7 @@ async fn saving_an_editorconfig_applies_it_to_the_open_files() -> anyhow::Result
 
     assert_eq!(String::from_utf8(written)?, expected);
     // the save event, which reads the file again
-    send(&mut app, "").await?;
+    send_keys(&mut app, "").await?;
 
     let a = doc(&app, &a);
     let (style, ending): (IndentStyle, LineEnding) = (a.indent_style, a.line_ending);
@@ -253,12 +235,12 @@ async fn the_editor_config_option_turns_it_off_and_on() -> anyhow::Result<()> {
     let (style, ending): (IndentStyle, LineEnding) = (on.indent_style, on.line_ending);
     assert_eq!((style, ending), (IndentStyle::Tabs, LineEnding::Crlf));
 
-    send(&mut app, ":set editor-config false<ret>").await?;
+    send_keys(&mut app, ":set editor-config false<ret>").await?;
     let off = doc(&app, &path);
     let (style, ending): (IndentStyle, LineEnding) = (off.indent_style, off.line_ending);
     assert_eq!((style, ending), (IndentStyle::Spaces(2), LineEnding::LF));
 
-    send(&mut app, ":set editor-config true<ret>").await?;
+    send_keys(&mut app, ":set editor-config true<ret>").await?;
     let on = doc(&app, &path);
     let (style, ending): (IndentStyle, LineEnding) = (on.indent_style, on.line_ending);
     assert_eq!((style, ending), (IndentStyle::Tabs, LineEnding::Crlf));

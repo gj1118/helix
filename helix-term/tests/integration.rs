@@ -59,6 +59,7 @@ mod test {
     mod snippets;
     mod splits;
     mod tabs;
+    mod tiny_terminal;
     mod todos;
     mod undo_tree;
     mod url_buffer;

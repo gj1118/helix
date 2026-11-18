@@ -137,33 +137,18 @@ pub fn expand<'a>(editor: &Editor, token: Token<'a>) -> Result<Cow<'a, str>> {
     }
 }
 
+/// How long a `%sh{...}` expansion may run. It runs on the editor's thread (the command it
+/// is part of needs its output), so a command that never ends would freeze the editor: it is
+/// stopped after this long instead, and the expansion fails.
+const SHELL_EXPANSION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Expand a shell command.
 pub fn expand_shell<'a>(editor: &Editor, content: Cow<'a, str>) -> Result<Cow<'a, str>> {
-    use std::process::{Command, Stdio};
-
     // Recursively expand the expansion's content before executing the shell command.
     let content = expand_inner(editor, content)?;
 
     let config = editor.config();
-    let shell = &config.shell;
-    let mut process = Command::new(&shell[0]);
-    process
-        .args(&shell[1..])
-        .arg(content.as_ref())
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    // TODO: there is no protection here against a shell command taking a long time.
-    // Ideally you should be able to hit `<ret>` in command mode and then be able to
-    // cancel the invocation (for example with `<C-c>`) if it takes longer than you'd
-    // like.
-    let output = match process.spawn() {
-        Ok(process) => process.wait_with_output()?,
-        Err(err) => {
-            bail!("Failed to start shell: {err}");
-        }
-    };
+    let output = run_shell(&config.shell, content.as_ref(), SHELL_EXPANSION_TIMEOUT)?;
 
     let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
 
@@ -183,6 +168,68 @@ pub fn expand_shell<'a>(editor: &Editor, content: Cow<'a, str>) -> Result<Cow<'a
     }
 
     Ok(Cow::Owned(text))
+}
+
+/// Runs `cmd` with `shell` and returns its output, or fails once it has run for `timeout`
+/// (killing it). Its output is read on threads of their own, so a command writing more than
+/// a pipe holds never blocks.
+fn run_shell(
+    shell: &[String],
+    cmd: &str,
+    timeout: std::time::Duration,
+) -> Result<std::process::Output> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    let Some((program, args)) = shell.split_first() else {
+        bail!("No shell set");
+    };
+    let mut child = Command::new(program)
+        .args(args)
+        .arg(cmd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| anyhow!("Failed to start shell: {err}"))?;
+    fn drain(pipe: Option<impl Read + Send + 'static>) -> std::sync::mpsc::Receiver<Vec<u8>> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        if let Some(mut pipe) = pipe {
+            std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                let _ = pipe.read_to_end(&mut bytes);
+                let _ = tx.send(bytes);
+            });
+        }
+        rx
+    }
+    let (stdout, stderr) = (drain(child.stdout.take()), drain(child.stderr.take()));
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!(
+                "`{cmd}` was stopped after {} seconds",
+                timeout.as_secs_f32()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    };
+    // (a background process the command started may keep the pipes open: not waited for)
+    let collect = |rx: std::sync::mpsc::Receiver<Vec<u8>>| {
+        rx.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .unwrap_or_default()
+    };
+    Ok(std::process::Output {
+        status,
+        stdout: collect(stdout),
+        stderr: collect(stderr),
+    })
 }
 
 /// Expand a positional argument of the custom command being run.
@@ -353,7 +400,33 @@ pub fn has_shell_expansion(content: &str) -> bool {
 
 #[cfg(test)]
 mod shell_expansion_tests {
-    use super::has_shell_expansion;
+    use super::{has_shell_expansion, run_shell};
+
+    #[cfg(unix)]
+    #[test]
+    fn shell_commands_are_stopped_at_the_timeout() {
+        use std::time::{Duration, Instant};
+        let shell = ["sh".to_string(), "-c".to_string()];
+        // a quick command: its output, whatever its size
+        let output = run_shell(
+            &shell,
+            "printf hi; head -c 200000 /dev/zero",
+            Duration::from_secs(10),
+        )
+        .unwrap();
+        assert!(output.status.success());
+        assert_eq!(&output.stdout[..2], b"hi");
+        assert_eq!(output.stdout.len(), 200_002_usize);
+        // one that never ends: stopped, not waited for
+        let start = Instant::now();
+        let err = run_shell(&shell, "sleep 30", Duration::from_millis(200)).unwrap_err();
+        let elapsed: Duration = start.elapsed();
+        assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
+        assert_eq!(err.to_string(), "`sleep 30` was stopped after 0.2 seconds");
+        // no shell
+        let err = run_shell(&[], "true", Duration::from_secs(1)).unwrap_err();
+        assert_eq!(err.to_string(), "No shell set");
+    }
 
     #[test]
     fn shell_expansions_are_found() {
