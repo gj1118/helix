@@ -1369,6 +1369,35 @@ vertical = 5
 horizontal = 5
 ```
 
+### `[editor.smooth-scroll]` Section
+
+Makes the scroll commands glide to their position instead of jumping, like Neovim's neoscroll.
+It is off by default.
+
+| Key | Description | Default |
+|--|--|---------|
+| `enable` | Turn smooth scrolling on | `false` |
+| `duration` | How long a scroll takes, in milliseconds, whatever its distance. `0` turns it off | `150` |
+| `easing` | How the speed changes along the way: `"linear"` (the same speed all along), `"ease-out"` (fast at first, slowing down at the end) or `"ease-in-out"` (slow at both ends) | `"ease-out"` |
+
+```toml
+[editor.smooth-scroll]
+enable = true
+duration = 150
+easing = "ease-out"
+```
+
+The commands that glide: half a page and a page down and up (`C-d` / `C-u`, `C-f` / `C-b`,
+`PageDown` / `PageUp`, and `space` / `backspace` in the `z` / `Z` view menus), centering or
+aligning the view on the cursor (`z z` / `z c`, `z t`, `z b`), and the view menus' `j` / `k`
+with a count (`z 10j`). One row at a time, the mouse wheel and jumps (`gg`, a search, a picker)
+stay instant.
+
+Only the drawing is animated: the cursor and the view are where the command puts them at once,
+so keys typed during the animation act on the final position and never wait for it. Another
+scroll on the way starts from what is on the screen; a jump, an edit or the mouse wheel ends
+the animation.
+
 ### `[editor.workspace-trust]` Section
 
 Controls implicit workspace trust. See the [workspace

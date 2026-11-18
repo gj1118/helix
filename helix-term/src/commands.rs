@@ -2320,52 +2320,77 @@ pub fn scroll(cx: &mut Context, offset: usize, direction: Direction, sync_cursor
     doc.set_selection(view.id, sel);
 }
 
-fn page_up(cx: &mut Context) {
+/// Runs a scroll command, then lets the view glide from where it was to where the command
+/// put it, with `[editor.smooth-scroll]` enabled (only the drawing is animated).
+fn smoothly(cx: &mut Context, scroll: impl FnOnce(&mut Context)) {
     let (view, doc) = current_ref!(cx.editor);
-    let offset = view.inner_height(doc);
-    scroll(cx, offset, Direction::Backward, false);
+    let (view_id, from) = (view.id, doc.view_offset(view.id));
+    scroll(cx);
+    cx.editor.animate_scroll(view_id, from);
+}
+
+fn page_up(cx: &mut Context) {
+    smoothly(cx, |cx| {
+        let (view, doc) = current_ref!(cx.editor);
+        let offset = view.inner_height(doc);
+        scroll(cx, offset, Direction::Backward, false);
+    });
 }
 
 fn page_down(cx: &mut Context) {
-    let (view, doc) = current_ref!(cx.editor);
-    let offset = view.inner_height(doc);
-    scroll(cx, offset, Direction::Forward, false);
+    smoothly(cx, |cx| {
+        let (view, doc) = current_ref!(cx.editor);
+        let offset = view.inner_height(doc);
+        scroll(cx, offset, Direction::Forward, false);
+    });
 }
 
 fn half_page_up(cx: &mut Context) {
-    let (view, doc) = current_ref!(cx.editor);
-    let offset = view.inner_height(doc) / 2;
-    scroll(cx, offset, Direction::Backward, false);
+    smoothly(cx, |cx| {
+        let (view, doc) = current_ref!(cx.editor);
+        let offset = view.inner_height(doc) / 2;
+        scroll(cx, offset, Direction::Backward, false);
+    });
 }
 
 fn half_page_down(cx: &mut Context) {
-    let (view, doc) = current_ref!(cx.editor);
-    let offset = view.inner_height(doc) / 2;
-    scroll(cx, offset, Direction::Forward, false);
+    smoothly(cx, |cx| {
+        let (view, doc) = current_ref!(cx.editor);
+        let offset = view.inner_height(doc) / 2;
+        scroll(cx, offset, Direction::Forward, false);
+    });
 }
 
 fn page_cursor_up(cx: &mut Context) {
-    let (view, doc) = current_ref!(cx.editor);
-    let offset = view.inner_height(doc);
-    scroll(cx, offset, Direction::Backward, true);
+    smoothly(cx, |cx| {
+        let (view, doc) = current_ref!(cx.editor);
+        let offset = view.inner_height(doc);
+        scroll(cx, offset, Direction::Backward, true);
+    });
 }
 
 fn page_cursor_down(cx: &mut Context) {
-    let (view, doc) = current_ref!(cx.editor);
-    let offset = view.inner_height(doc);
-    scroll(cx, offset, Direction::Forward, true);
+    smoothly(cx, |cx| {
+        let (view, doc) = current_ref!(cx.editor);
+        let offset = view.inner_height(doc);
+        scroll(cx, offset, Direction::Forward, true);
+    });
 }
 
 fn page_cursor_half_up(cx: &mut Context) {
-    let (view, doc) = current_ref!(cx.editor);
-    let offset = view.inner_height(doc) / 2;
-    scroll(cx, offset, Direction::Backward, true);
+    smoothly(cx, |cx| {
+        let (view, doc) = current_ref!(cx.editor);
+        let offset = view.inner_height(doc) / 2;
+        scroll(cx, offset, Direction::Backward, true);
+    });
 }
 
 fn page_cursor_half_down(cx: &mut Context) {
-    let (view, doc) = current_ref!(cx.editor);
-    let offset = view.inner_height(doc) / 2;
-    scroll(cx, offset, Direction::Forward, true);
+    smoothly(cx, |cx| {
+        let (view, doc) = current_ref!(cx.editor);
+        let offset = view.inner_height(doc) / 2;
+        scroll(cx, offset, Direction::Forward, true);
+    });
 }
 
 #[allow(deprecated)]
@@ -7808,18 +7833,24 @@ fn copy_between_registers(cx: &mut Context) {
 }
 
 fn align_view_top(cx: &mut Context) {
-    let (view, doc) = current!(cx.editor);
-    align_view(doc, view, Align::Top);
+    smoothly(cx, |cx| {
+        let (view, doc) = current!(cx.editor);
+        align_view(doc, view, Align::Top);
+    });
 }
 
 fn align_view_center(cx: &mut Context) {
-    let (view, doc) = current!(cx.editor);
-    align_view(doc, view, Align::Center);
+    smoothly(cx, |cx| {
+        let (view, doc) = current!(cx.editor);
+        align_view(doc, view, Align::Center);
+    });
 }
 
 fn align_view_bottom(cx: &mut Context) {
-    let (view, doc) = current!(cx.editor);
-    align_view(doc, view, Align::Bottom);
+    smoothly(cx, |cx| {
+        let (view, doc) = current!(cx.editor);
+        align_view(doc, view, Align::Bottom);
+    });
 }
 
 fn align_view_middle(cx: &mut Context) {
@@ -7849,11 +7880,12 @@ fn align_view_middle(cx: &mut Context) {
 }
 
 fn scroll_up(cx: &mut Context) {
-    scroll(cx, cx.count(), Direction::Backward, false);
+    // (one row at a time does not animate: see `animate_scroll`)
+    smoothly(cx, |cx| scroll(cx, cx.count(), Direction::Backward, false));
 }
 
 fn scroll_down(cx: &mut Context) {
-    scroll(cx, cx.count(), Direction::Forward, false);
+    smoothly(cx, |cx| scroll(cx, cx.count(), Direction::Forward, false));
 }
 
 fn goto_ts_object_impl(cx: &mut Context, object: &'static str, direction: Direction) {

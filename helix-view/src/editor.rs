@@ -517,6 +517,8 @@ pub struct Config {
     /// How long (in milliseconds) yanked text is highlighted (`ui.highlight.yank`), like
     /// Neovim's `vim.hl.on_yank`. 0 turns it off. Defaults to 200.
     pub yank_highlight: u64,
+    /// Smooth scrolling: the scroll commands glide to their position instead of jumping.
+    pub smooth_scroll: SmoothScrollConfig,
     /// Automatic save on focus lost and/or after delay.
     /// Time delay in milliseconds since last edit after which auto save timer triggers.
     /// Time delay defaults to false with 3000ms delay. Focus lost defaults to false.
@@ -1363,6 +1365,91 @@ pub enum BufferLineRenderMode {
     /// Only if multiple buffers are open
     Multiple,
 }
+
+/// `[editor.smooth-scroll]`: the scroll commands (`C-d` / `C-u`, `C-f` / `C-b`, page up /
+/// down, `zz` / `zt` / `zb`, a count of `C-e` / `C-y`) glide to their position, like
+/// Neovim's neoscroll. Only the drawing is animated: the cursor and the view are already
+/// where the command puts them, so the next key never waits for the animation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct SmoothScrollConfig {
+    /// Off by default.
+    pub enable: bool,
+    /// How long a scroll takes, in milliseconds (whatever its distance). 0 turns it off.
+    pub duration: u64,
+    /// How the speed changes along the way.
+    pub easing: ScrollEasing,
+}
+
+impl Default for SmoothScrollConfig {
+    fn default() -> Self {
+        Self {
+            enable: false,
+            duration: 150,
+            easing: ScrollEasing::EaseOut,
+        }
+    }
+}
+
+/// The speed of a smooth scroll along the way.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ScrollEasing {
+    /// The same speed all along.
+    Linear,
+    /// Fast at first, slowing down at the end.
+    #[default]
+    EaseOut,
+    /// Slow at both ends, fast in the middle.
+    EaseInOut,
+}
+
+impl ScrollEasing {
+    /// The part of the distance covered at `progress` (both from 0 to 1).
+    pub fn apply(self, progress: f64) -> f64 {
+        let p = progress.clamp(0.0, 1.0);
+        match self {
+            Self::Linear => p,
+            Self::EaseOut => 1.0 - (1.0 - p).powi(3),
+            Self::EaseInOut => {
+                if p < 0.5 {
+                    4.0 * p * p * p
+                } else {
+                    1.0 - (-2.0 * p + 2.0).powi(3) / 2.0
+                }
+            }
+        }
+    }
+}
+
+/// A smooth scroll under way (see [`SmoothScrollConfig`]).
+#[derive(Debug, Clone)]
+pub struct ScrollAnimation {
+    pub view: ViewId,
+    pub document: DocumentId,
+    /// The document's version: an edit ends the animation (the positions would be stale).
+    pub version: i32,
+    /// Where the view was.
+    pub from: ViewPosition,
+    /// Where the command put the view (the view's actual position all along).
+    pub to: ViewPosition,
+    /// The visual rows from `from` to `to` (negative upwards).
+    pub rows: isize,
+    pub start: Instant,
+    pub duration: Duration,
+    pub easing: ScrollEasing,
+    /// Whether a frame was drawn yet: until then, a change of the view's position (the
+    /// cursor kept in view after the command) is taken as the target.
+    pub drawn: bool,
+}
+
+/// The most rows a smooth scroll goes through (a farther one jumps).
+const SMOOTH_SCROLL_MAX_ROWS: isize = 2000;
+
+/// Counts the smooth scrolls: the frame timer of one stops when it is no longer the latest
+/// (ended, cancelled or followed by another).
+static SMOOTH_SCROLL_GENERATION: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 
 /// Which buffers the bufferline lists (and `gn` / `gp` and the buffer picker go through).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -2211,6 +2298,7 @@ impl Default for Config {
             auto_format: true,
             default_yank_register: '"',
             yank_highlight: 200,
+            smooth_scroll: SmoothScrollConfig::default(),
             auto_save: AutoSave::default(),
             auto_reload: AutoReload::default(),
             idle_timeout: Duration::from_millis(250),
@@ -2650,6 +2738,8 @@ pub struct Editor {
     pub plugin_completion_hook: Option<crate::plugin_ui::PluginCompletionHook>,
     /// The text just yanked, highlighted for a moment (see [`Config::yank_highlight`]).
     pub yank_flash: Option<YankFlash>,
+    /// The smooth scroll under way (`[editor.smooth-scroll]`).
+    pub scroll_animation: Option<ScrollAnimation>,
     /// The floating windows of plugins (`helix.ui.float`), the last one on top.
     pub plugin_floats: Vec<crate::plugin_ui::PluginFloat>,
     /// The marks plugins show on the quickfix panel's rows.
@@ -3013,6 +3103,7 @@ impl Editor {
             plugin_completion_hook: None,
             plugin_floats: Vec::new(),
             yank_flash: None,
+            scroll_animation: None,
             plugin_quickfix_marks: Default::default(),
             diff_sessions: Vec::new(),
             diff_review: None,
@@ -4458,6 +4549,201 @@ impl Editor {
 
     /// Highlights `ranges` (chars) of the focused buffer for [`Config::yank_highlight`]
     /// milliseconds: they were just yanked.
+    /// Starts a smooth scroll of `view` from `from` to where it is now (after a scroll
+    /// command), when `[editor.smooth-scroll]` is enabled. A scroll started while another
+    /// is under way starts from what is on the screen.
+    pub fn animate_scroll(&mut self, view_id: ViewId, from: ViewPosition) {
+        let config = self.config().smooth_scroll.clone();
+        if !config.enable || config.duration == 0 {
+            self.stop_scroll_animation();
+            return;
+        }
+        let Some(view) = self.tree.try_get(view_id) else {
+            return;
+        };
+        let Some(doc) = self.documents.get(&view.doc) else {
+            return;
+        };
+        let now = Instant::now();
+        // what the screen shows of a scroll under way
+        let from = match &self.scroll_animation {
+            Some(running)
+                if running.view == view_id
+                    && running.document == doc.id()
+                    && running.version == doc.version() =>
+            {
+                Self::scroll_position(running, view, doc, now).unwrap_or(from)
+            }
+            _ => from,
+        };
+        let to = doc.view_offset(view_id);
+        self.scroll_animation = Self::scroll_rows(view, doc, from, to)
+            .filter(|rows| rows.abs() > 1)
+            .map(|rows| ScrollAnimation {
+                view: view_id,
+                document: doc.id(),
+                version: doc.version(),
+                from,
+                to,
+                rows,
+                start: now,
+                duration: Duration::from_millis(config.duration),
+                easing: config.easing,
+                drawn: false,
+            });
+        use std::sync::atomic::Ordering;
+        let generation = SMOOTH_SCROLL_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
+        if self.scroll_animation.is_none() {
+            return;
+        }
+        // the frames of the animation (about 60 a second), until it is over (one more then)
+        // or no longer the latest
+        let until = now + Duration::from_millis(config.duration);
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                loop {
+                    sleep(Duration::from_millis(16)).await;
+                    if SMOOTH_SCROLL_GENERATION.load(Ordering::Relaxed) != generation {
+                        break;
+                    }
+                    helix_event::request_redraw();
+                    if Instant::now() >= until {
+                        break;
+                    }
+                }
+            });
+        }
+    }
+
+    /// Ends the smooth scroll under way, if any (the view is already where it goes).
+    pub fn stop_scroll_animation(&mut self) {
+        if self.scroll_animation.take().is_some() {
+            SMOOTH_SCROLL_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// The visual rows from `from` to `to` in `view` (negative upwards), when `to` is
+    /// `from` moved down or up by them (and both are within reach).
+    fn scroll_rows(
+        view: &View,
+        doc: &Document,
+        from: ViewPosition,
+        to: ViewPosition,
+    ) -> Option<isize> {
+        if from.horizontal_offset != to.horizontal_offset || from == to {
+            return None;
+        }
+        let text = doc.text().slice(..);
+        let len = text.len_chars();
+        if from.anchor > len || to.anchor > len {
+            return None;
+        }
+        let text_fmt = doc.text_format(view.inner_area(doc).width, None);
+        let annotations = view.text_annotations(doc, None);
+        let block = from.anchor.min(to.anchor);
+        let row = |pos: usize| {
+            helix_core::visual_offset_from_block(text, block, pos, &text_fmt, &annotations)
+                .0
+                .row as isize
+        };
+        let rows = (row(to.anchor) + to.vertical_offset as isize)
+            - (row(from.anchor) + from.vertical_offset as isize);
+        if rows == 0 || rows.abs() > SMOOTH_SCROLL_MAX_ROWS {
+            return None;
+        }
+        // only when moving `from` by the rows lands on `to`
+        let landed = helix_core::char_idx_at_visual_offset(
+            text,
+            from.anchor,
+            from.vertical_offset as isize + rows,
+            0,
+            &text_fmt,
+            &annotations,
+        );
+        (landed == (to.anchor, to.vertical_offset)).then_some(rows)
+    }
+
+    /// Where the screen shows the view of `animation` at `now`.
+    fn scroll_position(
+        animation: &ScrollAnimation,
+        view: &View,
+        doc: &Document,
+        now: Instant,
+    ) -> Option<ViewPosition> {
+        let elapsed = now.saturating_duration_since(animation.start);
+        if elapsed >= animation.duration {
+            return None;
+        }
+        let progress = elapsed.as_secs_f64() / animation.duration.as_secs_f64();
+        let rows = (animation.rows as f64 * animation.easing.apply(progress)).round() as isize;
+        let text_fmt = doc.text_format(view.inner_area(doc).width, None);
+        let (anchor, vertical_offset) = helix_core::char_idx_at_visual_offset(
+            doc.text().slice(..),
+            animation.from.anchor,
+            animation.from.vertical_offset as isize + rows,
+            0,
+            &text_fmt,
+            &view.text_annotations(doc, None),
+        );
+        Some(ViewPosition {
+            anchor,
+            horizontal_offset: animation.to.horizontal_offset,
+            vertical_offset,
+        })
+    }
+
+    /// Puts the view of the smooth scroll under way where this frame shows it, and returns
+    /// what [`Self::end_scroll_frame`] puts back after drawing. Ends the animation when it
+    /// is over, or when something else moved the view or changed the document.
+    pub fn begin_scroll_frame(&mut self) -> Option<(DocumentId, ViewId, ViewPosition)> {
+        let animation = self.scroll_animation.as_mut()?;
+        let alive = self.tree.try_get(animation.view).and_then(|view| {
+            let doc = self.documents.get(&animation.document)?;
+            (view.doc == animation.document && doc.version() == animation.version)
+                .then_some((view, doc))
+        });
+        let Some((view, doc)) = alive else {
+            self.stop_scroll_animation();
+            return None;
+        };
+        let actual = doc.view_offset(animation.view);
+        if actual != animation.to {
+            // the cursor kept in view after the command: the target, if it is in reach
+            let rows = (!animation.drawn)
+                .then(|| Self::scroll_rows(view, doc, animation.from, actual))
+                .flatten();
+            match rows {
+                Some(rows) => {
+                    animation.to = actual;
+                    animation.rows = rows;
+                }
+                None => {
+                    self.stop_scroll_animation();
+                    return None;
+                }
+            }
+        }
+        animation.drawn = true;
+        let shown = Self::scroll_position(animation, view, doc, Instant::now());
+        let Some(shown) = shown else {
+            self.stop_scroll_animation();
+            return None;
+        };
+        let (document, view_id) = (animation.document, animation.view);
+        doc_mut!(self, &document).set_view_offset(view_id, shown);
+        Some((document, view_id, actual))
+    }
+
+    /// Puts back the view's position after a frame of a smooth scroll (see
+    /// [`Self::begin_scroll_frame`]).
+    pub fn end_scroll_frame(&mut self, frame: Option<(DocumentId, ViewId, ViewPosition)>) {
+        if let Some((document, view, position)) = frame {
+            if let Some(doc) = self.documents.get_mut(&document) {
+                doc.set_view_offset(view, position);
+            }
+        }
+    }
+
     pub fn flash_yank(&mut self, ranges: Vec<std::ops::Range<usize>>) {
         let millis = self.config().yank_highlight;
         let ranges: Vec<_> = ranges.into_iter().filter(|r| r.start < r.end).collect();
@@ -5193,5 +5479,35 @@ mod cursor_roundness_tests {
         }
         // not a number: an error, as for any other option
         assert!(toml::from_str::<Config>("cursor-roundness = \"round\"").is_err());
+    }
+
+    #[test]
+    fn smooth_scroll_easings() {
+        use crate::editor::ScrollEasing;
+        for easing in [
+            ScrollEasing::Linear,
+            ScrollEasing::EaseOut,
+            ScrollEasing::EaseInOut,
+        ] {
+            // from nothing to the whole distance, never back
+            let start: f64 = easing.apply(0.0);
+            let end: f64 = easing.apply(1.0);
+            assert_eq!(start, 0.0_f64, "{easing:?}");
+            assert_eq!(end, 1.0_f64, "{easing:?}");
+            let mut last = 0.0_f64;
+            for step in 1..=100 {
+                let covered = easing.apply(step as f64 / 100.0);
+                assert!(covered >= last, "{easing:?} at {step}");
+                last = covered;
+            }
+            // out of range is clamped
+            assert_eq!(easing.apply(-1.0), 0.0_f64);
+            assert_eq!(easing.apply(2.0), 1.0_f64);
+        }
+        assert_eq!(ScrollEasing::Linear.apply(0.5), 0.5_f64);
+        // ease-out is ahead halfway; ease-in-out is halfway at half the time
+        assert_eq!(ScrollEasing::EaseOut.apply(0.5), 0.875_f64);
+        assert_eq!(ScrollEasing::EaseInOut.apply(0.5), 0.5_f64);
+        assert!(ScrollEasing::EaseInOut.apply(0.25) < 0.25_f64);
     }
 }

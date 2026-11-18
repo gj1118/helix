@@ -704,6 +704,9 @@ impl Application {
         cx.editor.kitty_graphics = self.terminal.backend().supports_kitty_graphics();
         let surface = self.terminal.current_buffer_mut();
 
+        // A smooth scroll under way draws the view where this frame shows it; the view is
+        // put back where the command put it once the frame (and its cursor) is drawn.
+        let scroll_frame = cx.editor.begin_scroll_frame();
         self.compositor.render(area, surface, &mut cx);
         // The secondary cursors the terminal draws (kitty's multiple cursors protocol), except
         // where something was drawn over them since the editor drew its views.
@@ -714,6 +717,7 @@ impl Application {
             .unwrap_or_default();
         self.terminal.set_secondary_cursors(secondary_cursors);
         let (pos, kind) = self.compositor.cursor(area, &self.editor);
+        self.editor.end_scroll_frame(scroll_frame);
         // reset cursor cache
         self.editor.cursor_cache.reset();
 
@@ -793,6 +797,11 @@ impl Application {
 
             use futures_util::StreamExt;
 
+            // The frames of a smooth scroll do not keep the editor busy: a test sees the
+            // scroll on its way once the idle timeout is over.
+            #[cfg(feature = "integration")]
+            let mut scroll_frame = false;
+
             tokio::select! {
                 biased;
 
@@ -839,6 +848,11 @@ impl Application {
                     self.render().await;
                 }
                 event = self.editor.wait_event() => {
+                    #[cfg(feature = "integration")]
+                    {
+                        scroll_frame = matches!(event, EditorEvent::Redraw)
+                            && self.editor.scroll_animation.is_some();
+                    }
                     let _idle_handled = self.handle_editor_event(event).await;
 
                     #[cfg(feature = "integration")]
@@ -864,7 +878,7 @@ impl Application {
             // for integration tests only, reset the idle timer after every
             // event to signal when test events are done processing
             #[cfg(feature = "integration")]
-            {
+            if !scroll_frame {
                 self.editor.reset_idle_timer();
             }
         }

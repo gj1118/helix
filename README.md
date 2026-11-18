@@ -1351,6 +1351,22 @@ yank-highlight = 200
 
 The theme key is `ui.highlight.yank` (falling back to `ui.highlight`, then `ui.selection`).
 
+## Smooth Scrolling
+
+`C-d` / `C-u`, `C-f` / `C-b`, `PageDown` / `PageUp`, `zz` / `zt` / `zb` and the view menu's
+counted `j` / `k` glide to their position instead of jumping, like Neovim's neoscroll. It is off by default:
+
+```toml
+[editor.smooth-scroll]
+enable = true
+duration = 150        # milliseconds per scroll, whatever the distance
+easing = "ease-out"   # or "linear", "ease-in-out"
+```
+
+Only the drawing is animated: the cursor is where the command puts it at once, so you can keep
+typing during the animation. See [`[editor.smooth-scroll]`](book/src/editor.md#editorsmooth-scroll-section)
+in the book.
+
 ## Persistent Undo
 
 Undo history that survives closing a file and quitting Helix. Saving a file also writes its
