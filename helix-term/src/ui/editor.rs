@@ -442,7 +442,11 @@ impl EditorView {
                 theme,
                 self.terminal_focused,
             ));
-            if let Some(overlay) = Self::highlight_focused_view_elements(view, doc, theme) {
+            let kind = editor.config().cursor_shape.from_mode(editor.mode());
+            let block_cursor = kind == CursorKind::Block;
+            if let Some(overlay) =
+                Self::highlight_focused_view_elements(view, doc, theme, block_cursor)
+            {
                 overlays.push(overlay);
             }
         }
@@ -1353,19 +1357,30 @@ impl EditorView {
             .collect()
     }
 
-    /// Render brace match, etc (meant for the focused view only)
+    /// Render brace match, etc (meant for the focused view only).
+    ///
+    /// The bracket matching the one under the cursor gets `ui.cursor.match`. Without a block
+    /// cursor (a bar or an underline, as in insert mode), the bracket under the cursor gets it
+    /// too, as Neovim's matchparen does: the cursor does not mark it then, and the pair
+    /// would otherwise look lopsided (`fmt.Println(|)` with only the `(` highlighted).
     pub fn highlight_focused_view_elements(
         view: &View,
         doc: &Document,
         theme: &Theme,
+        block_cursor: bool,
     ) -> Option<OverlayHighlights> {
         // Highlight matching braces
         let syntax = doc.syntax()?;
         let highlight = theme.find_highlight_exact("ui.cursor.match")?;
         let text = doc.text().slice(..);
-        let pos = doc.selection(view.id).primary().cursor(text);
-        let pos = helix_core::match_brackets::find_matching_bracket(syntax, text, pos)?;
-        Some(OverlayHighlights::single(highlight, pos..pos + 1))
+        let cursor = doc.selection(view.id).primary().cursor(text);
+        let pos = helix_core::match_brackets::find_matching_bracket(syntax, text, cursor)?;
+        if block_cursor {
+            return Some(OverlayHighlights::single(highlight, pos..pos + 1));
+        }
+        let mut ranges = vec![cursor..cursor + 1, pos..pos + 1];
+        ranges.sort_by_key(|range| range.start);
+        Some(OverlayHighlights::Homogeneous { highlight, ranges })
     }
 
     pub fn tabstop_highlights(doc: &Document, theme: &Theme) -> Option<OverlayHighlights> {

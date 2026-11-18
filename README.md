@@ -1274,6 +1274,13 @@ cursor-roundness = 25
 - Elsewhere (tmux, Alacritty, Windows Terminal, terminals without the protocol) the cursor
   stays square.
 
+## Matching Brackets
+
+With the cursor on a bracket, its partner is highlighted (`ui.cursor.match`). With a bar or
+underline cursor (`[editor.cursor-shape]`, typically in insert mode), the bracket under the
+cursor is highlighted too, like Neovim's matchparen: the bar doesn't mark it the way a block
+cursor does, so `fmt.Println(|)` would otherwise show only the `(` highlighted.
+
 ## Auto reload buffers on focus / changes
 Implements automatic reloading of buffers when their corresponding files are changed on disk. This behavior can be configured to trigger when the editor window gains focus, at a periodic interval, or both.
 

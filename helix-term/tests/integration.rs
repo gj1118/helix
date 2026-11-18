@@ -39,6 +39,7 @@ mod test {
     mod location_list;
     mod long_lines;
     mod lsp_data;
+    mod match_highlight;
     mod movement;
     mod multi_cursor;
     mod persistence;

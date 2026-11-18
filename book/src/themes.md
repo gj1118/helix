@@ -318,7 +318,7 @@ These scopes are used for theming the editor interface:
 | `ui.cursor.normal`                |                                                                                                |
 | `ui.cursor.insert`                |                                                                                                |
 | `ui.cursor.select`                |                                                                                                |
-| `ui.cursor.match`                 | Matching bracket etc.                                                                          |
+| `ui.cursor.match`                 | Matching bracket etc. With a bar or underline cursor (insert mode, say) the bracket under the cursor gets it too |
 | `ui.cursor.primary`               | Cursor with primary selection                                                                  |
 | `ui.cursor.primary.normal`        |                                                                                                |
 | `ui.cursor.primary.insert`        |                                                                                                |
