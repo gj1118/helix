@@ -398,3 +398,43 @@ async fn clicking_another_view_closes_the_signature_help() -> anyhow::Result<()>
     send(&mut app, keys("<esc><C-w>o")).await?;
     quit(app).await
 }
+
+/// `[editor.cmdline] use-full-height`: with the popup command line, the editor takes the
+/// bottom row too (the status line is the last row); without it, the bottom row stays for
+/// the command line and messages.
+#[tokio::test(flavor = "multi_thread")]
+async fn popup_command_line_full_height_takes_the_bottom_row() -> anyhow::Result<()> {
+    for (style, full_height, last_row_is_status) in [
+        ("popup", true, true),
+        ("popup", false, false),
+        ("bottom", true, false),
+    ] {
+        let mut app = helpers::AppBuilder::new()
+            .with_config(config(&format!(
+                "[editor.cmdline]\nstyle = \"{style}\"\nuse-full-height = {full_height}\n\
+                 [editor.bufferline]\nrender-mode = \"always\"\n"
+            )))
+            .build()?;
+        send(&mut app, keys("ihello<esc>")).await?;
+        let rows = app.rendered_rows();
+        let last = rows.len() - 1;
+        let status_row = rows
+            .iter()
+            .rposition(|row| row.contains("NOR") && row.contains("[scratch]"))
+            .unwrap_or_else(|| panic!("no status line:\n{}", rows.join("\n")));
+        let expected = if last_row_is_status { last } else { last - 1 };
+        assert_eq!(
+            status_row, expected,
+            "{style} use-full-height = {full_height}"
+        );
+        // the window reaches the status line: its area ends on the status line's row
+        let view = app.editor.tree.get(app.editor.tree.focus);
+        assert_eq!(
+            (view.area.y + view.area.height - 1) as usize,
+            expected,
+            "{style} use-full-height = {full_height}"
+        );
+        quit(app).await?;
+    }
+    Ok(())
+}
