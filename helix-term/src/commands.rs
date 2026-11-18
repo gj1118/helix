@@ -568,6 +568,11 @@ impl MappableCommand {
         goto_last_accessed_file, "Goto last accessed file",
         goto_last_modified_file, "Goto last modified file",
         goto_last_modification, "Goto last modification",
+        goto_older_change, "Goto older change (changelist)",
+        goto_newer_change, "Goto newer change (changelist)",
+        save_selections, "Save selections (in register ^ or the one picked)",
+        restore_selections, "Restore saved selections",
+        add_saved_selections, "Add saved selections to the selections",
         goto_line, "Goto line",
         goto_last_line, "Goto last line",
         extend_to_last_line, "Extend to last line",
@@ -711,6 +716,8 @@ impl MappableCommand {
         select_textobject_around_comment, "Select around comment (tree-sitter)",
         select_textobject_inside_test, "Select inside test (tree-sitter)",
         select_textobject_around_test, "Select around test (tree-sitter)",
+        select_textobject_inside_indentation, "Select inside indentation block",
+        select_textobject_around_indentation, "Select around indentation block",
         select_textobject_inside_entry, "Select inside data structure entry (tree-sitter)",
         select_textobject_around_entry, "Select around data structure entry (tree-sitter)",
         select_textobject_inside_xml_element, "Select inside (X)HTML element (tree-sitter)",
@@ -1458,20 +1465,52 @@ where
     doc.set_selection(view.id, selection);
 }
 
+/// A word motion: by sub-words instead with `[editor] subword-motions` (`w` stops at
+/// `Http` and `Response` in `parseHttpResponse`, at `max` and `width` in `max_width`).
+type WordMotion = fn(RopeSlice, &TextAnnotations, Range, usize) -> Range;
+
+fn word_motion(cx: &Context, word: WordMotion, sub_word: WordMotion) -> WordMotion {
+    if cx.editor.config().subword_motions {
+        sub_word
+    } else {
+        word
+    }
+}
+
 fn move_next_word_start(cx: &mut Context) {
-    move_word_impl(cx, movement::move_next_word_start)
+    let motion = word_motion(
+        cx,
+        movement::move_next_word_start,
+        movement::move_next_sub_word_start,
+    );
+    move_word_impl(cx, motion)
 }
 
 fn move_prev_word_start(cx: &mut Context) {
-    move_word_impl(cx, movement::move_prev_word_start)
+    let motion = word_motion(
+        cx,
+        movement::move_prev_word_start,
+        movement::move_prev_sub_word_start,
+    );
+    move_word_impl(cx, motion)
 }
 
 fn move_prev_word_end(cx: &mut Context) {
-    move_word_impl(cx, movement::move_prev_word_end)
+    let motion = word_motion(
+        cx,
+        movement::move_prev_word_end,
+        movement::move_prev_sub_word_end,
+    );
+    move_word_impl(cx, motion)
 }
 
 fn move_next_word_end(cx: &mut Context) {
-    move_word_impl(cx, movement::move_next_word_end)
+    let motion = word_motion(
+        cx,
+        movement::move_next_word_end,
+        movement::move_next_sub_word_end,
+    );
+    move_word_impl(cx, motion)
 }
 
 fn move_next_long_word_start(cx: &mut Context) {
@@ -1868,19 +1907,39 @@ where
 }
 
 fn extend_next_word_start(cx: &mut Context) {
-    extend_word_impl(cx, movement::move_next_word_start)
+    let motion = word_motion(
+        cx,
+        movement::move_next_word_start,
+        movement::move_next_sub_word_start,
+    );
+    extend_word_impl(cx, motion)
 }
 
 fn extend_prev_word_start(cx: &mut Context) {
-    extend_word_impl(cx, movement::move_prev_word_start)
+    let motion = word_motion(
+        cx,
+        movement::move_prev_word_start,
+        movement::move_prev_sub_word_start,
+    );
+    extend_word_impl(cx, motion)
 }
 
 fn extend_next_word_end(cx: &mut Context) {
-    extend_word_impl(cx, movement::move_next_word_end)
+    let motion = word_motion(
+        cx,
+        movement::move_next_word_end,
+        movement::move_next_sub_word_end,
+    );
+    extend_word_impl(cx, motion)
 }
 
 fn extend_prev_word_end(cx: &mut Context) {
-    extend_word_impl(cx, movement::move_prev_word_end)
+    let motion = word_motion(
+        cx,
+        movement::move_prev_word_end,
+        movement::move_prev_sub_word_end,
+    );
+    extend_word_impl(cx, motion)
 }
 
 fn extend_next_long_word_start(cx: &mut Context) {
@@ -5583,6 +5642,114 @@ fn goto_last_modification(cx: &mut Context) {
     }
 }
 
+fn goto_older_change(cx: &mut Context) {
+    goto_change_in_list(cx, Direction::Backward)
+}
+
+fn goto_newer_change(cx: &mut Context) {
+    goto_change_in_list(cx, Direction::Forward)
+}
+
+/// `g;` / `g,`: to the place of an older / newer change of the buffer (Vim's changelist).
+/// A window walks the list from the newest change; a new change starts it again from there.
+fn goto_change_in_list(cx: &mut Context, direction: Direction) {
+    let count = cx.count();
+    let extend = cx.editor.mode == Mode::Select;
+    let (view, doc) = current!(cx.editor);
+    let list = &doc.changelist;
+    let positions = list.positions();
+    let walking = view
+        .changelist_walk
+        .filter(|&(id, generation, _)| id == doc.id() && generation == list.generation())
+        .map(|(_, _, index)| index);
+    let index = match (direction, walking) {
+        (Direction::Backward, Some(index)) => index.checked_sub(count),
+        (Direction::Backward, None) => positions.len().checked_sub(count),
+        (Direction::Forward, Some(index)) => {
+            Some(index + count).filter(|&index| index < positions.len())
+        }
+        (Direction::Forward, None) => None,
+    };
+    let Some(index) = index else {
+        let message = match (positions.is_empty(), direction) {
+            (true, _) => "no changes in this buffer",
+            (false, Direction::Backward) => "at the oldest change",
+            (false, Direction::Forward) => "at the newest change",
+        };
+        cx.editor.set_error(message);
+        return;
+    };
+    let text = doc.text().slice(..);
+    let position = positions[index].min(text.len_chars());
+    view.changelist_walk = Some((doc.id(), list.generation(), index));
+    let selection = doc
+        .selection(view.id)
+        .clone()
+        .transform(|range| range.put_cursor(text, position, extend));
+    doc.set_selection(view.id, selection);
+}
+
+/// `A-Z`: saves the selections, all of them, under a register name (`^` without one), like
+/// Kakoune's `Z`.
+fn save_selections(cx: &mut Context) {
+    let register = cx.register.unwrap_or('^');
+    let (view, doc) = current!(cx.editor);
+    // (in the text of a revision: the edits made since are mapped when restoring)
+    doc.append_changes_to_history(view);
+    let saved = helix_view::editor::SavedSelections {
+        document: doc.id(),
+        revision: doc.get_current_revision(),
+        selection: doc.selection(view.id).clone(),
+    };
+    let count = saved.selection.len();
+    cx.editor.saved_selections.insert(register, saved);
+    cx.editor.set_status(format!(
+        "Saved {count} selection{} in {register}",
+        if count == 1 { "" } else { "s" }
+    ));
+}
+
+/// `A-z`: restores the selections saved under a register name (`^` without one), in their
+/// buffer, like Kakoune's `z`.
+fn restore_selections(cx: &mut Context) {
+    restore_saved_selections(cx, false)
+}
+
+/// `A-m`: adds the saved selections to the selections (in the same buffer; in another,
+/// they are restored there), to gather cursors from several places.
+fn add_saved_selections(cx: &mut Context) {
+    restore_saved_selections(cx, true)
+}
+
+fn restore_saved_selections(cx: &mut Context, add: bool) {
+    let register = cx.register.unwrap_or('^');
+    let Some(saved) = cx.editor.saved_selections.get(&register).cloned() else {
+        cx.editor
+            .set_error(format!("no selections saved in {register}"));
+        return;
+    };
+    let add = add && view!(cx.editor).doc == saved.document;
+    if view!(cx.editor).doc != saved.document {
+        cx.editor.switch(saved.document, Action::Replace);
+    }
+    let (view, doc) = current!(cx.editor);
+    let restored = doc.map_selection_from_revision(&saved.selection, saved.revision);
+    let selection = if add {
+        let current = doc.selection(view.id);
+        let ranges: SmallVec<[Range; 1]> = current
+            .ranges()
+            .iter()
+            .chain(restored.ranges())
+            .copied()
+            .collect();
+        Selection::new(ranges, current.primary_index())
+    } else {
+        restored
+    };
+    push_jump(view, doc);
+    doc.set_selection(view.id, selection);
+}
+
 fn goto_last_modified_file(cx: &mut Context) {
     let view = view!(cx.editor);
     let alternate_file = view
@@ -8320,6 +8487,28 @@ fn textobject_treesitter(
                 &loader,
                 count,
             )
+        });
+        doc.set_selection(view.id, selection);
+    };
+    cx.editor.apply_motion(motion);
+}
+
+fn select_textobject_inside_indentation(cx: &mut Context) {
+    textobject_indentation(cx, textobject::TextObject::Inside);
+}
+
+fn select_textobject_around_indentation(cx: &mut Context) {
+    textobject_indentation(cx, textobject::TextObject::Around);
+}
+
+fn textobject_indentation(cx: &mut Context, textobject: textobject::TextObject) {
+    let count = cx.count();
+    let motion = move |editor: &mut Editor| {
+        let (view, doc) = current!(editor);
+        let text = doc.text().slice(..);
+        let tab_width = doc.tab_width();
+        let selection = doc.selection(view.id).clone().transform(|range| {
+            textobject::textobject_indentation(text, range, textobject, count, tab_width)
         });
         doc.set_selection(view.id, selection);
     };

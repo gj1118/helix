@@ -519,6 +519,9 @@ pub struct Config {
     pub yank_highlight: u64,
     /// Smooth scrolling: the scroll commands glide to their position instead of jumping.
     pub smooth_scroll: SmoothScrollConfig,
+    /// The word motions (`w`, `b`, `e`, `ge`) stop at the parts of `camelCase` and
+    /// `snake_case` names, like nvim-spider. Off by default.
+    pub subword_motions: bool,
     /// Automatic save on focus lost and/or after delay.
     /// Time delay in milliseconds since last edit after which auto save timer triggers.
     /// Time delay defaults to false with 3000ms delay. Focus lost defaults to false.
@@ -1422,6 +1425,15 @@ impl ScrollEasing {
     }
 }
 
+/// Selections saved to be restored later (`A-Z`, `A-z`), like Kakoune's marks: in the text
+/// of a history revision, mapped through the edits made since when restored.
+#[derive(Debug, Clone)]
+pub struct SavedSelections {
+    pub document: DocumentId,
+    pub revision: usize,
+    pub selection: Selection,
+}
+
 /// A smooth scroll under way (see [`SmoothScrollConfig`]).
 #[derive(Debug, Clone)]
 pub struct ScrollAnimation {
@@ -2299,6 +2311,7 @@ impl Default for Config {
             default_yank_register: '"',
             yank_highlight: 200,
             smooth_scroll: SmoothScrollConfig::default(),
+            subword_motions: false,
             auto_save: AutoSave::default(),
             auto_reload: AutoReload::default(),
             idle_timeout: Duration::from_millis(250),
@@ -2740,6 +2753,8 @@ pub struct Editor {
     pub yank_flash: Option<YankFlash>,
     /// The smooth scroll under way (`[editor.smooth-scroll]`).
     pub scroll_animation: Option<ScrollAnimation>,
+    /// The selections saved under a register name (`A-Z`), to be restored (`A-z`).
+    pub saved_selections: HashMap<char, SavedSelections>,
     /// The floating windows of plugins (`helix.ui.float`), the last one on top.
     pub plugin_floats: Vec<crate::plugin_ui::PluginFloat>,
     /// The marks plugins show on the quickfix panel's rows.
@@ -3104,6 +3119,7 @@ impl Editor {
             plugin_floats: Vec::new(),
             yank_flash: None,
             scroll_animation: None,
+            saved_selections: HashMap::new(),
             plugin_quickfix_marks: Default::default(),
             diff_sessions: Vec::new(),
             diff_review: None,
@@ -4405,6 +4421,9 @@ impl Editor {
 
         // This will also disallow any follow-up writes
         self.saves.remove(&doc_id);
+        // the selections saved in it go with it
+        self.saved_selections
+            .retain(|_, saved| saved.document != doc_id);
 
         enum Action {
             Close(ViewId),

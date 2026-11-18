@@ -1345,6 +1345,24 @@ every key after an `Esc ]` or `Esc P` that isn't a terminal's reply: Esc then `]
 `P`, read together (a busy moment, a slow SSH connection) used to freeze the keyboard until a
 terminator the keyboard never sends. They are keys again (`Alt-]`, `Alt-P`, then the rest).
 
+## Moving and Selecting
+
+Four Neovim favourites, the Helix/Kakoune way (select first, then act):
+
+| Keys | What | Like |
+| --- | --- | --- |
+| `mii`, `mai` | The indentation block at each cursor; `mai` adds the line it hangs from and its closing `}`/`end`; `2mii` steps out a level. No grammar needed | vim-indent-object, Kakoune `<a-i>i` |
+| `Alt-Z`, `Alt-z`, `Alt-m` | Save all selections (`"a Alt-Z` under a register name), restore them later, in their buffer and mapped through the edits since, or add them to the current ones | Kakoune `Z`/`z`, Vim marks |
+| `g;`, `g,` | Walk the places of the last changes of the buffer (100 kept; typing a line is one place) | Vim's changelist |
+| `w`, `b`, `e` with `subword-motions = true` | Stop at the parts of `camelCase` and `snake_case` names | nvim-spider |
+
+```toml
+[editor]
+subword-motions = true
+```
+
+See [Text objects](book/src/textobjects.md) and [Keymap](book/src/keymap.md) in the book.
+
 ## Highlight on Yank
 
 Yanked text flashes for a moment (200 ms), like Neovim's `vim.hl.on_yank`, so you see what

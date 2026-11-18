@@ -112,6 +112,114 @@ pub fn textobject_word(
     }
 }
 
+/// The indentation of `line` in columns (a tab to the next multiple of `tab_width`), `None`
+/// for a blank line.
+fn line_indent(slice: RopeSlice, line: usize, tab_width: usize) -> Option<usize> {
+    let tab_width = tab_width.max(1);
+    let mut width = 0;
+    for ch in slice.line(line).chars() {
+        match ch {
+            ' ' => width += 1,
+            '\t' => width += tab_width - width % tab_width,
+            '\n' | '\r' => return None,
+            _ => return Some(width),
+        }
+    }
+    None
+}
+
+/// Whether `line` closes the block above it: it starts with `}`, `)`, `]`, `</` or the word
+/// `end` (Lua, Ruby, Elixir, shell `done`/`fi` are left out: their keywords vary).
+fn closes_block(slice: RopeSlice, line: usize) -> bool {
+    let mut chars = slice
+        .line(line)
+        .chars()
+        .skip_while(|&c| c == ' ' || c == '\t');
+    match chars.next() {
+        Some('}' | ')' | ']') => true,
+        Some('<') => chars.next() == Some('/'),
+        Some('e') => {
+            chars.next() == Some('n')
+                && chars.next() == Some('d')
+                && !chars
+                    .next()
+                    .is_some_and(|c| c.is_alphanumeric() || c == '_')
+        }
+        _ => false,
+    }
+}
+
+/// The indentation block at the cursor (`mii`): the lines at its indentation or deeper (the
+/// blank lines inside it, not those around it). On a blank line, the next line that is not
+/// blank decides (the one before at the end of the text). `count` steps out a level at a
+/// time. Around (`mai`), the block also has the line it hangs from (`def f():`, `fn f() {`)
+/// and the line closing it, when that line is at the same indentation and starts with
+/// `}`, `)`, `]`, `</` or `end`. The lines are whole, with their line endings.
+pub fn textobject_indentation(
+    slice: RopeSlice,
+    range: Range,
+    textobject: TextObject,
+    count: usize,
+    tab_width: usize,
+) -> Range {
+    let lines = slice.len_lines();
+    let indent = |line: usize| line_indent(slice, line, tab_width);
+    let cursor = range.cursor_line(slice);
+    let Some(mut anchor) = (cursor..lines)
+        .find(|&line| indent(line).is_some())
+        .or_else(|| (0..cursor).rev().find(|&line| indent(line).is_some()))
+    else {
+        return range;
+    };
+    // the lines at `level` or deeper around `anchor`, without the blank ones at the ends
+    let block = |anchor: usize, level: usize| {
+        let inside = |line: usize| indent(line).is_none_or(|indent| indent >= level);
+        let mut start = anchor;
+        while start > 0 && inside(start - 1) {
+            start -= 1;
+        }
+        let mut end = anchor;
+        while end + 1 < lines && inside(end + 1) {
+            end += 1;
+        }
+        while indent(start).is_none() {
+            start += 1;
+        }
+        while indent(end).is_none() {
+            end -= 1;
+        }
+        (start, end)
+    };
+    let mut level = indent(anchor).unwrap_or(0);
+    let (mut start, mut end) = block(anchor, level);
+    for _ in 1..count.max(1) {
+        // out a level: the block of the line this one hangs from
+        let Some(header) = (0..start).rev().find(|&line| indent(line).is_some()) else {
+            break;
+        };
+        anchor = header;
+        level = indent(anchor).unwrap_or(0);
+        (start, end) = block(anchor, level);
+    }
+    if textobject == TextObject::Around {
+        if let Some(header) = (0..start).rev().find(|&line| indent(line).is_some()) {
+            let header_level = indent(header);
+            start = header;
+            if let Some(closer) = (end + 1..lines).find(|&line| indent(line).is_some()) {
+                if indent(closer) == header_level && closes_block(slice, closer) {
+                    end = closer;
+                }
+            }
+        }
+    }
+    let to = if end + 1 < lines {
+        slice.line_to_char(end + 1)
+    } else {
+        slice.len_chars()
+    };
+    Range::new(slice.line_to_char(start), to)
+}
+
 pub fn textobject_paragraph(
     slice: RopeSlice,
     range: Range,
@@ -321,6 +429,53 @@ mod test {
 
     use crate::Range;
     use ropey::Rope;
+
+    /// The text `mii` / `mai` select with the cursor on the first `|` of `text` (removed).
+    fn indentation(text: &str, textobject: TextObject, count: usize) -> String {
+        let cursor = text.find('|').expect("a cursor");
+        let doc = Rope::from(text.replacen('|', "", 1));
+        let slice = doc.slice(..);
+        let cursor = slice.byte_to_char(cursor);
+        let range = textobject_indentation(slice, Range::point(cursor), textobject, count, 4);
+        slice.slice(range.from()..range.to()).to_string()
+    }
+
+    #[test]
+    fn indentation_blocks() {
+        let python = "def f():\n    a = 1\n\n    if a:\n        |b()\n    c()\n\nx = 2\n";
+        // the deepest block; then out a level, blank lines inside kept
+        assert_eq!(indentation(python, Inside, 1), "        b()\n");
+        assert_eq!(
+            indentation(python, Inside, 2),
+            "    a = 1\n\n    if a:\n        b()\n    c()\n"
+        );
+        // around: with the line it hangs from (no closing line in Python)
+        assert_eq!(indentation(python, Around, 1), "    if a:\n        b()\n");
+        // out of every level: the top level, blank lines at the ends left out
+        assert_eq!(indentation(python, Inside, 5), python.replacen('|', "", 1));
+
+        // braces: the closing line comes with the opening one
+        let rust = "fn f() {\n    let a = 1;\n    |a\n}\nfn g() {}\n";
+        assert_eq!(indentation(rust, Inside, 1), "    let a = 1;\n    a\n");
+        assert_eq!(
+            indentation(rust, Around, 1),
+            "fn f() {\n    let a = 1;\n    a\n}\n"
+        );
+        // `end`, and `endif` that is another word
+        let lua = "if x then\n  |y()\nend\n";
+        assert_eq!(indentation(lua, Around, 1), lua.replacen('|', "", 1));
+        let endif = "if x then\n  |y()\nendif_flag = 1\n";
+        assert_eq!(indentation(endif, Around, 1), "if x then\n  y()\n");
+
+        // on a blank line: the next line that is not blank decides
+        assert_eq!(indentation("a\n|\n  b\n  c\nd\n", Inside, 1), "  b\n  c\n");
+        // tabs count to the next tab stop
+        assert_eq!(indentation("a\n\t|b\n    c\nd", Inside, 1), "\tb\n    c\n");
+        // the last line has no line ending
+        assert_eq!(indentation("a\n  |b", Inside, 1), "  b");
+        // only blank lines: nothing
+        assert_eq!(indentation("\n|\n\n", Inside, 1), "");
+    }
 
     #[test]
     fn test_textobject_word() {

@@ -245,6 +245,52 @@ pub enum AnnotationAlign {
     EolOrRight,
 }
 
+/// How many places the changelist of a buffer keeps.
+const CHANGELIST_LEN: usize = 100;
+
+/// The places of the last changes of a buffer, oldest first, kept in step with the text
+/// (`g;` / `g,`, Vim's changelist). A change on the line of the last one replaces it: typing
+/// a line is one place.
+#[derive(Debug, Default, Clone)]
+pub struct Changelist {
+    positions: Vec<usize>,
+    /// Counts the changes: a window walking the list starts again from the newest after one.
+    generation: u64,
+}
+
+impl Changelist {
+    fn record(&mut self, changes: &helix_core::ChangeSet, text: RopeSlice) {
+        let Some((from, _, _)) = changes.changes_iter().next() else {
+            return;
+        };
+        let at = changes
+            .map_pos(from, helix_core::Assoc::Before)
+            .min(text.len_chars());
+        // (a place where text is inserted moves with its text: a line added above it)
+        for position in &mut self.positions {
+            *position = changes.map_pos(*position, helix_core::Assoc::After);
+        }
+        let line = text.char_to_line(at);
+        match self.positions.last_mut() {
+            Some(last) if text.char_to_line((*last).min(text.len_chars())) == line => *last = at,
+            _ => self.positions.push(at),
+        }
+        if self.positions.len() > CHANGELIST_LEN {
+            self.positions.remove(0);
+        }
+        self.generation += 1;
+    }
+
+    /// The places, oldest first.
+    pub fn positions(&self) -> &[usize] {
+        &self.positions
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+}
+
 pub struct Document {
     pub(crate) id: DocumentId,
     text: Rope,
@@ -294,6 +340,8 @@ pub struct Document {
     pub plugin_gutters: Vec<PluginGutter>,
     /// Highlights of plugins.
     pub plugin_highlights: Vec<PluginHighlight>,
+    /// Where the last changes were (`g;` / `g,`).
+    pub changelist: Changelist,
     pub indent_style: IndentStyle,
     editor_config: EditorConfig,
 
@@ -1162,6 +1210,7 @@ impl Document {
             plugin_signs: Vec::new(),
             plugin_gutters: Vec::new(),
             plugin_highlights: Vec::new(),
+            changelist: Changelist::default(),
             indent_style: DEFAULT_INDENT,
             editor_config: EditorConfig::default(),
             line_ending,
@@ -2235,6 +2284,7 @@ impl Document {
 
         // Plugins' decorations follow the text they were put on.
         self.map_plugin_decorations(changes, &old_doc);
+        self.changelist.record(changes, self.text.slice(..));
 
         // map diagnostics over changes too
         changes.update_positions(self.diagnostics.iter_mut().map(|diagnostic| {
@@ -2697,11 +2747,7 @@ impl Document {
     }
 
     /// Maps a selection of the text at history revision `revision` to the current text.
-    pub(crate) fn map_selection_from_revision(
-        &self,
-        selection: &Selection,
-        revision: usize,
-    ) -> Selection {
+    pub fn map_selection_from_revision(&self, selection: &Selection, revision: usize) -> Selection {
         let history = self.history.take();
         let committed = (history.current_revision() != revision)
             .then(|| history.changes_since(revision))
@@ -3958,5 +4004,38 @@ mod breadcrumb_tests {
 
         assert!(!crumbs.elided());
         assert!(crumbs.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod changelist_tests {
+    use super::{Changelist, CHANGELIST_LEN};
+    use helix_core::{Rope, Transaction};
+
+    /// Inserts `text` at `at` in `doc`, recording the change.
+    fn insert(list: &mut Changelist, doc: &mut Rope, at: usize, text: &str) {
+        let transaction = Transaction::insert(doc, &helix_core::Selection::point(at), text.into());
+        transaction.apply(doc);
+        list.record(transaction.changes(), doc.slice(..));
+    }
+
+    #[test]
+    fn changes_on_one_line_are_one_place_and_the_list_is_capped() {
+        let mut doc = Rope::from("a\nb\n");
+        let mut list = Changelist::default();
+        insert(&mut list, &mut doc, 0, "x");
+        insert(&mut list, &mut doc, 1, "y");
+        assert_eq!(list.positions(), &[1_usize]);
+        insert(&mut list, &mut doc, 4, "z");
+        assert_eq!(list.positions(), &[1_usize, 4]);
+        // a line added above moves the places down with their text
+        insert(&mut list, &mut doc, 0, "new\n");
+        assert_eq!(list.positions(), &[5_usize, 8, 0]);
+        assert_eq!(list.generation(), 4_u64);
+        // capped: the oldest places go
+        for _ in 0..CHANGELIST_LEN + 10 {
+            insert(&mut list, &mut doc, 0, "line\n");
+        }
+        assert_eq!(list.positions().len(), CHANGELIST_LEN);
     }
 }

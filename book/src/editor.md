@@ -54,6 +54,7 @@
 | `mouse-yank-register` | Which register to use for mouse yanks. | `*` |
 | `middle-click-paste` | Middle click paste support | `true` |
 | `default-yank-register` | Default register used for yank/paste | `'"'` |
+| `subword-motions` | The word motions (`w`, `b`, `e`, and `ge`) stop at the parts of `camelCase` and `snake_case` names (`parse`, `Http`, `Response`), like nvim-spider; `W`, `B`, `E` still go by WORDs. The commands `move_next_sub_word_start` and the others can be bound to keys of their own instead | `false` |
 | `yank-highlight` | How long, in milliseconds, yanked text is highlighted (`ui.highlight.yank`), like Neovim's `vim.hl.on_yank`; `0` turns it off. An edit ends it at once | `200` |
 | `scroll-lines` | Number of lines to scroll per scroll wheel step | `3` |
 | `shell` | Shell to use when running external commands | Unix: `["sh", "-c"]`<br/>Windows: `["cmd", "/C"]` |

@@ -16,6 +16,7 @@ function or block of code.
 | `w`                    | Word                     |
 | `W`                    | WORD                     |
 | `p`                    | Paragraph                |
+| `i`                    | Indentation block (see below) |
 | `(`, `[`, `'`, etc.    | Specified surround pairs |
 | `m`                    | The closest surround pair    |
 | `f`                    | Function                 |
@@ -26,6 +27,13 @@ function or block of code.
 | `e`                    | Entry (of a list, map, ...) |
 | `g`                    | Change                   |
 | `x`                    | (X)HTML element          |
+
+The indentation block (`mii`, like Kakoune's `<alt-i>i` and vim-indent-object) is the lines
+at the cursor's indentation or deeper, with the blank lines inside it but not those around it;
+on a blank line, the next line that is not blank decides. `mai` adds the line it hangs from
+(`def f():`, `fn f() {`) and the line closing it, when that one is at the same indentation and
+starts with `}`, `)`, `]`, `</` or `end`. A count steps out a level at a time (`2mii`). It needs
+no grammar, so it works in YAML, Python, Makefiles and plain text alike.
 
 > 💡 `f`, `t`, etc. need a tree-sitter grammar active for the current
 document and a special tree-sitter query file to work properly. [Only

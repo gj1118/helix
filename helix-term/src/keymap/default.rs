@@ -85,6 +85,8 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
             "k" => move_line_up,
             "j" => move_line_down,
             "." => goto_last_modification,
+            ";" => goto_older_change,
+            "," => goto_newer_change,
             "w" => goto_word,
         },
         ":" => command_mode,
@@ -125,6 +127,10 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
         "x" => extend_line_below,
         "X" => extend_to_line_bounds,
         "A-x" => shrink_to_line_bounds,
+        // saved selections (Kakoune's marks: `Z` / `z`, here with Alt as `z` is the view)
+        "A-Z" => save_selections,
+        "A-z" => restore_selections,
+        "A-m" => add_saved_selections,
 
         "m" => { "Match"
             "m" => match_brackets,
@@ -135,6 +141,7 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
                 "w" => select_textobject_inside_word,
                 "W" => select_textobject_inside_WORD,
                 "p" => select_textobject_inside_paragraph,
+                "i" => select_textobject_inside_indentation,
                 "t" => select_textobject_inside_type,
                 "f" => select_textobject_inside_function,
                 "a" => select_textobject_inside_parameter,
@@ -149,6 +156,7 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
                 "w" => select_textobject_around_word,
                 "W" => select_textobject_around_WORD,
                 "p" => select_textobject_around_paragraph,
+                "i" => select_textobject_around_indentation,
                 "t" => select_textobject_around_type,
                 "f" => select_textobject_around_function,
                 "a" => select_textobject_around_parameter,

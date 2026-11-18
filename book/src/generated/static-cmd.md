@@ -189,6 +189,11 @@
 | `goto_last_accessed_file` | Goto last accessed file | normal: `` ga ``, select: `` ga `` |
 | `goto_last_modified_file` | Goto last modified file | normal: `` gm ``, select: `` gm `` |
 | `goto_last_modification` | Goto last modification | normal: `` g. ``, select: `` g. `` |
+| `goto_older_change` | Goto older change (changelist) | normal: `` g; ``, select: `` g; `` |
+| `goto_newer_change` | Goto newer change (changelist) | normal: `` g, ``, select: `` g, `` |
+| `save_selections` | Save selections (in register ^ or the one picked) | normal: `` <A-Z> ``, select: `` <A-Z> `` |
+| `restore_selections` | Restore saved selections | normal: `` <A-z> ``, select: `` <A-z> `` |
+| `add_saved_selections` | Add saved selections to the selections | normal: `` <A-m> ``, select: `` <A-m> `` |
 | `goto_line` | Goto line | normal: `` G ``, select: `` G `` |
 | `goto_last_line` | Goto last line | normal: `` ge `` |
 | `extend_to_last_line` | Extend to last line | select: `` ge `` |
@@ -332,6 +337,8 @@
 | `select_textobject_around_comment` | Select around comment (tree-sitter) | normal: `` mac ``, select: `` mac `` |
 | `select_textobject_inside_test` | Select inside test (tree-sitter) | normal: `` miT ``, select: `` miT `` |
 | `select_textobject_around_test` | Select around test (tree-sitter) | normal: `` maT ``, select: `` maT `` |
+| `select_textobject_inside_indentation` | Select inside indentation block | normal: `` mii ``, select: `` mii `` |
+| `select_textobject_around_indentation` | Select around indentation block | normal: `` mai ``, select: `` mai `` |
 | `select_textobject_inside_entry` | Select inside data structure entry (tree-sitter) | normal: `` mie ``, select: `` mie `` |
 | `select_textobject_around_entry` | Select around data structure entry (tree-sitter) | normal: `` mae ``, select: `` mae `` |
 | `select_textobject_inside_xml_element` | Select inside (X)HTML element (tree-sitter) | normal: `` mix ``, select: `` mix `` |

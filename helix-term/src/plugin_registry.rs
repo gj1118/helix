@@ -491,6 +491,8 @@ fn static_permissions(name: &str) -> &'static [Permission] {
         // a panel that turns the buffer into older revisions
         "undo_tree" => &[Ui, Edit],
         "tab_new" | "tab_close" | "tab_next" | "tab_previous" => &[Windows],
+        // the saved selections may be in another buffer, shown in the window
+        "restore_selections" | "add_saved_selections" => &[Edit, Windows],
         // running programs or debuggees; replaying a macro (any keys)
         "shell_pipe"
         | "shell_pipe_to"
@@ -863,7 +865,7 @@ mod tests {
     fn static_commands_are_classified() {
         let count = crate::commands::MappableCommand::STATIC_COMMAND_LIST.len();
         assert_eq!(
-            count, 421,
+            count, 428,
             "commands were added or removed: check `static_permissions` for them"
         );
         use helix_plugin::types::EditorCommandRegistry;

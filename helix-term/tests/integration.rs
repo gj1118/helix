@@ -42,6 +42,7 @@ mod test {
     mod match_highlight;
     mod movement;
     mod multi_cursor;
+    mod navigation;
     mod persistence;
     mod plaintasks;
     mod plugin_panels;

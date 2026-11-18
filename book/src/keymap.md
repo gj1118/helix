@@ -65,6 +65,9 @@ Normal mode is the default mode when you launch helix. You can return to it from
 | `Ctrl-i`              | Jump forward on the jumplist                       | `jump_forward`              |
 | `Ctrl-o`              | Jump backward on the jumplist                      | `jump_backward`             |
 | `Ctrl-s`              | Save the current selection to the jumplist         | `save_selection`            |
+| `Alt-Z`               | Save the selections (all of them) under a register name, `^` without one (Kakoune's `Z`) | `save_selections` |
+| `Alt-z`               | Restore the saved selections, in their buffer, mapped through the edits made since (Kakoune's `z`) | `restore_selections` |
+| `Alt-m`               | Add the saved selections to the selections         | `add_saved_selections`      |
 
 ### Changes
 
@@ -267,6 +270,8 @@ Jumps to various locations.
 | `n`   | Go to next buffer                                | `goto_next_buffer`         |
 | `p`   | Go to previous buffer                            | `goto_previous_buffer`     |
 | `.`   | Go to last modification in current file          | `goto_last_modification`   |
+| `;`   | Go to an older change (the changelist, Vim's `g;`) | `goto_older_change`        |
+| `,`   | Go to a newer change (the changelist, Vim's `g,`)  | `goto_newer_change`        |
 | `j`   | Move down textual (instead of visual) line       | `move_line_down`           |
 | `k`   | Move up textual (instead of visual) line         | `move_line_up`             |
 | `w`   | Show labels at each word and select the word that belongs to the entered labels | `goto_word` |

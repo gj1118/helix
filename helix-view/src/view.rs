@@ -174,6 +174,9 @@ pub struct View {
     /// The window's own list of locations (Neovim's location list), beside the editor's
     /// quicklist. A window split from this one starts with a copy.
     pub location_list: crate::quicklist::Quicklist,
+    /// Where this window is in the changelist of its buffer (`g;` / `g,`): the buffer, the
+    /// changelist's generation, the index.
+    pub changelist_walk: Option<(DocumentId, u64, usize)>,
     /// Where the labels of its closed folds (`▸ 12 lines · function`) were last drawn, for a
     /// click on one to open its fold.
     pub fold_labels: std::cell::RefCell<Vec<FoldLabel>>,
@@ -217,6 +220,7 @@ impl View {
             diagnostics_handler: DiagnosticsHandler::new(),
             bar: false,
             location_list: Default::default(),
+            changelist_walk: None,
             fold_labels: Default::default(),
         }
     }
