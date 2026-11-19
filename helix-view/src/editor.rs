@@ -4587,8 +4587,6 @@ impl Editor {
         segments
     }
 
-    /// Highlights `ranges` (chars) of the focused buffer for [`Config::yank_highlight`]
-    /// milliseconds: they were just yanked.
     /// Starts a smooth scroll of `view` from `from` to where it is now (after a scroll
     /// command), when `[editor.smooth-scroll]` is enabled. A scroll started while another
     /// is under way starts from what is on the screen.
@@ -4784,6 +4782,8 @@ impl Editor {
         }
     }
 
+    /// Highlights `ranges` (chars) of the focused buffer for [`Config::yank_highlight`]
+    /// milliseconds: they were just yanked.
     pub fn flash_yank(&mut self, ranges: Vec<std::ops::Range<usize>>) {
         let millis = self.config().yank_highlight;
         let ranges: Vec<_> = ranges.into_iter().filter(|r| r.start < r.end).collect();
@@ -5120,7 +5120,7 @@ impl Editor {
                 _ = helix_event::redraw_requested() => {
                     if  !self.needs_redraw{
                         self.needs_redraw = true;
-                        let timeout = Instant::now() + Duration::from_millis(33);
+                        let timeout = Instant::now() + self.redraw_delay();
                         if timeout < self.idle_timer.deadline() && timeout < self.redraw_timer.deadline(){
                             self.redraw_timer.as_mut().reset(timeout)
                         }
@@ -5135,6 +5135,18 @@ impl Editor {
                     return EditorEvent::IdleTimer
                 }
             }
+        }
+    }
+
+    /// How long a requested redraw waits, so that the requests made meanwhile share its
+    /// frame. The frames of a smooth scroll are paced by their own timer (about 60 a
+    /// second) and drawn at once: waiting would leave a frame every 50 ms, two in a
+    /// 150 ms scroll.
+    pub fn redraw_delay(&self) -> Duration {
+        if self.scroll_animation.is_some() {
+            Duration::ZERO
+        } else {
+            Duration::from_millis(33)
         }
     }
 

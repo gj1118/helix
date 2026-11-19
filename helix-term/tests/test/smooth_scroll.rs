@@ -131,6 +131,29 @@ async fn smooth_scroll_animates_only_the_drawing() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The frames of a smooth scroll are drawn as soon as its timer asks (about 60 a second),
+/// not after the 33 ms other redraws wait: that left two frames in a 150 ms scroll.
+#[tokio::test(flavor = "multi_thread")]
+async fn smooth_scroll_frames_are_not_held_back() -> anyhow::Result<()> {
+    use std::time::Duration;
+    let text: String = (1..=600).map(|i| format!("line {i}\n")).collect();
+    let file = helpers::temp_file_with_contents(&text)?;
+    let mut app = app_with("enable = true\nduration = 60000", &file).await?;
+    let idle: Duration = app.editor.redraw_delay();
+    assert_eq!(idle, Duration::from_millis(33));
+    send_keys(&mut app, "<C-d>").await?;
+    assert!(app.editor.scroll_animation.is_some());
+    let scrolling: Duration = app.editor.redraw_delay();
+    assert_eq!(scrolling, Duration::ZERO);
+    // over: redraws wait again
+    send_keys(&mut app, "gg").await?;
+    assert!(app.editor.scroll_animation.is_none());
+    let after: Duration = app.editor.redraw_delay();
+    assert_eq!(after, Duration::from_millis(33));
+    quit(app).await?;
+    Ok(())
+}
+
 /// The setting: off by default, with its duration and easing.
 #[test]
 fn smooth_scroll_setting() {

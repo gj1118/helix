@@ -1436,7 +1436,8 @@ easing = "ease-out"   # or "linear", "ease-in-out"
 ```
 
 Only the drawing is animated: the cursor is where the command puts it at once, so you can keep
-typing during the animation. See [`[editor.smooth-scroll]`](book/src/editor.md#editorsmooth-scroll-section)
+typing during the animation. It draws about 60 frames a second. To see the difference, try
+`:set smooth-scroll.duration 1000` and `:toggle smooth-scroll.enable` while the editor runs. See [`[editor.smooth-scroll]`](book/src/editor.md#editorsmooth-scroll-section)
 in the book.
 
 ## Persistent Undo

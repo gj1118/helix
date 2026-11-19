@@ -1400,6 +1400,16 @@ so keys typed during the animation act on the final position and never wait for 
 scroll on the way starts from what is on the screen; a jump, an edit or the mouse wheel ends
 the animation.
 
+The animation draws about 60 frames a second and moves by whole lines, so a short scroll at
+the default 150 ms is quick. To see it clearly, slow it down while the editor runs, compare,
+then put it back:
+
+```
+:set smooth-scroll.duration 1000
+:set smooth-scroll.easing linear
+:toggle smooth-scroll.enable
+```
+
 ### `[editor.workspace-trust]` Section
 
 Controls implicit workspace trust. See the [workspace
