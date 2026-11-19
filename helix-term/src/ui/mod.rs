@@ -33,7 +33,7 @@ use crate::filter_picker_entry;
 use crate::job::{self, Callback};
 use crate::ui::completers::CompletionResult;
 pub use cmdline_popup::CmdlinePopup;
-pub use completion::Completion;
+pub use completion::{Completion, CompletionItem};
 pub use confirm_box::ConfirmBox;
 pub use editor::EditorView;
 pub use file_explorer::file_explorer;

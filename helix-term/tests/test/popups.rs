@@ -316,6 +316,123 @@ async fn a_popup_at_the_cursor_stays_within_its_view() -> anyhow::Result<()> {
     quit(app).await
 }
 
+/// The documentation of the selected completion, drawn by the completion menu, and where its
+/// text is on the screen: the rows and columns of the cells of `word`.
+fn completion_documentation(
+    app: &mut helix_term::application::Application,
+    word: &str,
+) -> Vec<(u16, u16)> {
+    use helix_term::compositor::Context;
+    use helix_term::ui::CompletionItem;
+
+    let doc = helix_view::doc!(app.editor);
+    let item = helix_core::CompletionItem {
+        transaction: helix_core::Transaction::new(doc.text()),
+        label: "Println".into(),
+        kind: "function".into(),
+        documentation: Some(
+            format!("Println prints its {word} separated by spaces and a newline. ").repeat(6),
+        ),
+        snippet: None,
+        provider: helix_core::completion::CompletionProvider::Word,
+    };
+    let (view, doc) = helix_view::current_ref!(app.editor);
+    let cursor = doc
+        .selection(view.id)
+        .primary()
+        .cursor(doc.text().slice(..));
+    let mut completion =
+        helix_term::ui::Completion::new(&app.editor, vec![CompletionItem::Other(item)], cursor);
+    let area = app.compositor.size();
+    let mut surface = tui::buffer::Buffer::empty(area);
+    let mut jobs = helix_term::job::Jobs::new();
+    let mut cx = Context {
+        editor: &mut app.editor,
+        scroll: None,
+        jobs: &mut jobs,
+        plugin_manager: None,
+    };
+    // the first item selected, as `C-n` does: its documentation is shown
+    for key in helix_view::input::parse_macro("<C-n>").unwrap() {
+        let _ = completion.handle_event(&helix_view::input::Event::Key(key), &mut cx);
+    }
+    completion.render(area, &mut surface, &mut cx);
+    let mut cells = Vec::new();
+    for y in area.top()..area.bottom() {
+        let row: String = (area.left()..area.right())
+            .map(|x| surface[(x, y)].symbol.chars().next().unwrap_or(' '))
+            .collect();
+        cells.extend(row.match_indices(word).map(|(x, _)| (y, x as u16)));
+    }
+    cells
+}
+
+/// The documentation of a completion stays in the cursor's view, like hover: beside the menu
+/// (on its left when the right has no room), else right above the cursor; never across the
+/// screen, over the views beside it.
+#[tokio::test(flavor = "multi_thread")]
+async fn completion_documentation_stays_within_its_view() -> anyhow::Result<()> {
+    // Lines ending in a space: no word before the cursor at their end to filter the menu by.
+    let text: String = (0..30)
+        .map(|i| format!("line {i} {} \n", "x".repeat(55)))
+        .collect();
+    let text = format!("#[|]#{text}");
+    // Selecting the item doesn't insert it: nothing else of a completion session is set up.
+    let mut app = helpers::AppBuilder::new()
+        .with_config(config("[editor]\npreview-completion-insert = false\n"))
+        .with_input_text(&text)
+        .build()?;
+    app.resize_terminal(160, 40).await;
+    use helix_term::application::Application;
+    let view_area = |app: &Application| helix_view::current_ref!(app.editor).0.area;
+    let cursor = |app: &Application| app.editor.cursor().0.unwrap();
+
+    // one view: on the right of the menu
+    send_keys(&mut app, "24ggA").await?;
+    let row = cursor(&app).row as u16;
+    let docs = completion_documentation(&mut app, "arguments");
+    assert!(!docs.is_empty());
+    assert!(
+        docs.iter()
+            .all(|&(y, x)| y >= row && x > cursor(&app).col as u16 + 15),
+        "{docs:?}"
+    );
+
+    // the right one of two views, the cursor at its end: on the left of the menu, in the view
+    send_keys(&mut app, "<esc>:vsplit<ret>A").await?;
+    let area = view_area(&app);
+    assert!(area.left() > 0, "{area:?}");
+    let docs = completion_documentation(&mut app, "arguments");
+    assert!(!docs.is_empty());
+    let col = cursor(&app).col as u16;
+    assert!(
+        docs.iter().all(|&(_, x)| x >= area.left() && x + 9 <= col),
+        "{docs:?} in {area:?}, cursor at {col}"
+    );
+
+    // the middle one of three narrow views, the cursor in its middle: no room beside the menu,
+    // so right above the cursor, in the view (the view, not the top of the screen)
+    send_keys(&mut app, "<esc>:vsplit<ret><C-w>h020li <esc>i").await?;
+    let area = view_area(&app);
+    assert!(area.left() > 0 && area.right() < 160, "{area:?}");
+    let docs = completion_documentation(&mut app, "arguments");
+    assert!(!docs.is_empty());
+    let row = cursor(&app).row as u16;
+    assert!(
+        docs.iter()
+            .all(|&(y, x)| y < row && x >= area.left() && x + 9 <= area.right()),
+        "{docs:?} in {area:?}, cursor on row {row}"
+    );
+    let last = docs.iter().map(|&(y, _)| y).max().unwrap();
+    assert!(
+        last + 4 >= row,
+        "its last line {last} is near the cursor on row {row}"
+    );
+
+    send_keys(&mut app, "<esc><C-w>o").await?;
+    quit(app).await
+}
+
 /// Clicking another view closes the signature help: it is about the call the cursor was in,
 /// and stayed up over the view clicked.
 #[tokio::test(flavor = "multi_thread")]

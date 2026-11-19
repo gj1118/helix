@@ -1249,6 +1249,10 @@ splits beside it, to stay readable) and never more than 120. Menus (completion, 
 actions) are as wide as their entries. Try values with `:set popup-max-width-percent 45`.
 Clicking another split closes the signature help.
 
+The documentation of the selected completion stays in the split too: beside the menu, on its
+left when the right has no room, else right above (or below) the line you are typing, as wide
+as hover at most. It used to take the whole width of the screen, at its top.
+
 ## Rounded Cursors
 
 Block cursors with rounded corners, like 4coder's `cursor_roundness`:

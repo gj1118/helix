@@ -1,10 +1,9 @@
+pub use crate::handlers::completion::CompletionItem;
 use crate::handlers::completion::LspCompletionItem;
-use crate::ui::{menu, Markdown, Menu, Popup, PromptEvent};
+use crate::ui::{menu, popup, Markdown, Menu, Popup, PromptEvent};
 use crate::{
     compositor::{Component, Context, Event, EventResult},
-    handlers::completion::{
-        trigger_auto_completion, CompletionItem, CompletionResponse, ResolveHandler,
-    },
+    handlers::completion::{trigger_auto_completion, CompletionResponse, ResolveHandler},
 };
 use helix_core::snippets::{ActiveSnippet, RenderedSnippet, Snippet};
 use helix_core::{self as core, chars, fuzzy::MATCHER, Change, Transaction};
@@ -636,13 +635,17 @@ impl Component for Completion {
             doc => doc.insert(Markdown::new(md, cx.editor.syn_loader.clone())),
         };
 
+        // Beside the menu, else right above or below the line of the cursor and the menu: within
+        // the columns of the cursor's view, like hover and signature help (not across the
+        // screen, over the views beside it, in a split).
         let popup_area = self.popup.area(area, cx.editor);
-        let doc_width_available = area.width.saturating_sub(popup_area.right());
-        let doc_area = if doc_width_available > 30 {
-            let mut doc_width = doc_width_available;
+        let (left, right) = popup::view_columns(cx.editor, coords.col as u16, area.width);
+        let room_right = right.saturating_sub(popup_area.right());
+        let room_left = popup_area.left().saturating_sub(left);
+        let doc_area = if room_right > 30 || room_left > 30 {
+            let on_right = room_right > 30;
+            let mut doc_width = if on_right { room_right } else { room_left };
             let mut doc_height = area.height.saturating_sub(popup_area.top());
-            let x = popup_area.right();
-            let y = popup_area.top();
 
             // The markdown reports its own padding; the border adds a cell
             // on every side on top of that.
@@ -653,27 +656,45 @@ impl Component for Completion {
                 doc_width = rel_width.saturating_add(BORDER_INSET).min(doc_width);
                 doc_height = rel_height.saturating_add(BORDER_INSET).min(doc_height);
             }
-            Rect::new(x, y, doc_width, doc_height)
+            let x = if on_right {
+                popup_area.right()
+            } else {
+                popup_area.left() - doc_width
+            };
+            Rect::new(x, popup_area.top(), doc_width, doc_height)
         } else {
             // Documentation should not cover the cursor or the completion popup
             // Completion popup could be above or below the current line
-            let avail_height_above = cursor_pos.min(popup_area.top()).saturating_sub(1);
-            let avail_height_below = area
+            let room_above = cursor_pos.min(popup_area.top()).saturating_sub(1);
+            let room_below = area
                 .height
                 .saturating_sub(cursor_pos.max(popup_area.bottom()) + 1 /* padding */);
-            let (y, avail_height) = if avail_height_below >= avail_height_above {
-                (
-                    area.height.saturating_sub(avail_height_below),
-                    avail_height_below,
-                )
-            } else {
-                (0, avail_height_above)
-            };
-            if avail_height <= 1 {
+            let above = room_above > room_below;
+            let room = if above { room_above } else { room_below }.min(15);
+            if room <= 1 {
                 return;
             }
-
-            Rect::new(0, y, area.width, avail_height.min(15))
+            let columns = right.saturating_sub(left);
+            let mut doc_width = popup::text_width(cx.editor, columns).min(columns);
+            let mut doc_height = room;
+            if let Some((rel_width, rel_height)) = markdown_doc.required_size((
+                doc_width.saturating_sub(BORDER_INSET),
+                doc_height.saturating_sub(BORDER_INSET),
+            )) {
+                doc_width = rel_width.saturating_add(BORDER_INSET).min(doc_width);
+                doc_height = rel_height.saturating_add(BORDER_INSET).min(doc_height);
+            }
+            // Lined up with the menu, kept in the columns.
+            let x = popup_area
+                .left()
+                .min(right.saturating_sub(doc_width))
+                .max(left);
+            let y = if above {
+                room_above - doc_height
+            } else {
+                cursor_pos.max(popup_area.bottom()) + 1
+            };
+            Rect::new(x, y, doc_width, doc_height)
         };
 
         // clear area

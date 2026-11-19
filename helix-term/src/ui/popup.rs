@@ -22,6 +22,28 @@ const MIN_VIEW_WIDTH: u16 = 40;
 /// A popup is given this many columns at least, whatever share of its view it may take.
 const MIN_POPUP_WIDTH: u16 = 40;
 
+/// The columns a popup at screen column `x` (at the cursor) stays within: those of the focused
+/// view when `x` is in it, so that in a split it doesn't cover the views beside it; the whole
+/// screen when the view is too narrow to read a popup in.
+pub fn view_columns(editor: &Editor, x: u16, screen_width: u16) -> (u16, u16) {
+    editor
+        .tree
+        .try_get(editor.tree.focus)
+        .map(|view| view.area)
+        .filter(|area| area.width >= MIN_VIEW_WIDTH && (area.left()..area.right()).contains(&x))
+        .map_or((0, screen_width), |area| {
+            (area.left(), area.right().min(screen_width))
+        })
+}
+
+/// The widest a popup of text is in `columns`: a share of them (`popup-max-width-percent`), its
+/// text wrapping to it, and `MIN_POPUP_WIDTH` columns at least.
+pub fn text_width(editor: &Editor, columns: u16) -> u16 {
+    let percent = u32::from(editor.config().popup_max_width_percent.clamp(10, 100));
+    let share = u32::from(columns) * percent / 100;
+    (share as u16).max(MIN_POPUP_WIDTH)
+}
+
 struct RenderInfo {
     area: Rect,
     child_height: u16,
@@ -212,28 +234,18 @@ impl<T: Component> Popup<T> {
             Open::Below => viewport.height.saturating_sub(1 + rel_y),
         };
         max_height = max_height.min(MAX_HEIGHT);
-        // A popup at the cursor stays within the columns of the cursor's view: in a split, it
-        // doesn't spread over the neighbouring views. A view too narrow to read a popup in
-        // (and a popup anchored elsewhere) has the whole screen.
-        let (left, right) = editor
-            .tree
-            .try_get(editor.tree.focus)
-            .map(|view| view.area)
-            .filter(|area| {
-                !self.fixed
-                    && area.width >= MIN_VIEW_WIDTH
-                    && (area.left()..area.right()).contains(&rel_x)
-            })
-            .map_or((0, viewport.width), |area| {
-                (area.left(), area.right().min(viewport.width))
-            });
+        // A popup at the cursor stays within the columns of the cursor's view (`view_columns`);
+        // a popup anchored elsewhere has the whole screen.
+        let (left, right) = if self.fixed {
+            (0, viewport.width)
+        } else {
+            view_columns(editor, rel_x, viewport.width)
+        };
         let mut max_width = right.saturating_sub(left).saturating_sub(2).min(MAX_WIDTH);
-        // ... and takes a share of them at most (`popup-max-width-percent`): its text wraps
-        // to it. A menu is as wide as its entries.
+        // ... and takes a share of them at most (`text_width`). A menu is as wide as its
+        // entries.
         if !is_menu && !self.fixed {
-            let percent = u32::from(editor.config().popup_max_width_percent.clamp(10, 100));
-            let share = u32::from(right.saturating_sub(left)) * percent / 100;
-            max_width = max_width.min((share as u16).max(MIN_POPUP_WIDTH));
+            max_width = max_width.min(text_width(editor, right.saturating_sub(left)));
         }
         if let Some(width) = self.max_size.0 {
             max_width = max_width.min(width.saturating_add(2));
