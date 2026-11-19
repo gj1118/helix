@@ -1338,6 +1338,14 @@ Files with very long lines (minified JSON or JavaScript, one-line logs) stay res
   each starting a new visual line (a slightly shorter visual line every 16K characters): what
   is shown deep in such a line is found from its block, not from the line's start.
 
+## Rainbow Brackets in Large Blocks
+
+Rainbow brackets (`rainbow-brackets = true`) are worked out from the lines on screen: the
+blocks around them still set the colors, but the editor no longer goes over everything from
+the start of the enclosing top-level item (a 2,000-line `impl` block, say) on every frame and
+in every window. Moving through the middle of such a block, in two windows of the same file,
+went from about 30 ms per key to 5 ms.
+
 ## Keys after Esc, read together
 
 The terminal input parser (the `termina` crate, patched in `vendor/termina`) no longer holds

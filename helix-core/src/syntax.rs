@@ -630,6 +630,9 @@ impl Syntax {
         )
     }
 
+    /// The rainbow highlights of the brackets in `range`. The range can be just the visible
+    /// part of the document: the scopes enclosing it are matched too, so the nesting levels
+    /// are the ones of the whole document.
     pub fn rainbow_highlights(
         &self,
         source: RopeSlice,
@@ -1196,19 +1199,6 @@ fn pretty_print_tree_impl<W: fmt::Write>(
     Ok(())
 }
 
-/// Finds the child of `node` which contains the given byte range.
-pub fn child_for_byte_range<'a>(node: &Node<'a>, range: ops::Range<u32>) -> Option<Node<'a>> {
-    for child in node.children() {
-        let child_range = child.byte_range();
-
-        if range.start >= child_range.start && range.end <= child_range.end {
-            return Some(child);
-        }
-    }
-
-    None
-}
-
 #[derive(Debug)]
 pub struct RainbowQuery {
     query: Query,
@@ -1254,6 +1244,63 @@ mod test {
     use crate::{Rope, Transaction};
 
     static LOADER: LazyLock<Loader> = LazyLock::new(crate::config::default_lang_loader);
+
+    /// Rainbow highlights computed over a few lines are the ones of the whole document on
+    /// those lines: the enclosing scopes set the nesting level, also in an injection.
+    #[test]
+    fn rainbow_highlights_of_a_few_lines_match_the_whole_document() {
+        type Spans = Vec<(u32, ops::Range<usize>)>;
+        fn spans(highlights: OverlayHighlights) -> Spans {
+            let OverlayHighlights::Heterogenous { highlights } = highlights else {
+                unreachable!("rainbow highlights are heterogenous")
+            };
+            let spans = highlights
+                .into_iter()
+                .map(|(highlight, range)| (highlight.get(), range));
+            spans.collect()
+        }
+        fn on(spans: &Spans, lines: &ops::Range<usize>) -> Spans {
+            let mut spans = spans.clone();
+            spans.retain(|(_, range)| range.start < lines.end && range.end > lines.start);
+            spans
+        }
+
+        let rust = r#"impl Foo {
+    fn bar(&self, items: &[(u32, Vec<u8>)]) -> Option<u32> {
+        for (index, (key, bytes)) in items.iter().enumerate() {
+            if bytes.is_empty() {
+                let nested = vec![[1, 2], [3, (4 + key) as i32]];
+                println!("{:?} (not a bracket) {}", nested, index);
+            }
+        }
+        // a comment (with) [brackets]
+        Some(self.map(|x| { (x + 1) * 2 }))
+    }
+}
+"#;
+        let markdown = format!("# Title\n\nText (here).\n\n```rust\n{rust}```\n\nMore [text].\n");
+        for (language, source) in [("rust", rust.to_string()), ("markdown", markdown)] {
+            let text = Rope::from_str(&source);
+            let slice = text.slice(..);
+            let language = LOADER.language_for_name(language).unwrap();
+            let syntax = Syntax::new(slice, language, &LOADER).unwrap();
+            let whole = spans(syntax.rainbow_highlights(slice, 4, &LOADER, ..));
+            assert!(whole.len() > 20, "the brackets are highlighted");
+            for first in 0..text.len_lines() {
+                for height in [1, 3] {
+                    let last = (first + height).min(text.len_lines());
+                    let bytes = text.line_to_byte(first) as u32..text.line_to_byte(last) as u32;
+                    let chars = text.line_to_char(first)..text.line_to_char(last);
+                    let lines = spans(syntax.rainbow_highlights(slice, 4, &LOADER, bytes));
+                    assert_eq!(
+                        on(&lines, &chars),
+                        on(&whole, &chars),
+                        "lines {first}..{last}"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn test_textobject_queries() {
