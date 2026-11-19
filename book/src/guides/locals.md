@@ -92,3 +92,9 @@ The locals system runs alongside `highlights.scm`, not instead of it.
 successfully resolves to a `@local.definition`, and only for that specific
 resolution. Non-`@local.*` captures in `locals.scm` (i.e. discards) have no
 effect on `highlights.scm` results.
+
+## Queries and editing speed
+
+As for [injection queries](./injection.md#queries-and-editing-speed), the locals query runs
+again only where an edit changed the file when each pattern has a capture at the same depth
+wherever it appears in the pattern.

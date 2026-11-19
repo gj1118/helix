@@ -1346,6 +1346,33 @@ the start of the enclosing top-level item (a 2,000-line `impl` block, say) on ev
 in every window. Moving through the middle of such a block, in two windows of the same file,
 went from about 30 ms per key to 5 ms.
 
+## Typing in Large Files
+
+On every key typed, Helix used to look through the whole file again for the languages written
+inside it (comments, doc comments, Markdown code blocks, SQL and regular expressions in strings,
+`<script>` in HTML) and for the scopes of local variables. Now it looks only where the edit
+changed the syntax tree, and keeps the rest; a group of comments read together is parsed again
+only when one of them changes. Per key typed:
+
+| File | Before | Now |
+| --- | --- | --- |
+| `commands.rs`, 10,000 lines of Rust | 41 ms | 5 ms |
+| 6,000 lines of Rust, a comment and a `println!` every other line | 72 ms | 16–20 ms |
+| 4,650 lines of Go, many doc comments | 20 ms | 11 ms |
+| `CHANGELOG.md`, 3,000 lines of Markdown | 49 ms | 6 ms |
+| 3,600 lines of HTML with scripts and styles | 4.4 ms | 0.5 ms |
+
+What is left is tree-sitter parsing the file again (a few milliseconds), and drawing.
+
+Fixed along the way: a pattern comparing text (`#eq?`, `#any-of?`) never matched a node whose
+text crosses one of the chunks the file is stored in (about one byte in a thousand), so syntax
+highlighting and injections failed at random places of large files and moved while editing
+(`regexp.MustCompile("...")` sometimes not highlighted as a regular expression). And a parse
+stopped by its time limit no longer leaks into the next file parsed.
+
+This lives in Helix's copy of the [tree-house](https://github.com/helix-editor/tree-house)
+crates (`vendor/tree-house`, `vendor/tree-house-bindings`, see their `PATCHES.md`).
+
 ## Keys after Esc, read together
 
 The terminal input parser (the `termina` crate, patched in `vendor/termina`) no longer holds

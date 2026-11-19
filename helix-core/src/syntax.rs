@@ -1237,6 +1237,9 @@ impl RainbowQuery {
 }
 
 #[cfg(test)]
+mod incremental_tests;
+
+#[cfg(test)]
 mod test {
     use std::sync::LazyLock;
 

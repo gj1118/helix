@@ -16,6 +16,8 @@ members = [
   "helix-stdx",
   "helix-plugin",
   "xtask",
+  "vendor/tree-house",
+  "vendor/tree-house-bindings",
 ]
 # third-party crates patched for this fork (see `[patch.crates-io]`)
 exclude = ["vendor"]
@@ -83,3 +85,9 @@ rust-version = "1.90"
 # vendor/termina/PATCHES.md).
 [patch.crates-io]
 termina = { path = "vendor/termina" }
+# tree-house 0.4.0 (the syntax layer: tree-sitter trees, injections, locals, highlighting) with
+# updates that cost what an edit changed instead of the size of the file, and its bindings to
+# tree-sitter with predicates fixed for text spanning chunks of the rope (see the PATCHES.md of
+# vendor/tree-house and vendor/tree-house-bindings).
+tree-house = { path = "vendor/tree-house" }
+tree-house-bindings = { path = "vendor/tree-house-bindings" }

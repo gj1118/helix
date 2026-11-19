@@ -67,4 +67,16 @@ second argument (a string).
 - `#any-of?` (standard):
 The first argument (a capture) must be one of the other arguments (strings).
 
+## Queries and editing speed
+
+While a file is edited, Helix runs the injection query again only where an edit changed the
+file. It finds a pattern's matches again from the node of its root (for a pattern of sibling
+nodes, their parent), which it locates from a capture: so that a pattern takes part, give it a
+capture (any name, such as `@_name`) that is at the same depth wherever it appears in the
+pattern. A capture inside an alternation whose branches nest it at different depths does not
+count; the content capture of `[(string (content) @injection.content) (raw_string
+(raw_content) @injection.content)]` does. A file whose matches include a pattern without such a
+capture has that query run on the whole file again on each edit. The same holds for
+`locals.scm`.
+
 [upstream-docs]: https://tree-sitter.github.io/tree-sitter/3-syntax-highlighting.html#language-injection
