@@ -928,7 +928,7 @@ position = "default"
 # Customize command icons
 [editor.cmdline.icons]
 search = "🔍"    # For search commands (/,?)
-command = "⚙"    # For command mode (:)
+command = "🛠️"   # For command mode (:)
 shell = "⚡"      # For shell commands (!)
 general = "💬"   # For other prompts
 ```

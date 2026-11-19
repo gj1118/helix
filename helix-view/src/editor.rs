@@ -889,7 +889,7 @@ impl Default for QuickfixConfig {
 pub struct CmdlineIcons {
     /// Icon for search commands (/,?). Defaults to "🔍".
     pub search: String,
-    /// Icon for command mode (:). Defaults to "⚙".
+    /// Icon for command mode (:). Defaults to "🛠️".
     pub command: String,
     /// Icon for shell commands (!). Defaults to "⚡".
     pub shell: String,

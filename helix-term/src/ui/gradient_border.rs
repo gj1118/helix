@@ -32,29 +32,60 @@ impl PanelBorder {
             return;
         }
         if config.gradient_borders.enable {
-            let stale = self
-                .gradient
-                .as_ref()
-                .is_none_or(|(cached, _)| *cached != config.gradient_borders);
-            if stale {
-                self.gradient = Some((
-                    config.gradient_borders.clone(),
-                    GradientBorder::from_theme(&editor.theme, &config.gradient_borders),
-                ));
-            }
-            if let Some((_, border)) = self.gradient.as_mut() {
-                border.render(area, surface, &editor.theme, config.border_rounded());
-            }
+            self.gradient(&config.gradient_borders, &editor.theme)
+                .render(area, surface, &editor.theme, config.border_rounded());
         } else {
             self.gradient = None;
-            Widget::render(
-                Block::bordered()
-                    .border_type(crate::ui::border_type(&config))
-                    .border_style(crate::ui::border_style(&editor.theme)),
-                area,
-                surface,
-            );
+            Widget::render(Self::block(&config, &editor.theme), area, surface);
         }
+    }
+
+    /// `render`, with `title` in the top border (in `ui.popup.title` when the theme sets
+    /// it). A hidden border keeps its title.
+    pub fn render_titled(
+        &mut self,
+        area: Rect,
+        title: &str,
+        surface: &mut Surface,
+        editor: &Editor,
+    ) {
+        if area.width < 2 || area.height < 2 {
+            return;
+        }
+        let config = editor.config();
+        let theme = &editor.theme;
+        if config.gradient_borders.enable && !config.borders_hidden() {
+            self.gradient(&config.gradient_borders, theme)
+                .render_with_title(area, surface, theme, Some(title), config.border_rounded());
+        } else {
+            self.gradient = None;
+            let block = Self::block(&config, theme);
+            let block = match theme.try_get("ui.popup.title") {
+                Some(style) => block.title(tui::text::Span::styled(title, style)),
+                None => block.title(title),
+            };
+            Widget::render(block, area, surface);
+        }
+    }
+
+    /// The gradient border for `config`, made again when the configuration changed (a
+    /// `:config-reload`): it is kept for its animation.
+    fn gradient(&mut self, config: &GradientBorderConfig, theme: &Theme) -> &mut GradientBorder {
+        if self
+            .gradient
+            .as_ref()
+            .is_none_or(|(cached, _)| cached != config)
+        {
+            self.gradient = Some((config.clone(), GradientBorder::from_theme(theme, config)));
+        }
+        &mut self.gradient.as_mut().unwrap().1
+    }
+
+    /// The border when gradient borders are off.
+    fn block<'a>(config: &helix_view::editor::Config, theme: &Theme) -> Block<'a> {
+        Block::bordered()
+            .border_type(crate::ui::border_type(config))
+            .border_style(crate::ui::border_style(theme))
     }
 }
 

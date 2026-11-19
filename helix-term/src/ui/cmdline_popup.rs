@@ -1,18 +1,15 @@
 use crate::compositor::{Component, Context, Event, EventResult};
 use crate::ui::completers::CompletionResult;
-use crate::ui::gradient_border::GradientBorder;
+use crate::ui::gradient_border::{GradientBorder, PanelBorder};
 use crate::ui::prompt::{Prompt, PromptEvent};
 use helix_core::{unicode::width::UnicodeWidthStr, Position};
 use helix_view::{
-    editor::{CmdlineConfig, CmdlinePosition, CmdlineStyle, GradientBorderConfig},
+    editor::{CmdlineConfig, CmdlinePosition, CmdlineStyle},
     graphics::{CursorKind, Rect, Style},
     Editor,
 };
 use std::borrow::Cow;
-use tui::{
-    buffer::Buffer as Surface,
-    widgets::{Block, Widget},
-};
+use tui::buffer::Buffer as Surface;
 
 /// Most completions the list below the input shows at once.
 const MAX_COMPLETIONS: usize = 10;
@@ -28,8 +25,9 @@ pub struct CmdlinePopup {
     /// The screen row of the editor's cursor when the popup was first drawn: where a popup at
     /// the cursor (`position = "cursor"`) goes, and stays while a search moves the cursor.
     cursor_row: Option<u16>,
-    /// The gradient border, with the configuration it was made from (kept for its animation).
-    gradient_border: Option<(GradientBorderConfig, GradientBorder)>,
+    /// The border of the input, its completions and its help: the gradient one (kept for its
+    /// animation) when `[editor.gradient-borders]` is enabled, otherwise the common one.
+    border: PanelBorder,
     /// The highlighted styles of the input (one per byte), for the line and theme they were
     /// computed for: highlighting parses the line, which a frame drawn for every keystroke
     /// (or a cursor blink) need not do again.
@@ -49,7 +47,7 @@ impl CmdlinePopup {
             style,
             popup_area: Rect::default(),
             cursor_row: None,
-            gradient_border: None,
+            border: PanelBorder::default(),
             highlights: None,
         }
     }
@@ -156,24 +154,6 @@ impl CmdlinePopup {
         }
     }
 
-    /// The gradient border for `config`, made again when the configuration changed (a
-    /// `:config-reload` while the popup is open).
-    fn gradient_border(
-        &mut self,
-        theme: &helix_view::Theme,
-        config: &GradientBorderConfig,
-    ) -> &mut GradientBorder {
-        if self
-            .gradient_border
-            .as_ref()
-            .is_none_or(|(made_for, _)| made_for != config)
-        {
-            self.gradient_border =
-                Some((config.clone(), GradientBorder::from_theme(theme, config)));
-        }
-        &mut self.gradient_border.as_mut().unwrap().1
-    }
-
     /// Render popup-style cmdline
     fn render_popup(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
         let config = cx.editor.config();
@@ -192,42 +172,12 @@ impl CmdlinePopup {
             theme.get("ui.popup"),
             !crate::ui::border_cells_take_background(&config),
         );
+        // The prompt's label is the border's title.
+        self.border
+            .render_titled(popup_area, self.prompt.prompt(), surface, cx.editor);
+        let inner_area = inside_border(popup_area);
 
-        // Use gradient border if enabled, otherwise use default border
-        let inner_area = if config.gradient_borders.enable {
-            let rounded = config.border_rounded();
-            let hidden = config.borders_hidden();
-            let title = self.prompt.prompt().to_string();
-            let gradient_border = self.gradient_border(theme, &config.gradient_borders);
-            if !hidden {
-                gradient_border.render_with_title(
-                    popup_area,
-                    surface,
-                    theme,
-                    Some(&title),
-                    rounded,
-                );
-            }
-            // The gradient border is one cell wide whatever its thickness.
-            GradientBorder::inner_area(popup_area)
-        } else {
-            let block = Block::default()
-                .borders(tui::widgets::Borders::ALL)
-                .border_type(crate::ui::border_type(&config))
-                .border_style(crate::ui::border_style(theme));
-            // The background is painted inside the border above (see `clear_bordered`).
-            // `ui.popup.title` when the theme sets it; otherwise the border's style.
-            let block = match theme.try_get("ui.popup.title") {
-                Some(style) => block.title(tui::text::Span::styled(self.prompt.prompt(), style)),
-                None => block.title(self.prompt.prompt()),
-            };
-            let inner_area = block.inner(popup_area);
-            block.render(popup_area, surface);
-            inner_area
-        };
-
-        // The icon of the kind of prompt, right before the input. The prompt's label is the
-        // border's title.
+        // The icon of the kind of prompt, right before the input.
         let icon = self.icon(&config);
         let icon_width = Self::icon_width(icon, inner_area);
         if inner_area.height > 0 && icon_width > 0 {
@@ -333,15 +283,7 @@ impl CmdlinePopup {
     /// when the screen is too short or narrow for it. Asked for the cursor before the popup
     /// is drawn (by the compositor), so it does not depend on drawing.
     fn input_area(&self, viewport: Rect, config: &helix_view::editor::Config) -> Option<Rect> {
-        let popup_area = self.calculate_popup_area(viewport, &config.cmdline);
-        let inner_area = if config.gradient_borders.enable {
-            // The gradient border is one cell wide whatever its thickness.
-            GradientBorder::inner_area(popup_area)
-        } else {
-            Block::default()
-                .borders(tui::widgets::Borders::ALL)
-                .inner(popup_area)
-        };
+        let inner_area = inside_border(self.calculate_popup_area(viewport, &config.cmdline));
         let icon_width = Self::icon_width(self.icon(config), inner_area);
         let input_area = inner_area.clip_left(icon_width).with_height(1);
         (inner_area.height > 0 && input_area.width > 0).then_some(input_area)
@@ -396,25 +338,9 @@ impl CmdlinePopup {
             help,
             !crate::ui::border_cells_take_background(&config),
         );
-        // The same border as the input and the completions: the gradient one when
-        // `[editor.gradient-borders]` is enabled, otherwise the common border color.
-        let inner = if config.gradient_borders.enable {
-            if !config.borders_hidden() {
-                let rounded = config.border_rounded();
-                let theme = &cx.editor.theme;
-                self.gradient_border(theme, &config.gradient_borders)
-                    .render(area, surface, theme, rounded);
-            }
-            // The gradient border is one cell wide whatever its thickness.
-            GradientBorder::inner_area(area)
-        } else {
-            let block = Block::bordered()
-                .border_style(crate::ui::border_style(&cx.editor.theme))
-                .border_type(crate::ui::border_type(&config));
-            let inner = block.inner(area);
-            block.render(area, surface);
-            inner
-        };
+        // The same border as the input and the completions.
+        self.border.render(area, surface, cx.editor);
+        let inner = inside_border(area);
         let inner = inner.inner(helix_view::graphics::Margin::horizontal(1));
         text.render(inner, surface, cx);
     }
@@ -474,39 +400,17 @@ impl CmdlinePopup {
 
         // Clear and render completion background (match global autocomplete), only
         // inside the border (see `clear_bordered`).
+        let config = cx.editor.config();
         crate::ui::clear_bordered(
             surface,
             comp_area,
             completion_bg,
-            !crate::ui::border_cells_take_background(&cx.editor.config()),
+            !crate::ui::border_cells_take_background(&config),
         );
-
-        let editor_config = cx.editor.config();
-
-        // Use gradient border for completion if enabled
-        let inner_area = if editor_config.gradient_borders.enable {
-            let rounded = editor_config.border_rounded();
-            if !editor_config.borders_hidden() {
-                self.gradient_border(theme, &editor_config.gradient_borders)
-                    .render(comp_area, surface, theme, rounded);
-            }
-            // The gradient border is one cell wide whatever its thickness.
-            GradientBorder::inner_area(comp_area)
-        } else {
-            // Use traditional border, matching popup card styling
-            let border_type = crate::ui::border_type(&cx.editor.config());
-            let block = Block::default()
-                .borders(tui::widgets::Borders::ALL)
-                .border_type(border_type)
-                .border_style(crate::ui::border_style(theme));
-
-            let inner_area = block.inner(comp_area);
-            block.render(comp_area, surface);
-            inner_area
-        };
+        self.border.render(comp_area, surface, cx.editor);
+        let inner_area = inside_border(comp_area);
 
         // Render completion items with scrolling support
-        let config = cx.editor.config();
         let picker_symbol = config.picker_symbol.as_str();
         let symbol_width = picker_symbol.width();
 
@@ -590,6 +494,12 @@ impl CmdlinePopup {
     }
 }
 
+/// The area inside a box's border: every border is one cell wide (a gradient one whatever its
+/// thickness, a hidden one too).
+fn inside_border(area: Rect) -> Rect {
+    GradientBorder::inner_area(area)
+}
+
 impl Component for CmdlinePopup {
     fn handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
         // Delegate event handling to the underlying prompt
@@ -655,7 +565,6 @@ mod tests {
         );
 
         assert_eq!(popup.style, CmdlineStyle::Popup);
-        assert!(popup.gradient_border.is_none());
         assert_eq!(popup.popup_area, Rect::default());
     }
 

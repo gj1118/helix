@@ -196,6 +196,34 @@ async fn command_line_popup_position() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn command_line_popup_keeps_its_title_without_borders() -> anyhow::Result<()> {
+    for gradient in [true, false] {
+        let mut app = helpers::AppBuilder::new()
+            .with_config(config(&format!(
+                "[editor]\nborder-style = \"none\"\n\
+                 [editor.cmdline]\nstyle = \"popup\"\n\
+                 [editor.gradient-borders]\nenable = {gradient}\n"
+            )))
+            .build()?;
+        send_keys(&mut app, ":config-reload").await?;
+        let rows = app.rendered_rows();
+        let context = format!("gradient {gradient}:\n{}", rows.join("\n"));
+        let title = rows.iter().position(|row| row.contains("Cmdline"));
+        assert_eq!(
+            title.map(|title| rows[title + 1].contains("config-reload")),
+            Some(true),
+            "the title is right above the input: {context}"
+        );
+        // no border glyphs around the input
+        let input = &rows[title.unwrap() + 1];
+        assert!(!input.contains(['│', '▏', '▕', '┃', '║']), "{context}");
+        send_keys(&mut app, "<esc>").await?;
+        quit(app).await?;
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn command_line_popup_help_follows_the_gradient_border() -> anyhow::Result<()> {
     use helix_view::graphics::Color;
     for gradient in [true, false] {
