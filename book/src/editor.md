@@ -817,6 +817,7 @@ bottom line. See [Command line](./command-line.md#popup-style) for how it is use
 | `min-popup-width` | Minimum width of the popup, in columns | `40` |
 | `max-popup-width` | Maximum width of the popup, in columns | `80` |
 | `use-full-height` | With `style = "popup"`, use the full terminal height and drop the reserved bottom line | `false` |
+| `position` | Where the popup is, centered across the screen: `"default"` (the upper third), `"top"`, `"center"`, `"bottom"` (its completions and help above it) or `"cursor"` (right below the line of the cursor, or right above it when the cursor is near the bottom of the screen) | `"default"` |
 | `icons.search` | Icon for search prompts (`/`, `?`) | `"🔍"` |
 | `icons.command` | Icon for command mode (`:`) | `"🛠️"` |
 | `icons.shell` | Icon for shell prompts (`\|`, `!`, `A-\|`, `A-!`, `$`) | `"⚡"` |

@@ -917,6 +917,14 @@ max-popup-width = 80    # Maximum width for popup cmdline
 # Only applies when style = "popup"
 use-full-height = true
 
+# Where the popup is (always centered across the screen):
+#   "default" - the upper third (default)
+#   "top"     - at the top
+#   "center"  - in the middle
+#   "bottom"  - at the bottom, its completions and help above it
+#   "cursor"  - right below the line you're on (right above it near the bottom of the screen)
+position = "default"
+
 # Customize command icons
 [editor.cmdline.icons]
 search = "🔍"    # For search commands (/,?)

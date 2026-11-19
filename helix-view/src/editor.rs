@@ -816,6 +816,8 @@ pub struct CmdlineConfig {
     pub max_popup_width: u16,
     /// Use full height when cmdline style is popup (removes the bottom space). Defaults to false.
     pub use_full_height: bool,
+    /// Where the popup is on the screen. Defaults to `default` (the upper third).
+    pub position: CmdlinePosition,
     /// Customizable icons for different command types.
     pub icons: CmdlineIcons,
 }
@@ -828,6 +830,7 @@ impl Default for CmdlineConfig {
             min_popup_width: 40,
             max_popup_width: 80,
             use_full_height: false,
+            position: CmdlinePosition::Default,
             icons: CmdlineIcons::default(),
         }
     }
@@ -913,6 +916,24 @@ pub enum CmdlineStyle {
     Bottom,
     /// Centered popup window (noice.nvim style)
     Popup,
+}
+
+/// `position` of `[editor.cmdline]`: where the command line popup is, centered across the screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum CmdlinePosition {
+    /// In the upper third of the screen.
+    #[default]
+    Default,
+    /// At the top, below the first row (the bufferline's).
+    Top,
+    /// In the middle.
+    Center,
+    /// At the bottom, above the last row; its completions and help above it.
+    Bottom,
+    /// Right below the line of the cursor, or right above it when there is no room below (its
+    /// completions and help above it then).
+    Cursor,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

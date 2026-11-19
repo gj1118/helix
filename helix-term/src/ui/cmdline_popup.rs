@@ -4,7 +4,7 @@ use crate::ui::gradient_border::GradientBorder;
 use crate::ui::prompt::{Prompt, PromptEvent};
 use helix_core::{unicode::width::UnicodeWidthStr, Position};
 use helix_view::{
-    editor::{CmdlineConfig, CmdlineStyle, GradientBorderConfig},
+    editor::{CmdlineConfig, CmdlinePosition, CmdlineStyle, GradientBorderConfig},
     graphics::{CursorKind, Rect, Style},
     Editor,
 };
@@ -25,6 +25,9 @@ pub struct CmdlinePopup {
     style: CmdlineStyle,
     /// Where the popup was last drawn.
     popup_area: Rect,
+    /// The screen row of the editor's cursor when the popup was first drawn: where a popup at
+    /// the cursor (`position = "cursor"`) goes, and stays while a search moves the cursor.
+    cursor_row: Option<u16>,
     /// The gradient border, with the configuration it was made from (kept for its animation).
     gradient_border: Option<(GradientBorderConfig, GradientBorder)>,
     /// The highlighted styles of the input (one per byte), for the line and theme they were
@@ -45,6 +48,7 @@ impl CmdlinePopup {
             prompt: Prompt::new(prompt_text, history_register, completion_fn, callback_fn),
             style,
             popup_area: Rect::default(),
+            cursor_row: None,
             gradient_border: None,
             highlights: None,
         }
@@ -83,8 +87,8 @@ impl CmdlinePopup {
     }
 
     /// The popup's area inside `viewport`: as wide as the input needs, between the
-    /// `min-popup-width` and `max-popup-width` of `[editor.cmdline]`, centered, in the upper
-    /// third.
+    /// `min-popup-width` and `max-popup-width` of `[editor.cmdline]`, centered, at its
+    /// `position`.
     fn calculate_popup_area(&self, viewport: Rect, config: &CmdlineConfig) -> Rect {
         let min_width = config.min_popup_width;
         // a maximum below the minimum is the minimum
@@ -104,9 +108,40 @@ impl CmdlinePopup {
         let height = 3.min(viewport.height);
 
         let x = viewport.x + (viewport.width.saturating_sub(width)) / 2;
-        let y = viewport.y + (viewport.height.saturating_sub(height)) / 3; // Position in upper third
+        // the rows the popup can start on
+        let room = viewport.height.saturating_sub(height);
+        let y = viewport.y
+            + match config.position {
+                CmdlinePosition::Default => room / 3,
+                CmdlinePosition::Top => room.min(1),
+                CmdlinePosition::Center => room / 2,
+                CmdlinePosition::Bottom => room.saturating_sub(1),
+                CmdlinePosition::Cursor => match self.cursor_row {
+                    Some(row) => {
+                        let row = row.saturating_sub(viewport.y).min(viewport.height);
+                        if row < room {
+                            row + 1
+                        } else {
+                            row.saturating_sub(height)
+                        }
+                    }
+                    None => room / 3,
+                },
+            };
 
         Rect::new(x, y, width, height)
+    }
+
+    /// Whether the completions and the help go above the popup (`popup_area`): at the bottom,
+    /// and at the cursor when the popup is above it. Below it otherwise.
+    fn stacks_up(&self, popup_area: Rect, config: &CmdlineConfig) -> bool {
+        match config.position {
+            CmdlinePosition::Bottom => true,
+            CmdlinePosition::Cursor => self
+                .cursor_row
+                .is_some_and(|row| popup_area.bottom() <= row),
+            _ => false,
+        }
     }
 
     /// The icon of the kind of prompt: from what it is (its history register and label), not
@@ -142,6 +177,9 @@ impl CmdlinePopup {
     /// Render popup-style cmdline
     fn render_popup(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
         let config = cx.editor.config();
+        if self.cursor_row.is_none() {
+            self.cursor_row = cx.editor.cursor().0.map(|position| position.row as u16);
+        }
         let popup_area = self.calculate_popup_area(area, &config.cmdline);
         self.popup_area = popup_area;
 
@@ -210,15 +248,17 @@ impl CmdlinePopup {
             self.render_input_text(input_area, surface, cx);
         }
 
-        // Below the popup: the completions, then the help for what is typed.
-        let mut below = popup_area;
+        // Below the popup (or above it, see `stacks_up`): the completions, then the help for
+        // what is typed.
+        let up = self.stacks_up(popup_area, &config.cmdline);
+        let mut next_to = popup_area;
         if !self.prompt.completions().is_empty() {
-            let list = self.render_completion_popup(popup_area, area, surface, cx);
+            let list = self.render_completion_popup(popup_area, area, up, surface, cx);
             if list.height > 0 {
-                below = list;
+                next_to = list;
             }
         }
-        self.render_doc(below, area, surface, cx);
+        self.render_doc(next_to, area, up, surface, cx);
     }
 
     /// Render the input text with horizontal scrolling support, highlighted when the prompt
@@ -313,10 +353,17 @@ impl CmdlinePopup {
         area.width.saturating_sub(1).max(1) as usize
     }
 
-    /// The help for what is typed (`with_doc_fn`), in a box below `above` (the popup or its
-    /// completions), as wide as the popup and as tall as the help needs and the screen
-    /// allows.
-    fn render_doc(&mut self, above: Rect, viewport: Rect, surface: &mut Surface, cx: &mut Context) {
+    /// The help for what is typed (`with_doc_fn`), in a box right below `next_to` (the popup
+    /// or its completions), or right above it when `up`, as wide as the popup and as tall as
+    /// the help needs and the screen allows.
+    fn render_doc(
+        &mut self,
+        next_to: Rect,
+        viewport: Rect,
+        up: bool,
+        surface: &mut Surface,
+        cx: &mut Context,
+    ) {
         let Some(doc) = (self.prompt.doc_fn)(self.prompt.line()) else {
             return;
         };
@@ -324,18 +371,22 @@ impl CmdlinePopup {
         let width = self.popup_area.width;
         // border and a column of margin on each side
         let text_width = width.saturating_sub(4);
-        let y = above.bottom();
-        let available = viewport.bottom().saturating_sub(y);
+        let available = if up {
+            next_to.top().saturating_sub(viewport.top())
+        } else {
+            viewport.bottom().saturating_sub(next_to.bottom())
+        };
         if text_width == 0 || available < 3 {
             return;
         }
         let (_, text_height) = crate::ui::text::required_size(&text.contents, text_width);
-        let area = Rect::new(
-            self.popup_area.x,
-            y,
-            width,
-            text_height.saturating_add(2).min(available),
-        );
+        let height = text_height.saturating_add(2).min(available);
+        let y = if up {
+            next_to.top() - height
+        } else {
+            next_to.bottom()
+        };
+        let area = Rect::new(self.popup_area.x, y, width, height);
 
         let config = cx.editor.config();
         let help = cx.editor.theme.get("ui.help");
@@ -368,14 +419,27 @@ impl CmdlinePopup {
         text.render(inner, surface, cx);
     }
 
-    /// The area of the completion list: one row below the input popup (`base_area`), as
-    /// tall as the items need (at most `MAX_COMPLETIONS`) and the screen (`viewport`)
-    /// allows; empty when not even one item fits.
-    fn completion_area(base_area: Rect, viewport: Rect, items: usize) -> Rect {
-        let y = base_area.bottom().saturating_add(1);
-        let available = viewport.bottom().saturating_sub(y);
+    /// The area of the completion list: one row below the input popup (`base_area`), or one
+    /// row above it when `up`, as tall as the items need (at most `MAX_COMPLETIONS`) and the
+    /// screen (`viewport`) allows; empty when not even one item fits.
+    fn completion_area(base_area: Rect, viewport: Rect, items: usize, up: bool) -> Rect {
+        let available = if up {
+            base_area
+                .top()
+                .saturating_sub(1)
+                .saturating_sub(viewport.top())
+        } else {
+            viewport
+                .bottom()
+                .saturating_sub(base_area.bottom().saturating_add(1))
+        };
         // Fixed height based on visible items + borders
         let height = (items.min(MAX_COMPLETIONS) as u16 + 2).min(available);
+        let y = if up {
+            base_area.top().saturating_sub(1 + height)
+        } else {
+            base_area.bottom().saturating_add(1)
+        };
         if height < 3 {
             return Rect::new(base_area.x, y, 0, 0);
         }
@@ -388,6 +452,7 @@ impl CmdlinePopup {
         &mut self,
         base_area: Rect,
         viewport: Rect,
+        up: bool,
         surface: &mut Surface,
         cx: &Context,
     ) -> Rect {
@@ -396,11 +461,11 @@ impl CmdlinePopup {
         let completion_bg = theme.get("ui.menu");
         let selected_row_bg = theme.get("ui.menu.selected");
 
-        // Position completion popup below the main popup, inside the screen: on a short
-        // terminal fewer items are shown (a frame drawn past the bottom of the screen
+        // Position completion popup below (or above) the main popup, inside the screen: on a
+        // short terminal fewer items are shown (a frame drawn past the edge of the screen
         // would write outside of it).
         let total_items = self.prompt.completions().len();
-        let comp_area = Self::completion_area(base_area, viewport, total_items);
+        let comp_area = Self::completion_area(base_area, viewport, total_items, up);
         if comp_area.width < 2 {
             return Rect::default();
         }
@@ -681,7 +746,7 @@ mod tests {
             let area = popup.calculate_popup_area(viewport, &CmdlineConfig::default());
             assert_eq!(viewport.intersection(area), area, "{viewport:?}");
             for items in [1, 10, 500] {
-                let list = CmdlinePopup::completion_area(area, viewport, items);
+                let list = CmdlinePopup::completion_area(area, viewport, items, false);
                 if list.height > 0 {
                     assert_eq!(viewport.intersection(list), list, "{viewport:?}");
                     assert!(list.height <= items as u16 + 2);
@@ -691,11 +756,11 @@ mod tests {
         }
         // a tall screen shows ten completions, a short one what fits
         let area = popup.calculate_popup_area(Rect::new(0, 0, 80, 40), &CmdlineConfig::default());
-        let list = CmdlinePopup::completion_area(area, Rect::new(0, 0, 80, 40), 500);
+        let list = CmdlinePopup::completion_area(area, Rect::new(0, 0, 80, 40), 500, false);
         assert_eq!(list.height, 12);
         let short = Rect::new(0, 0, 80, 12);
         let area = popup.calculate_popup_area(short, &CmdlineConfig::default());
-        let list = CmdlinePopup::completion_area(area, short, 500);
+        let list = CmdlinePopup::completion_area(area, short, 500, false);
         assert_eq!(list.bottom(), short.bottom());
 
         // a very long line doesn't overflow the width
@@ -703,6 +768,71 @@ mod tests {
         popup.prompt.set_line_unchecked("x".repeat(70_000));
         let area = popup.calculate_popup_area(viewport, &CmdlineConfig::default());
         assert_eq!(area.width, CmdlineConfig::default().max_popup_width);
+    }
+
+    /// `position` places the popup: in the upper third, at the top, in the middle, at the
+    /// bottom (its completions above it), or right below the cursor's line (right above it,
+    /// with its completions above it, when the cursor is near the bottom).
+    #[test]
+    fn positions() {
+        let mut popup = CmdlinePopup::new(
+            ":".into(),
+            None,
+            crate::ui::completers::none,
+            |_ctx, _input, _event| {},
+            CmdlineStyle::Popup,
+        );
+        let viewport = Rect::new(0, 0, 100, 40);
+        let at = |position| CmdlineConfig {
+            position,
+            ..CmdlineConfig::default()
+        };
+        let row = |popup: &CmdlinePopup, position| {
+            let area = popup.calculate_popup_area(viewport, &at(position));
+            assert_eq!(viewport.intersection(area), area, "{position:?}");
+            assert_eq!(area.height, 3);
+            area.y
+        };
+        assert_eq!(row(&popup, CmdlinePosition::Default), 37 / 3);
+        assert_eq!(row(&popup, CmdlinePosition::Top), 1);
+        assert_eq!(row(&popup, CmdlinePosition::Center), 37 / 2);
+        assert_eq!(row(&popup, CmdlinePosition::Bottom), 36);
+        // no cursor known yet: where it is by default
+        assert_eq!(row(&popup, CmdlinePosition::Cursor), 37 / 3);
+        popup.cursor_row = Some(10);
+        assert_eq!(row(&popup, CmdlinePosition::Cursor), 11);
+        popup.cursor_row = Some(37);
+        assert_eq!(row(&popup, CmdlinePosition::Cursor), 34);
+        popup.cursor_row = Some(39);
+        assert_eq!(row(&popup, CmdlinePosition::Cursor), 36);
+
+        // The completions are on the side the popup has room on.
+        for (position, cursor_row, up) in [
+            (CmdlinePosition::Default, None, false),
+            (CmdlinePosition::Top, None, false),
+            (CmdlinePosition::Center, None, false),
+            (CmdlinePosition::Bottom, None, true),
+            (CmdlinePosition::Cursor, Some(10), false),
+            (CmdlinePosition::Cursor, Some(37), true),
+        ] {
+            popup.cursor_row = cursor_row;
+            let config = at(position);
+            let area = popup.calculate_popup_area(viewport, &config);
+            assert_eq!(popup.stacks_up(area, &config), up, "{position:?}");
+            let list = CmdlinePopup::completion_area(area, viewport, 5, up);
+            assert_eq!(list.height, 7, "{position:?}");
+            assert_eq!(viewport.intersection(list), list, "{position:?}");
+            if up {
+                assert_eq!(list.bottom() + 1, area.top(), "{position:?}");
+            } else {
+                assert_eq!(list.top(), area.bottom() + 1, "{position:?}");
+            }
+        }
+        // above a popup at the top of a short screen, what fits
+        let short = Rect::new(0, 0, 100, 8);
+        let area = popup.calculate_popup_area(short, &at(CmdlinePosition::Bottom));
+        let list = CmdlinePopup::completion_area(area, short, 500, true);
+        assert_eq!((list.top(), list.bottom() + 1), (0, area.top()));
     }
 
     // ===========================================

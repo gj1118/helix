@@ -144,6 +144,57 @@ async fn command_line_popup_lists_completions_inside_the_screen() -> anyhow::Res
 
 /// The help of the command below the popup command line has the same border as the input
 /// and the completions: the gradient one when gradient borders are on.
+/// `position` of `[editor.cmdline]` places the popup: at the bottom with its completions and
+/// help above it, right below the cursor's line with them below it.
+#[tokio::test(flavor = "multi_thread")]
+async fn command_line_popup_position() -> anyhow::Result<()> {
+    let text: String = (0..30).map(|i| format!("line {i}\n")).collect();
+    for (position, keys) in [("bottom", ""), ("cursor", "6gg"), ("default", "")] {
+        let mut app = helpers::AppBuilder::new()
+            .with_config(config(&format!(
+                "[editor.cmdline]\nstyle = \"popup\"\nposition = \"{position}\"\n"
+            )))
+            .with_input_text(format!("#[|]#{text}"))
+            .build()?;
+        send_keys(&mut app, keys).await?;
+        let cursor_row = app.editor.cursor().0.unwrap().row;
+        send_keys(&mut app, ":config-reload").await?;
+        let rows = app.rendered_rows();
+        let find = |text: &str, not: &str| {
+            rows.iter()
+                .position(|row| row.contains(text) && (not.is_empty() || !row.contains(not)))
+                .unwrap_or_else(|| panic!("{position}: no {text:?}:\n{}", rows.join("\n")))
+        };
+        // the input, below the popup's title, and its completion
+        let input = find("Cmdline", "") + 1;
+        assert!(rows[input].contains("config-reload"), "{position}");
+        let completion = rows
+            .iter()
+            .enumerate()
+            .position(|(y, row)| y != input && row.contains("config-reload"))
+            .unwrap_or_else(|| panic!("{position}: no completion"));
+        let help = find("Refresh user config", "");
+        let context = format!("{position}:\n{}", rows.join("\n"));
+        match position {
+            "bottom" => {
+                assert_eq!(input, rows.len() - 3, "{context}");
+                assert!(help < completion && completion < input, "{context}");
+            }
+            "cursor" => {
+                assert_eq!(input, cursor_row + 2, "{context}");
+                assert!(input < completion && completion < help, "{context}");
+            }
+            _ => {
+                assert!(input < rows.len() / 2, "{context}");
+                assert!(input < completion && completion < help, "{context}");
+            }
+        }
+        send_keys(&mut app, "<esc>").await?;
+        quit(app).await?;
+    }
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn command_line_popup_help_follows_the_gradient_border() -> anyhow::Result<()> {
     use helix_view::graphics::Color;

@@ -118,7 +118,9 @@ and grows with the input between `min-popup-width` and `max-popup-width` columns
 scrolls. Like the bottom command line, it suggests the last entry of the prompt's history while
 nothing is typed, highlights the regex of a search, and shows the documentation of the command
 typed (below the popup and its completions). `use-full-height = true` lets the popup use the full
-terminal height instead of leaving the bottom line free. All of these options are listed in
+terminal height instead of leaving the bottom line free. `position` places it: in the upper
+third (`"default"`), at the `"top"`, in the `"center"`, at the `"bottom"` (with its completions
+and help above it) or right below the line of the `"cursor"`. All of these options are listed in
 [`[editor.cmdline]`](./editor.md#editorcmdline-section).
 
 ```toml
