@@ -317,7 +317,8 @@ functions that run commands then do nothing instead.
 
 Each function needs a [permission](#permissions): the `helix.buffer` and `helix.window`
 getters, `helix.lsp`, `helix.on` and the `helix.editor` getters need `read`; `helix.ui`,
-`set_status`, `set_annotations` and `set_panel` need `ui`; changes of buffers (`insert`,
+`set_status`, `set_annotations`, `set_overlays`, `set_line_number_styles` and `set_panel`
+need `ui`; changes of buffers (`insert`,
 `delete`, selections, cursor, modes, registers, undo/redo) need `edit`; `open`, `close`,
 `quit` and `window:focus()` need `windows`; `save` and `save_all` need `files`;
 `register_command` needs `commands`, and `execute_command` needs `commands` and what the
@@ -426,9 +427,58 @@ Buffer methods (they raise an error once the buffer is closed):
   lines) or `{ { from, to, style } }` (char indices); `style` is a theme key (`"warning"`,
   `"diff.plus"`, or one set with `helix.ui.set_style`). Replaces the plugin's highlights of
   the buffer; `set_highlights({})` clears them (`ui`).
-- Signs, highlights, annotations and panels move with the text as it is edited: an anchor
-  stays with the text after it, a highlight keeps what remains of its text (text typed at
-  its edges is not in it; it goes when all of it is deleted), a sign stays on its line.
+- `set_overlays(list)` (focused buffer only): text the plugin draws over the blank cells of
+  lines in the focused window: their indentation, and after their end. The text of a line is
+  never covered: a cell of an overlay that would cover it is left out. Each overlay is `{ line,
+  col, text, ... }`: `line` (1-based), `col` the column of its first cell (0-based, counted
+  like the cursor's, tabs expanded; default 0), `text`, and a [style](#styles). It is drawn on
+  the line's first row (a soft-wrapped line), after the indentation guides (over them).
+  Replaces the plugin's overlays of the window; `set_overlays({})` clears them. Scope lines,
+  indentation guides of a plugin's own, markers in the margin of the code (`ui`):
+
+  ```lua
+  local buffer = helix.buffer.get_current()
+  buffer:set_text("if ready {\n    run()\n}\n") -- needs `edit`
+  buffer:set_overlays({
+      { line = 2, col = 0, text = "│", fg = "#806d9c" },
+      -- the `>` would cover the `r` of `run`: left out
+      { line = 2, col = 2, text = "─>", style = "comment" },
+  })
+  local overlays = buffer:get_overlays()
+  assert(type(overlays) == "table" and #overlays == 2)
+  assert(math.type(overlays[1].col) == "integer" and overlays[1].col == 0)
+  assert(overlays[2].line == 2 and overlays[2].text == "─>")
+  buffer:set_overlays({})
+  assert(#buffer:get_overlays() == 0)
+  ```
+- `get_overlays()` (focused buffer only): the overlays of all plugins in the focused window,
+  `{ { plugin, line, col, text } }` (`read`); `clear_overlays()`: removes the calling
+  plugin's overlays of this buffer in every window (`ui`).
+- `set_line_number_styles(list)` (focused buffer only): styles of the line numbers of lines
+  in the focused window, over the theme's (`ui.linenr`, `ui.linenr.selected`): `{ { line,
+  ... } }` or `{ { start_line, end_line, ... } }` (1-based, both included) with a
+  [style](#styles). Replaces the plugin's styles of the window; `{}` clears them. The lines
+  of the block of code being worked on, of a search's matches, of a test that failed (`ui`):
+
+  ```lua
+  local buffer = helix.buffer.get_current()
+  buffer:set_text("fn main() {\n    run();\n}\n") -- needs `edit`
+  buffer:set_line_number_styles({ { start_line = 1, end_line = 3, fg = "#806d9c" } })
+  local styles = buffer:get_line_number_styles()
+  assert(type(styles) == "table" and #styles == 1)
+  assert(math.type(styles[1].end_line) == "integer" and styles[1].end_line == 3)
+  assert(styles[1].start_line == 1)
+  buffer:clear_line_number_styles()
+  assert(#buffer:get_line_number_styles() == 0)
+  ```
+- `get_line_number_styles()` (focused buffer only): the line number styles of all plugins in
+  the focused window, `{ { plugin, start_line, end_line } }` (`read`);
+  `clear_line_number_styles()`: removes the calling plugin's of this buffer in every window
+  (`ui`).
+- Signs, highlights, annotations, panels, overlays and line number styles move with the text
+  as it is edited: an anchor stays with the text after it, a highlight keeps what remains of
+  its text (text typed at its edges is not in it; it goes when all of it is deleted), a sign
+  or an overlay stays on its line, and line number styles with their lines.
 - `get_info()`: `{ indent_style = "tabs"|"spaces", indent_width, tab_width, line_ending =
   "lf"|"crlf", encoding, readonly, text_width }`.
 - `save(force)`: writes the buffer (`files`); `close(force)`: closes it (`force`: even with
@@ -468,9 +518,10 @@ Buffer methods (they raise an error once the buffer is closed):
 - `has_syntax()`: whether the buffer has a syntax tree (a language with a tree-sitter
   grammar) (`read`).
 - The syntax tree (`read`; an error without one). A node is a table, a snapshot of the tree
-  when it was asked: `{ type, named, missing, extra, from, to, start_byte, end_byte,
-  start_line, start_col, end_line, end_col, child_count, named_child_count }` (`from`/`to`
-  char indices, `to` exclusive; lines 1-based, columns 0-based in chars). A method given a
+  when it was asked: `{ type, named, missing, extra, has_error, from, to, start_byte,
+  end_byte, start_line, start_col, end_line, end_col, child_count, named_child_count }`
+  (`from`/`to` char indices, `to` exclusive; lines 1-based, columns 0-based in chars;
+  `has_error`: the node is or contains a syntax error). A method given a
   node finds it again in the current tree by its range and type, and is an error once an
   edit removed it.
   - `syntax_root()`: the root node.
@@ -501,6 +552,7 @@ Buffer methods (they raise an error once the buffer is closed):
   assert(buffer:syntax_text(add) == "add")
   local call = buffer:syntax_parent(add)
   assert(call.type == "call_expression")
+  assert(type(call.has_error) == "boolean" and call.has_error == false)
   local matches = buffer:syntax_query("(function_item name: (identifier) @name)")
   assert(#matches == 1 and matches[1].captures[1].name == "name")
   assert(buffer:syntax_text(matches[1].captures[1].node) == "main")
@@ -981,6 +1033,15 @@ assert(type(missing) == "boolean" and missing == false)
   returns its id. While the editor is busy, a firing that is due waits, and the ones after it
   are not queued up behind it.
 - `helix.cancel(id)`: stops a timer of the plugin; returns whether it was running.
+- `helix.now()`: milliseconds (with a fractional part) from a fixed moment, on a clock that
+  only goes forward: how long something took, or how far an animation has got whatever
+  firings of its timer were skipped.
+
+  ```lua
+  local started = helix.now()
+  assert(type(started) == "number" and started >= 0)
+  assert(helix.now() >= started)
+  ```
 
 The functions run on the editor's thread like event handlers (with the editor and the time
 limit). `:reload-all-plugins` stops every timer.
@@ -1221,3 +1282,60 @@ The status line shows the statistics of the list: `2/3 done (66%) ■■■■�
 
 Links are looked for next to the task list, then in the working directory (PlainTasks also
 searches the project's folders).
+
+## The block around the cursor (`pile`)
+
+`contrib/plugins/pile` has the `chunk` and `line_num` parts of
+[hlchunk.nvim](https://github.com/shellRaining/hlchunk.nvim). `chunk` draws the block of code
+around the cursor (a function, a loop, an `if`, an object...) with a line down its left side,
+joined to its first and last lines, over their indentation and never over the code:
+
+```
+for item in list {
+╭───if item.ready {
+│       item.run();
+╰──>}
+}
+```
+
+It is in the error colour when the block has a syntax error. `line_num` colours the numbers
+of the block's lines. Each part is on or off on its own:
+
+```toml
+[[plugins.plugins]]
+name = "pile"
+permissions = ["commands"]   # :pile-enable, :pile-disable, :pile-toggle
+config = { chunk = { enable = true, delay = 0 }, line_num = { enable = true } }
+```
+
+| `chunk` setting | Description | Default |
+| --- | --- | --- |
+| `enable` | Draw the block | `true` |
+| `style`, `error_style` | The line's [style](#styles) (a table, a colour `"#806d9c"` or a theme key), and its style when the block has a syntax error. `style` can also be hlchunk's list of the two | `{ fg = "#806d9c" }`, `{ fg = "#c21f30" }` |
+| `error_sign` | Use `error_style` for a block with a syntax error | `true` |
+| `use_treesitter` | Find the block in the syntax tree; `false` (or a buffer without one): between the braces `{`, `}` around the cursor | `true` |
+| `chars` | `horizontal_line`, `vertical_line`, `left_top`, `left_bottom`, `right_arrow` | `"─"`, `"│"`, `"╭"`, `"╰"`, `">"` |
+| `delay` | Milliseconds the cursor rests before another block is drawn, animated; `0`: at once, not animated. An edit draws at once | `300` |
+| `duration` | Milliseconds the animation takes (from the first line's code to the corner, down, to the arrow); `0`: not animated | `200` |
+| `max_file_size` | Buffers larger than this (in characters) are left alone | `1048576` |
+| `exclude_languages` | Languages left alone, e.g. `{ "markdown" }` | `{}` |
+| `textobject` | A key selecting the lines of the block, e.g. `"A-c"` (needs the `keymaps` and `edit` permissions) | `""` (none) |
+| `node_types` | The syntax nodes that make a block: Lua patterns of their types | hlchunk's (`"class"`, `"^func"`, `"method"`, `"^if"`, `"while"`, `"for"`, ...) and Rust's, Go's and others' (`"impl"`, `"struct"`, `"loop"`, `"closure"`, ...) |
+
+| `line_num` setting | Description | Default |
+| --- | --- | --- |
+| `enable` | Colour the numbers of the block's lines | `false` |
+| `style` | Their [style](#styles) | `{ fg = "#806d9c" }` |
+| `use_treesitter`, `max_file_size`, `exclude_languages` | As for `chunk` | `true`, `1048576`, `{}` |
+
+`:pile-enable`, `:pile-disable` and `:pile-toggle` switch both parts, or the one named
+(`:pile-toggle chunk`, `:pile-disable line_num`). A setting of the wrong type or an unknown one
+is reported when the plugin loads, and its default used.
+
+The block is the smallest node over several lines around the cursor whose type matches
+`node_types` (the code of a Markdown fence is its language's); with the cursor in the
+indentation of a line, around the line's code. The line is drawn in the
+column a level of indentation left of the block's first and last lines, and the lines in
+between that are less indented (the end of a string, say) are left alone. Only the lines in
+view are drawn, again as the view scrolls. It uses `buffer:set_overlays` and
+`buffer:set_line_number_styles`, which any plugin can use.

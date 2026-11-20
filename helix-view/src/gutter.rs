@@ -364,6 +364,22 @@ pub fn line_numbers<'doc>(
     // folded lines between `line` and `current_line`
     let mut folded_lines = None;
 
+    // the styles plugins give the numbers of some lines (`buffer:set_line_number_styles`)
+    let plugin_styles: Vec<(usize, usize, Style)> = doc
+        .plugin_line_numbers
+        .get(&view.id)
+        .into_iter()
+        .flatten()
+        .map(|style| {
+            let base = style
+                .scope
+                .as_deref()
+                .map(|scope| theme.get(scope))
+                .unwrap_or_default();
+            (style.first, style.last, base.patch(style.style))
+        })
+        .collect();
+
     Box::new(
         move |line: usize, selected: bool, first_visual_line: bool, out: &mut String| {
             if line == last_line_in_view && !draw_last {
@@ -404,13 +420,18 @@ pub fn line_numbers<'doc>(
                     line + 1
                 };
 
-                let style = if same_color && selected && is_focused {
+                let mut style = if same_color && selected && is_focused {
                     linenr_style
                 } else if selected && is_focused {
                     linenr_select
                 } else {
                     linenr
                 };
+                for (first, last, plugin_style) in &plugin_styles {
+                    if (*first..=*last).contains(&line) {
+                        style = style.patch(*plugin_style);
+                    }
+                }
 
                 if first_visual_line {
                     write!(out, "{:>1$}", display_num, width).unwrap();

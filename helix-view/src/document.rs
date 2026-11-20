@@ -168,6 +168,33 @@ pub struct PluginGutterCell {
     pub style: crate::graphics::Style,
 }
 
+/// Text a plugin draws over the blank cells of a line (`buffer:set_overlays`): its
+/// indentation, or after its end. The text of the line is never covered.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PluginOverlay {
+    pub plugin: String,
+    /// The line (0-based).
+    pub line: usize,
+    /// The column of its first cell, counted like the cursor's (tabs expanded).
+    pub col: usize,
+    pub text: String,
+    /// A theme key, under `style`.
+    pub scope: Option<String>,
+    pub style: crate::graphics::Style,
+}
+
+/// A style a plugin gives the line numbers of some lines (`buffer:set_line_number_styles`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PluginLineNumberStyle {
+    pub plugin: String,
+    /// The lines (0-based, both included).
+    pub first: usize,
+    pub last: usize,
+    /// A theme key, under `style`.
+    pub scope: Option<String>,
+    pub style: crate::graphics::Style,
+}
+
 /// A range a plugin highlights with a theme key (`buffer:set_highlights`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PluginHighlight {
@@ -307,6 +334,10 @@ pub struct Document {
     pub plugin_annotations: HashMap<ViewId, Vec<PluginAnnotation>>,
     /// The panel a plugin shows next to a line, by view (`buffer:set_panel`).
     pub plugin_panels: HashMap<ViewId, crate::annotations::panel::PluginPanel>,
+    /// Text plugins draw over blank cells, by view, sorted by line (`buffer:set_overlays`).
+    pub plugin_overlays: HashMap<ViewId, Vec<PluginOverlay>>,
+    /// Styles plugins give line numbers, by view (`buffer:set_line_number_styles`).
+    pub plugin_line_numbers: HashMap<ViewId, Vec<PluginLineNumberStyle>>,
     fold_container: HashMap<ViewId, FoldContainer>,
     /// LSP document highlights for each view, stored as char ranges.
     pub(crate) document_highlights: HashMap<ViewId, DocumentHighlights>,
@@ -1240,6 +1271,8 @@ impl Document {
             jump_labels: HashMap::new(),
             plugin_annotations: HashMap::new(),
             plugin_panels: HashMap::new(),
+            plugin_overlays: HashMap::new(),
+            plugin_line_numbers: HashMap::new(),
             document_highlights: HashMap::new(),
             code_action_hints: HashSet::new(),
             color_swatches: None,
@@ -2111,13 +2144,16 @@ impl Document {
         self.fold_container.remove(&view_id);
         self.plugin_annotations.remove(&view_id);
         self.plugin_panels.remove(&view_id);
+        self.plugin_overlays.remove(&view_id);
+        self.plugin_line_numbers.remove(&view_id);
     }
 
     /// Apply a [`Transaction`] to the [`Document`] to change its text.
-    /// Moves plugins' annotations, panels, highlights and signs with the text through
-    /// `changes` (of `old_text`): an anchor stays with the text after it, a highlight shrinks
-    /// to what remains of its text (and goes when nothing does), a sign stays on its line (the
-    /// line of the start of a deletion when its line was deleted).
+    /// Moves plugins' annotations, panels, highlights, signs, overlays and line number styles
+    /// with the text through `changes` (of `old_text`): an anchor stays with the text after
+    /// it, a highlight shrinks to what remains of its text (and goes when nothing does), a
+    /// sign or an overlay stays on its line (the line of the start of a deletion when its line
+    /// was deleted).
     fn map_plugin_decorations(&mut self, changes: &helix_core::ChangeSet, old_text: &Rope) {
         use helix_core::Assoc;
         for annotations in self.plugin_annotations.values_mut() {
@@ -2165,6 +2201,29 @@ impl Document {
                     cell.line = new_text.char_to_line(mapped);
                 }
                 gutter.cells.sort_by_key(|cell| cell.line);
+            }
+        }
+        if !self.plugin_overlays.is_empty() || !self.plugin_line_numbers.is_empty() {
+            let old_lines = old_text.len_lines();
+            let new_text = self.text.slice(..);
+            let map_line = |line: usize| {
+                let start = old_text.line_to_char(line.min(old_lines.saturating_sub(1)));
+                let mapped = changes
+                    .map_pos(start, Assoc::After)
+                    .min(new_text.len_chars());
+                new_text.char_to_line(mapped)
+            };
+            for overlays in self.plugin_overlays.values_mut() {
+                for overlay in overlays.iter_mut() {
+                    overlay.line = map_line(overlay.line);
+                }
+                overlays.sort_by_key(|overlay| overlay.line);
+            }
+            for styles in self.plugin_line_numbers.values_mut() {
+                for style in styles {
+                    style.first = map_line(style.first);
+                    style.last = map_line(style.last).max(style.first);
+                }
             }
         }
     }

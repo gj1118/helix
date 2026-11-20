@@ -624,6 +624,12 @@ impl LuaEngine {
             })
         })?;
         helix.set("cancel", cancel)?;
+
+        // helix.now() - Milliseconds from a fixed moment (a monotonic clock, not the time of
+        // day), with a fractional part: how long something took, the step an animation is at
+        let now =
+            lua.create_function(|_lua, ()| Ok(clock_origin().elapsed().as_secs_f64() * 1000.0))?;
+        helix.set("now", now)?;
         Ok(())
     }
 
@@ -1716,6 +1722,12 @@ fn event_table(lua: &Lua, event: &PluginEvent) -> LuaResult<LuaTable> {
         }
     }
     Ok(data)
+}
+
+/// The moment `helix.now()` counts from: the first time a plugin asked, the same for all.
+fn clock_origin() -> std::time::Instant {
+    static ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    *ORIGIN.get_or_init(std::time::Instant::now)
 }
 
 #[cfg(test)]

@@ -1999,3 +1999,67 @@ async fn a_plugin_float_takes_the_keys_and_a_docked_window_has_its_own() -> anyh
     );
     Ok(())
 }
+
+/// Overlays are drawn over the blank cells of their lines only (the indentation, after the
+/// end, a blank line), never over the text; line number styles colour the numbers of their
+/// lines.
+#[tokio::test(flavor = "multi_thread")]
+async fn plugins_draw_over_blank_cells_and_colour_line_numbers() -> anyhow::Result<()> {
+    use helix_view::graphics::Color;
+    let file = helpers::temp_file_with_contents("top\n    body\n\n  x\n")?;
+    let init = r##"
+        helix.on("ready", function()
+            local buffer = helix.buffer.get_current()
+            buffer:set_overlays({
+                -- the 4th cell is the `b` of `body`: left out
+                { line = 2, col = 1, text = "<<<<", fg = "#010203" },
+                -- after the end of `    body`
+                { line = 2, col = 9, text = "#", fg = "#010203" },
+                -- a blank line
+                { line = 3, col = 2, text = "|", fg = "#010203" },
+                -- the indentation of `  x`
+                { line = 4, col = 0, text = "ab", fg = "#010203" },
+                -- over `top`: left out
+                { line = 1, col = 0, text = "Z", fg = "#010203" },
+            })
+            buffer:set_line_number_styles({ { start_line = 2, end_line = 3, fg = "#040506" } })
+        end)
+    "##;
+    let dir = plugin_dir(&[("over", init, None)])?;
+    let mut config = plugin_config(dir.path(), "[[plugins]]\nname = \"over\"\n")?;
+    config.editor.true_color = true;
+    let mut app = helpers::AppBuilder::new()
+        .with_file(file.path(), None)
+        .with_config(config)
+        .build()?;
+    send_keys(&mut app, "").await?;
+
+    let rows = app.rendered_rows();
+    let context = rows[..5].join("\n");
+    let text = cell_column(&rows[0], "top").expect("line 1 is shown") as usize;
+    let cells = |row: usize, from: usize, to: usize| -> String {
+        rows[row]
+            .chars()
+            .skip(text + from)
+            .take(to - from)
+            .collect()
+    };
+    assert_eq!(cells(0, 0, 3), "top", "{context}");
+    assert_eq!(cells(1, 0, 10), " <<<body #", "{context}");
+    assert_eq!(cells(2, 0, 3), "  |", "{context}");
+    assert_eq!(cells(3, 0, 3), "abx", "{context}");
+    let overlay_fg: Color = app.rendered_fg((text + 1) as u16, 1);
+    assert_eq!(overlay_fg, Color::Rgb(1, 2, 3));
+
+    // the numbers of lines 2 and 3 in the plugin's colour, not those of 1 and 4
+    let number = |row: usize, digit: &str| -> Color {
+        let col = cell_column(&rows[row], digit).expect("a line number");
+        assert!((col as usize) < text, "{digit} in the gutter: {context}");
+        app.rendered_fg(col, row as u16)
+    };
+    let (two, three): (Color, Color) = (number(1, "2"), number(2, "3"));
+    assert_eq!((two, three), (Color::Rgb(4, 5, 6), Color::Rgb(4, 5, 6)));
+    assert_ne!(number(0, "1"), Color::Rgb(4, 5, 6));
+    assert_ne!(number(3, "4"), Color::Rgb(4, 5, 6));
+    Ok(())
+}

@@ -28,6 +28,11 @@ when a parse is cancelled (`src/parser.rs`).
   between a tree and the tree parsed from it.
 - `Query::end_byte_for_pattern` and `Query::is_pattern_rooted`.
 
+## For plugins
+
+`Node::has_error` (`ts_node_has_error`): whether a node is or contains a syntax error, for the
+`has_error` field of the syntax nodes given to plugins.
+
 ## Tree-sitter optimized in debug builds
 
 `build.rs` compiles tree-sitter with optimizations when the build has none (`OPT_LEVEL=0`):

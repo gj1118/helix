@@ -9,7 +9,7 @@ use helix_view::annotations::plugins::{
     annotation_text, annotation_text_format, eol_layout, inline_annotations,
     inline_annotations_drop, inline_start_col, plugin_annotations_on_line, virtual_line_rows,
 };
-use helix_view::document::PluginAnnotation;
+use helix_view::document::{PluginAnnotation, PluginOverlay};
 use helix_view::{Document, Theme, ViewId};
 
 /// Draws the annotations plugins set with `buffer:set_annotations`. The rows they take are
@@ -232,5 +232,111 @@ impl Decoration for PluginDecoration<'_> {
         }
 
         Position::new(rows, inline_col_used)
+    }
+}
+
+/// Draws the text plugins set with `buffer:set_overlays` over the blank cells of their
+/// lines, on the first row of each: the indentation, and the cells after the end of the line
+/// (when it ends on that row). The text of a line is never covered.
+pub struct PluginOverlays<'a> {
+    overlays: &'a [PluginOverlay],
+    text: RopeSlice<'a>,
+    theme: &'a Theme,
+    tab_width: usize,
+}
+
+impl<'a> PluginOverlays<'a> {
+    /// `None` when no plugin draws over the text of `view_id`.
+    pub fn new(doc: &'a Document, theme: &'a Theme, view_id: ViewId) -> Option<Self> {
+        let overlays = doc.plugin_overlays.get(&view_id)?;
+        Some(Self {
+            overlays,
+            text: doc.text().slice(..),
+            theme,
+            tab_width: doc.tab_width(),
+        })
+    }
+}
+
+/// The blank columns of `line` (without its line ending; tabs expanded to `tab_width`):
+/// the width of its indentation, and the column after its end, if it ends before `limit`.
+fn blank_columns(line: RopeSlice, tab_width: usize, limit: usize) -> (usize, Option<usize>) {
+    use helix_stdx::rope::RopeSliceExt;
+    let ending = helix_core::line_ending::get_line_ending(&line).map_or(0, |e| e.len_chars());
+    let line = line.slice(..line.len_chars() - ending);
+    let mut col = 0usize;
+    let mut indent = None;
+    for grapheme in line.graphemes() {
+        let blank = grapheme == " " || grapheme == "\t";
+        if !blank && indent.is_none() {
+            indent = Some(col);
+        }
+        if indent.is_some() && col > limit {
+            return (indent.unwrap_or(col), None);
+        }
+        col += if grapheme == "\t" {
+            tab_width.max(1) - col % tab_width.max(1)
+        } else {
+            helix_core::graphemes::grapheme_width(&std::borrow::Cow::from(grapheme))
+        };
+    }
+    (indent.unwrap_or(col), Some(col))
+}
+
+impl Decoration for PluginOverlays<'_> {
+    fn render_virt_lines(
+        &mut self,
+        renderer: &mut TextRenderer,
+        pos: LinePos,
+        _virt_off: Position,
+    ) -> Position {
+        let none = Position::new(0, 0);
+        if !pos.first_visual_line {
+            return none;
+        }
+        let start = self.overlays.partition_point(|o| o.line < pos.doc_line);
+        let on_line = &self.overlays[start..];
+        let end = on_line.partition_point(|o| o.line == pos.doc_line);
+        let on_line = &on_line[..end];
+        if on_line.is_empty() || pos.doc_line >= self.text.len_lines() {
+            return none;
+        }
+        // the row on the screen
+        let Some(row) = (pos.visual_line as usize).checked_sub(renderer.offset.row) else {
+            return none;
+        };
+        if row >= renderer.viewport.height as usize {
+            return none;
+        }
+        let limit = on_line
+            .iter()
+            .map(|o| o.col.saturating_add(o.text.len()))
+            .max()
+            .unwrap_or(0);
+        let (indent, end) = blank_columns(self.text.line(pos.doc_line), self.tab_width, limit);
+        // past its end only where the line ends on this row (not soft-wrapped onto the next)
+        let end = end.filter(|_| pos.is_last_visual_line);
+        for overlay in on_line {
+            let style = overlay
+                .scope
+                .as_deref()
+                .map(|scope| self.theme.get(scope))
+                .unwrap_or_default()
+                .patch(overlay.style);
+            let mut col = overlay.col;
+            for grapheme in helix_core::unicode::segmentation::UnicodeSegmentation::graphemes(
+                overlay.text.as_str(),
+                true,
+            ) {
+                let width = helix_core::graphemes::grapheme_width(grapheme).max(1);
+                let blank = col + width <= indent || end.is_some_and(|end| col >= end);
+                if blank && renderer.column_in_bounds(col, width) {
+                    let x = renderer.viewport.x as usize + col - renderer.offset.col;
+                    renderer.set_string(x as u16, pos.visual_line, grapheme, style);
+                }
+                col += width;
+            }
+        }
+        none
     }
 }

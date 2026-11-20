@@ -21,6 +21,8 @@ pub(crate) struct NodeInfo {
     pub named: bool,
     pub missing: bool,
     pub extra: bool,
+    /// Whether it is or contains a syntax error.
+    pub has_error: bool,
     /// chars, `to` exclusive
     pub from: usize,
     pub to: usize,
@@ -49,6 +51,7 @@ impl NodeInfo {
             named: node.is_named(),
             missing: node.is_missing(),
             extra: node.is_extra(),
+            has_error: node.has_error(),
             from,
             to,
             start_byte,
@@ -61,11 +64,12 @@ impl NodeInfo {
     }
 
     pub(crate) fn into_lua(self, lua: &Lua) -> LuaResult<LuaTable> {
-        let table = lua.create_table_with_capacity(0, 14)?;
+        let table = lua.create_table_with_capacity(0, 15)?;
         table.raw_set("type", self.kind)?;
         table.raw_set("named", self.named)?;
         table.raw_set("missing", self.missing)?;
         table.raw_set("extra", self.extra)?;
+        table.raw_set("has_error", self.has_error)?;
         table.raw_set("from", self.from)?;
         table.raw_set("to", self.to)?;
         table.raw_set("start_byte", self.start_byte)?;

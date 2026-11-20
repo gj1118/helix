@@ -121,6 +121,12 @@ impl<'tree> Node<'tree> {
         unsafe { ts_node_is_extra(self.as_raw()) }
     }
 
+    /// Check if this node is a syntax error or contains any syntax errors.
+    #[inline]
+    pub fn has_error(&self) -> bool {
+        unsafe { ts_node_has_error(self.as_raw()) }
+    }
+
     /// Get the byte offsets where this node starts.
     #[inline(always)]
     pub fn start_byte(&self) -> u32 {
@@ -299,6 +305,9 @@ extern "C" {
     /// Extra nodes represent things like comments, which are not required by the
     /// grammar, but can appear anywhere.
     fn ts_node_is_extra(node: NodeRaw) -> bool;
+
+    /// Check if the node is a syntax error or contains any syntax errors.
+    fn ts_node_has_error(node: NodeRaw) -> bool;
 
     /// Get the node's immediate parent
     fn ts_node_parent(node: NodeRaw) -> NodeRaw;

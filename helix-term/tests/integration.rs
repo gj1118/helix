@@ -44,6 +44,7 @@ mod test {
     mod multi_cursor;
     mod navigation;
     mod persistence;
+    mod pile;
     mod plaintasks;
     mod plugin_panels;
     mod plugins;

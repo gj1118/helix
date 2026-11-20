@@ -2968,3 +2968,176 @@ result = "ran"
     );
     assert_eq!(result, "ran".to_string());
 }
+
+/// The overlay, line number style and clock examples of the book do what they say.
+#[test]
+fn the_overlay_and_line_number_examples_of_the_book_work() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    for start in [
+        "local buffer = helix.buffer.get_current()\n  buffer:set_text(\"if ready",
+        "local buffer = helix.buffer.get_current()\n  buffer:set_text(\"fn main() {\\n    run();",
+        "local started = helix.now()",
+    ] {
+        run(&engine, &mut editor, book_example(start)).unwrap();
+    }
+    let (view, doc) = helix_view::current_ref!(editor);
+    assert!(!doc.plugin_overlays.contains_key(&view.id));
+    assert!(!doc.plugin_line_numbers.contains_key(&view.id));
+}
+
+/// Overlays and line number styles are each plugin's own, per window: a call replaces the
+/// caller's, the getters list every plugin's (1-based lines), `clear_*` removes the caller's,
+/// and they stay on their lines through edits. Wrong input is an error.
+#[test]
+fn overlays_and_line_number_styles_belong_to_their_plugin() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let mut engine = engine();
+    engine
+        .add_state("q", crate::permissions::Permissions::all())
+        .unwrap();
+    run(
+        &engine,
+        &mut editor,
+        r##"
+        local b = helix.buffer.get_current()
+        b:set_text("a {\n    b\n}\n")
+        b:set_overlays({ { line = 2, col = 0, text = "│", fg = "#806d9c" } })
+        b:set_line_number_styles({ { start_line = 1, end_line = 3, style = "comment" } })
+        "##,
+    )
+    .unwrap();
+    engine
+        .run_as(
+            "q",
+            &mut editor,
+            r#"
+            local b = helix.buffer.get_current()
+            b:set_overlays({ { line = 3, col = 4, text = "<" } })
+            b:set_line_number_styles({ { line = 2, modifiers = { "bold" } } })
+            local overlays = b:get_overlays()
+            assert(#overlays == 2 and overlays[1].plugin == "p" and overlays[2].plugin == "q")
+            assert(math.type(overlays[2].line) == "integer" and overlays[2].line == 3)
+            local styles = b:get_line_number_styles()
+            assert(#styles == 2 and styles[2].start_line == 2 and styles[2].end_line == 2)
+            "#,
+        )
+        .unwrap();
+    let overlays = |editor: &Editor| -> Vec<(String, usize, usize, String)> {
+        let (view, doc) = helix_view::current_ref!(editor);
+        doc.plugin_overlays
+            .get(&view.id)
+            .into_iter()
+            .flatten()
+            .map(|o| (o.plugin.clone(), o.line, o.col, o.text.clone()))
+            .collect()
+    };
+    let styles = |editor: &Editor| -> Vec<(String, usize, usize)> {
+        let (view, doc) = helix_view::current_ref!(editor);
+        doc.plugin_line_numbers
+            .get(&view.id)
+            .into_iter()
+            .flatten()
+            .map(|s| (s.plugin.clone(), s.first, s.last))
+            .collect()
+    };
+    let owned = |plugin: &str, line: usize, col: usize, text: &str| {
+        (plugin.to_string(), line, col, text.to_string())
+    };
+    assert_eq!(
+        overlays(&editor),
+        [owned("p", 1, 0, "│"), owned("q", 2, 4, "<")]
+    );
+    {
+        let (view, doc) = helix_view::current_ref!(editor);
+        let style = &doc.plugin_line_numbers[&view.id][0];
+        assert_eq!(style.scope.as_deref(), Some("comment"));
+        let color = &doc.plugin_overlays[&view.id][0].style.fg;
+        assert_eq!(
+            *color,
+            Some(helix_view::graphics::Color::Rgb(0x80, 0x6d, 0x9c))
+        );
+    }
+
+    // a line inserted at the top: everything one line down
+    run(
+        &engine,
+        &mut editor,
+        r#"helix.buffer.get_current():insert(1, 0, "top\n")"#,
+    )
+    .unwrap();
+    assert_eq!(
+        overlays(&editor),
+        [owned("p", 2, 0, "│"), owned("q", 3, 4, "<")]
+    );
+    assert_eq!(
+        styles(&editor),
+        [("p".to_string(), 1, 3), ("q".to_string(), 2, 2)]
+    );
+
+    // `q` clears its own; `p` replaces its own
+    engine
+        .run_as(
+            "q",
+            &mut editor,
+            r#"
+            local b = helix.buffer.get_current()
+            b:clear_overlays()
+            b:clear_line_number_styles()
+            "#,
+        )
+        .unwrap();
+    run(
+        &engine,
+        &mut editor,
+        r#"helix.buffer.get_current():set_overlays({ { line = 1, text = "*" } })"#,
+    )
+    .unwrap();
+    assert_eq!(overlays(&editor), [owned("p", 0, 0, "*")]);
+    assert_eq!(styles(&editor), [("p".to_string(), 1, 3)]);
+
+    // wrong input
+    for code in [
+        r#"helix.buffer.get_current():set_overlays({ { col = 1, text = "x" } })"#,
+        r#"helix.buffer.get_current():set_overlays({ { line = 0, text = "x" } })"#,
+        r#"helix.buffer.get_current():set_overlays({ { line = 1, col = "a", text = "x" } })"#,
+        r#"helix.buffer.get_current():set_line_number_styles({ { fg = "red" } })"#,
+        r#"helix.buffer.get_current():set_line_number_styles({ { start_line = 3, end_line = 2 } })"#,
+        r#"helix.buffer.get_current():set_line_number_styles({ { line = 1, start_line = 1 } })"#,
+    ] {
+        assert!(run(&engine, &mut editor, code).is_err(), "{code}");
+    }
+    // the failed calls changed nothing
+    assert_eq!(overlays(&editor), [owned("p", 0, 0, "*")]);
+}
+
+/// A syntax node tells whether it is or contains a syntax error.
+#[test]
+fn syntax_nodes_tell_their_errors() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    run(
+        &engine,
+        &mut editor,
+        r#"
+        local b = helix.buffer.get_current()
+        b:set_language("rust")
+        b:set_text("fn good() {\n    run();\n}\nfn bad() {\n    let = ;\n}\n")
+        local good = b:syntax_parent(b:syntax_node(b:line_to_char(1) + 4))
+        while good.type ~= "function_item" do good = b:syntax_parent(good) end
+        assert(type(good.has_error) == "boolean" and good.has_error == false, good.type)
+        local bad = b:syntax_node(b:line_to_char(3) + 3)
+        while bad.type ~= "function_item" do bad = b:syntax_parent(bad) end
+        assert(bad.has_error == true, bad.type)
+        local root = b:syntax_root()
+        assert(root.has_error == true)
+        "#,
+    )
+    .unwrap();
+}

@@ -440,10 +440,14 @@ permissions = ["edit", "commands"]  # what it may do beyond looking ("read") and
   status line segments (`helix.statusline.set("branch", { text = "main", position = "left" })`,
   for every buffer or one), a bar at the top of windows (`helix.winbar.set("file",
   { text = "{path}{modified}" })`), gutter columns of their own (`buffer:set_gutter("blame",
-  { width = 8, cells = {...} })`), gutter signs, highlights of ranges with theme keys, explorer row
-  texts, and theme styles (`helix.ui.set_style("ui.statusline", { bg = "#202020" })`, kept
-  over theme changes).
-- **Background work** - timers (`helix.defer`, `helix.every`), programs whose output comes
+  { width = 8, cells = {...} })`), gutter signs, highlights of ranges with theme keys, text
+  over the indentation and after the end of lines, never over the code (`buffer:set_overlays{
+  { line = 3, col = 4, text = "╭─" } }`: scope lines, guides), styles for the numbers of some
+  lines (`buffer:set_line_number_styles{ { start_line = 3, end_line = 9, fg = "#806d9c" } }`),
+  explorer row texts, and theme styles (`helix.ui.set_style("ui.statusline", { bg =
+  "#202020" })`, kept over theme changes).
+- **Background work** - timers (`helix.defer`, `helix.every`) and a clock in milliseconds for
+  animations (`helix.now()`), programs whose output comes
   back to Lua (`helix.process.run`, needs `shell`), and requests to the language servers
   (`helix.lsp.request`, with the cursor's position in the server's encoding); the callbacks
   run on the editor's thread when the result is in.
@@ -460,7 +464,8 @@ permissions = ["edit", "commands"]  # what it may do beyond looking ("read") and
   (`helix.completion.register_source{ name = "emoji", complete = function(ctx) ... end }`,
   limited to languages, asked on trigger characters, while typing and with `C-x`).
 - **Syntax tree** - the tree-sitter node at a position (in injected languages too), its
-  parent, children and text, and tree-sitter queries run on a buffer
+  parent, children and text, whether it has a syntax error (`node.has_error`), and
+  tree-sitter queries run on a buffer
   (`buffer:syntax_query("(function_item name: (identifier) @name)")`, text predicates applied).
 - **Search** - the matches of a regex found like Helix's search (`buffer:find_all`) and the
   last search pattern (`helix.editor.last_search()`).
@@ -474,9 +479,13 @@ permissions = ["edit", "commands"]  # what it may do beyond looking ("read") and
   `.taskpaper` and `TODO` files: projects, `☐`/`✔`/`✘` tasks done and cancelled with their
   dates (`C-d`, `A-c`, or the `<space>t` menu), the archive, `@due` dates with the time left,
   the time spent (`@started`, `@lasted`), Tab expansions (`t` → `@today`, `@due(+2d)` → the
-  date), statistics in the status line, and links to files and URLs. Copy one to
-  `~/.config/helix/plugins/` to use it.
-- Signs, highlights, annotations and panels move with the text as it is edited. Annotations
+  date), statistics in the status line, and links to files and URLs; and `pile`, the chunk
+  and line_num parts of [hlchunk.nvim](https://github.com/shellRaining/hlchunk.nvim): the
+  block of code around the cursor drawn with a line down its left side (`╭─`, `│`, `╰─>`),
+  red when it has a syntax error, and its line numbers coloured, each part on or off in its
+  config. Copy one to `~/.config/helix/plugins/` to use it.
+- Signs, highlights, annotations, panels, overlays and line number styles move with the text
+  as it is edited. Annotations
   belong to the plugin that drew them, and can be pinned to the window's right edge
   (`align = "right"`, or `"eol_or_right"` for a line too long for the window).
 - **Isolation** - each plugin runs in a Lua state of its own: one cannot change what another

@@ -17,7 +17,7 @@ mod diagnostics;
 pub mod inline_completion;
 mod plugins;
 
-pub use plugins::PluginDecoration;
+pub use plugins::{PluginDecoration, PluginOverlays};
 
 /// Decorations are the primary mechanism for extending the text rendering.
 ///

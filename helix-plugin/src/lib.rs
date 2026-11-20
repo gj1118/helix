@@ -158,6 +158,8 @@ impl PluginManager {
             doc.plugin_highlights.clear();
             doc.plugin_annotations.clear();
             doc.plugin_panels.clear();
+            doc.plugin_overlays.clear();
+            doc.plugin_line_numbers.clear();
         }
         if !editor.plugin_theme_overrides.is_empty() {
             editor.plugin_theme_overrides.clear();

@@ -1,0 +1,8 @@
+name = "pile"
+version = "0.1.0"
+description = "The block of code around the cursor drawn and its line numbers coloured, like hlchunk.nvim's chunk and line_num"
+author = "Gagan Janjua"
+entry = "init.lua"
+# Reads buffers and draws over their indentation and line numbers. "commands" adds the
+# :pile-* commands; a `textobject` key needs "keymaps" and "edit" (it selects lines).
+permissions = ["read", "ui", "commands", "keymaps", "edit"]

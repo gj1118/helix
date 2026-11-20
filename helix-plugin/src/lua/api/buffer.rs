@@ -862,6 +862,183 @@ impl LuaUserData for LuaBuffer {
             })
         });
 
+        // Text drawn over the blank cells of lines in the focused window: { { line (1-based),
+        // col (0-based), text, style... }, ... } (replaces the caller's; `{}` clears them)
+        methods.add_method("set_overlays", |lua, this, list: LuaTable| {
+            require(lua, Permission::Ui, "buffer:set_overlays")?;
+            let plugin = crate::lua::current_plugin_name().to_string();
+            let mut mine = Vec::with_capacity(list.raw_len());
+            for i in 1..=list.raw_len() {
+                let item: LuaTable = list.raw_get(i)?;
+                let line: usize = item
+                    .raw_get::<Option<usize>>("line")?
+                    .filter(|line| *line > 0)
+                    .ok_or_else(|| {
+                        LuaError::RuntimeError("An overlay needs a `line` (1-based)".into())
+                    })?;
+                let col: usize = item.raw_get::<Option<usize>>("col")?.unwrap_or(0);
+                let text: String = item.raw_get::<Option<String>>("text")?.unwrap_or_default();
+                if text.is_empty() {
+                    continue;
+                }
+                let (scope, style) = super::style::read_style(lua, &item)?;
+                mine.push(helix_view::document::PluginOverlay {
+                    plugin: plugin.clone(),
+                    line: line - 1,
+                    col,
+                    text,
+                    scope,
+                    style,
+                });
+            }
+            with_focused_doc(this.document_id, "Overlays", |view, doc| {
+                let overlays = doc.plugin_overlays.entry(view.id).or_default();
+                overlays.retain(|o| o.plugin != plugin);
+                overlays.extend(mine);
+                // By line for the renderer; stable: a plugin's earlier overlay of a cell is
+                // drawn first (the later one on top).
+                overlays.sort_by_key(|o| o.line);
+                if overlays.is_empty() {
+                    doc.plugin_overlays.remove(&view.id);
+                }
+                helix_event::request_redraw();
+                Ok(())
+            })
+        });
+
+        // The overlays of every plugin in the focused window: { { plugin, line, col, text } }
+        methods.add_method("get_overlays", |lua, this, ()| {
+            require(lua, Permission::Read, "buffer:get_overlays")?;
+            let overlays = with_focused_doc(this.document_id, "Overlays", |view, doc| {
+                Ok(doc
+                    .plugin_overlays
+                    .get(&view.id)
+                    .cloned()
+                    .unwrap_or_default())
+            })?;
+            let list = lua.create_table_with_capacity(overlays.len(), 0)?;
+            for overlay in overlays {
+                let item = lua.create_table_with_capacity(0, 4)?;
+                item.raw_set("plugin", overlay.plugin)?;
+                item.raw_set("line", overlay.line + 1)?;
+                item.raw_set("col", overlay.col)?;
+                item.raw_set("text", overlay.text)?;
+                list.raw_push(item)?;
+            }
+            Ok(list)
+        });
+
+        // Remove the caller's overlays of this buffer, in every window
+        methods.add_method("clear_overlays", |lua, this, ()| {
+            require(lua, Permission::Ui, "buffer:clear_overlays")?;
+            let plugin = crate::lua::current_plugin_name().to_string();
+            crate::lua::with_editor(|editor| {
+                let doc = editor.document_mut(this.document_id).ok_or_else(|| {
+                    LuaError::RuntimeError(format!(
+                        "Buffer {:?} no longer exists",
+                        this.document_id
+                    ))
+                })?;
+                doc.plugin_overlays.retain(|_, overlays| {
+                    overlays.retain(|o| o.plugin != plugin);
+                    !overlays.is_empty()
+                });
+                helix_event::request_redraw();
+                Ok(())
+            })
+        });
+
+        // Styles of the line numbers of lines in the focused window: { { line | start_line,
+        // end_line (1-based), style... }, ... } (replaces the caller's; `{}` clears them)
+        methods.add_method("set_line_number_styles", |lua, this, list: LuaTable| {
+            require(lua, Permission::Ui, "buffer:set_line_number_styles")?;
+            let plugin = crate::lua::current_plugin_name().to_string();
+            let mut mine = Vec::with_capacity(list.raw_len());
+            for i in 1..=list.raw_len() {
+                let item: LuaTable = list.raw_get(i)?;
+                let line: Option<usize> = item.raw_get("line")?;
+                let start: Option<usize> = item.raw_get("start_line")?;
+                let end: Option<usize> = item.raw_get("end_line")?;
+                let (first, last) = match (line, start, end) {
+                    (Some(line), None, None) => (line, line),
+                    (None, Some(start), end) => (start, end.unwrap_or(start)),
+                    _ => {
+                        return Err(LuaError::RuntimeError(
+                            "A line number style needs a `line`, or a `start_line` and an \
+                             `end_line` (1-based)"
+                                .into(),
+                        ))
+                    }
+                };
+                if first == 0 || last < first {
+                    return Err(LuaError::RuntimeError(format!(
+                        "Line number style: lines {first} to {last} (1-based, the first \
+                         first)"
+                    )));
+                }
+                let (scope, style) = super::style::read_style(lua, &item)?;
+                mine.push(helix_view::document::PluginLineNumberStyle {
+                    plugin: plugin.clone(),
+                    first: first - 1,
+                    last: last - 1,
+                    scope,
+                    style,
+                });
+            }
+            with_focused_doc(this.document_id, "Line number styles", |view, doc| {
+                let styles = doc.plugin_line_numbers.entry(view.id).or_default();
+                styles.retain(|s| s.plugin != plugin);
+                styles.extend(mine);
+                if styles.is_empty() {
+                    doc.plugin_line_numbers.remove(&view.id);
+                }
+                helix_event::request_redraw();
+                Ok(())
+            })
+        });
+
+        // The line number styles of every plugin in the focused window:
+        // { { plugin, start_line, end_line } }
+        methods.add_method("get_line_number_styles", |lua, this, ()| {
+            require(lua, Permission::Read, "buffer:get_line_number_styles")?;
+            let styles = with_focused_doc(this.document_id, "Line number styles", |view, doc| {
+                Ok(doc
+                    .plugin_line_numbers
+                    .get(&view.id)
+                    .cloned()
+                    .unwrap_or_default())
+            })?;
+            let list = lua.create_table_with_capacity(styles.len(), 0)?;
+            for style in styles {
+                let item = lua.create_table_with_capacity(0, 3)?;
+                item.raw_set("plugin", style.plugin)?;
+                item.raw_set("start_line", style.first + 1)?;
+                item.raw_set("end_line", style.last + 1)?;
+                list.raw_push(item)?;
+            }
+            Ok(list)
+        });
+
+        // Remove the caller's line number styles of this buffer, in every window
+        methods.add_method("clear_line_number_styles", |lua, this, ()| {
+            require(lua, Permission::Ui, "buffer:clear_line_number_styles")?;
+            let plugin = crate::lua::current_plugin_name().to_string();
+            crate::lua::with_editor(|editor| {
+                let doc = editor.document_mut(this.document_id).ok_or_else(|| {
+                    LuaError::RuntimeError(format!(
+                        "Buffer {:?} no longer exists",
+                        this.document_id
+                    ))
+                })?;
+                doc.plugin_line_numbers.retain(|_, styles| {
+                    styles.retain(|s| s.plugin != plugin);
+                    !styles.is_empty()
+                });
+                helix_event::request_redraw();
+                Ok(())
+            })
+        });
+
         // The matches of a regex in the buffer, like Helix's search finds them
         methods.add_method(
             "find_all",
