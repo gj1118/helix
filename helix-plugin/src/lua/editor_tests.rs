@@ -2980,6 +2980,7 @@ fn the_overlay_and_line_number_examples_of_the_book_work() {
         "local buffer = helix.buffer.get_current()\n  buffer:set_text(\"if ready",
         "local buffer = helix.buffer.get_current()\n  buffer:set_text(\"fn main() {\\n    run();",
         "local started = helix.now()",
+        "helix.ui.set_style(\"plugin.mark\", { fg = \"#010203\", modifiers = { \"bold\" } })",
     ] {
         run(&engine, &mut editor, book_example(start)).unwrap();
     }

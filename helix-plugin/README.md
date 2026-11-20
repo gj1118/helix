@@ -573,6 +573,21 @@ Buffer methods (they raise an error once the buffer is closed):
   `"diagnostic.error"`, or a new one like `"plugin.mark"` for `set_highlights`), written like
   in a theme ([styles](#styles)); it stays when the theme changes. `reset_style(scope)` brings
   the theme's own back.
+- `get_style(scope)`: the theme's style of a key, written like in a theme (`{ fg, bg,
+  modifiers, underline }`, colors as `"#rrggbb"`, a name such as `"light-blue"` or a palette
+  index such as `"8"`, each field only when set), with the plugins' changes (`set_style`);
+  `nil` when the theme does not set that key itself (no fall back to a broader one). A
+  plugin can use a theme's colors when it has some for it, and its own otherwise (`read`):
+
+  ```lua
+  helix.ui.set_style("plugin.mark", { fg = "#010203", modifiers = { "bold" } })
+  local mark = helix.ui.get_style("plugin.mark")
+  assert(type(mark) == "table" and mark.fg == "#010203")
+  assert(type(mark.modifiers) == "table" and mark.modifiers[1] == "bold")
+  assert(mark.bg == nil)
+  local none = helix.ui.get_style("plugin.unset")
+  assert(none == nil)
+  ```
 - `get_theme()`, `set_theme(name)`, `get_terminal_size()` (`{width, height}` of the editor
   area), `redraw()`.
 - `popup{ text | lines | markdown, title, position, max_width, max_height, persistent }`: a

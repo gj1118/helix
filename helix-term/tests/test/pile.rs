@@ -498,3 +498,63 @@ async fn new_settings_load_the_plugin_again() -> anyhow::Result<()> {
     assert_eq!(shown(&app), (false, true), "still loaded");
     Ok(())
 }
+
+/// The colours: the user's styles, else the theme's `pile.*` keys (simplelight has
+/// `pile.line_num` and `pile.chunk.error`, not `pile.chunk`), else hlchunk's. A theme change
+/// takes its keys at once.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_colours_come_from_the_settings_or_the_theme() -> anyhow::Result<()> {
+    use helix_view::graphics::Modifier;
+    let rust = file(RUST, ".rs")?;
+    let number_cell = |app: &Application, row: u16| -> (Color, bool) {
+        let rows = app.rendered_rows();
+        let text = text_column(app) as usize;
+        let col = rows[row as usize]
+            .chars()
+            .take(text)
+            .enumerate()
+            .filter(|(_, c)| c.is_ascii_digit())
+            .map(|(col, _)| col)
+            .last()
+            .expect("a line number") as u16;
+        let cell = app.rendered_cell(col, row);
+        (cell.fg, cell.modifier.contains(Modifier::BOLD))
+    };
+
+    // no style set: hlchunk's with the test theme, the theme's with simplelight
+    let (mut plain, _plain_plugins) = app(
+        "{ chunk = { delay = 0 }, line_num = { enable = true } }",
+        &rust,
+    )
+    .await?;
+    send_keys(&mut plain, "4gg").await?;
+    let number: (Color, bool) = number_cell(&plain, 2);
+    assert_eq!(number.0, VIOLET);
+    send_keys(&mut plain, ":theme simplelight<ret>").await?;
+    let ink = Color::Rgb(0x00, 0x01, 0x00);
+    assert_eq!(
+        number_cell(&plain, 2),
+        (ink, true),
+        "simplelight's pile.line_num"
+    );
+    assert_eq!(
+        number_cell(&plain, 9).0,
+        Color::Rgb(0x40, 0x41, 0x3e),
+        "out of the block"
+    );
+    let corner: Color = plain.rendered_fg(text_column(&plain) + 4, 2);
+    assert_eq!(corner, VIOLET, "simplelight has no pile.chunk");
+
+    // the user's, over the theme's
+    let (mut mine, _mine_plugins) = app(
+        "{ chunk = { delay = 0, style = { fg = \"#112233\" } }, \
+         line_num = { enable = true, style = \"#5f87af\" } }",
+        &rust,
+    )
+    .await?;
+    send_keys(&mut mine, ":theme simplelight<ret>4gg").await?;
+    assert_eq!(number_cell(&mine, 2).0, Color::Rgb(0x5f, 0x87, 0xaf));
+    let corner: Color = mine.rendered_fg(text_column(&mine) + 4, 2);
+    assert_eq!(corner, Color::Rgb(0x11, 0x22, 0x33));
+    Ok(())
+}

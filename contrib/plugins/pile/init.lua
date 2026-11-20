@@ -15,7 +15,10 @@
 --
 -- Each part is on or off on its own, in the `config` of its `[[plugins.plugins]]` entry
 -- (the defaults below). A style is a table like in a theme ({ fg = "#806d9c", modifiers =
--- { "bold" } }), a colour ("#806d9c") or a theme key ("comment").
+-- { "bold" } }), a colour ("#806d9c") or a theme key ("comment"). Without one, the theme's
+-- `pile.chunk`, `pile.chunk.error` and `pile.line_num` are used when it sets them
+-- (simplelight and simpledark set the last two), else hlchunk's colours (the defaults
+-- below).
 --
 --   chunk = {
 --     enable = true,
@@ -60,11 +63,16 @@ local NODE_TYPES = {
   "enum", "interface", "mod_item", "module", "namespace",
 }
 
+-- The colours without a style of the user's or the theme's (hlchunk's).
+local VIOLET, RED = { fg = "#806d9c" }, { fg = "#c21f30" }
+
+-- The settings that are styles: the user's, else the theme's key, else hlchunk's colour (see
+-- `resolve_styles`); not in DEFAULTS, to tell them apart.
+local STYLES = { style = true, error_style = true }
+
 local DEFAULTS = {
   chunk = {
     enable = true,
-    style = { fg = "#806d9c" },
-    error_style = { fg = "#c21f30" },
     error_sign = true,
     use_treesitter = true,
     chars = {
@@ -83,7 +91,6 @@ local DEFAULTS = {
   },
   line_num = {
     enable = false,
-    style = { fg = "#806d9c" },
     use_treesitter = true,
     max_file_size = 1024 * 1024,
     exclude_languages = {},
@@ -107,10 +114,14 @@ local function merge(name, defaults, given)
   end
   for key, value in pairs(given) do
     local default = defaults[key]
-    if default == nil then
+    if STYLES[key] and (name == "chunk" or key == "style") then
+      if type(value) ~= "table" and type(value) ~= "string" then
+        table.insert(problems, name .. "." .. key .. " should be a style: a table, a colour or a theme key")
+      else
+        merged[key] = value
+      end
+    elseif default == nil then
       table.insert(problems, "unknown setting " .. name .. "." .. tostring(key))
-    elseif key == "style" or key == "error_style" then
-      merged[key] = value
     elseif type(value) ~= type(default) then
       table.insert(problems, name .. "." .. key .. " should be a " .. type(default))
     elseif key == "chars" then
@@ -146,16 +157,33 @@ local function style_fields(style)
   return {}
 end
 
-local chunk_style, chunk_error_style
-if type(config.chunk.style) == "table" and config.chunk.style[1] ~= nil then
-  -- hlchunk's list: the line, then the line of a block with an error
-  chunk_style = style_fields(config.chunk.style[1])
-  chunk_error_style = style_fields(config.chunk.style[2] or config.chunk.error_style)
-else
-  chunk_style = style_fields(config.chunk.style)
-  chunk_error_style = style_fields(config.chunk.error_style)
+-- The style of the theme's `key` when the theme sets it, else `fallback`.
+local function themed(key, fallback)
+  local ok, style = pcall(helix.ui.get_style, key)
+  if ok and style then
+    -- the key itself: drawn with the theme's style as it is
+    return { style = key }
+  end
+  return fallback
 end
-local line_num_style = style_fields(config.line_num.style)
+
+local chunk_style, chunk_error_style, line_num_style
+
+-- The styles of the parts: the user's, else the theme's, else hlchunk's. Again when the theme
+-- changes.
+local function resolve_styles()
+  local given_style, given_error = config.chunk.style, config.chunk.error_style
+  if type(given_style) == "table" and given_style[1] ~= nil then
+    -- hlchunk's list: the line, then the line of a block with an error
+    given_style, given_error = given_style[1], given_style[2] or given_error
+  end
+  chunk_style = given_style and style_fields(given_style) or themed("pile.chunk", VIOLET)
+  chunk_error_style = given_error and style_fields(given_error)
+    or themed("pile.chunk.error", RED)
+  line_num_style = config.line_num.style and style_fields(config.line_num.style)
+    or themed("pile.line_num", VIOLET)
+end
+resolve_styles()
 
 -- `item` with the fields of `style`.
 local function styled(item, style)
@@ -539,6 +567,11 @@ helix.on("selection_change", function()
 end)
 helix.on("buffer_changed", function()
   update("edit")
+end)
+helix.on("theme_change", function()
+  resolve_styles()
+  drawn.chunk, drawn.line_num = nil, nil
+  update("view")
 end)
 for _, event in ipairs({ "scroll", "window_focus", "buffer_focus_lost", "buffer_open",
   "view_change", "config_change", "language_change" }) do

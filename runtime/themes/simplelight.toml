@@ -144,6 +144,12 @@
 "diagnostic.unnecessary" = { modifiers = ["dim"] }
 "diagnostic.deprecated" = { modifiers = ["crossed_out"] }
 
+# The pile plugin (contrib/plugins/pile): the line beside a block with a syntax error, and
+# the numbers of the lines of the block around the cursor, in the strongest ink (the line
+# itself keeps hlchunk's violet; "pile.chunk" would set it).
+"pile.chunk.error" = { fg = "ink", modifiers = ["bold"] }
+"pile.line_num" = { fg = "ink", modifiers = ["bold"] }
+
 # Comment annotations (TODO:, FIXME:, …): stand out against the surrounding comment
 # Aliases share a key: TO-DO -> todo, FIXIT -> fix, PERFORMANCE -> perf, MARKER/BOOKMARK -> mark, MOCK -> stub.
 "error.broken" = { fg = "ink", modifiers = ["bold"] }

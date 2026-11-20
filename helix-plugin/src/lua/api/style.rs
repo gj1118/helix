@@ -28,6 +28,81 @@ pub(crate) fn read_style(lua: &Lua, table: &LuaTable) -> LuaResult<(Option<Strin
     Ok((scope, style))
 }
 
+/// `style` as a table written like in a theme, the inverse of [`read_style`]: `fg`, `bg`
+/// (`"#rrggbb"`, a color name such as `"light-blue"`, or a terminal palette index such as
+/// `"8"`), `modifiers` (`{ "bold", ... }`) and `underline` (`{ style, color }`), each only
+/// when the style sets it.
+pub(crate) fn write_style(lua: &Lua, style: &Style) -> LuaResult<LuaTable> {
+    use helix_view::graphics::{Color, Modifier, UnderlineStyle};
+    fn color(color: Color) -> String {
+        match color {
+            Color::Reset => "default".into(),
+            Color::Black => "black".into(),
+            Color::Red => "red".into(),
+            Color::Green => "green".into(),
+            Color::Yellow => "yellow".into(),
+            Color::Blue => "blue".into(),
+            Color::Magenta => "magenta".into(),
+            Color::Cyan => "cyan".into(),
+            Color::Gray => "gray".into(),
+            Color::LightRed => "light-red".into(),
+            Color::LightGreen => "light-green".into(),
+            Color::LightYellow => "light-yellow".into(),
+            Color::LightBlue => "light-blue".into(),
+            Color::LightMagenta => "light-magenta".into(),
+            Color::LightCyan => "light-cyan".into(),
+            Color::LightGray => "light-gray".into(),
+            Color::White => "white".into(),
+            Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
+            Color::Indexed(index) => index.to_string(),
+        }
+    }
+    let table = lua.create_table()?;
+    if let Some(fg) = style.fg {
+        table.raw_set("fg", color(fg))?;
+    }
+    if let Some(bg) = style.bg {
+        table.raw_set("bg", color(bg))?;
+    }
+    let names = [
+        (Modifier::BOLD, "bold"),
+        (Modifier::DIM, "dim"),
+        (Modifier::ITALIC, "italic"),
+        (Modifier::SLOW_BLINK, "slow_blink"),
+        (Modifier::RAPID_BLINK, "rapid_blink"),
+        (Modifier::REVERSED, "reversed"),
+        (Modifier::HIDDEN, "hidden"),
+        (Modifier::CROSSED_OUT, "crossed_out"),
+    ];
+    let modifiers: Vec<&str> = names
+        .iter()
+        .filter(|(modifier, _)| style.add_modifier.contains(*modifier))
+        .map(|(_, name)| *name)
+        .collect();
+    if !modifiers.is_empty() {
+        table.raw_set("modifiers", modifiers)?;
+    }
+    if style.underline_style.is_some() || style.underline_color.is_some() {
+        let underline = lua.create_table()?;
+        if let Some(kind) = style.underline_style {
+            let name = match kind {
+                UnderlineStyle::Reset => "reset",
+                UnderlineStyle::Line => "line",
+                UnderlineStyle::Curl => "curl",
+                UnderlineStyle::Dotted => "dotted",
+                UnderlineStyle::Dashed => "dashed",
+                UnderlineStyle::DoubleLine => "double_line",
+            };
+            underline.raw_set("style", name)?;
+        }
+        if let Some(underline_color) = style.underline_color {
+            underline.raw_set("color", color(underline_color))?;
+        }
+        table.raw_set("underline", underline)?;
+    }
+    Ok(table)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -56,6 +131,20 @@ mod tests {
         let empty: LuaTable = lua.load("{ text = 'x' }").eval().unwrap();
         let (scope, style): (Option<String>, Style) = read_style(&lua, &empty).unwrap();
         assert_eq!((scope, style), (None, Style::default()));
+
+        // written back the same
+        let written: LuaTable = write_style(&lua, &expected).unwrap();
+        let (_, again): (Option<String>, Style) = read_style(&lua, &written).unwrap();
+        assert_eq!(again, expected);
+        let fg: String = written.raw_get("fg").unwrap();
+        assert_eq!(fg, "red");
+        let bg: String = written.raw_get("bg").unwrap();
+        assert_eq!(bg, "#102030");
+        let indexed: LuaTable = write_style(&lua, &Style::default().fg(Color::Indexed(8))).unwrap();
+        let fg: String = indexed.raw_get("fg").unwrap();
+        assert_eq!(fg, "8");
+        let none: LuaTable = write_style(&lua, &Style::default()).unwrap();
+        assert_eq!(none.pairs::<LuaValue, LuaValue>().count(), 0);
 
         let bad: LuaTable = lua.load("{ fg = 'not-a-color' }").eval().unwrap();
         let error = read_style(&lua, &bad).unwrap_err().to_string();

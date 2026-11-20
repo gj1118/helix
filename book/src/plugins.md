@@ -643,6 +643,21 @@ Buffer methods (they raise an error once the buffer is closed):
   `"diagnostic.error"`, or a new one like `"plugin.mark"` for `set_highlights`), written like
   in a theme ([styles](#styles)); it stays when the theme changes. `reset_style(scope)` brings
   the theme's own back.
+- `get_style(scope)`: the theme's style of a key, written like in a theme (`{ fg, bg,
+  modifiers, underline }`, colors as `"#rrggbb"`, a name such as `"light-blue"` or a palette
+  index such as `"8"`, each field only when set), with the plugins' changes (`set_style`);
+  `nil` when the theme does not set that key itself (no fall back to a broader one). A
+  plugin can use a theme's colors when it has some for it, and its own otherwise (`read`):
+
+  ```lua
+  helix.ui.set_style("plugin.mark", { fg = "#010203", modifiers = { "bold" } })
+  local mark = helix.ui.get_style("plugin.mark")
+  assert(type(mark) == "table" and mark.fg == "#010203")
+  assert(type(mark.modifiers) == "table" and mark.modifiers[1] == "bold")
+  assert(mark.bg == nil)
+  local none = helix.ui.get_style("plugin.unset")
+  assert(none == nil)
+  ```
 - `get_theme()`, `set_theme(name)`, `get_terminal_size()` (`{width, height}` of the editor
   area), `redraw()`.
 - `popup{ text | lines | markdown, title, position, max_width, max_height, persistent }`: a
@@ -1318,7 +1333,7 @@ config = { chunk = { enable = true, delay = 0 }, line_num = { enable = true } }
 | `chunk` setting | Description | Default |
 | --- | --- | --- |
 | `enable` | Draw the block | `true` |
-| `style`, `error_style` | The line's [style](#styles) (a table, a colour `"#806d9c"` or a theme key), and its style when the block has a syntax error. `style` can also be hlchunk's list of the two | `{ fg = "#806d9c" }`, `{ fg = "#c21f30" }` |
+| `style`, `error_style` | The line's [style](#styles) (a table, a colour `"#806d9c"` or a theme key), and its style when the block has a syntax error. `style` can also be hlchunk's list of the two | the theme's `pile.chunk` and `pile.chunk.error` when it sets them, else `{ fg = "#806d9c" }` and `{ fg = "#c21f30" }` |
 | `error_sign` | Use `error_style` for a block with a syntax error | `true` |
 | `use_treesitter` | Find the block in the syntax tree; `false` (or a buffer without one): between the braces `{`, `}` around the cursor | `true` |
 | `chars` | `horizontal_line`, `vertical_line`, `left_top`, `left_bottom`, `right_arrow` | `"─"`, `"│"`, `"╭"`, `"╰"`, `">"` |
@@ -1332,8 +1347,18 @@ config = { chunk = { enable = true, delay = 0 }, line_num = { enable = true } }
 | `line_num` setting | Description | Default |
 | --- | --- | --- |
 | `enable` | Colour the numbers of the block's lines | `false` |
-| `style` | Their [style](#styles) | `{ fg = "#806d9c" }` |
+| `style` | Their [style](#styles) | the theme's `pile.line_num` when it sets it, else `{ fg = "#806d9c" }` |
 | `use_treesitter`, `max_file_size`, `exclude_languages` | As for `chunk` | `true`, `1048576`, `{}` |
+
+The colours are the settings' styles, else a theme's own: `pile.chunk`, `pile.chunk.error`
+and `pile.line_num` in a theme give the line, the line of a block with a syntax error and the
+line numbers (the `simplelight` and `simpledark` themes set the last two, in their strongest
+ink and bold), else hlchunk's violet and red. The line drawn and the line numbers in colours
+of your own:
+
+```toml
+config = { chunk = { style = "#5f87af" }, line_num = { enable = true, style = { fg = "#5f87af", modifiers = ["bold"] } } }
+```
 
 `:pile-enable`, `:pile-disable` and `:pile-toggle` switch both parts, or the one named
 (`:pile-toggle chunk`, `:pile-disable line_num`); `:pile-status` says which parts are on and

@@ -204,6 +204,18 @@ pub fn register_ui_api(lua: &Lua, helix_table: &LuaTable) -> Result<()> {
     })?;
     ui_module.set("get_theme", get_theme)?;
 
+    // helix.ui.get_style(scope) - The theme's style of `scope` (with the plugins' changes),
+    // written like in a theme, or nil when the theme does not set that key itself
+    let get_style = lua.create_function(|lua, scope: String| {
+        require(lua, Permission::Read, "helix.ui.get_style")?;
+        let style = crate::lua::with_editor(|editor| Ok(editor.theme.try_get_exact(&scope)))?;
+        match style {
+            Some(style) => Ok(LuaValue::Table(super::style::write_style(lua, &style)?)),
+            None => Ok(LuaValue::Nil),
+        }
+    })?;
+    ui_module.set("get_style", get_style)?;
+
     // helix.ui.set_theme(name) - Set theme
     let set_theme = lua.create_function(|lua, name: String| {
         require(lua, Permission::Ui, "helix.ui.set_theme")?;

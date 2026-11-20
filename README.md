@@ -484,7 +484,8 @@ permissions = ["edit", "commands"]  # what it may do beyond looking ("read") and
   and line_num parts of [hlchunk.nvim](https://github.com/shellRaining/hlchunk.nvim): the
   block of code around the cursor drawn with a line down its left side (`╭─`, `│`, `╰─>`),
   red when it has a syntax error, and its line numbers coloured, each part on or off in its
-  config. Copy one to `~/.config/helix/plugins/` to use it.
+  config, in colours of the config or of the theme (`pile.chunk`, `pile.chunk.error`,
+  `pile.line_num`; plugins read a theme's colours with `helix.ui.get_style`). Copy one to `~/.config/helix/plugins/` to use it.
 - Signs, highlights, annotations, panels, overlays and line number styles move with the text
   as it is edited. Annotations
   belong to the plugin that drew them, and can be pinned to the window's right edge
