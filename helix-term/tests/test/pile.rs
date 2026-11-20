@@ -228,6 +228,8 @@ async fn a_block_with_an_error_is_red() -> anyhow::Result<()> {
     for (config, expected) in [
         ("{ chunk = { delay = 0 } }", RED),
         ("{ chunk = { delay = 0, error_sign = false } }", VIOLET),
+        // not in the gradient's colours
+        ("{ chunk = { delay = 0, gradient = true } }", RED),
     ] {
         let (mut app, _plugins) = app(config, &rust).await?;
         send_keys(&mut app, "3gg").await?;
@@ -499,9 +501,8 @@ async fn new_settings_load_the_plugin_again() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The colours: the user's styles, else the theme's `pile.*` keys (simplelight has
-/// `pile.line_num` and `pile.chunk.error`, not `pile.chunk`), else hlchunk's. A theme change
-/// takes its keys at once.
+/// The colours: the user's styles, else the theme's `pile.*` keys, else hlchunk's. A theme
+/// change takes its keys at once.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_colours_come_from_the_settings_or_the_theme() -> anyhow::Result<()> {
     use helix_view::graphics::Modifier;
@@ -543,7 +544,11 @@ async fn the_colours_come_from_the_settings_or_the_theme() -> anyhow::Result<()>
         "out of the block"
     );
     let corner: Color = plain.rendered_fg(text_column(&plain) + 4, 2);
-    assert_eq!(corner, VIOLET, "simplelight has no pile.chunk");
+    assert_eq!(
+        corner,
+        Color::Rgb(0x6d, 0x6e, 0x6b),
+        "simplelight's pile.chunk"
+    );
 
     // the user's, over the theme's
     let (mut mine, _mine_plugins) = app(
@@ -556,5 +561,68 @@ async fn the_colours_come_from_the_settings_or_the_theme() -> anyhow::Result<()>
     assert_eq!(number_cell(&mine, 2).0, Color::Rgb(0x5f, 0x87, 0xaf));
     let corner: Color = mine.rendered_fg(text_column(&mine) + 4, 2);
     assert_eq!(corner, Color::Rgb(0x11, 0x22, 0x33));
+    Ok(())
+}
+
+/// `gradient`: the line in the colours of `[editor.gradient-borders]`, from the first line's
+/// code (its start colour), down, to the arrow (its end colour), through its middle colour
+/// when it has one; `:set` changes them at once.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_line_can_take_the_gradient_colours() -> anyhow::Result<()> {
+    let rust = file(RUST, ".rs")?;
+    // the colours of the overlays: by (line, col)
+    let colour = |app: &Application, line: usize, col: usize| -> Option<Color> {
+        let (view, doc) = helix_view::current_ref!(app.editor);
+        doc.plugin_overlays
+            .get(&view.id)?
+            .iter()
+            .find(|o| o.line + 1 == line && o.col == col && o.rows.on(true))
+            .and_then(|o| o.style.fg)
+    };
+    for (middle, halfway) in [
+        ("", Color::Rgb(139, 0, 115)),
+        ("#00ff00", Color::Rgb(23, 231, 0)),
+    ] {
+        let (mut app, _plugins) = app_with(
+            "{ chunk = { delay = 0, gradient = true } }",
+            &rust,
+            |config| {
+                config.editor.gradient_borders.start_color = "#ff0000".into();
+                config.editor.gradient_borders.middle_color = middle.into();
+                config.editor.gradient_borders.end_color = "#0000ff".into();
+            },
+        )
+        .await?;
+        send_keys(&mut app, "4gg").await?;
+        // the `if` block, lines 3 to 8, the line in column 4: 4 cells along line 3, 4 lines down
+        // (5 to 7, and 4), 4 cells along line 8: 12 places
+        assert_eq!(
+            colour(&app, 3, 7),
+            Some(Color::Rgb(255, 0, 0)),
+            "{middle:?}: the start"
+        );
+        assert_eq!(
+            colour(&app, 5, 4),
+            Some(halfway),
+            "{middle:?}: place 5 of 12"
+        );
+        assert_eq!(
+            colour(&app, 8, 7),
+            Some(Color::Rgb(0, 0, 255)),
+            "{middle:?}: the arrow"
+        );
+        // as drawn
+        let start: Color = app.rendered_fg(text_column(&app) + 7, 2);
+        assert_eq!(start, Color::Rgb(255, 0, 0));
+        if middle.is_empty() {
+            send_keys(&mut app, ":set gradient-borders.start-color #00ff00<ret>").await?;
+            assert_eq!(
+                colour(&app, 3, 7),
+                Some(Color::Rgb(0, 255, 0)),
+                "the new start"
+            );
+            assert_eq!(colour(&app, 5, 4), Some(Color::Rgb(0, 139, 115)));
+        }
+    }
     Ok(())
 }

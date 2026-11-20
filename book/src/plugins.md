@@ -1339,6 +1339,7 @@ config = { chunk = { enable = true, delay = 0 }, line_num = { enable = true } }
 | `chars` | `horizontal_line`, `vertical_line`, `left_top`, `left_bottom`, `right_arrow` | `"─"`, `"│"`, `"╭"`, `"╰"`, `">"` |
 | `delay` | Milliseconds the cursor rests before another block is drawn, animated; `0`: at once, not animated. An edit draws at once | `300` |
 | `duration` | Milliseconds the animation takes (from the first line's code to the corner, down, to the arrow); `0`: not animated | `200` |
+| `gradient` | The line in the colours of [`[editor.gradient-borders]`](./editor.md) (`start-color`, `middle-color`, `end-color`), from the first line's code (the start colour), down, to the arrow (the end colour), over `style`'s colour; a block with a syntax error keeps `error_style`. The colours follow `:set` and `:config-reload` | `false` |
 | `max_file_size` | Buffers larger than this (in characters) are left alone | `1048576` |
 | `exclude_languages` | Languages left alone, e.g. `{ "markdown" }` | `{}` |
 | `textobject` | A key selecting the lines of the block, e.g. `"A-c"` (needs the `keymaps` and `edit` permissions) | `""` (none) |
@@ -1352,12 +1353,13 @@ config = { chunk = { enable = true, delay = 0 }, line_num = { enable = true } }
 
 The colours are the settings' styles, else a theme's own: `pile.chunk`, `pile.chunk.error`
 and `pile.line_num` in a theme give the line, the line of a block with a syntax error and the
-line numbers (the `simplelight` and `simpledark` themes set the last two, in their strongest
-ink and bold), else hlchunk's violet and red. The line drawn and the line numbers in colours
-of your own:
+line numbers (the `simplelight` and `simpledark` themes set them: the line in a grey, the
+others in their strongest ink and bold), else hlchunk's violet and red. The line drawn and
+the line numbers in colours of your own, or the line in the gradient borders' colours:
 
 ```toml
 config = { chunk = { style = "#5f87af" }, line_num = { enable = true, style = { fg = "#5f87af", modifiers = ["bold"] } } }
+config = { chunk = { gradient = true } }   # with [editor.gradient-borders] start-color, end-color
 ```
 
 `:pile-enable`, `:pile-disable` and `:pile-toggle` switch both parts, or the one named

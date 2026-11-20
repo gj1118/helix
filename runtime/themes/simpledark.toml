@@ -143,9 +143,10 @@
 "diagnostic.unnecessary" = { modifiers = ["dim"] }
 "diagnostic.deprecated" = { modifiers = ["crossed_out"] }
 
-# The pile plugin (contrib/plugins/pile): the line beside a block with a syntax error, and
-# the numbers of the lines of the block around the cursor, in the strongest ink (the line
-# itself keeps hlchunk's violet; "pile.chunk" would set it).
+# The pile plugin (contrib/plugins/pile): the line beside the block around the cursor (a grey
+# as plain as hlchunk's violet on this background), the same line when the block has a syntax
+# error, and the numbers of the block's lines (the strongest ink).
+"pile.chunk" = "gray-4"
 "pile.chunk.error" = { fg = "white", modifiers = ["bold"] }
 "pile.line_num" = { fg = "white", modifiers = ["bold"] }
 

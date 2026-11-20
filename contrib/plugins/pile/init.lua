@@ -32,6 +32,10 @@
 --     delay = 300,                       -- ms the cursor rests before another block is drawn,
 --                                        --   with an animation; 0: at once, not animated
 --     duration = 200,                    -- ms the animation takes; 0: not animated
+--     gradient = false,                  -- the line in the colours of [editor.gradient-borders]
+--                                        --   (start-color, middle-color, end-color): from the
+--                                        --   first line's code, down, to the arrow; a block with
+--                                        --   an error keeps error_style
 --     max_file_size = 1048576,           -- larger buffers (in characters) are left alone
 --     exclude_languages = {},            -- e.g. { "markdown", "text" }
 --     textobject = "",                   -- a key selecting the block's lines (e.g. "A-c");
@@ -84,6 +88,7 @@ local DEFAULTS = {
     },
     delay = 300,
     duration = 200,
+    gradient = false,
     max_file_size = 1024 * 1024,
     exclude_languages = {},
     textobject = "",
@@ -379,7 +384,8 @@ end
 
 -- The cells of the chunk of `block` on lines `first_shown` to `last_shown`, in the order
 -- the animation draws them: from the first line's code leftwards to the corner, down, then
--- right to the arrow before the last line's code.
+-- right to the arrow before the last line's code. Each has its place along the whole line,
+-- `at` from 0 to `length` - 1 (the second value), shown or not, for the gradient.
 local function chunk_cells(buffer, block, first_shown, last_shown)
   local chars = config.chunk.chars
   local info = buffer:get_info()
@@ -389,25 +395,32 @@ local function chunk_cells(buffer, block, first_shown, last_shown)
   local last_indent = indent_of(without_ending(buffer:get_line(block.last)), tab_width)
   local col = math.max(math.min(first_indent, last_indent) - shift, 0)
 
+  -- the lengths of the three parts of the line: along the first line, down, along the last
+  local top = math.max(first_indent - col, 0)
+  local down = block.last - block.first - 1
+  local length = top + down + math.max(last_indent - col, 0)
+
   local cells = {}
   -- `rows`: on which rows of a soft-wrapped line ("first" by default, "wrapped", "all")
-  local function add(line, at, text, rows)
+  local function add(line, at, place, text, rows)
     if line >= first_shown and line <= last_shown then
-      table.insert(cells, { line = line, col = at, text = text, rows = rows })
+      table.insert(cells, { line = line, col = at, place = place, text = text, rows = rows })
     end
   end
   for at = first_indent - 1, col, -1 do
-    add(block.first, at, at == col and chars.left_top or chars.horizontal_line)
+    add(block.first, at, first_indent - 1 - at, at == col and chars.left_top
+      or chars.horizontal_line)
   end
   -- down the rows the first line is wrapped onto, then beside every row of the lines between
-  add(block.first, col, chars.vertical_line, "wrapped")
+  add(block.first, col, math.max(top - 1, 0), chars.vertical_line, "wrapped")
   local from = math.max(block.first + 1, first_shown)
   local to = math.min(block.last - 1, last_shown)
   if from <= to then
     for i, text in ipairs(buffer:get_lines(from, to)) do
       local indent, blank = indent_of(text, tab_width)
+      local line = from + i - 1
       if blank or indent > col then
-        add(from + i - 1, col, chars.vertical_line, "all")
+        add(line, col, top + line - block.first - 1, chars.vertical_line, "all")
       end
     end
   end
@@ -418,9 +431,54 @@ local function chunk_cells(buffer, block, first_shown, last_shown)
     elseif at == last_indent - 1 then
       text = chars.right_arrow
     end
-    add(block.last, at, text)
+    add(block.last, at, top + down + at - col, text)
   end
-  return cells
+  return cells, length
+end
+
+-- The gradient's colours: those of `[editor.gradient-borders]` (its defaults without them), as
+-- { r, g, b } stops: start, the middle one when set, end.
+local function gradient_stops()
+  local settings = helix.editor.get_option("gradient-borders") or {}
+  local function rgb(hex, default)
+    hex = type(hex) == "string" and hex:match("^#(%x%x%x%x%x%x)$") or default
+    return {
+      tonumber(hex:sub(1, 2), 16),
+      tonumber(hex:sub(3, 4), 16),
+      tonumber(hex:sub(5, 6), 16),
+    }
+  end
+  local stops = { rgb(settings["start-color"], "8A2BE2") }
+  if type(settings["middle-color"]) == "string" and settings["middle-color"]:match("^#%x%x%x%x%x%x$") then
+    table.insert(stops, rgb(settings["middle-color"]))
+  end
+  table.insert(stops, rgb(settings["end-color"], "00BFFF"))
+  return stops
+end
+
+-- The colour `share` (0 to 1) of the way through `stops`, like the gradient borders mix them.
+local function mix(stops, share)
+  share = math.min(math.max(share, 0), 1)
+  local from, to = stops[1], stops[#stops]
+  if #stops == 3 then
+    if share < 0.5 then
+      to, share = stops[2], share * 2
+    else
+      from, share = stops[2], (share - 0.5) * 2
+    end
+  end
+  local function channel(i)
+    return math.floor(from[i] + (to[i] - from[i]) * share)
+  end
+  return string.format("#%02x%02x%02x", channel(1), channel(2), channel(3))
+end
+
+-- Gives each cell its colour of the gradient, by its place along the line.
+local function colour_cells(cells, length)
+  local stops = gradient_stops()
+  for _, cell in ipairs(cells) do
+    cell.fg = mix(stops, length > 1 and cell.place / (length - 1) or 0)
+  end
 end
 
 -- Shows the first `count` cells (all of them without a count).
@@ -430,6 +488,10 @@ local function show(buffer, cells, style, count)
     local cell = cells[i]
     list[i] = styled({ line = cell.line, col = cell.col, text = cell.text, rows = cell.rows },
       style)
+    -- its colour of the gradient, over the style's
+    if cell.fg then
+      list[i].fg = cell.fg
+    end
   end
   buffer:set_overlays(list)
 end
@@ -490,8 +552,11 @@ local function update_chunk(buffer, window, moved)
     and config.chunk.delay > 0 and config.chunk.duration > 0
   local function draw()
     waiting = cancel(waiting)
-    local cells = chunk_cells(buffer, block, first_shown, last_shown)
+    local cells, length = chunk_cells(buffer, block, first_shown, last_shown)
     local style = faulty and chunk_error_style or chunk_style
+    if config.chunk.gradient and not faulty then
+      colour_cells(cells, length)
+    end
     if animated then
       animate(buffer, cells, style)
     else
@@ -573,8 +638,15 @@ helix.on("theme_change", function()
   drawn.chunk, drawn.line_num = nil, nil
   update("view")
 end)
+helix.on("config_change", function()
+  -- the gradient's colours may be others (`:set gradient-borders.start-color ...`)
+  if config.chunk.gradient then
+    drawn.chunk = nil
+  end
+  update("view")
+end)
 for _, event in ipairs({ "scroll", "window_focus", "buffer_focus_lost", "buffer_open",
-  "view_change", "config_change", "language_change" }) do
+  "view_change", "language_change" }) do
   helix.on(event, function()
     update("view")
   end)
