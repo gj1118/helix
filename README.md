@@ -486,7 +486,8 @@ permissions = ["edit", "commands"]  # what it may do beyond looking ("read") and
   red when it has a syntax error, and its line numbers coloured, each part on or off in its
   config, in colours of the config or of the theme (`pile.chunk`, `pile.chunk.error`,
   `pile.line_num`; plugins read a theme's colours with `helix.ui.get_style`), or the line in
-  the gradient borders' colours (`gradient = true`). Copy one to `~/.config/helix/plugins/` to use it.
+  the gradient borders' colours (`gradient = true`), as thin, heavy, double or block lines
+  (`style = { line_color = "#ffc900", thickness = 3 }`). Copy one to `~/.config/helix/plugins/` to use it.
 - Signs, highlights, annotations, panels, overlays and line number styles move with the text
   as it is edited. Annotations
   belong to the plugin that drew them, and can be pinned to the window's right edge

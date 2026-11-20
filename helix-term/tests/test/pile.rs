@@ -364,7 +364,7 @@ async fn braces_make_a_block_and_the_textobject_selects_it() -> anyhow::Result<(
 async fn wrong_settings_are_reported() -> anyhow::Result<()> {
     let rust = file(RUST, ".rs")?;
     let (app, _plugins) = app(
-        "{ chunk = { delay = \"soon\", colour = 1 }, line_number = {} }",
+        "{ chunk = { delay = \"soon\", colour = 1, style = { thickness = 9, line_color = \"yellowish\" } }, line_number = {} }",
         &rust,
     )
     .await?;
@@ -377,6 +377,8 @@ async fn wrong_settings_are_reported() -> anyhow::Result<()> {
         "chunk.delay should be a number",
         "unknown setting chunk.colour",
         "unknown setting line_number",
+        "chunk.style.thickness should be 1 to 5",
+        "chunk.style.line_color should be a colour",
     ] {
         assert!(status.contains(expected), "{expected}: {status}");
     }
@@ -623,6 +625,121 @@ async fn the_line_can_take_the_gradient_colours() -> anyhow::Result<()> {
             );
             assert_eq!(colour(&app, 5, 4), Some(Color::Rgb(0, 139, 115)));
         }
+    }
+    Ok(())
+}
+
+/// The line's style: `line_color` (or `lineColor`) and `thickness`, 1 to 5 like the gradient
+/// borders' (thin and rounded, heavy, double, half and full blocks, full blocks); `chars` over
+/// the thickness's; `gradient` over `line_color`, not over the thickness.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_line_has_a_colour_and_a_thickness() -> anyhow::Result<()> {
+    let rust = file(RUST, ".rs")?;
+    let yellow = Color::Rgb(0xff, 0xc9, 0x00);
+    for (style, top, middle, bottom, colour) in [
+        (
+            "{ line_color = \"#ffc900\", thickness = 3 }",
+            "╔═══if",
+            "║   ",
+            "╚══>}",
+            yellow,
+        ),
+        (
+            "{ lineColor = \"#ffc900\", thickness = 2 }",
+            "┏━━━if",
+            "┃   ",
+            "┗━━>}",
+            yellow,
+        ),
+        ("{ thickness = 4 }", "█▄▄▄if", "█   ", "█▀▀>}", VIOLET),
+        (
+            "{ thickness = 5, fg = \"#ffc900\" }",
+            "████if",
+            "█   ",
+            "███>}",
+            yellow,
+        ),
+        (
+            "{ line_color = \"#ffc900\" }",
+            "╭───if",
+            "│   ",
+            "╰──>}",
+            yellow,
+        ),
+    ] {
+        let config = format!("{{ chunk = {{ delay = 0, style = {style} }} }}");
+        let (mut app, _plugins) = app(&config, &rust).await?;
+        send_keys(&mut app, "4gg").await?;
+        let rows = text_rows(&app);
+        let context = format!("{style}:\n{}", rows[..9].join("\n"));
+        // from the line's column (4)
+        let from_the_line = |row: usize| -> String { rows[row].chars().skip(4).collect() };
+        assert!(from_the_line(2).starts_with(top), "{context}");
+        assert!(from_the_line(3).starts_with(middle), "{context}");
+        assert!(from_the_line(7).starts_with(bottom), "{context}");
+        let corner: Color = app.rendered_fg(text_column(&app) + 4, 2);
+        assert_eq!(corner, colour, "{context}");
+    }
+
+    // chars over the thickness's
+    let (mut chars, _chars_plugins) = app(
+        "{ chunk = { delay = 0, style = { thickness = 2 }, chars = { vertical_line = \"┆\" } } }",
+        &rust,
+    )
+    .await?;
+    send_keys(&mut chars, "4gg").await?;
+    let rows = text_rows(&chars);
+    assert_eq!(
+        rows[2],
+        "    ┏━━━if item.ready {",
+        "{}",
+        rows[..9].join("\n")
+    );
+    assert_eq!(rows[3], "    ┆       item.run();");
+
+    // the gradient over line_color, the thickness kept
+    let (mut gradient, _gradient_plugins) = app_with(
+        "{ chunk = { delay = 0, gradient = true, style = { line_color = \"#ffc900\", thickness = 3 } } }",
+        &rust,
+        |config| {
+            config.editor.gradient_borders.start_color = "#ff0000".into();
+            config.editor.gradient_borders.end_color = "#0000ff".into();
+        },
+    )
+    .await?;
+    send_keys(&mut gradient, "4gg").await?;
+    let rows = text_rows(&gradient);
+    assert_eq!(
+        rows[2],
+        "    ╔═══if item.ready {",
+        "{}",
+        rows[..9].join("\n")
+    );
+    let start: Color = gradient.rendered_fg(text_column(&gradient) + 7, 2);
+    assert_eq!(
+        start,
+        Color::Rgb(255, 0, 0),
+        "the gradient's start, not line_color"
+    );
+
+    // beside a block with a syntax error: the error colour, style's thickness (or its own)
+    let broken = file(
+        "fn main() {\n    if ready {\n        let = ;\n    }\n}\n",
+        ".rs",
+    )?;
+    for (config, top) in [
+        ("{ chunk = { delay = 0, style = { thickness = 3 } } }", "╔═══if ready {"),
+        (
+            "{ chunk = { delay = 0, style = { thickness = 3 }, error_style = { fg = \"#c21f30\", thickness = 2 } } }",
+            "┏━━━if ready {",
+        ),
+    ] {
+        let (mut app, _plugins) = app(config, &broken).await?;
+        send_keys(&mut app, "3gg").await?;
+        let rows = text_rows(&app);
+        assert_eq!(rows[1], top, "{config}:\n{}", rows[..5].join("\n"));
+        let corner: Color = app.rendered_fg(text_column(&app), 1);
+        assert_eq!(corner, RED, "{config}");
     }
     Ok(())
 }

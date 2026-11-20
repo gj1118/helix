@@ -15,20 +15,31 @@
 --
 -- Each part is on or off on its own, in the `config` of its `[[plugins.plugins]]` entry
 -- (the defaults below). A style is a table like in a theme ({ fg = "#806d9c", modifiers =
--- { "bold" } }), a colour ("#806d9c") or a theme key ("comment"). Without one, the theme's
--- `pile.chunk`, `pile.chunk.error` and `pile.line_num` are used when it sets them
--- (simplelight and simpledark set the last two), else hlchunk's colours (the defaults
--- below).
+-- { "bold" } }), a colour ("#806d9c", "light-blue") or a theme key ("comment"). Without one,
+-- the theme's `pile.chunk`, `pile.chunk.error` and `pile.line_num` are used when it sets them
+-- (simplelight and simpledark do), else hlchunk's colours (the defaults below).
+--
+-- The line's style table can also have `line_color` (or `lineColor`; over `fg`) and
+-- `thickness`, 1 to 5 like the gradient borders': thin and rounded (1, `─ │ ╭ ╰`), heavy
+-- (2, `━ ┃ ┏ ┗`), double (3, `═ ║ ╔ ╚`), half and full blocks (4), full blocks (5):
+--
+--   chunk = { enable = true, gradient = false, style = { line_color = "#ffc900", thickness = 3 } }
+--
+-- With `gradient = true` the line takes the gradient borders' colours and `line_color` is
+-- left aside (the thickness stays). `chars` set some characters over the thickness's.
 --
 --   chunk = {
 --     enable = true,
 --     style = { fg = "#806d9c" },        -- the line (or a list of two styles, like hlchunk's:
---     error_style = { fg = "#c21f30" },  --   the line, then the line of a block with an error)
+--                                        --   the line, then the line of a block with an error),
+--                                        --   with line_color and thickness (1, see above)
+--     error_style = { fg = "#c21f30" },  -- the line beside a block with an error (its own
+--                                        --   thickness, or style's)
 --     error_sign = true,                 -- error_style when the block has a syntax error
 --     use_treesitter = true,             -- the block from the syntax tree; false (or no syntax
 --                                        --   tree): between the braces around the cursor
 --     chars = { horizontal_line = "─", vertical_line = "│", left_top = "╭",
---               left_bottom = "╰", right_arrow = ">" },
+--               left_bottom = "╰", right_arrow = ">" },   -- those of thickness 1
 --     delay = 300,                       -- ms the cursor rests before another block is drawn,
 --                                        --   with an animation; 0: at once, not animated
 --     duration = 200,                    -- ms the animation takes; 0: not animated
@@ -102,6 +113,17 @@ local DEFAULTS = {
   },
 }
 
+-- The characters of each thickness of the line, those of the gradient borders' thicknesses:
+-- the first line's horizontal line, the last line's, the vertical line and the corners (the
+-- arrow is `right_arrow` in all of them).
+local THICKNESS = {
+  { horizontal_line = "─", bottom_line = "─", vertical_line = "│", left_top = "╭", left_bottom = "╰" },
+  { horizontal_line = "━", bottom_line = "━", vertical_line = "┃", left_top = "┏", left_bottom = "┗" },
+  { horizontal_line = "═", bottom_line = "═", vertical_line = "║", left_top = "╔", left_bottom = "╚" },
+  { horizontal_line = "▄", bottom_line = "▀", vertical_line = "█", left_top = "█", left_bottom = "█" },
+  { horizontal_line = "█", bottom_line = "█", vertical_line = "█", left_top = "█", left_bottom = "█" },
+}
+
 local problems = {}
 
 -- `defaults` with what `given` sets over it: a setting of the wrong type is reported and
@@ -149,17 +171,91 @@ for key in pairs(given) do
   end
 end
 
--- The fields of a style: a table, a colour or a theme key.
-local function style_fields(style)
+-- The characters the user set (`chunk.chars`): over those of the line's thickness.
+local given_chars = {}
+if type(given.chunk) == "table" and type(given.chunk.chars) == "table" then
+  for key, value in pairs(given.chunk.chars) do
+    if DEFAULTS.chunk.chars[key] ~= nil and type(value) == "string" then
+      given_chars[key] = value
+    end
+  end
+end
+
+-- The characters of a line `thickness` thick (1 to 5), with the user's over them.
+local function line_chars(thickness)
+  local set = THICKNESS[thickness] or THICKNESS[1]
+  local chars = { right_arrow = DEFAULTS.chunk.chars.right_arrow }
+  for key, value in pairs(set) do
+    chars[key] = value
+  end
+  for key, value in pairs(given_chars) do
+    chars[key] = value
+    if key == "horizontal_line" then
+      chars.bottom_line = value
+    end
+  end
+  return chars
+end
+
+-- The colour names of themes.
+local COLOUR_NAMES = {}
+for _, name in ipairs({ "default", "black", "red", "green", "yellow", "blue", "magenta", "cyan",
+  "gray", "light-red", "light-green", "light-yellow", "light-blue", "light-magenta",
+  "light-cyan", "light-gray", "white" }) do
+  COLOUR_NAMES[name] = true
+end
+
+-- Whether `value` is a colour written like in a theme: "#rrggbb", a name ("light-blue") or a
+-- terminal palette index ("8").
+local function is_colour(value)
+  if type(value) ~= "string" then
+    return false
+  end
+  if value:match("^#%x%x%x%x%x%x$") or COLOUR_NAMES[value] then
+    return true
+  end
+  local index = math.tointeger(tonumber(value))
+  return index ~= nil and index >= 0 and index <= 255
+end
+
+-- A style of the settings (a table, a colour or a theme key) as the fields of an overlay's
+-- style, and the line's thickness when it sets one. `name` names it in the problems.
+local function style_fields(style, name)
   if type(style) == "string" then
-    if style:sub(1, 1) == "#" then
+    if is_colour(style) then
       return { fg = style }
     end
     return { style = style }
-  elseif type(style) == "table" then
-    return style
+  elseif type(style) ~= "table" then
+    return {}
   end
-  return {}
+  local fields, thickness = {}, nil
+  for key, value in pairs(style) do
+    if key == "thickness" then
+      if math.type(value) == "integer" and value >= 1 and value <= 5 then
+        thickness = value
+      else
+        table.insert(problems, name .. ".thickness should be 1 to 5")
+      end
+    elseif key ~= "line_color" and key ~= "lineColor" then
+      fields[key] = value
+    end
+  end
+  local line_color = style.line_color
+  if line_color == nil then
+    line_color = style.lineColor
+  end
+  if line_color ~= nil then
+    fields.fg = line_color
+  end
+  for _, key in ipairs({ "fg", "bg" }) do
+    if fields[key] ~= nil and not is_colour(fields[key]) then
+      table.insert(problems, name .. (key == "fg" and line_color ~= nil and ".line_color" or "." .. key)
+        .. " should be a colour (\"#ffc900\", \"light-blue\", ...)")
+      fields[key] = nil
+    end
+  end
+  return fields, thickness
 end
 
 -- The style of the theme's `key` when the theme sets it, else `fallback`.
@@ -172,23 +268,68 @@ local function themed(key, fallback)
   return fallback
 end
 
+-- The styles of the settings, read once: the line's, the line's beside a block with an error,
+-- the line numbers'; and the line's thickness (beside a block with an error too, unless
+-- error_style has its own).
+local mine = {}
+do
+  local style, error_style = config.chunk.style, config.chunk.error_style
+  local style_name, error_name = "chunk.style", "chunk.error_style"
+  if type(style) == "table" and style[1] ~= nil then
+    -- hlchunk's list: the line, then the line of a block with an error
+    style, error_style = style[1], style[2] or error_style
+    style_name, error_name = "chunk.style[1]", "chunk.style[2]"
+  end
+  if style ~= nil then
+    mine.chunk, mine.thickness = style_fields(style, style_name)
+  end
+  if error_style ~= nil then
+    mine.chunk_error, mine.error_thickness = style_fields(error_style, error_name)
+  end
+  if config.line_num.style ~= nil then
+    mine.line_num = style_fields(config.line_num.style, "line_num.style")
+  end
+end
+
 local chunk_style, chunk_error_style, line_num_style
 
 -- The styles of the parts: the user's, else the theme's, else hlchunk's. Again when the theme
 -- changes.
-local function resolve_styles()
-  local given_style, given_error = config.chunk.style, config.chunk.error_style
-  if type(given_style) == "table" and given_style[1] ~= nil then
-    -- hlchunk's list: the line, then the line of a block with an error
-    given_style, given_error = given_style[1], given_style[2] or given_error
+-- `own` (a style of the settings) over `fallback`: in place of it when it has a colour or a
+-- theme key, else added to it (`{ thickness = 3 }` or `{ modifiers = { "bold" } }` keep the
+-- theme's colour, or hlchunk's).
+local function over(fallback, own)
+  if own == nil then
+    return fallback
   end
-  chunk_style = given_style and style_fields(given_style) or themed("pile.chunk", VIOLET)
-  chunk_error_style = given_error and style_fields(given_error)
-    or themed("pile.chunk.error", RED)
-  line_num_style = config.line_num.style and style_fields(config.line_num.style)
-    or themed("pile.line_num", VIOLET)
+  if own.fg ~= nil or own.style ~= nil then
+    return own
+  end
+  local merged = {}
+  for key, value in pairs(fallback) do
+    merged[key] = value
+  end
+  for key, value in pairs(own) do
+    merged[key] = value
+  end
+  return merged
+end
+
+local function resolve_styles()
+  chunk_style = over(themed("pile.chunk", VIOLET), mine.chunk)
+  chunk_error_style = over(themed("pile.chunk.error", RED), mine.chunk_error)
+  line_num_style = over(themed("pile.line_num", VIOLET), mine.line_num)
 end
 resolve_styles()
+
+-- The characters of the line beside a block (`faulty`: with a syntax error).
+local function chars_of(faulty)
+  local thickness = mine.thickness or 1
+  if faulty and mine.error_thickness then
+    thickness = mine.error_thickness
+  end
+  return line_chars(thickness)
+end
 
 -- `item` with the fields of `style`.
 local function styled(item, style)
@@ -386,8 +527,7 @@ end
 -- the animation draws them: from the first line's code leftwards to the corner, down, then
 -- right to the arrow before the last line's code. Each has its place along the whole line,
 -- `at` from 0 to `length` - 1 (the second value), shown or not, for the gradient.
-local function chunk_cells(buffer, block, first_shown, last_shown)
-  local chars = config.chunk.chars
+local function chunk_cells(buffer, block, first_shown, last_shown, chars)
   local info = buffer:get_info()
   local tab_width = math.max(info.tab_width, 1)
   local shift = info.indent_style == "tabs" and tab_width or math.max(info.indent_width, 1)
@@ -425,7 +565,7 @@ local function chunk_cells(buffer, block, first_shown, last_shown)
     end
   end
   for at = col, last_indent - 1 do
-    local text = chars.horizontal_line
+    local text = chars.bottom_line
     if at == col then
       text = chars.left_bottom
     elseif at == last_indent - 1 then
@@ -552,7 +692,7 @@ local function update_chunk(buffer, window, moved)
     and config.chunk.delay > 0 and config.chunk.duration > 0
   local function draw()
     waiting = cancel(waiting)
-    local cells, length = chunk_cells(buffer, block, first_shown, last_shown)
+    local cells, length = chunk_cells(buffer, block, first_shown, last_shown, chars_of(faulty))
     local style = faulty and chunk_error_style or chunk_style
     if config.chunk.gradient and not faulty then
       colour_cells(cells, length)
