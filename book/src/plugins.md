@@ -1320,7 +1320,7 @@ config = { chunk = { enable = true, delay = 0 }, line_num = { enable = true } }
 | `max_file_size` | Buffers larger than this (in characters) are left alone | `1048576` |
 | `exclude_languages` | Languages left alone, e.g. `{ "markdown" }` | `{}` |
 | `textobject` | A key selecting the lines of the block, e.g. `"A-c"` (needs the `keymaps` and `edit` permissions) | `""` (none) |
-| `node_types` | The syntax nodes that make a block: Lua patterns of their types | hlchunk's (`"class"`, `"^func"`, `"method"`, `"^if"`, `"while"`, `"for"`, ...) and Rust's, Go's and others' (`"impl"`, `"struct"`, `"loop"`, `"closure"`, ...) |
+| `node_types` | The syntax nodes that make a block: Lua patterns of their types | hlchunk's (`"class"`, `"^func"`, `"method"`, `"^if"`, `"while"`, `"for"`, `"switch"`, ...) and a few more: `"case"` (a case of a switch is a block of its own, inside the switch's), Rust's, Go's and others' (`"impl"`, `"struct"`, `"loop"`, `"closure"`, ...) |
 
 | `line_num` setting | Description | Default |
 | --- | --- | --- |

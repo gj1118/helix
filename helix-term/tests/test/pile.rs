@@ -86,16 +86,21 @@ fn overlays(app: &Application) -> Vec<(usize, usize, String)> {
         .collect()
 }
 
+/// Where the first line of the test files starts in a row of the screen.
+fn first_text(row: &str) -> Option<usize> {
+    ["fn main", "a {", "package main"]
+        .iter()
+        .find_map(|start| row.find(start))
+}
+
 /// The screen's rows of the text, from the column of the text (after the gutter).
 fn text_rows(app: &Application) -> Vec<String> {
     let rows = app.rendered_rows();
     let first = rows
         .iter()
-        .find_map(|row| row.find("fn main").or_else(|| row.find("a {")).map(|_| row))
+        .find_map(|row| first_text(row).map(|_| row))
         .expect("the first line is shown");
-    let at = first
-        .find("fn main")
-        .or_else(|| first.find("a {"))
+    let at = first_text(first)
         .map(|byte| first[..byte].chars().count())
         .unwrap();
     rows.iter()
@@ -339,5 +344,46 @@ async fn wrong_settings_are_reported() -> anyhow::Result<()> {
     }
     // the defaults: the function's chunk, drawn at once at the start
     assert!(!overlays(&app).is_empty());
+    Ok(())
+}
+
+/// A case of a switch is a block of its own: with the cursor in one, its chunk is drawn, not
+/// the switch's (Go, indented with tabs).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_case_of_a_switch_is_its_own_block() -> anyhow::Result<()> {
+    let text = "package main\n\nfunc main() {\n\tswitch {\n\tcase a:\n\t\tone()\n\tcase b:\n\t\ttwo()\n\t\tthree()\n\tdefault:\n\t\tfour()\n\t}\n}\n";
+    let go = file(text, ".go")?;
+    let (mut app, _plugins) = app("{ chunk = { delay = 0 } }", &go).await?;
+    // in the second case
+    send_keys(&mut app, "8gg").await?;
+    let drawn = overlays(&app);
+    let rows = text_rows(&app);
+    let context = format!("{drawn:?}\n{}", rows[..13].join("\n"));
+    assert!(
+        drawn.iter().all(|(line, _, _)| (7..=9).contains(line)),
+        "{context}"
+    );
+    assert!(drawn.contains(&(7, 0, "╭".to_string())), "{context}");
+    assert!(drawn.contains(&(9, 7, ">".to_string())), "{context}");
+    assert_eq!(rows[6], "╭───case b:", "{context}");
+    assert_eq!(rows[8], "╰──────>three()", "{context}");
+
+    // in `default:`, its case
+    send_keys(&mut app, "11gg").await?;
+    let drawn = overlays(&app);
+    assert!(drawn.contains(&(10, 0, "╭".to_string())), "{drawn:?}");
+    assert!(
+        drawn.iter().all(|(line, _, _)| (10..=11).contains(line)),
+        "{drawn:?}"
+    );
+
+    // on the `switch` line: the switch
+    send_keys(&mut app, "4gg").await?;
+    let drawn = overlays(&app);
+    assert!(drawn.contains(&(12, 0, "╰".to_string())), "{drawn:?}");
+    assert!(
+        drawn.iter().all(|(line, _, _)| (4..=12).contains(line)),
+        "{drawn:?}"
+    );
     Ok(())
 }

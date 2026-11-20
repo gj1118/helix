@@ -48,10 +48,12 @@
 -- both parts or the one named (`:pile-toggle chunk`, `:pile-disable line_num`).
 
 -- The syntax nodes that make a block: Lua patterns of their types (hlchunk's, and a few more
--- for Rust, Go and others).
+-- for Rust, Go and others). "case" is a case of a switch (Go's expression_case and
+-- default_case, JavaScript's switch_case, C's case_statement, Python's case_clause...): with
+-- the cursor in one, the block is the case, not the whole switch.
 local NODE_TYPES = {
   "class", "^func", "method", "closure", "lambda", "^if", "while", "for", "loop", "with",
-  "try", "except", "catch", "match", "switch", "arguments", "argument_list", "object",
+  "try", "except", "catch", "match", "switch", "case", "arguments", "argument_list", "object",
   "dictionary", "element", "table", "tuple", "array", "do_block", "impl", "trait", "struct",
   "enum", "interface", "mod_item", "module", "namespace",
 }
