@@ -43,8 +43,20 @@ use std::sync::Arc;
 pub struct PluginManager {
     /// The Lua engine
     engine: Arc<RwLock<LuaEngine>>,
-    /// Plugin configuration
-    config: PluginConfig,
+    /// Plugin configuration (`:config-reload` puts a new one in, see
+    /// [`PluginManager::update_config`])
+    config: RwLock<PluginConfig>,
+}
+
+/// What [`PluginManager::update_config`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigUpdate {
+    /// The settings are the same (or plugins are off): the plugins were left as they are.
+    Unchanged,
+    /// The plugins were loaded again, with the new settings.
+    Reloaded,
+    /// Plugins were switched on or off (`enabled`), which takes a restart: nothing changed.
+    NeedsRestart,
 }
 
 impl PluginManager {
@@ -55,22 +67,46 @@ impl PluginManager {
 
         Ok(Self {
             engine: Arc::new(RwLock::new(engine)),
-            config,
+            config: RwLock::new(config),
         })
     }
 
     /// Returns true if the plugin system is enabled
     pub fn is_enabled(&self) -> bool {
-        self.config.enabled
+        self.config.read().enabled
+    }
+
+    /// Puts `config` (the `[plugins]` section read again) in place of the settings the plugins
+    /// run with: when they differ, the plugins are loaded again with it, as
+    /// `:reload-all-plugins` does, so a plugin's new `config`, its permissions and the
+    /// directories take effect. Switching plugins on or off (`enabled`) takes a restart.
+    pub fn update_config(&self, editor: &mut Editor, config: PluginConfig) -> Result<ConfigUpdate> {
+        {
+            let current = self.config.read();
+            if *current == config {
+                return Ok(ConfigUpdate::Unchanged);
+            }
+            if current.enabled != config.enabled {
+                return Ok(ConfigUpdate::NeedsRestart);
+            }
+        }
+        let enabled = config.enabled;
+        *self.config.write() = config;
+        if !enabled {
+            return Ok(ConfigUpdate::Unchanged);
+        }
+        self.reload_plugins(editor)?;
+        Ok(ConfigUpdate::Reloaded)
     }
 
     /// Initialize and load all plugins
     pub fn initialize(&self, editor: &mut Editor) -> Result<()> {
         // Determine plugin directories
-        let plugin_dirs = if self.config.plugin_dirs.is_empty() {
+        let configured_dirs = self.config.read().plugin_dirs.clone();
+        let plugin_dirs = if configured_dirs.is_empty() {
             lua::loader::PluginLoader::default_plugin_dirs()
         } else {
-            self.config.plugin_dirs.clone()
+            configured_dirs
         };
 
         info!("Searching for plugins in: {:?}", plugin_dirs);
@@ -178,7 +214,7 @@ impl PluginManager {
             engine.reset()?;
 
             // Re-register API
-            engine.register_api(self.config.clone())?;
+            engine.register_api(self.config.read().clone())?;
         }
 
         // Re-initialize (discover and load)
@@ -188,7 +224,7 @@ impl PluginManager {
     /// Check if a plugin is enabled in the configuration
     fn is_plugin_enabled(&self, name: &str) -> bool {
         // If there's specific config for this plugin, use that
-        if let Some(plugin_config) = self.config.plugins.iter().find(|p| p.name == name) {
+        if let Some(plugin_config) = self.config.read().plugins.iter().find(|p| p.name == name) {
             return plugin_config.enabled;
         }
 
@@ -229,12 +265,13 @@ impl PluginManager {
     }
 
     /// Get plugin configuration for a specific plugin
-    pub fn get_plugin_config(&self, name: &str) -> Option<&serde_json::Value> {
+    pub fn get_plugin_config(&self, name: &str) -> Option<serde_json::Value> {
         self.config
+            .read()
             .plugins
             .iter()
             .find(|p| p.name == name)
-            .map(|p| &p.config)
+            .map(|p| p.config.clone())
     }
 
     /// Get the Lua engine (for advanced operations)

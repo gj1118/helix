@@ -881,12 +881,24 @@ impl LuaUserData for LuaBuffer {
                 if text.is_empty() {
                     continue;
                 }
+                use helix_view::document::OverlayRows;
+                let rows = match item.raw_get::<Option<String>>("rows")?.as_deref() {
+                    None | Some("first") => OverlayRows::First,
+                    Some("wrapped") => OverlayRows::Wrapped,
+                    Some("all") => OverlayRows::All,
+                    Some(other) => {
+                        return Err(LuaError::RuntimeError(format!(
+                        "An overlay's `rows` is \"first\", \"wrapped\" or \"all\", not \"{other}\""
+                    )))
+                    }
+                };
                 let (scope, style) = super::style::read_style(lua, &item)?;
                 mine.push(helix_view::document::PluginOverlay {
                     plugin: plugin.clone(),
                     line: line - 1,
                     col,
                     text,
+                    rows,
                     scope,
                     style,
                 });
@@ -918,11 +930,18 @@ impl LuaUserData for LuaBuffer {
             })?;
             let list = lua.create_table_with_capacity(overlays.len(), 0)?;
             for overlay in overlays {
-                let item = lua.create_table_with_capacity(0, 4)?;
+                let item = lua.create_table_with_capacity(0, 5)?;
                 item.raw_set("plugin", overlay.plugin)?;
                 item.raw_set("line", overlay.line + 1)?;
                 item.raw_set("col", overlay.col)?;
                 item.raw_set("text", overlay.text)?;
+                use helix_view::document::OverlayRows;
+                let rows = match overlay.rows {
+                    OverlayRows::First => "first",
+                    OverlayRows::Wrapped => "wrapped",
+                    OverlayRows::All => "all",
+                };
+                item.raw_set("rows", rows)?;
                 list.raw_push(item)?;
             }
             Ok(list)

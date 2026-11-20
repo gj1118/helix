@@ -3021,6 +3021,7 @@ fn overlays_and_line_number_styles_belong_to_their_plugin() {
             b:set_line_number_styles({ { line = 2, modifiers = { "bold" } } })
             local overlays = b:get_overlays()
             assert(#overlays == 2 and overlays[1].plugin == "p" and overlays[2].plugin == "q")
+            assert(type(overlays[1].rows) == "string" and overlays[1].rows == "first")
             assert(math.type(overlays[2].line) == "integer" and overlays[2].line == 3)
             local styles = b:get_line_number_styles()
             assert(#styles == 2 and styles[2].start_line == 2 and styles[2].end_line == 2)
@@ -3105,6 +3106,7 @@ fn overlays_and_line_number_styles_belong_to_their_plugin() {
         r#"helix.buffer.get_current():set_overlays({ { col = 1, text = "x" } })"#,
         r#"helix.buffer.get_current():set_overlays({ { line = 0, text = "x" } })"#,
         r#"helix.buffer.get_current():set_overlays({ { line = 1, col = "a", text = "x" } })"#,
+        r#"helix.buffer.get_current():set_overlays({ { line = 1, text = "x", rows = "some" } })"#,
         r#"helix.buffer.get_current():set_line_number_styles({ { fg = "red" } })"#,
         r#"helix.buffer.get_current():set_line_number_styles({ { start_line = 3, end_line = 2 } })"#,
         r#"helix.buffer.get_current():set_line_number_styles({ { line = 1, start_line = 1 } })"#,

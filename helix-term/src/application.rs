@@ -424,18 +424,7 @@ impl Application {
         ])
         .context("build signal handler")?;
 
-        // The `[plugins]` table of the config. The integration tests don't load plugins unless
-        // a test asks for them with its own table: the default directories are the user's own
-        // (`~/.config/helix/plugins`), and every test would run with whatever is there (an
-        // auto-save plugin, say), each one loading them again.
-        let plugin_config = if cfg!(feature = "integration") && config.load().plugins.is_none() {
-            PluginConfig {
-                enabled: false,
-                ..PluginConfig::default()
-            }
-        } else {
-            config.load().plugin_config()
-        };
+        let plugin_config = Self::plugin_settings(&config.load());
         let plugin_manager =
             PluginManager::new(plugin_config).expect("Failed to create plugin manager");
 
@@ -548,6 +537,38 @@ impl Application {
     /// Merges the plugins' key bindings over the configured keys when they changed, or when
     /// the focused buffer's language changed and some are for some languages only: the
     /// keymap reads the keys of the config.
+    /// The `[plugins]` table of `config`. The integration tests don't load plugins unless a
+    /// test asks for them with its own table: the default directories are the user's own
+    /// (`~/.config/helix/plugins`), and every test would run with whatever is there (an
+    /// auto-save plugin, say), each one loading them again.
+    fn plugin_settings(config: &Config) -> PluginConfig {
+        if cfg!(feature = "integration") && config.plugins.is_none() {
+            PluginConfig {
+                enabled: false,
+                ..PluginConfig::default()
+            }
+        } else {
+            config.plugin_config()
+        }
+    }
+
+    /// Puts the `[plugins]` settings of a config read again (`:config-reload`) in place: when
+    /// they changed, the plugins are loaded again with them (a plugin's `config` and
+    /// permissions, the directories), and their key bindings applied.
+    pub fn apply_plugin_settings(
+        &mut self,
+        settings: PluginConfig,
+    ) -> anyhow::Result<helix_plugin::ConfigUpdate> {
+        let update = self
+            .plugin_manager
+            .update_config(&mut self.editor, settings)?;
+        if update == helix_plugin::ConfigUpdate::Reloaded {
+            self.applied_keymaps = None;
+            self.apply_plugin_keymaps();
+        }
+        Ok(update)
+    }
+
     fn apply_plugin_keymaps(&mut self) {
         let keymaps = &self.editor.plugin_keymaps;
         let language = keymaps
@@ -957,6 +978,7 @@ impl Application {
     }
 
     fn refresh_config(&mut self) {
+        let mut plugins = None;
         let mut refresh_config = || -> Result<(), Error> {
             let default_config = Config::load_default()
                 .map_err(|err| anyhow::anyhow!("Failed to load config: {}", err))?;
@@ -994,9 +1016,14 @@ impl Application {
             // The plugins' bindings go over the keys read again.
             self.base_keys = default_config.keys.clone();
             self.applied_keymaps = None;
+            let plugin_settings = Self::plugin_settings(&default_config);
             // Store new config
             self.config.store(Arc::new(default_config));
             self.apply_plugin_keymaps();
+            // Plugins' new settings: they are loaded again with them (what they say while
+            // loading, a missing permission say, is not hidden by "Config refreshed").
+            self.editor.clear_status();
+            plugins = Some(self.apply_plugin_settings(plugin_settings));
             // Re-read the .editorconfig files, applying what changed (once the new config, with
             // its `editor-config`, and the languages, whose indent is the fallback, are in).
             self.refresh_editor_configs();
@@ -1007,13 +1034,23 @@ impl Application {
             Ok(())
         };
 
-        match refresh_config() {
-            Ok(_) => {
-                self.editor.set_status("Config refreshed");
+        let refreshed = refresh_config();
+        use helix_plugin::ConfigUpdate;
+        match (refreshed, plugins) {
+            (Err(err), _) => self.editor.set_error(err.to_string()),
+            (Ok(_), Some(Err(err))) => self
+                .editor
+                .set_error(format!("Config refreshed, plugins not reloaded: {err}")),
+            (Ok(_), Some(Ok(ConfigUpdate::NeedsRestart))) => self
+                .editor
+                .set_warning("Config refreshed; plugins are switched on or off at the next start"),
+            (Ok(_), Some(Ok(ConfigUpdate::Reloaded))) => {
+                if self.editor.get_status().is_none() {
+                    self.editor
+                        .set_status("Config refreshed, plugins reloaded with their settings");
+                }
             }
-            Err(err) => {
-                self.editor.set_error(err.to_string());
-            }
+            (Ok(_), _) => self.editor.set_status("Config refreshed"),
         }
     }
 

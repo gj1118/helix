@@ -236,24 +236,30 @@ impl Decoration for PluginDecoration<'_> {
 }
 
 /// Draws the text plugins set with `buffer:set_overlays` over the blank cells of their
-/// lines, on the first row of each: the indentation, and the cells after the end of the line
-/// (when it ends on that row). The text of a line is never covered.
+/// lines: on the first row of a line, its indentation and the cells after its end (when it
+/// ends on that row); on the rows a soft-wrapped line continues on, the indentation they keep
+/// (none when the line is indented more than `soft-wrap.max-indent-retain`). The text of a
+/// line is never covered.
 pub struct PluginOverlays<'a> {
     overlays: &'a [PluginOverlay],
     text: RopeSlice<'a>,
     theme: &'a Theme,
     tab_width: usize,
+    /// The indentation wrapped rows keep at most (`TextFormat::max_indent_retain`).
+    max_indent_retain: usize,
 }
 
 impl<'a> PluginOverlays<'a> {
-    /// `None` when no plugin draws over the text of `view_id`.
-    pub fn new(doc: &'a Document, theme: &'a Theme, view_id: ViewId) -> Option<Self> {
+    /// `None` when no plugin draws over the text of `view_id`; `width`: the width of the text
+    /// area (for the indentation wrapped rows keep).
+    pub fn new(doc: &'a Document, theme: &'a Theme, view_id: ViewId, width: u16) -> Option<Self> {
         let overlays = doc.plugin_overlays.get(&view_id)?;
         Some(Self {
             overlays,
             text: doc.text().slice(..),
             theme,
             tab_width: doc.tab_width(),
+            max_indent_retain: doc.text_format(width, None).max_indent_retain as usize,
         })
     }
 }
@@ -291,14 +297,12 @@ impl Decoration for PluginOverlays<'_> {
         _virt_off: Position,
     ) -> Position {
         let none = Position::new(0, 0);
-        if !pos.first_visual_line {
-            return none;
-        }
+        let first = pos.first_visual_line;
         let start = self.overlays.partition_point(|o| o.line < pos.doc_line);
         let on_line = &self.overlays[start..];
         let end = on_line.partition_point(|o| o.line == pos.doc_line);
         let on_line = &on_line[..end];
-        if on_line.is_empty() || pos.doc_line >= self.text.len_lines() {
+        if !on_line.iter().any(|o| o.rows.on(first)) || pos.doc_line >= self.text.len_lines() {
             return none;
         }
         // the row on the screen
@@ -314,9 +318,21 @@ impl Decoration for PluginOverlays<'_> {
             .max()
             .unwrap_or(0);
         let (indent, end) = blank_columns(self.text.line(pos.doc_line), self.tab_width, limit);
-        // past its end only where the line ends on this row (not soft-wrapped onto the next)
-        let end = end.filter(|_| pos.is_last_visual_line);
-        for overlay in on_line {
+        let (indent, end) = if first {
+            // past its end only where the line ends on this row (not soft-wrapped onto the
+            // next)
+            (indent, end.filter(|_| pos.is_last_visual_line))
+        } else {
+            // a wrapped row starts with the line's indentation, unless it is deeper than
+            // `max_indent_retain` (then at the first column); its end is not known here
+            let kept = if indent <= self.max_indent_retain {
+                indent
+            } else {
+                0
+            };
+            (kept, None)
+        };
+        for overlay in on_line.iter().filter(|o| o.rows.on(first)) {
             let style = overlay
                 .scope
                 .as_deref()

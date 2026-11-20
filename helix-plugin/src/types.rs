@@ -327,7 +327,7 @@ pub struct Plugin {
 }
 
 /// Plugin configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PluginConfig {
     /// Whether plugins are enabled globally
     #[serde(default = "default_true")]
@@ -355,7 +355,7 @@ impl Default for PluginConfig {
 }
 
 /// Configuration for an individual plugin
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IndividualPluginConfig {
     /// Plugin name
     pub name: String,

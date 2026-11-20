@@ -49,6 +49,15 @@ async fn app(
     config: &str,
     file: &tempfile::NamedTempFile,
 ) -> anyhow::Result<(Application, tempfile::TempDir)> {
+    app_with(config, file, |_| {}).await
+}
+
+/// [`app`], with `change` made to the editor's settings.
+async fn app_with(
+    config: &str,
+    file: &tempfile::NamedTempFile,
+    change: impl FnOnce(&mut Config),
+) -> anyhow::Result<(Application, tempfile::TempDir)> {
     let plugins = tempfile::tempdir()?;
     let source = concat!(env!("CARGO_MANIFEST_DIR"), "/../contrib/plugins/pile");
     let dir = plugins.path().join("pile");
@@ -59,11 +68,8 @@ async fn app(
     let mut app_config = helpers::test_config();
     app_config.editor.notifications.enable = false;
     app_config.editor.true_color = true;
-    app_config.plugins = Some(toml::from_str(&format!(
-        "plugin_dirs = [{:?}]\n[[plugins]]\nname = \"pile\"\n\
-         permissions = [\"commands\", \"keymaps\", \"edit\"]\nconfig = {config}\n",
-        plugins.path()
-    ))?);
+    app_config.plugins = Some(plugins_section(plugins.path(), config)?);
+    change(&mut app_config);
     let mut app = helpers::AppBuilder::new()
         .with_file(file.path(), None)
         .with_config(app_config)
@@ -72,6 +78,24 @@ async fn app(
     app.resize_terminal(80, 24).await;
     send_keys(&mut app, "").await?;
     Ok((app, plugins))
+}
+
+/// The `[plugins]` section loading the plugin from `dir` with `config` (a TOML inline table)
+/// and the permissions it asks for.
+fn plugins_section(dir: &std::path::Path, config: &str) -> anyhow::Result<toml::Value> {
+    Ok(toml::from_str(&format!(
+        "plugin_dirs = [{dir:?}]\n[[plugins]]\nname = \"pile\"\n\
+         permissions = [\"commands\", \"keymaps\", \"edit\"]\nconfig = {config}\n"
+    ))?)
+}
+
+/// The plugin settings of that section, as `:config-reload` reads them.
+fn settings(dir: &std::path::Path, config: &str) -> anyhow::Result<helix_plugin::PluginConfig> {
+    let config = Config {
+        plugins: Some(plugins_section(dir, config)?),
+        ..Default::default()
+    };
+    Ok(config.plugin_config())
 }
 
 /// The plugin's overlays in the focused window: `(line (1-based), col, text)`.
@@ -232,7 +256,9 @@ async fn another_block_waits_for_the_cursor_to_rest() -> anyhow::Result<()> {
         function
             .iter()
             .all(|(_, col, text)| *col == 0 && text == "│")
-            && function.len() == 7,
+            // beside the 7 lines between its first and last, and the rows its first line
+            // would be wrapped onto
+            && function.len() == 8,
         "the function's chunk, drawn at once at the start: {function:?}"
     );
     send_keys(&mut slow, "4gg").await?;
@@ -291,6 +317,16 @@ async fn commands_switch_the_parts() -> anyhow::Result<()> {
     assert_eq!(shown(&app), (false, true));
     send_keys(&mut app, ":pile-enable<ret>").await?;
     assert_eq!(shown(&app), (true, true));
+    send_keys(&mut app, ":pile-toggle line_num<ret>:pile-status<ret>").await?;
+    let status = app
+        .editor
+        .get_status()
+        .map(|(message, _)| message.to_string())
+        .unwrap_or_default();
+    assert_eq!(
+        status,
+        "pile: chunk on, line_num off; the block: lines 3 to 8"
+    );
     Ok(())
 }
 
@@ -385,5 +421,80 @@ async fn a_case_of_a_switch_is_its_own_block() -> anyhow::Result<()> {
         drawn.iter().all(|(line, _, _)| (4..=12).contains(line)),
         "{drawn:?}"
     );
+    Ok(())
+}
+
+/// The line goes down the rows a long line of the block is wrapped onto (soft wrap): no gap.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_chunk_goes_down_wrapped_rows() -> anyhow::Result<()> {
+    let text = format!(
+        "fn main() {{\n    if ready {{\n        run(\"{}\");\n        done();\n    }}\n}}\n",
+        "word ".repeat(16)
+    );
+    let rust = file(&text, ".rs")?;
+    let (mut app, _plugins) = app_with("{ chunk = { delay = 0 } }", &rust, |config| {
+        config.editor.soft_wrap.enable = Some(true)
+    })
+    .await?;
+    app.resize_terminal(50, 20).await;
+    send_keys(&mut app, "3gg").await?;
+    let rows = text_rows(&app);
+    let context = rows[..9].join("\n");
+    assert_eq!(rows[1], "╭───if ready {", "{context}");
+    assert!(rows[2].starts_with("│       run(\"word"), "{context}");
+    // the rows `run(...)` is wrapped onto, then `done();`, all beside the line
+    let wrapped: Vec<&String> = rows[3..]
+        .iter()
+        .take_while(|row| !row.contains("done"))
+        .collect();
+    assert!(!wrapped.is_empty(), "the line is wrapped: {context}");
+    for row in &wrapped {
+        assert!(row.starts_with("│       "), "{row:?}: {context}");
+    }
+    let done = 3 + wrapped.len();
+    assert!(rows[done].starts_with("│       done();"), "{context}");
+    assert_eq!(rows[done + 1], "╰──>}", "{context}");
+    Ok(())
+}
+
+/// `:config-reload` puts new plugin settings in place (`Application::apply_plugin_settings`,
+/// which it calls with the `[plugins]` section read again): the plugins are loaded again with
+/// them. The same settings leave them alone; switching plugins off takes a restart.
+#[tokio::test(flavor = "multi_thread")]
+async fn new_settings_load_the_plugin_again() -> anyhow::Result<()> {
+    use helix_plugin::ConfigUpdate;
+    let rust = file(RUST, ".rs")?;
+    let (mut app, plugins) = app("{ chunk = { delay = 0 } }", &rust).await?;
+    send_keys(&mut app, "4gg").await?;
+    let shown = |app: &Application| -> (bool, bool) {
+        let (view, doc) = helix_view::current_ref!(app.editor);
+        (
+            !overlays(app).is_empty(),
+            doc.plugin_line_numbers.contains_key(&view.id),
+        )
+    };
+    assert_eq!(shown(&app), (true, false));
+
+    // the same settings: nothing to do
+    let same = settings(plugins.path(), "{ chunk = { delay = 0 } }")?;
+    let update: ConfigUpdate = app.apply_plugin_settings(same)?;
+    assert_eq!(update, ConfigUpdate::Unchanged);
+
+    // chunk off, line_num on
+    let new = settings(
+        plugins.path(),
+        "{ chunk = { enable = false }, line_num = { enable = true } }",
+    )?;
+    let update: ConfigUpdate = app.apply_plugin_settings(new)?;
+    assert_eq!(update, ConfigUpdate::Reloaded);
+    send_keys(&mut app, "j").await?;
+    assert_eq!(shown(&app), (false, true));
+
+    // plugins switched off: at the next start
+    let mut off = settings(plugins.path(), "{}")?;
+    off.enabled = false;
+    let update: ConfigUpdate = app.apply_plugin_settings(off)?;
+    assert_eq!(update, ConfigUpdate::NeedsRestart);
+    assert_eq!(shown(&app), (false, true), "still loaded");
     Ok(())
 }

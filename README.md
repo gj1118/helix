@@ -398,7 +398,8 @@ outside the panel keep working as usual.
 
 Plugins are written in Lua 5.4 and live in `~/.config/helix/plugins/<name>/init.lua`. They
 are set up in the `[plugins]` section of the global `config.toml` (a workspace's
-`.helix/config.toml` cannot set it), and changes to that section need a restart:
+`.helix/config.toml` cannot set it); `:config-reload` loads them again with changed settings
+(switching plugins on or off as a whole takes a restart):
 
 ```toml
 [plugins]

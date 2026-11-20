@@ -45,7 +45,9 @@
 --   },
 --
 -- Commands (with the "commands" permission): :pile-enable, :pile-disable, :pile-toggle, for
--- both parts or the one named (`:pile-toggle chunk`, `:pile-disable line_num`).
+-- both parts or the one named (`:pile-toggle chunk`, `:pile-disable line_num`), and
+-- :pile-status, which parts are on and the lines of the block. The parts it starts with are
+-- written to the log (:log-open).
 
 -- The syntax nodes that make a block: Lua patterns of their types (hlchunk's, and a few more
 -- for Rust, Go and others). "case" is a case of a switch (Go's expression_case and
@@ -164,6 +166,15 @@ local function styled(item, style)
 end
 
 local on = { chunk = config.chunk.enable, line_num = config.line_num.enable }
+
+-- What the parts are switched to, and the block of the focused window.
+local function status()
+  local function state(part)
+    return part .. " " .. (on[part] and "on" or "off")
+  end
+  return "pile: " .. state("chunk") .. ", " .. state("line_num")
+end
+helix.log.info(status() .. " (the settings of its [[plugins.plugins]] entry)")
 
 -- What is drawn, to leave it be while it stays the same: per part, a key of the buffer,
 -- window, block and visible lines, and (chunk) the key of the block alone.
@@ -351,21 +362,24 @@ local function chunk_cells(buffer, block, first_shown, last_shown)
   local col = math.max(math.min(first_indent, last_indent) - shift, 0)
 
   local cells = {}
-  local function add(line, at, text)
+  -- `rows`: on which rows of a soft-wrapped line ("first" by default, "wrapped", "all")
+  local function add(line, at, text, rows)
     if line >= first_shown and line <= last_shown then
-      table.insert(cells, { line = line, col = at, text = text })
+      table.insert(cells, { line = line, col = at, text = text, rows = rows })
     end
   end
   for at = first_indent - 1, col, -1 do
     add(block.first, at, at == col and chars.left_top or chars.horizontal_line)
   end
+  -- down the rows the first line is wrapped onto, then beside every row of the lines between
+  add(block.first, col, chars.vertical_line, "wrapped")
   local from = math.max(block.first + 1, first_shown)
   local to = math.min(block.last - 1, last_shown)
   if from <= to then
     for i, text in ipairs(buffer:get_lines(from, to)) do
       local indent, blank = indent_of(text, tab_width)
       if blank or indent > col then
-        add(from + i - 1, col, chars.vertical_line)
+        add(from + i - 1, col, chars.vertical_line, "all")
       end
     end
   end
@@ -386,7 +400,8 @@ local function show(buffer, cells, style, count)
   local list = {}
   for i = 1, count or #cells do
     local cell = cells[i]
-    list[i] = styled({ line = cell.line, col = cell.col, text = cell.text }, style)
+    list[i] = styled({ line = cell.line, col = cell.col, text = cell.text, rows = cell.rows },
+      style)
   end
   buffer:set_overlays(list)
 end
@@ -594,6 +609,20 @@ if helix.has_permission("commands") then
     doc = "Stop drawing the block around the cursor and colouring its line numbers, or the part named",
     args = args,
     handler = function(a) switch(a, false) end,
+  })
+  helix.register_command({
+    name = "pile-status",
+    doc = "Show which parts are on, and the lines of the block around the cursor",
+    handler = function()
+      local message = status()
+      local ok, buffer = pcall(helix.buffer.get_current)
+      if ok then
+        local block = find_block(buffer, config.chunk)
+        message = message .. (block and ("; the block: lines " .. block.first .. " to "
+          .. block.last) or "; no block around the cursor")
+      end
+      helix.ui.notify(message)
+    end,
   })
   helix.register_command({
     name = "pile-toggle",

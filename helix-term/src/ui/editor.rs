@@ -534,7 +534,9 @@ impl EditorView {
 
         decorations.add_decoration(PluginDecoration::new(doc, theme, view.id));
         // after the indentation guides (drawn with each line): over them
-        if let Some(overlays) = text_decorations::PluginOverlays::new(doc, theme, view.id) {
+        if let Some(overlays) =
+            text_decorations::PluginOverlays::new(doc, theme, view.id, inner.width)
+        {
             decorations.add_decoration(overlays);
         }
 

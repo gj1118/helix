@@ -104,8 +104,11 @@ unlike the `[editor]` keys.
   cannot enable plugins or point Helix at other plugin directories: a `[plugins]` section
   there is ignored, with a warning in the log.
 - An invalid `[plugins]` section (`enabled = 3`, say) is a config error, like any other.
-- Plugins are loaded once, at startup. Changes to `[plugins]` take effect after a restart:
-  neither `:config-reload` nor `:reload-all-plugins` reads the section again.
+- `:config-reload` reads the section again: when a plugin's entry (its `config`,
+  `permissions`, `enabled`) or `plugin_dirs` changed, the plugins are loaded again with the
+  new settings, like `:reload-all-plugins` does (their timers, drawings and bindings start
+  over). Switching plugins on or off as a whole (`enabled` of `[plugins]`) takes a restart.
+  `:reload-all-plugins` loads the plugins' code again with the settings in effect.
 
 ## Permissions
 
@@ -431,8 +434,12 @@ Buffer methods (they raise an error once the buffer is closed):
   lines in the focused window: their indentation, and after their end. The text of a line is
   never covered: a cell of an overlay that would cover it is left out. Each overlay is `{ line,
   col, text, ... }`: `line` (1-based), `col` the column of its first cell (0-based, counted
-  like the cursor's, tabs expanded; default 0), `text`, and a [style](#styles). It is drawn on
-  the line's first row (a soft-wrapped line), after the indentation guides (over them).
+  like the cursor's, tabs expanded; default 0), `text`, `rows`, and a [style](#styles).
+  `rows` is which rows of a soft-wrapped line it is drawn on: `"first"` (the default; the
+  only row of a line that is not wrapped), `"wrapped"` (the rows it is wrapped onto) or
+  `"all"`; a wrapped row's blank cells are the indentation it keeps (none when the line is
+  indented more than [`soft-wrap.max-indent-retain`](./editor.md#editorsoft-wrap-section)).
+  It is drawn after the indentation guides (over them).
   Replaces the plugin's overlays of the window; `set_overlays({})` clears them. Scope lines,
   indentation guides of a plugin's own, markers in the margin of the code (`ui`):
 
@@ -452,7 +459,7 @@ Buffer methods (they raise an error once the buffer is closed):
   assert(#buffer:get_overlays() == 0)
   ```
 - `get_overlays()` (focused buffer only): the overlays of all plugins in the focused window,
-  `{ { plugin, line, col, text } }` (`read`); `clear_overlays()`: removes the calling
+  `{ { plugin, line, col, text, rows } }` (`read`); `clear_overlays()`: removes the calling
   plugin's overlays of this buffer in every window (`ui`).
 - `set_line_number_styles(list)` (focused buffer only): styles of the line numbers of lines
   in the focused window, over the theme's (`ui.linenr`, `ui.linenr.selected`): `{ { line,
@@ -1329,13 +1336,16 @@ config = { chunk = { enable = true, delay = 0 }, line_num = { enable = true } }
 | `use_treesitter`, `max_file_size`, `exclude_languages` | As for `chunk` | `true`, `1048576`, `{}` |
 
 `:pile-enable`, `:pile-disable` and `:pile-toggle` switch both parts, or the one named
-(`:pile-toggle chunk`, `:pile-disable line_num`). A setting of the wrong type or an unknown one
-is reported when the plugin loads, and its default used.
+(`:pile-toggle chunk`, `:pile-disable line_num`); `:pile-status` says which parts are on and
+the lines of the block around the cursor. Changed settings take effect with `:config-reload`.
+A setting of the wrong type or an unknown one is reported when the plugin loads, and its
+default used; the parts it starts with are written to the log (`:log-open`).
 
 The block is the smallest node over several lines around the cursor whose type matches
 `node_types` (the code of a Markdown fence is its language's); with the cursor in the
 indentation of a line, around the line's code. The line is drawn in the
 column a level of indentation left of the block's first and last lines, and the lines in
-between that are less indented (the end of a string, say) are left alone. Only the lines in
-view are drawn, again as the view scrolls. It uses `buffer:set_overlays` and
+between that are less indented (the end of a string, say) are left alone. With soft wrap, the
+line goes down the rows a line is wrapped onto too. Only the lines in view are drawn, again as
+the view scrolls. It uses `buffer:set_overlays` and
 `buffer:set_line_number_styles`, which any plugin can use.

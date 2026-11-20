@@ -178,9 +178,34 @@ pub struct PluginOverlay {
     /// The column of its first cell, counted like the cursor's (tabs expanded).
     pub col: usize,
     pub text: String,
+    /// The rows of a soft-wrapped line it is drawn on.
+    pub rows: OverlayRows,
     /// A theme key, under `style`.
     pub scope: Option<String>,
     pub style: crate::graphics::Style,
+}
+
+/// The rows of a soft-wrapped line a [`PluginOverlay`] is drawn on.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum OverlayRows {
+    /// The first row (the only one of a line that is not wrapped).
+    #[default]
+    First,
+    /// The rows the line is wrapped onto, not the first.
+    Wrapped,
+    /// All of them.
+    All,
+}
+
+impl OverlayRows {
+    /// Whether it is drawn on the first row of a line (`first`), or on the others.
+    pub fn on(self, first: bool) -> bool {
+        match self {
+            Self::First => first,
+            Self::Wrapped => !first,
+            Self::All => true,
+        }
+    }
 }
 
 /// A style a plugin gives the line numbers of some lines (`buffer:set_line_number_styles`).

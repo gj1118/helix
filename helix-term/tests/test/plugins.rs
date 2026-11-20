@@ -2063,3 +2063,42 @@ async fn plugins_draw_over_blank_cells_and_colour_line_numbers() -> anyhow::Resu
     assert_ne!(number(3, "4"), Color::Rgb(4, 5, 6));
     Ok(())
 }
+
+/// An overlay's `rows`: the first row of a soft-wrapped line (the default), the rows it is
+/// wrapped onto, or all of them; on a wrapped row, only over the indentation it keeps.
+#[tokio::test(flavor = "multi_thread")]
+async fn overlays_take_the_rows_of_wrapped_lines() -> anyhow::Result<()> {
+    let long = format!("    {}\n", "word ".repeat(20));
+    let file = helpers::temp_file_with_contents(&long)?;
+    let init = r##"
+        helix.on("ready", function()
+            helix.buffer.get_current():set_overlays({
+                { line = 1, col = 0, text = "F" },
+                { line = 1, col = 1, text = "W", rows = "wrapped" },
+                { line = 1, col = 2, text = "A", rows = "all" },
+                -- the indentation is 4 wide: the 5th cell is the text, on every row
+                { line = 1, col = 3, text = "xx", rows = "all" },
+            })
+            local overlays = helix.buffer.get_current():get_overlays()
+            assert(overlays[2].rows == "wrapped" and overlays[1].rows == "first")
+        end)
+    "##;
+    let dir = plugin_dir(&[("rows", init, None)])?;
+    let mut config = plugin_config(dir.path(), "[[plugins]]\nname = \"rows\"\n")?;
+    config.editor.soft_wrap.enable = Some(true);
+    let mut app = helpers::AppBuilder::new()
+        .with_file(file.path(), None)
+        .with_config(config)
+        .build()?;
+    app.resize_terminal(40, 10).await;
+    send_keys(&mut app, "").await?;
+
+    let rows = app.rendered_rows();
+    let context = rows[..5].join("\n");
+    let text = cell_column(&rows[0], "word").expect("the line is shown") as usize - 4;
+    let cells = |row: usize| -> String { rows[row].chars().skip(text).take(5).collect() };
+    assert_eq!(cells(0), "F Axw", "the first row: {context}");
+    assert_eq!(cells(1), " WAxw", "a wrapped row: {context}");
+    assert_eq!(cells(2), " WAxw", "the next one: {context}");
+    Ok(())
+}

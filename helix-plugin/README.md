@@ -70,8 +70,9 @@ config = { greeting = "hi", nested = { level = 2 } }   # helix.get_config() in t
 permissions = ["commands"]                     # beyond "read" and "ui", see Permissions
 ```
 
-Plugins without an entry are loaded. The section is read at startup only: changes need a
-restart (`:reload-all-plugins` reloads the plugins' code, not this section).
+Plugins without an entry are loaded. `:config-reload` reads the section again and loads the
+plugins again when it changed (switching plugins on or off as a whole, `enabled`, takes a
+restart); `:reload-all-plugins` reloads the plugins' code with the settings in effect.
 
 The user documentation is the book's [Plugins](../book/src/plugins.md) chapter.
 
@@ -363,8 +364,12 @@ Buffer methods (they raise an error once the buffer is closed):
   lines in the focused window: their indentation, and after their end. The text of a line is
   never covered: a cell of an overlay that would cover it is left out. Each overlay is `{ line,
   col, text, ... }`: `line` (1-based), `col` the column of its first cell (0-based, counted
-  like the cursor's, tabs expanded; default 0), `text`, and a [style](#styles). It is drawn on
-  the line's first row (a soft-wrapped line), after the indentation guides (over them).
+  like the cursor's, tabs expanded; default 0), `text`, `rows`, and a [style](#styles).
+  `rows` is which rows of a soft-wrapped line it is drawn on: `"first"` (the default; the
+  only row of a line that is not wrapped), `"wrapped"` (the rows it is wrapped onto) or
+  `"all"`; a wrapped row's blank cells are the indentation it keeps (none when the line is
+  indented more than [`soft-wrap.max-indent-retain`](./editor.md#editorsoft-wrap-section)).
+  It is drawn after the indentation guides (over them).
   Replaces the plugin's overlays of the window; `set_overlays({})` clears them. Scope lines,
   indentation guides of a plugin's own, markers in the margin of the code (`ui`):
 
@@ -384,7 +389,7 @@ Buffer methods (they raise an error once the buffer is closed):
   assert(#buffer:get_overlays() == 0)
   ```
 - `get_overlays()` (focused buffer only): the overlays of all plugins in the focused window,
-  `{ { plugin, line, col, text } }` (`read`); `clear_overlays()`: removes the calling
+  `{ { plugin, line, col, text, rows } }` (`read`); `clear_overlays()`: removes the calling
   plugin's overlays of this buffer in every window (`ui`).
 - `set_line_number_styles(list)` (focused buffer only): styles of the line numbers of lines
   in the focused window, over the theme's (`ui.linenr`, `ui.linenr.selected`): `{ { line,
