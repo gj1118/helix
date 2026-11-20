@@ -737,6 +737,52 @@ fn any_open_buffer_can_be_edited_and_read() {
     assert!(texts.contains(&"ALPHA\n>beta\n".to_string()), "{texts:?}");
 }
 
+/// The example of the book, and line endings, tabs after spaces and ranges past the end.
+#[test]
+fn indents_are_widths_and_false_for_blank_lines() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    run(
+        &engine,
+        &mut editor,
+        r#"
+        local buffer = helix.buffer.create("fn main() {\n\tlet a = 1;\n\n    if a {}\n}\n")
+        local indents = buffer:get_indents(1)
+        assert(#indents == 5 and indents[1] == 0 and math.type(indents[1]) == "integer")
+        assert(indents[2] == buffer:get_info().tab_width and indents[3] == false and indents[4] == 4)
+        "#,
+    )
+    .unwrap();
+    let result = result_of(
+        &engine,
+        &mut editor,
+        r#"
+        local b = helix.buffer.create("a\r\n  \r\n  \tb\r\n\t\n")
+        local function show(list)
+            local out = {}
+            for i, width in ipairs(list) do
+                out[i] = math.type(width) or tostring(width)
+                if width then out[i] = out[i] .. ":" .. width end
+            end
+            return table.concat(out, ",")
+        end
+        result = table.concat({
+            show(b:get_indents(1)), show(b:get_indents(2, 3)), show(b:get_indents(4, 9)),
+            show(b:get_indents(7, 9)), tostring(#b:get_indents(3, 2)),
+        }, "|")
+        "#,
+    );
+    // blank lines (only spaces and tabs before their line ending) are `false`; the tab after
+    // two spaces goes on to the tab width (4); like `get_lines`, the empty line after the final
+    // line ending is one only when asked for with `last`
+    assert_eq!(
+        result,
+        "integer:0,false,integer:4,false|false,integer:4|false,false||0"
+    );
+}
+
 #[test]
 fn buffer_info_and_language() {
     let rt = runtime();

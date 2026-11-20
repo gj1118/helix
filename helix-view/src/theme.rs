@@ -527,12 +527,31 @@ impl Theme {
     }
 }
 
+/// The palette of the standard color names, made once: [`parse_style`] and [`parse_color`]
+/// run for every style a plugin sets (a cell of an overlay, a sign...).
+fn standard_palette() -> &'static ThemePalette {
+    static PALETTE: std::sync::LazyLock<ThemePalette> =
+        std::sync::LazyLock::new(ThemePalette::default);
+    &PALETTE
+}
+
 /// A style written like in a theme (`{ fg = "red", bg = "#123456", modifiers = ["bold"],
 /// underline = { style = "curl", color = "red" } }`), with the standard color names.
 pub fn parse_style(value: Value) -> Result<Style, String> {
     let mut style = Style::default();
-    ThemePalette::default().parse_style(&mut style, value)?;
+    standard_palette().parse_style(&mut style, value)?;
     Ok(style)
+}
+
+/// A color written like in a theme: `"#rrggbb"`, a standard name (`"light-blue"`) or a
+/// terminal palette index (`"8"`).
+pub fn parse_color(value: &str) -> Result<Color, String> {
+    let palette = standard_palette();
+    palette
+        .palette
+        .get(value)
+        .copied()
+        .map_or_else(|| ThemePalette::string_to_rgb(value), Ok)
 }
 
 struct ThemePalette {

@@ -9,9 +9,37 @@ use mlua::prelude::*;
 /// (`style`). Read without running metamethods.
 pub(crate) fn read_style(lua: &Lua, table: &LuaTable) -> LuaResult<(Option<String>, Style)> {
     let scope: Option<String> = table.raw_get("style")?;
+    let values: [(&str, LuaValue); 4] = [
+        ("fg", table.raw_get("fg")?),
+        ("bg", table.raw_get("bg")?),
+        ("modifiers", table.raw_get("modifiers")?),
+        ("underline", table.raw_get("underline")?),
+    ];
+    // The usual style, colors only (a cell of an overlay, a sign): read straight, without
+    // going through a theme's table. Plugins set thousands of them.
+    let colors_only = values[2].1.is_nil()
+        && values[3].1.is_nil()
+        && values[..2]
+            .iter()
+            .all(|(_, value)| matches!(value, LuaValue::Nil | LuaValue::String(_)));
+    if colors_only {
+        let color = |value: &LuaValue| -> LuaResult<Option<helix_view::graphics::Color>> {
+            let LuaValue::String(text) = value else {
+                return Ok(None);
+            };
+            helix_view::theme::parse_color(&text.to_str()?)
+                .map(Some)
+                .map_err(|e| LuaError::RuntimeError(format!("Invalid style: {e}")))
+        };
+        let style = Style {
+            fg: color(&values[0].1)?,
+            bg: color(&values[1].1)?,
+            ..Style::default()
+        };
+        return Ok((scope, style));
+    }
     let mut fields = serde_json::Map::new();
-    for key in ["fg", "bg", "modifiers", "underline"] {
-        let value: LuaValue = table.raw_get(key)?;
+    for (key, value) in values {
         if value.is_nil() {
             continue;
         }
@@ -145,6 +173,25 @@ mod tests {
         assert_eq!(fg, "8");
         let none: LuaTable = write_style(&lua, &Style::default()).unwrap();
         assert_eq!(none.pairs::<LuaValue, LuaValue>().count(), 0);
+
+        // colors only (the direct path) read like the rest
+        for code in [
+            "{ fg = 'light-blue' }",
+            "{ fg = '#102030', bg = '8' }",
+            "{ bg = 'default', style = 'comment' }",
+        ] {
+            let colors: LuaTable = lua.load(code).eval().unwrap();
+            let (_, direct): (Option<String>, Style) = read_style(&lua, &colors).unwrap();
+            let with_bold: LuaTable = lua.load(code).eval().unwrap();
+            with_bold.raw_set("modifiers", vec!["bold"]).unwrap();
+            let (_, general): (Option<String>, Style) = read_style(&lua, &with_bold).unwrap();
+            let general = general.remove_modifier(Modifier::BOLD);
+            assert_eq!(direct.fg, general.fg, "{code}");
+            assert_eq!(direct.bg, general.bg, "{code}");
+        }
+        let direct: LuaTable = lua.load("{ fg = 'light-blue' }").eval().unwrap();
+        let (_, light_blue): (Option<String>, Style) = read_style(&lua, &direct).unwrap();
+        assert_eq!(light_blue.fg, Some(Color::LightBlue));
 
         let bad: LuaTable = lua.load("{ fg = 'not-a-color' }").eval().unwrap();
         let error = read_style(&lua, &bad).unwrap_err().to_string();

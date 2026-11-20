@@ -327,6 +327,18 @@ Buffer methods (they raise an error once the buffer is closed):
 - `get_lines(first, last)`: the lines `first` to `last` (1-based, inclusive; `last`
   defaults to the last line, not counting the empty one after a final line ending), without
   line endings; `get_range(start_line, start_col, end_line, end_col)`: the text between.
+- `get_indents(first, last)`: the width of the indentation of the lines `first` to `last`
+  (like `get_lines`) in columns, tabs expanded to the tab width; `false` for a blank line (empty,
+  or only spaces and tabs). Worked out by the editor, much faster than reading the lines and
+  measuring them in Lua: for what reads every line on the screen on each redraw (an indent
+  guide, a block's line).
+
+  ```lua
+  local buffer = helix.buffer.create("fn main() {\n\tlet a = 1;\n\n    if a {}\n}\n")
+  local indents = buffer:get_indents(1)
+  assert(#indents == 5 and indents[1] == 0 and math.type(indents[1]) == "integer")
+  assert(indents[2] == buffer:get_info().tab_width and indents[3] == false and indents[4] == 4)
+  ```
 - `set_signs(list)`: gutter signs of the plugin for this buffer, `{ { line, text, ... } }`
   (`line` 1-based, `text` one cell wide, and a [style](#styles)); drawn in the diagnostics
   column (the `diagnostics` gutter) on lines without a diagnostic. Replaces the plugin's
@@ -920,8 +932,9 @@ diagnostics of the cursor line in a panel, like tiny-inline-diagnostic.nvim (and
 `other_lines`, those of the other lines in view after their end), `hlslens`,
 search lenses like nvim-hlslens (`[3/12]` at the end of the lines of the matches),
 `plaintasks`, task lists like Sublime Text's PlainTasks, and `pile`, the chunk and line_num
-parts of hlchunk.nvim (the block around the cursor drawn with `buffer:set_overlays`, its line
-numbers coloured with `buffer:set_line_number_styles`). The book's Plugins chapter has their
+parts of hlchunk.nvim (the block around the cursor drawn with `buffer:set_overlays` from the
+indentation `buffer:get_indents` gives, its line numbers coloured with
+`buffer:set_line_number_styles`). The book's Plugins chapter has their
 settings.
 
 ## Development

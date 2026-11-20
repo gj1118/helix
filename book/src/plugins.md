@@ -371,6 +371,18 @@ Buffer methods (they raise an error once the buffer is closed):
 - `get_lines(first, last)`: the lines `first` to `last` (1-based, inclusive; `last`
   defaults to the last line, not counting the empty one after a final line ending), without
   line endings; `get_range(start_line, start_col, end_line, end_col)`: the text between.
+- `get_indents(first, last)`: the width of the indentation of the lines `first` to `last`
+  (like `get_lines`) in columns, tabs expanded to the tab width; `false` for a blank line (empty,
+  or only spaces and tabs). Worked out by the editor, much faster than reading the lines and
+  measuring them in Lua: for what reads every line on the screen on each redraw (an indent
+  guide, a block's line).
+
+  ```lua
+  local buffer = helix.buffer.create("fn main() {\n\tlet a = 1;\n\n    if a {}\n}\n")
+  local indents = buffer:get_indents(1)
+  assert(#indents == 5 and indents[1] == 0 and math.type(indents[1]) == "integer")
+  assert(indents[2] == buffer:get_info().tab_width and indents[3] == false and indents[4] == 4)
+  ```
 - `set_diagnostics(list)`: diagnostics of the plugin for this buffer, shown like a language
   server's: underlined in the text, in the gutter, as inline diagnostics, in the diagnostics
   pickers (`Space d`, `Space D`) and the status line's counts, and stepped through with `]d`.
@@ -1335,9 +1347,9 @@ config = { chunk = { enable = true, delay = 0 }, line_num = { enable = true } }
 | `enable` | Draw the block | `true` |
 | `style`, `error_style` | The line's [style](#styles) (a table, a colour `"#806d9c"` or a theme key), and its style when the block has a syntax error. A table can also have `line_color` (or `lineColor`; over `fg`) and `thickness` (below). A style without a colour or a theme key (`{ thickness = 3 }`) keeps the theme's colour or hlchunk's. `style` can also be hlchunk's list of the two | the theme's `pile.chunk` and `pile.chunk.error` when it sets them, else `{ fg = "#806d9c" }` and `{ fg = "#c21f30" }` |
 | `error_sign` | Use `error_style` for a block with a syntax error | `true` |
-| `use_treesitter` | Find the block in the syntax tree; `false` (or a buffer without one): between the braces `{`, `}` around the cursor | `true` |
+| `use_treesitter` | Find the block in the syntax tree; `false` (or a buffer without one): between the braces `{`, `}` around the cursor, up to 2 000 lines each way | `true` |
 | `chars` | `horizontal_line`, `vertical_line`, `left_top`, `left_bottom`, `right_arrow`, over those of the line's thickness | those of thickness 1: `"─"`, `"│"`, `"╭"`, `"╰"`, `">"` |
-| `delay` | Milliseconds the cursor rests before another block is drawn, animated; `0`: at once, not animated. An edit draws at once | `300` |
+| `delay` | Milliseconds the cursor rests before another block is drawn, animated: one it moved to with a key, a click, or a scroll taking it along (`C-d`); `0`: at once, not animated. An edit, or another window or buffer, draws at once | `300` |
 | `duration` | Milliseconds the animation takes (from the first line's code to the corner, down, to the arrow); `0`: not animated | `200` |
 | `gradient` | The line in the colours of [`[editor.gradient-borders]`](./editor.md) (`start-color`, `middle-color`, `end-color`), from the first line's code (the start colour), down, to the arrow (the end colour), over `style`'s colour; a block with a syntax error keeps `error_style`. The colours follow `:set` and `:config-reload` | `false` |
 | `max_file_size` | Buffers larger than this (in characters) are left alone | `1048576` |
@@ -1383,6 +1395,10 @@ The block is the smallest node over several lines around the cursor whose type m
 indentation of a line, around the line's code. The line is drawn in the
 column a level of indentation left of the block's first and last lines, and the lines in
 between that are less indented (the end of a string, say) are left alone. With soft wrap, the
-line goes down the rows a line is wrapped onto too. Only the lines in view are drawn, again as
-the view scrolls. It uses `buffer:set_overlays` and
-`buffer:set_line_number_styles`, which any plugin can use.
+line goes down the rows a line is wrapped onto too. Only the lines in view, and a screen
+around them, are drawn; it is drawn again only when what it covers changes: the cursor's
+block, the view past those lines, the indentation or the line breaks of the text (typing in a
+line changes nothing drawn, and costs next to nothing). The braces are read a batch of lines
+at a time and searched by Lua's patterns, so a long file without a syntax tree is quick too.
+It uses `buffer:set_overlays`, `buffer:set_line_number_styles` and `buffer:get_indents`, which
+any plugin can use.

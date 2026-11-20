@@ -743,3 +743,131 @@ async fn the_line_has_a_colour_and_a_thickness() -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+/// The status line's message.
+fn status(app: &Application) -> String {
+    app.editor
+        .get_status()
+        .map(|(message, _)| message.to_string())
+        .unwrap_or_default()
+}
+
+/// The braces of a block are found however far apart (the text is read in batches growing
+/// from 64 lines to 512), past nested blocks, with wide characters before them, `\r\n` line
+/// endings, and the cursor on a brace.
+#[tokio::test(flavor = "multi_thread")]
+async fn braces_are_found_however_far_apart() -> anyhow::Result<()> {
+    let mut lines = vec!["a {".to_string(), "  é ü { inner".to_string()];
+    lines.extend(std::iter::repeat_n("    x".to_string(), 700));
+    // the inner block closes on line 703, where another opens
+    lines.extend(["  } { same line", "    y", "  }", "}", "after"].map(String::from));
+    let text = lines.join("\r\n") + "\r\n";
+    let plain = file(&text, ".txt")?;
+    let (mut app, _plugins) = app("{ chunk = { delay = 0 } }", &plain).await?;
+    for (keys, block) in [
+        ("400gg", "lines 2 to 703"),
+        ("704gg", "lines 703 to 705"),
+        // on the closing brace of the outer block, the inner ones skipped going back
+        ("706gg", "lines 1 to 706"),
+        // on the brace opening the inner block: its block
+        ("2ggf{", "lines 2 to 703"),
+        ("1gggl", "lines 1 to 706"),
+    ] {
+        send_keys(&mut app, &format!("{keys}:pile-status<ret>")).await?;
+        assert_eq!(
+            status(&app),
+            format!("pile: chunk on, line_num off; the block: {block}"),
+            "{keys}"
+        );
+    }
+    send_keys(&mut app, "707gg:pile-status<ret>").await?;
+    assert_eq!(
+        status(&app),
+        "pile: chunk on, line_num off; no block around the cursor"
+    );
+    assert!(overlays(&app).is_empty());
+    Ok(())
+}
+
+/// Edits keep the chunk right: typing after a line's indentation changes none of its cells,
+/// typing in the indentation or on a blank line may, and a change of whole lines (replacing
+/// them with the same text) moves what is drawn on them, which is drawn again.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_chunk_stays_right_through_edits() -> anyhow::Result<()> {
+    let rust = file(RUST, ".rs")?;
+    let (mut app, _plugins) = app("{ chunk = { delay = 0 } }", &rust).await?;
+    send_keys(&mut app, "4gg").await?;
+    let drawn = overlays(&app);
+    assert!(drawn.contains(&(5, 4, "│".to_string())), "{drawn:?}");
+
+    send_keys(&mut app, "Aabc<esc>").await?;
+    assert_eq!(overlays(&app), drawn, "typed after the indentation");
+    send_keys(&mut app, "ghi  <esc>").await?;
+    let indented = overlays(&app);
+    assert_eq!(
+        indented, drawn,
+        "line 4 indented more: still beside the line"
+    );
+
+    // lines 4 and 5 replaced by themselves in one change: the overlays on them moved
+    send_keys(&mut app, "4ggxxyR").await?;
+    let (_, doc) = helix_view::current_ref!(app.editor);
+    assert!(
+        doc.text().to_string().contains("item.run();abc\n\n"),
+        "the same text"
+    );
+    assert_eq!(overlays(&app), drawn, "drawn again where they were");
+
+    // the blank line 5 typed on (not indented): no line beside it any more
+    send_keys(&mut app, "5ggiz<esc>").await?;
+    let typed = overlays(&app);
+    assert!(!typed.iter().any(|(line, ..)| *line == 5), "{typed:?}");
+    assert!(typed.contains(&(6, 4, "│".to_string())), "{typed:?}");
+    Ok(())
+}
+
+/// In another window (a split) the chunk is drawn at once, even with a long delay; the same
+/// cells as in the first window are sent to the new one.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_new_window_draws_its_chunk_at_once() -> anyhow::Result<()> {
+    let rust = file(RUST, ".rs")?;
+    let (mut app, _plugins) = app("{ chunk = { delay = 60000 } }", &rust).await?;
+    let first = overlays(&app);
+    assert!(!first.is_empty(), "drawn at the start");
+    let first_view = app.editor.tree.focus;
+    send_keys(&mut app, ":vsplit<ret>").await?;
+    assert_ne!(app.editor.tree.focus, first_view);
+    assert_eq!(overlays(&app), first, "the new window's");
+    Ok(())
+}
+
+/// A scroll taking the cursor into another block (`C-d`) is a move: the new block waits for
+/// the cursor to rest. An edit then draws it at once.
+#[tokio::test(flavor = "multi_thread")]
+async fn scrolling_into_another_block_waits_like_a_move() -> anyhow::Result<()> {
+    let body = "    let x = 1;\n".repeat(30);
+    let text = format!("fn a() {{\n{body}}}\nfn b() {{\n{body}}}\n");
+    let rust = file(&text, ".rs")?;
+    let (mut app, _plugins) = app("{ chunk = { delay = 60000 } }", &rust).await?;
+    let a = overlays(&app);
+    assert!(
+        a.contains(&(2, 0, "│".to_string())),
+        "a's, at the start: {a:?}"
+    );
+    send_keys(&mut app, "<C-d><C-d><C-d><C-d>").await?;
+    let (view, doc) = helix_view::current_ref!(app.editor);
+    let line = doc.text().char_to_line(
+        doc.selection(view.id)
+            .primary()
+            .cursor(doc.text().slice(..)),
+    );
+    assert!(line + 1 > 33, "in b: line {}", line + 1);
+    assert_eq!(overlays(&app), a, "still a's");
+    send_keys(&mut app, "o<esc>").await?;
+    let b = overlays(&app);
+    assert!(
+        b.contains(&(40, 0, "│".to_string())) && !b.contains(&(2, 0, "│".to_string())),
+        "{b:?}"
+    );
+    Ok(())
+}

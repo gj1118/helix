@@ -112,6 +112,24 @@ fn change(
 /// Clamp a 1-based line and 0-based column to a char offset inside `text`. A column past
 /// the end of the line is the end of that line (before its line ending), not a position
 /// on the next line.
+/// The width of the indentation of `line` in columns (tabs expanded to `tab_width`), or
+/// `None` when it is blank: empty, or only spaces and tabs.
+fn indent_width(line: helix_core::RopeSlice, tab_width: usize) -> Option<usize> {
+    let mut col = 0;
+    for c in line.chars() {
+        match c {
+            ' ' => col += 1,
+            '\t' => col += tab_width - col % tab_width,
+            // (`\r` of a `\r\n`, a line ending of its own only with `unicode-lines`)
+            c if c == '\r' || helix_core::line_ending::LineEnding::from_char(c).is_some() => {
+                return None
+            }
+            _ => return Some(col),
+        }
+    }
+    None
+}
+
 fn line_col_to_char(text: &helix_core::Rope, line: usize, col: usize) -> usize {
     let text = text.slice(..);
     let row = (line.saturating_sub(1)).min(text.len_lines().saturating_sub(1));
@@ -463,6 +481,38 @@ impl LuaUserData for LuaBuffer {
                         .collect())
                 })?;
                 lua.create_sequence_from(lines)
+            },
+        );
+
+        // The width of the indentation of the lines `first..=last` (1-based, inclusive, clamped,
+        // like `get_lines`) in columns, tabs expanded to the buffer's tab width; `false` for a
+        // blank line (empty, or only spaces and tabs). Worked out in Rust: an indent guide or a
+        // chunk reads every line on the screen on each redraw.
+        methods.add_method(
+            "get_indents",
+            |lua, this, (first, last): (usize, Option<usize>)| {
+                require(lua, Permission::Read, "buffer:get_indents")?;
+                let widths: Vec<Option<usize>> = with_doc(this.document_id, |doc| {
+                    let text = doc.text().slice(..);
+                    let tab_width = doc.tab_width().max(1);
+                    let count = text.len_lines();
+                    let ends_with_newline = count > 1 && text.line(count - 1).len_chars() == 0;
+                    let default_last = if ends_with_newline { count - 1 } else { count };
+                    let first = first.max(1);
+                    let last = last.unwrap_or(default_last).min(count);
+                    Ok((first..=last)
+                        .map(|line| indent_width(text.line(line - 1), tab_width))
+                        .collect())
+                })?;
+                let list = lua.create_table_with_capacity(widths.len(), 0)?;
+                for (i, width) in widths.into_iter().enumerate() {
+                    let value = match width {
+                        Some(width) => LuaValue::Integer(width as i64),
+                        None => LuaValue::Boolean(false),
+                    };
+                    list.raw_set(i + 1, value)?;
+                }
+                Ok(list)
             },
         );
 

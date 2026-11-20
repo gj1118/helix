@@ -40,8 +40,10 @@
 --                                        --   tree): between the braces around the cursor
 --     chars = { horizontal_line = "─", vertical_line = "│", left_top = "╭",
 --               left_bottom = "╰", right_arrow = ">" },   -- those of thickness 1
---     delay = 300,                       -- ms the cursor rests before another block is drawn,
---                                        --   with an animation; 0: at once, not animated
+--     delay = 300,                       -- ms the cursor rests before another block is drawn
+--                                        --   (moved to by a key, a click or a scroll), with an
+--                                        --   animation; 0: at once, not animated (in another
+--                                        --   window or buffer, or after an edit: at once)
 --     duration = 200,                    -- ms the animation takes; 0: not animated
 --     gradient = false,                  -- the line in the colours of [editor.gradient-borders]
 --                                        --   (start-color, middle-color, end-color): from the
@@ -350,9 +352,20 @@ local function status()
 end
 helix.log.info(status() .. " (the settings of its [[plugins.plugins]] entry)")
 
--- What is drawn, to leave it be while it stays the same: per part, a key of the buffer,
--- window, block and visible lines, and (chunk) the key of the block alone.
-local drawn = { chunk = nil, chunk_block = nil, line_num = nil }
+-- What is drawn, to leave it be while it stays the same (most keys change nothing: the
+-- cursor stays in the block, the view stays within the lines drawn, an edit leaves the cells
+-- as they were).
+local drawn = {
+  block = nil,     -- the chunk's block: the key of its buffer, window, lines and error
+  from = nil,      -- the lines drawn, around the lines shown
+  to = nil,
+  cells = nil,     -- what the cells sent were (their signature)
+  stale = true,    -- after an edit, a theme or settings change: worked out again
+  cleared = nil,   -- the buffer and window the chunk was cleared in, nothing drawn since
+  here = nil,      -- the buffer and window of the chunk drawn or cleared last
+  line_num = nil,  -- the key of the line numbers' block
+  numbers_cleared = nil,
+}
 local animation = nil -- the animation's timer
 local waiting = nil   -- the timer of a block waiting for the cursor to rest
 
@@ -392,66 +405,92 @@ local function block_by_syntax(buffer, cursor)
   return nil
 end
 
--- Lines looked at each way for the braces around the cursor.
+-- Lines looked at each way for the braces around the cursor, and read at a time: few at
+-- first (most blocks are short), twice as many each time after, up to `BATCH_MAX`.
 local SCAN = 2000
+local BATCH = 64
+local BATCH_MAX = 512
+
+-- In `text` from byte `init`: the first `stop` brace not inside a block of `go` and `stop`
+-- braces, which Lua's `%b` skips (the scan is in C, not char by char in Lua); or nil and
+-- the byte to go on from once more text is read (a block going on past `text`, or its end).
+local function unmatched(text, init, go, stop)
+  local block = "^%b" .. go .. stop
+  while true do
+    local pos = text:find("[{}]", init)
+    if not pos then
+      return nil, #text + 1
+    end
+    if text:sub(pos, pos) == stop then
+      return pos
+    end
+    local _, last = text:find(block, pos)
+    if not last then
+      return nil, pos
+    end
+    init = last + 1
+  end
+end
+
+-- The line (1-based) of the brace closing the block (`step` 1) or opening it (`step` -1),
+-- going from char `col` of `line`: or nil within `SCAN` lines. Backwards, the text read is
+-- reversed, its `}` opening the blocks skipped.
+local function brace_line(buffer, line, col, step)
+  local back = step < 0
+  local limit = back and math.max(1, line - SCAN) or math.min(buffer:line_count(), line + SCAN)
+  local whole = math.maxinteger -- (a column: to the line's end)
+  -- the text read, in order, and each part's text, first char and offset in it
+  local read, parts = "", {}
+  local init, next_line, size = 1, line, BATCH
+  while (back and next_line >= limit) or (not back and next_line <= limit) do
+    local far = back and math.max(limit, next_line - size + 1)
+      or math.min(limit, next_line + size - 1)
+    local text, start
+    if next_line == line and back then
+      text, start = buffer:get_range(far, 0, line, col), buffer:line_to_char(far - 1)
+    elseif next_line == line then
+      text, start = buffer:get_range(line, col, far, whole), buffer:line_to_char(line - 1) + col
+    else
+      local first = math.min(next_line, far)
+      text, start = buffer:get_range(first, 0, math.max(next_line, far), whole),
+        buffer:line_to_char(first - 1)
+    end
+    -- (lines are joined by "\n": their own line endings matter for no brace)
+    local offset = #read > 0 and #read + 1 or 0
+    parts[#parts + 1] = { text = text, start = start, offset = offset }
+    read = (#read > 0 and read .. "\n" or "") .. (back and text:reverse() or text)
+    local pos
+    pos, init = unmatched(read, init, back and "}" or "{", back and "{" or "}")
+    if pos then
+      for i = #parts, 1, -1 do
+        local part = parts[i]
+        if pos > part.offset then
+          local byte = pos - part.offset
+          if back then
+            byte = #part.text - byte + 1
+          end
+          return buffer:char_to_line(part.start + utf8.len(part.text, 1, byte) - 1) + 1
+        end
+      end
+    end
+    next_line, size = far + step, math.min(size * 2, BATCH_MAX)
+  end
+  return nil
+end
 
 -- The block between the braces around char `cursor`: { first, last } or nil.
 local function block_by_braces(buffer, cursor)
   local line = buffer:char_to_line(cursor) + 1
-  local count = buffer:line_count()
-  local from = math.max(1, line - SCAN)
-  local to = math.min(count, line + SCAN)
-  local lines = buffer:get_lines(from, to)
-  local here = lines[line - from + 1] or ""
   local col = cursor - buffer:line_to_char(line - 1)
-  local byte = utf8.offset(here, col + 1) or (#here + 1)
-  -- backwards from before the cursor (from the cursor when it is on a `{`)
-  local open
-  local depth = 0
-  local start = here:sub(byte, byte) == "{" and byte or byte - 1
-  for i = line, from, -1 do
-    local text = lines[i - from + 1]
-    for b = (i == line) and start or #text, 1, -1 do
-      local c = text:sub(b, b)
-      if c == "}" then
-        depth = depth + 1
-      elseif c == "{" then
-        if depth == 0 then
-          open = i
-          break
-        end
-        depth = depth - 1
-      end
-    end
-    if open then
-      break
-    end
+  -- from the cursor, after it when it is on a `{`
+  if buffer:get_range(line, col, line, col + 1) == "{" then
+    col = col + 1
   end
+  local open = brace_line(buffer, line, col, -1)
   if not open then
     return nil
   end
-  -- forwards from after it (from the cursor when it is not on a `{`)
-  local close
-  depth = 0
-  start = here:sub(byte, byte) == "{" and byte + 1 or byte
-  for i = line, to do
-    local text = lines[i - from + 1]
-    for b = (i == line) and start or 1, #text do
-      local c = text:sub(b, b)
-      if c == "{" then
-        depth = depth + 1
-      elseif c == "}" then
-        if depth == 0 then
-          close = i
-          break
-        end
-        depth = depth - 1
-      end
-    end
-    if close then
-      break
-    end
-  end
+  local close = brace_line(buffer, line, col, 1)
   if not close or close == open then
     return nil
   end
@@ -469,6 +508,9 @@ local function applies(buffer, part)
   return buffer:len() <= part.max_file_size
 end
 
+-- The widest indentation the cursor is taken out of (to the line's code).
+local INDENT_MAX = 256
+
 -- The blocks found while handling an event (both parts look for it), by how.
 local found = nil
 
@@ -481,13 +523,15 @@ local function find_block(buffer, part)
     return found[how] or nil
   end
   local cursor = buffer:get_cursor()
-  -- in the indentation of a line, the block is that of the line's code
-  local line = buffer:char_to_line(cursor)
-  local start = buffer:line_to_char(line)
-  local text = buffer:get_line(line + 1):gsub("\r?\n$", "")
-  local indent = #text:match("^[ \t]*")
-  if cursor - start < indent and indent < #text then
-    cursor = start + indent
+  -- in the indentation of a line, the block is that of the line's code (read near the
+  -- cursor only: a line may be a whole minified file)
+  local line = buffer:char_to_line(cursor) + 1
+  local col = cursor - buffer:line_to_char(line - 1)
+  if col <= INDENT_MAX and not buffer:get_range(line, 0, line, col):find("[^ \t]") then
+    local code = buffer:get_range(line, col, line, col + INDENT_MAX):find("[^ \t]")
+    if code then
+      cursor = cursor + code - 1
+    end
   end
   local block
   if how == "syntax" then
@@ -503,36 +547,17 @@ end
 
 -- Drawing the chunk ---------------------------------------------------------------------
 
--- The width of the indentation of `text`, and whether the line is blank.
-local function indent_of(text, tab_width)
-  local col = 0
-  for i = 1, #text do
-    local c = text:byte(i)
-    if c == 32 then
-      col = col + 1
-    elseif c == 9 then
-      col = col + tab_width - col % tab_width
-    else
-      return col, false
-    end
-  end
-  return col, true
-end
-
-local function without_ending(text)
-  return (text:gsub("\r?\n$", ""))
-end
-
 -- The cells of the chunk of `block` on lines `first_shown` to `last_shown`, in the order
 -- the animation draws them: from the first line's code leftwards to the corner, down, then
--- right to the arrow before the last line's code. Each has its place along the whole line,
--- `at` from 0 to `length` - 1 (the second value), shown or not, for the gradient.
+-- right to the arrow before the last line's code. Each has its `place` along the whole line,
+-- 0 to `length` - 1 (the second value), shown or not, for the gradient.
 local function chunk_cells(buffer, block, first_shown, last_shown, chars)
   local info = buffer:get_info()
   local tab_width = math.max(info.tab_width, 1)
   local shift = info.indent_style == "tabs" and tab_width or math.max(info.indent_width, 1)
-  local first_indent = indent_of(without_ending(buffer:get_line(block.first)), tab_width)
-  local last_indent = indent_of(without_ending(buffer:get_line(block.last)), tab_width)
+  -- (the indentation of each line, worked out by the editor; `false` for a blank one)
+  local first_indent = buffer:get_indents(block.first, block.first)[1] or 0
+  local last_indent = buffer:get_indents(block.last, block.last)[1] or 0
   local col = math.max(math.min(first_indent, last_indent) - shift, 0)
 
   -- the lengths of the three parts of the line: along the first line, down, along the last
@@ -556,10 +581,9 @@ local function chunk_cells(buffer, block, first_shown, last_shown, chars)
   local from = math.max(block.first + 1, first_shown)
   local to = math.min(block.last - 1, last_shown)
   if from <= to then
-    for i, text in ipairs(buffer:get_lines(from, to)) do
-      local indent, blank = indent_of(text, tab_width)
+    for i, indent in ipairs(buffer:get_indents(from, to)) do
       local line = from + i - 1
-      if blank or indent > col then
+      if not indent or indent > col then
         add(line, col, top + line - block.first - 1, chars.vertical_line, "all")
       end
     end
@@ -577,8 +601,15 @@ local function chunk_cells(buffer, block, first_shown, last_shown, chars)
 end
 
 -- The gradient's colours: those of `[editor.gradient-borders]` (its defaults without them), as
+-- The gradient's stops and the colours of the places along a line of the length worked out
+-- last (most redraws are of the same block): worked out again when the settings change.
+local gradient = { stops = nil, length = nil, colours = {} }
+
 -- { r, g, b } stops: start, the middle one when set, end.
 local function gradient_stops()
+  if gradient.stops then
+    return gradient.stops
+  end
   local settings = helix.editor.get_option("gradient-borders") or {}
   local function rgb(hex, default)
     hex = type(hex) == "string" and hex:match("^#(%x%x%x%x%x%x)$") or default
@@ -593,6 +624,7 @@ local function gradient_stops()
     table.insert(stops, rgb(settings["middle-color"]))
   end
   table.insert(stops, rgb(settings["end-color"], "00BFFF"))
+  gradient.stops = stops
   return stops
 end
 
@@ -616,24 +648,43 @@ end
 -- Gives each cell its colour of the gradient, by its place along the line.
 local function colour_cells(cells, length)
   local stops = gradient_stops()
+  if gradient.length ~= length then
+    gradient.length, gradient.colours = length, {}
+  end
+  local colours = gradient.colours
   for _, cell in ipairs(cells) do
-    cell.fg = mix(stops, length > 1 and cell.place / (length - 1) or 0)
+    local colour = colours[cell.place]
+    if not colour then
+      colour = mix(stops, length > 1 and cell.place / (length - 1) or 0)
+      colours[cell.place] = colour
+    end
+    cell.fg = colour
   end
 end
 
--- Shows the first `count` cells (all of them without a count).
-local function show(buffer, cells, style, count)
+-- The overlays of `cells` in `style`.
+local function overlays_of(cells, style)
+  local keys, values = {}, {}
+  for key, value in pairs(style) do
+    keys[#keys + 1], values[#values + 1] = key, value
+  end
   local list = {}
-  for i = 1, count or #cells do
-    local cell = cells[i]
-    list[i] = styled({ line = cell.line, col = cell.col, text = cell.text, rows = cell.rows },
-      style)
+  for i, cell in ipairs(cells) do
+    local item = { line = cell.line, col = cell.col, text = cell.text, rows = cell.rows }
+    for k = 1, #keys do
+      item[keys[k]] = values[k]
+    end
     -- its colour of the gradient, over the style's
     if cell.fg then
-      list[i].fg = cell.fg
+      item.fg = cell.fg
     end
+    list[i] = item
   end
-  buffer:set_overlays(list)
+  return list
+end
+
+local function show(buffer, cells, style)
+  buffer:set_overlays(overlays_of(cells, style))
 end
 
 -- Draws the cells one after the other over `duration` ms (by the clock: firings of the
@@ -641,12 +692,16 @@ end
 local function animate(buffer, cells, style)
   animation = cancel(animation)
   local started = helix.now()
+  local all, shown = overlays_of(cells, style), {}
   buffer:set_overlays({})
   animation = helix.every(16, function()
     local share = math.min(1, (helix.now() - started) / config.chunk.duration)
-    local count = math.max(1, math.ceil(#cells * share))
+    local count = math.max(1, math.ceil(#all * share))
+    for i = #shown + 1, count do
+      shown[i] = all[i]
+    end
     -- the buffer may no longer be focused: the animation ends
-    if not pcall(show, buffer, cells, style, count) or count >= #cells then
+    if not pcall(buffer.set_overlays, buffer, shown) or count >= #all then
       animation = cancel(animation)
     end
   end)
@@ -657,53 +712,82 @@ end
 local function shown_lines(window)
   local top = window:get_top_line() + 1
   local height = window:get_area().height
-  return math.max(1, top - height), top + 2 * height + 20
+  return math.max(1, top - height), top + 2 * height + 20, top, top + height
 end
 
-local function clear_chunk(buffer)
+-- The buffer and window, for the keys of what is drawn.
+local function place(buffer, window)
+  return buffer:id() .. ":" .. window:id()
+end
+
+-- No chunk in `window` (once: not again while nothing is drawn there).
+local function clear_chunk(buffer, window)
   animation = cancel(animation)
   waiting = cancel(waiting)
-  pcall(buffer.set_overlays, buffer, {})
-  drawn.chunk, drawn.chunk_block = nil, nil
+  local here = place(buffer, window)
+  if drawn.cleared ~= here then
+    pcall(buffer.set_overlays, buffer, {})
+    drawn.cleared = here
+  end
+  drawn.block, drawn.cells, drawn.here = nil, nil, here
 end
 
--- `moved`: the cursor moved (another block waits for it to rest and is animated); else the
--- text changed or the view did: drawn at once.
-local function update_chunk(buffer, window, moved)
+-- What the cells sent to a window are, to tell whether they changed.
+local function signature(here, cells, faulty)
+  local parts, n = { here, tostring(faulty) }, 2
+  for _, cell in ipairs(cells) do
+    parts[n + 1], parts[n + 2], parts[n + 3] = cell.line, cell.col, cell.text
+    parts[n + 4], parts[n + 5] = cell.rows or "", cell.fg or ""
+    n = n + 5
+  end
+  return table.concat(parts, ",")
+end
+
+-- `how`: "edit" (the text changed: drawn at once), else "move" or "view". Another block of
+-- the same window and buffer is the cursor's having moved (with a key, a click, or a scroll
+-- taking it along): it waits for the cursor to rest, and is animated. In another window or
+-- buffer, or at the start, the block is drawn at once.
+local function update_chunk(buffer, window, how)
   if not on.chunk then
     return
   end
   local block = find_block(buffer, config.chunk)
   if not block then
-    clear_chunk(buffer)
+    clear_chunk(buffer, window)
     return
   end
   local faulty = block.error and config.chunk.error_sign
-  local first_shown, last_shown = shown_lines(window)
-  local block_key = table.concat({ buffer:id(), window:id(), block.first, block.last,
+  local first_shown, last_shown, top, bottom = shown_lines(window)
+  local block_key = table.concat({ place(buffer, window), block.first, block.last,
     tostring(faulty) }, ":")
-  local key = block_key .. ":" .. first_shown
-  if key == drawn.chunk then
-    -- back on the block drawn: a block waiting to be drawn is not
+  if block_key == drawn.block and not drawn.stale and top >= drawn.from and bottom <= drawn.to then
+    -- the block drawn, and the view within the lines drawn: nothing to do (a block waiting
+    -- to be drawn is not, the cursor came back)
     waiting = cancel(waiting)
     return
   end
-  local animated = moved and block_key ~= drawn.chunk_block
+  local here = place(buffer, window)
+  local animated = how ~= "edit" and drawn.here == here and block_key ~= drawn.block
     and config.chunk.delay > 0 and config.chunk.duration > 0
   local function draw()
     waiting = cancel(waiting)
+    -- (where the window shows now: it may have scrolled while the block waited)
+    first_shown, last_shown = shown_lines(window)
     local cells, length = chunk_cells(buffer, block, first_shown, last_shown, chars_of(faulty))
     local style = faulty and chunk_error_style or chunk_style
     if config.chunk.gradient and not faulty then
       colour_cells(cells, length)
     end
+    local cells_now = signature(here, cells, faulty)
     if animated then
       animate(buffer, cells, style)
-    else
+    elseif cells_now ~= drawn.cells or animation then
+      -- (the same cells as drawn after most edits and scrolls: not sent again)
       animation = cancel(animation)
       show(buffer, cells, style)
     end
-    drawn.chunk, drawn.chunk_block = key, block_key
+    drawn.block, drawn.from, drawn.to = block_key, first_shown, last_shown
+    drawn.cells, drawn.stale, drawn.cleared, drawn.here = cells_now, false, nil, here
   end
   if animated then
     -- after the cursor has rested `delay` ms (still on this block)
@@ -711,9 +795,11 @@ local function update_chunk(buffer, window, moved)
     waiting = helix.defer(config.chunk.delay, function()
       waiting = nil
       local ok, current = pcall(helix.buffer.get_current)
-      if ok and current:id() == buffer:id() then
+      local ok_window, focused = pcall(helix.window.get_current)
+      if ok and ok_window and current and focused and place(current, focused) == here then
         local now = find_block(buffer, config.chunk)
-        if now and now.first == block.first and now.last == block.last then
+        if now and now.first == block.first and now.last == block.last
+          and now.error == block.error then
           pcall(draw)
         end
       end
@@ -731,16 +817,20 @@ local function update_line_num(buffer, window)
   end
   local block = find_block(buffer, config.line_num)
   if not block then
-    pcall(buffer.set_line_number_styles, buffer, {})
+    local here = place(buffer, window)
+    if drawn.numbers_cleared ~= here then
+      pcall(buffer.set_line_number_styles, buffer, {})
+      drawn.numbers_cleared = here
+    end
     drawn.line_num = nil
     return
   end
-  local key = table.concat({ buffer:id(), window:id(), block.first, block.last }, ":")
+  local key = table.concat({ place(buffer, window), block.first, block.last }, ":")
   if key ~= drawn.line_num then
     buffer:set_line_number_styles({
       styled({ start_line = block.first, end_line = block.last }, line_num_style),
     })
-    drawn.line_num = key
+    drawn.line_num, drawn.numbers_cleared = key, nil
   end
 end
 
@@ -754,12 +844,8 @@ local function update(how)
     return
   end
   local window = helix.window.get_current()
-  if how == "edit" then
-    -- the same lines may have other indentation: drawn again
-    drawn.chunk, drawn.line_num = nil, nil
-  end
   found = {}
-  local ok_chunk, problem = pcall(update_chunk, buffer, window, how == "move")
+  local ok_chunk, problem = pcall(update_chunk, buffer, window, how)
   local ok_num, problem_num = pcall(update_line_num, buffer, window)
   found = nil
   if not ok_chunk or not ok_num then
@@ -770,27 +856,64 @@ end
 helix.on("selection_change", function()
   update("move")
 end)
-helix.on("buffer_changed", function()
+-- Whether `text` has a line break.
+local function breaks(text)
+  return text:find("[\n\r\v\f]") or text:find("\u{85}", 1, true)
+    or text:find("\u{2028}", 1, true) or text:find("\u{2029}", 1, true)
+end
+
+-- Whether `change` (within a line) is after the first char of its line that is not blank:
+-- the line's indentation is as it was, and so are the cells of the chunk.
+local function after_indentation(buffer, change)
+  local code = buffer:get_line(change.start_line):find("[^ \t\r\n]")
+  return code ~= nil and change.from - buffer:line_to_char(change.start_line - 1) >= code
+end
+
+helix.on("buffer_changed", function(event)
+  -- The overlays and line number styles move with the lines they are on. The chunk's cells
+  -- are those of the indentation of the block's lines: most edits (typing) are after it and
+  -- change none. Others in a line: the cells are worked out again, and sent if they changed.
+  -- One adding, removing or replacing line breaks may have moved them anywhere: sent again.
+  local ok, buffer = pcall(helix.buffer.get_current)
+  if ok and buffer and buffer:id() == event.document_id then
+    if not event.changes then
+      drawn.stale, drawn.cells, drawn.line_num = true, nil, nil
+    end
+    for _, change in ipairs(event.changes or {}) do
+      if breaks(change.text) or breaks(change.removed) then
+        drawn.stale, drawn.cells, drawn.line_num = true, nil, nil
+        break
+      elseif not drawn.stale and not after_indentation(buffer, change) then
+        drawn.stale = true
+      end
+    end
+  end
   update("edit")
 end)
 helix.on("theme_change", function()
   resolve_styles()
-  drawn.chunk, drawn.line_num = nil, nil
+  drawn.stale, drawn.cells, drawn.line_num = true, nil, nil
   update("view")
 end)
 helix.on("config_change", function()
   -- the gradient's colours may be others (`:set gradient-borders.start-color ...`)
+  gradient.stops, gradient.length = nil, nil
   if config.chunk.gradient then
-    drawn.chunk = nil
+    drawn.stale = true
   end
   update("view")
 end)
 for _, event in ipairs({ "scroll", "window_focus", "buffer_focus_lost", "buffer_open",
-  "view_change", "language_change" }) do
+  "view_change" }) do
   helix.on(event, function()
     update("view")
   end)
 end
+helix.on("language_change", function()
+  -- another syntax tree, not the cursor's having moved: its block is drawn at once
+  drawn.here = nil
+  update("view")
+end)
 helix.on("ready", function()
   update("view")
 end)
@@ -830,11 +953,13 @@ local function switch(args, value)
     on[part] = new
     if not new and ok then
       if part == "chunk" then
-        clear_chunk(buffer)
+        animation = cancel(animation)
+        waiting = cancel(waiting)
         pcall(buffer.clear_overlays, buffer)
+        drawn.block, drawn.cells, drawn.cleared, drawn.here = nil, nil, nil, nil
       else
         pcall(buffer.clear_line_number_styles, buffer)
-        drawn.line_num = nil
+        drawn.line_num, drawn.numbers_cleared = nil, nil
       end
     end
   end
