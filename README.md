@@ -51,7 +51,7 @@ This fork of Helix implements the following pull requests. Future pull requests 
 2. https://github.com/helix-editor/helix/pull/13053 (local search in buffer)
 3. https://github.com/helix-editor/helix/pull/12369 (basic support for icons)
 4. https://github.com/helix-editor/helix/pull/13306 (customizable color swatches)
-5. https://github.com/helix-editor/helix/pull/13430 (showing vertical preview)
+5. https://github.com/helix-editor/helix/pull/13430 (showing vertical preview; now upstream's layout, the preview above the list in tall windows, with `picker-stacked-preview = "below"` for this PR's place, and narrow short windows stacked too)
 6. https://github.com/helix-editor/helix/pull/11497 (support for rounded corners)
 7. https://github.com/helix-editor/helix/pull/13197 (welcome screen)
 8. https://github.com/helix-editor/helix/pull/12520 (picker titles)

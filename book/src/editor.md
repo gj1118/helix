@@ -100,6 +100,7 @@
 | `kitty-keyboard-protocol` | Whether to enable Kitty Keyboard Protocol. Can be `enabled`, `disabled` or `auto` | `"auto"` |
 | `terminal` | Where a debuggee that asks for a terminal is started: `launcher` or `command`/`args`, see [The terminal of the debuggee](./debugging.md#the-terminal-of-the-debuggee) | detected |
 | `picker-symbol` | Drawn before the selected row of pickers and of the command line popup's completions | `">"` |
+| `picker-stacked-preview` | Where a picker's preview goes when it is stacked with the list (a window taller than wide, or too narrow for both side by side, see [Preview beside or stacked](./pickers.md#preview-beside-or-stacked)): `"above"` the prompt and the list, or `"below"` them | `"above"` |
 | `fullscreen-overlay` | Pickers (and the command palette) take the whole screen on terminals narrower than 200 columns, instead of 90% of it. The file picker with [`file-picker.hide-preview`](#editorfile-picker-section) keeps its own size | `false` |
 | `welcome-screen` | Show the [welcome screen](#welcome-screen) when Helix starts without a file | `true` |
 | `remote-control` | Listen on a socket of its own, so `hx --remote` and `hx --remote-command` can reach this Helix (Unix only; see [Remote control](./remote.md)) | `true` |

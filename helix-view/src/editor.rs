@@ -479,6 +479,9 @@ pub struct Config {
     pub line_number: LineNumber,
     /// Symbol to use for the picker. Defaults to ">".
     pub picker_symbol: String,
+    /// Where a picker's preview goes when it is stacked with the list (a window taller than
+    /// wide, or too narrow for both side by side): `above` or `below` the list.
+    pub picker_stacked_preview: StackedPreview,
     /// Highlight the lines cursors are currently on. Defaults to false.
     pub cursorline: bool,
     /// Highlight the columns cursors are currently on. Defaults to false.
@@ -906,6 +909,17 @@ impl Default for CmdlineIcons {
             general: "💬".to_string(),
         }
     }
+}
+
+/// Where a picker's preview goes when it is stacked with the list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum StackedPreview {
+    /// Above the list, the prompt and the list at the bottom (as upstream Helix).
+    #[default]
+    Above,
+    /// Below the prompt and the list.
+    Below,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -2318,6 +2332,7 @@ impl Default for Config {
             },
             line_number: LineNumber::Absolute,
             picker_symbol: ">".to_string(),
+            picker_stacked_preview: StackedPreview::default(),
             cursorline: false,
             cursorcolumn: false,
             cursor_roundness: 0,

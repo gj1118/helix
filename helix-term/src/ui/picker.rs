@@ -47,7 +47,7 @@ use helix_core::{
     visual_offset_from_anchor, Position,
 };
 use helix_view::{
-    editor::Action,
+    editor::{Action, StackedPreview},
     graphics::{CursorKind, Margin, Modifier, Rect},
     input::KeyEvent,
     theme::Style,
@@ -61,7 +61,15 @@ use self::handlers::{DynamicQueryChange, DynamicQueryHandler, PreviewHighlightHa
 pub const ID: &str = "picker";
 
 pub const MIN_AREA_WIDTH_FOR_PREVIEW: u16 = 72;
+/// The rows a window needs for the preview stacked with the list by the aspect of the window.
+pub const MIN_AREA_HEIGHT_FOR_STACKED_PREVIEW: u16 = 36;
+/// The rows a window needs for the preview stacked with the list when, beside it, the preview
+/// would show less of the code (see [`preview_layout`]).
 pub const MIN_AREA_HEIGHT_FOR_PREVIEW: u16 = 24;
+/// Terminal cells are about 1:2 aspect ratio
+const CELL_ASPECT: u16 = 2;
+/// The columns of a line the preview is worth: wider shows little more of most code.
+const PREVIEW_CODE_WIDTH: u16 = 80;
 /// Biggest file size to preview in bytes
 pub const MAX_FILE_SIZE_FOR_PREVIEW: u64 = 10 * 1024 * 1024;
 /// Files bigger than this (in bytes) are read on a blocking thread, so that moving through big
@@ -2014,56 +2022,80 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
     }
 }
 
+/// Where the list and the preview go in a picker's `area`: side by side, stacked (the preview
+/// above the list, or `below` it), or the list alone.
+///
+/// ```text
+/// +---------+ +---------+    +---------+    +---------+
+/// |prompt   | |preview  |    |preview  |    |prompt   |
+/// +---------+ |         |    |         |    +---------+
+/// |picker   | |         |    |         |    |picker   |
+/// |         | |         |    +---------+    +---------+
+/// +---------+ +---------+    |prompt   |    |preview  |
+///                            +---------+    |         |
+///                            |picker   |    |         |
+///                            +---------+    +---------+
+/// ```
+///
+/// Stacked when the window is taller than wide (its cells are about twice as tall as wide)
+/// or too narrow for both side by side, as upstream Helix does; and also when side by side
+/// the preview would show less of the code than stacked (its lines cut short in a narrow
+/// window), in a window with the rows for it (`MIN_AREA_HEIGHT_FOR_PREVIEW`).
+pub fn preview_layout(area: Rect, below: bool) -> (Rect, Option<Rect>) {
+    let fits_beside = area.width > MIN_AREA_WIDTH_FOR_PREVIEW;
+    let fits_stacked = area.height >= MIN_AREA_HEIGHT_FOR_STACKED_PREVIEW;
+    let portrait = area.width < CELL_ASPECT * area.height;
+    let stacked = (fits_stacked && (portrait || !fits_beside))
+        || (area.height >= MIN_AREA_HEIGHT_FOR_PREVIEW
+            && (!fits_beside || shows_more_stacked(area)));
+    if stacked {
+        let list_height = area.height / 3;
+        if below {
+            let picker = area.with_height(list_height);
+            (picker, Some(area.clip_top(picker.height)))
+        } else {
+            let preview = area.with_height(area.height - list_height);
+            (area.clip_top(preview.height), Some(preview))
+        }
+    } else if fits_beside {
+        let picker = area.with_width(area.width / 2);
+        (picker, Some(area.clip_left(picker.width)))
+    } else {
+        (area, None)
+    }
+}
+
+/// Whether the preview shows more of the code stacked with the list than beside it: the rows
+/// it has times the columns of their lines it shows (up to `PREVIEW_CODE_WIDTH`).
+fn shows_more_stacked(area: Rect) -> bool {
+    let code =
+        |width: u16, height: u16| u32::from(width.min(PREVIEW_CODE_WIDTH)) * u32::from(height);
+    code(area.width, area.height - area.height / 3) > code(area.width / 2, area.height)
+}
+
+impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Picker<I, D> {
+    /// The list's and the preview's areas (see [`preview_layout`]).
+    fn layout(&self, area: Rect, below: bool) -> (Rect, Option<Rect>) {
+        if !self.show_preview || !self.has_preview() {
+            return (area, None);
+        }
+        preview_layout(area, below)
+    }
+}
+
+/// Whether the config puts a stacked preview below the list.
+fn preview_below(editor: &Editor) -> bool {
+    editor.config().picker_stacked_preview == StackedPreview::Below
+}
+
 impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I, D> {
     fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
         if self.docked.is_some() {
             return self.render_docked(area, surface, cx);
         }
-        // default render
-        // +--title--+ +---------+
-        // +---------+ +---------+
-        // |prompt   | |preview  |
-        // +---------+ |         |
-        // |picker   | |         |
-        // |         | |         |
-        // +---------+ +---------+
-        //
-        // stack vertically
-        // +---------+
-        // |prompt   |
-        // +---------+
-        // |picker   |
-        // |         |
-        // +---------+
-        // |preview  |
-        // |         |
-        // |         |
-        // +---------+
-
-        let render_preview = self.show_preview
-            && self.has_preview()
-            && area.width >= MIN_AREA_WIDTH_FOR_PREVIEW
-            && area.height >= MIN_AREA_HEIGHT_FOR_PREVIEW;
-        let stack_vertically = area.width / 2 < MIN_AREA_WIDTH_FOR_PREVIEW;
-
-        let picker_area = if render_preview {
-            if stack_vertically {
-                area.with_height(area.height / 3)
-            } else {
-                area.with_width(area.width / 2)
-            }
-        } else {
-            area
-        };
-
+        let (picker_area, preview_area) = self.layout(area, preview_below(cx.editor));
         self.render_picker(picker_area, surface, cx);
-
-        if render_preview {
-            let preview_area = if stack_vertically {
-                area.clip_top(picker_area.height)
-            } else {
-                area.clip_left(picker_area.width)
-            };
+        if let Some(preview_area) = preview_area {
             self.render_preview(preview_area, surface, cx);
         }
     }
@@ -2271,28 +2303,15 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
         if self.docked.is_some() {
             return self.docked_cursor(area, editor);
         }
-        // calculate the inner area inside the box
+        // the prompt: the first row inside the list's box
+        let (picker_area, _) = self.layout(area, preview_below(editor));
         let inner = if editor.config().gradient_borders.enable {
             // The gradient border is one cell wide whatever its thickness.
-            crate::ui::gradient_border::GradientBorder::inner_area(area)
+            crate::ui::gradient_border::GradientBorder::inner_area(picker_area)
         } else {
-            let block = Block::bordered();
-            block.inner(area)
+            Block::bordered().inner(picker_area)
         };
-
-        // prompt area
-        let render_preview = self.show_preview
-            && self.has_preview()
-            && area.width >= MIN_AREA_WIDTH_FOR_PREVIEW
-            && area.height >= MIN_AREA_HEIGHT_FOR_PREVIEW;
-        let stack_vertically = area.width / 2 < MIN_AREA_WIDTH_FOR_PREVIEW;
-
-        let picker_width = if render_preview && !stack_vertically {
-            inner.width / 2
-        } else {
-            inner.width
-        };
-        let area = inner.clip_left(1).with_height(1).with_width(picker_width);
+        let area = inner.clip_left(1).with_height(1);
 
         if let Some(replace) = self.replace.as_ref().filter(|replace| replace.focused) {
             let label_width = REPLACE_LABEL.len() as u16;
@@ -2309,9 +2328,14 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
     }
 
     fn required_size(&mut self, (width, height): (u16, u16)) -> Option<(u16, u16)> {
-        self.completion_height =
-            height.saturating_sub(4 + self.header_height() + u16::from(self.replace.is_some()));
-        self.preview_height = height.saturating_sub(2);
+        // (the list and the preview are as tall with the preview above or below the list)
+        let (picker_area, preview_area) = self.layout(Rect::new(0, 0, width, height), false);
+        self.completion_height = picker_area
+            .height
+            .saturating_sub(4 + self.header_height() + u16::from(self.replace.is_some()));
+        self.preview_height = preview_area
+            .map_or(height, |preview| preview.height)
+            .saturating_sub(2);
         Some((width, height))
     }
 
@@ -2946,7 +2970,64 @@ mod tests {
     #[test]
     fn test_min_area_constants() {
         assert_eq!(MIN_AREA_WIDTH_FOR_PREVIEW, 72);
+        assert_eq!(MIN_AREA_HEIGHT_FOR_STACKED_PREVIEW, 36);
         assert_eq!(MIN_AREA_HEIGHT_FOR_PREVIEW, 24);
+    }
+
+    /// Where the list and the preview go, for windows of every shape (the picker's area is
+    /// 90% of the screen).
+    #[test]
+    fn test_preview_layout() {
+        let area = |width, height| Rect::new(0, 0, width, height);
+        // wide: side by side, each half
+        assert_eq!(
+            preview_layout(area(180, 43), false),
+            (area(90, 43), Some(Rect::new(90, 0, 90, 43)))
+        );
+        // a 140×40 terminal: halves of 63 columns show more code than stacked
+        assert_eq!(
+            preview_layout(area(126, 34), false),
+            (area(63, 34), Some(Rect::new(63, 0, 63, 34)))
+        );
+        // taller than wide (cells are twice as tall as wide): stacked, the preview above
+        // with two thirds of the rows
+        assert_eq!(
+            preview_layout(area(72, 52), false),
+            (Rect::new(0, 35, 72, 17), Some(area(72, 35)))
+        );
+        // ... or below the list
+        assert_eq!(
+            preview_layout(area(72, 52), true),
+            (area(72, 17), Some(Rect::new(0, 17, 72, 35)))
+        );
+        // narrow and tall: stacked, whatever the width
+        assert_eq!(
+            preview_layout(area(30, 40), false),
+            (Rect::new(0, 27, 30, 13), Some(area(30, 27)))
+        );
+        // a 100×30 terminal, too short for the stack by aspect: side by side the preview
+        // would have 45 columns; stacked it shows more of the code
+        assert_eq!(
+            preview_layout(area(90, 25), false),
+            (Rect::new(0, 17, 90, 8), Some(area(90, 17)))
+        );
+        // a 100×42 terminal: not taller than wide, but halves of 45 columns: stacked too
+        assert_eq!(
+            preview_layout(area(90, 36), true),
+            (area(90, 12), Some(Rect::new(0, 12, 90, 24)))
+        );
+        // an 80×30 terminal: too narrow for both side by side, stacked in its 25 rows
+        assert_eq!(
+            preview_layout(area(72, 25), false),
+            (Rect::new(0, 17, 72, 8), Some(area(72, 17)))
+        );
+        // an 80×24 terminal: no room for a preview
+        assert_eq!(preview_layout(area(72, 19), false), (area(72, 19), None));
+        // short and wide: side by side
+        assert_eq!(
+            preview_layout(area(160, 20), false),
+            (area(80, 20), Some(Rect::new(80, 0, 80, 20)))
+        );
     }
 
     #[test]
@@ -3169,9 +3250,21 @@ mod tests {
 
         assert_eq!(picker.preview_height, 0);
 
+        // no preview to show: the whole height, less the borders
         picker.required_size((100, 50));
-        // preview_height = height - 2 (for borders) = 48
         assert_eq!(picker.preview_height, 48);
+
+        // a preview stacked with the list (halves of 50 columns show less code): its height
+        let columns = [Column::new("test", |item: &String, _: &()| {
+            item.as_str().into()
+        })];
+        let mut picker: Picker<String, ()> =
+            Picker::new(columns, 0, vec![], (), |_cx, _item, _action| {})
+                .with_text_preview(|_, _| None, |_, _| None);
+        picker.required_size((100, 50));
+        assert_eq!(picker.preview_height, 34 - 2);
+        picker.required_size((200, 50));
+        assert_eq!(picker.preview_height, 50 - 2, "side by side");
     }
 
     #[test]

@@ -266,3 +266,84 @@ async fn vsplit_on_a_directory_opens_the_picked_file_in_a_split() -> anyhow::Res
     )
     .await
 }
+
+/// What the file previewed below says.
+const PREVIEWED: &str = "a line only the preview shows";
+
+/// Sends `keys` to the application and runs it until it is idle.
+async fn send_keys(app: &mut Application, keys: &str) -> anyhow::Result<()> {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    for key in helix_view::input::parse_macro(keys)? {
+        tx.send(Ok(termina::Event::Key(key.into())))?;
+    }
+    let mut stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
+    app.event_loop_until_idle(&mut stream).await;
+    Ok(())
+}
+
+/// The row and column of the preview's text, and the row of the prompt's cursor.
+fn places(app: &Application) -> ((usize, usize), usize) {
+    let rows = app.rendered_rows();
+    let (row, col) = rows
+        .iter()
+        .enumerate()
+        .find_map(|(i, row)| {
+            row.find(PREVIEWED)
+                .map(|byte| (i, row[..byte].chars().count()))
+        })
+        .unwrap_or_else(|| panic!("no preview:\n{}", rows.join("\n")));
+    let (cursor, _) = app.compositor.cursor(app.compositor.size(), &app.editor);
+    ((row, col), cursor.expect("the prompt's cursor").row)
+}
+
+/// The preview goes above the list in a window taller than wide, as upstream Helix has it, or
+/// below it with `picker-stacked-preview = "below"`, the prompt's cursor in the list's box
+/// either way; a short window too narrow for both side by side stacks them as well, and a
+/// wide one has them side by side.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_preview_goes_by_the_window_and_the_setting() -> anyhow::Result<()> {
+    let dir = tempfile::tempdir()?;
+    let file = dir.path().join("notes.txt");
+    std::fs::write(&file, format!("{PREVIEWED}\n"))?;
+    let mut app = app_with_quicklist(&[&file])?;
+
+    // the tests' terminal, 120×150: taller than wide
+    send_keys(&mut app, "<space>q").await?;
+    let ((row, _), prompt) = places(&app);
+    assert!(
+        row < prompt,
+        "above: preview row {row}, prompt row {prompt}"
+    );
+
+    send_keys(
+        &mut app,
+        "<esc>:set picker-stacked-preview below<ret><space>q",
+    )
+    .await?;
+    let ((row, _), prompt) = places(&app);
+    assert!(
+        row > prompt,
+        "below: preview row {row}, prompt row {prompt}"
+    );
+
+    // 100×30: side by side, the preview would have 45 columns
+    send_keys(&mut app, "<esc>").await?;
+    app.resize_terminal(100, 30).await;
+    send_keys(&mut app, "<space>q").await?;
+    let ((row, col), prompt) = places(&app);
+    assert!(
+        row > prompt && col < 20,
+        "100×30: preview at {row}:{col}, prompt row {prompt}"
+    );
+
+    // 200×50: side by side, the preview on the right
+    send_keys(&mut app, "<esc>").await?;
+    app.resize_terminal(200, 50).await;
+    send_keys(&mut app, "<space>q").await?;
+    let ((row, col), prompt) = places(&app);
+    assert!(
+        col > 100 && row.abs_diff(prompt) < 5,
+        "200×50: preview at {row}:{col}, prompt row {prompt}"
+    );
+    Ok(())
+}

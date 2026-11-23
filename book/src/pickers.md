@@ -44,11 +44,33 @@ lines now; the status line says how many were, and replacing again uses the refr
 
 `Space-e` opens an interactive file explorer for browsing and opening files, rooted at the workspace; `Space-.` opens one rooted at the current buffer's directory. Unlike the file picker, the explorer does not ignore most files by default; its ignore behaviour is configured separately in the [`[editor.file-explorer]`](./editor.md#editorfile-explorer-section) section.
 
-### Preview on narrow terminals
+### Preview beside or stacked
 
-The preview sits beside the list when there is room for both. When the terminal is narrower than
-about 144 columns, the preview is placed below the list instead, so both stay readable. There is
-no option for this: the layout is chosen from the width of the terminal.
+The preview sits beside the list when the window is wide, and is stacked with it (the list
+gets a third of the rows, the preview the rest) when:
+
+- the window is taller than it is wide (a terminal cell is about twice as tall as wide: 80
+  columns by 50 rows is taller than wide), with at least 36 rows;
+- or it is too narrow for both side by side (72 columns or fewer), with at least 24 rows;
+- or, with at least 24 rows, side by side would show less of the code: half the width cuts
+  the preview's lines short. Counting the rows of the preview and up to 80 columns of each
+  of its lines, stacked wins in a 100×30 terminal (halves of 45 columns) and side by side in
+  a 140×40 one (halves of 63 columns).
+
+Stacked, the preview goes above the list, the prompt and the list at the bottom, as upstream
+Helix has it; [`picker-stacked-preview = "below"`](./editor.md#editor-section) puts it below
+the prompt and the list instead. Shorter than 24 rows and too narrow for both side by side,
+the picker shows only its list. `Ctrl-t` hides or shows the preview.
+
+| Terminal | Layout |
+| --- | --- |
+| 200×50 | side by side |
+| 140×40 | side by side |
+| 100×42 | stacked (halves of 45 columns) |
+| 100×30 | stacked |
+| 80×30 | stacked |
+| 80×24 | the list only |
+| 90×60, or any window taller than wide | stacked |
 
 ### Size
 

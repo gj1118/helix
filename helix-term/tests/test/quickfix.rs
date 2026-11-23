@@ -205,13 +205,14 @@ async fn without_enable_the_lists_are_pickers() -> anyhow::Result<()> {
     send_keys(&mut app, "<space>q").await?;
     assert!(!app.editor.quickfix_panel.visible);
     assert_eq!(view_bottom(&app), 29);
-    // a picker over the editor: its title near the top
+    // a picker over the editor: in the 72×25 overlay from row 1 of this 80×30 screen, the
+    // preview above (17 rows) and the list below it, its title on the list's top border
     let rows = app.rendered_rows();
     let title = rows
         .iter()
         .position(|row| row.contains("Quicklist"))
         .unwrap_or_else(|| panic!("{rows:#?}"));
-    assert!(title < 5, "{rows:#?}");
+    assert_eq!(title, 1 + 17, "{rows:#?}");
     // Enter visits and closes the picker (its column header goes)
     send_keys(&mut app, "<ret>").await?;
     assert_eq!(cursor_line(&app), 2);

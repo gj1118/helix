@@ -10,16 +10,17 @@ fn screen(app: &Application) -> String {
     app.rendered_rows().join("\n")
 }
 
-/// The text rows of the picker's preview (the frame under the list, the screen being tall).
+/// The text rows of the picker's preview (the frame above the list, the screen being taller
+/// than wide).
 fn preview_rows(app: &Application) -> Vec<String> {
     let rows = app.rendered_rows();
-    // the second frame's top border, then its rows up to its bottom border
+    // the first frame's top border, then its rows up to its bottom border
     let top = rows
         .iter()
         .enumerate()
         .filter(|(_, row)| row.trim_start().starts_with('🭽'))
         .map(|(i, _)| i)
-        .nth(1);
+        .next();
     let Some(top) = top else {
         return Vec::new();
     };
