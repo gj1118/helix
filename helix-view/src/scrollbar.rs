@@ -170,11 +170,15 @@ pub fn line_count(text: helix_core::RopeSlice) -> usize {
     }
 }
 
+/// The parts of a row the handle's ends move by.
+pub const EIGHTHS: usize = 8;
+
 /// Where the lines of a buffer go on a bar.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Layout {
     rows: usize,
-    /// The lines counted (those not folded away).
+    /// The lines of the buffer, and those counted (not folded away).
+    total: usize,
     lines: usize,
     /// The folds left out: their first and last line, and the lines folded before them.
     folds: Vec<(usize, usize, usize)>,
@@ -202,6 +206,7 @@ impl Layout {
         }
         Self {
             rows: rows.into(),
+            total: lines.max(1),
             lines: lines.saturating_sub(hidden).max(1),
             folds: kept,
         }
@@ -237,6 +242,56 @@ impl Layout {
             counted * self.rows / self.lines
         };
         row.min(self.rows.saturating_sub(1))
+    }
+
+    /// The place of `line`'s top on the bar, in eighths of rows (see [`Self::row`]).
+    fn eighth(&self, line: usize) -> usize {
+        let counted = self.counted(line).min(self.lines);
+        if self.lines <= self.rows {
+            counted * EIGHTHS
+        } else {
+            counted * self.rows * EIGHTHS / self.lines
+        }
+    }
+
+    /// The handle of the lines `first..=last` on screen, in eighths of rows: from the top of
+    /// the first to the bottom of the last (the top of the next), at least a row.
+    pub fn handle(&self, first: usize, last: usize) -> (usize, usize) {
+        let end = self.rows * EIGHTHS;
+        let after_last = self.counted(last).min(self.lines - 1) + 1;
+        let bottom = if self.lines <= self.rows {
+            after_last * EIGHTHS
+        } else {
+            after_last * self.rows * EIGHTHS / self.lines
+        };
+        let top = self.eighth(first).min(end.saturating_sub(EIGHTHS));
+        let bottom = bottom.clamp(top + EIGHTHS, end.max(top + EIGHTHS));
+        (top, bottom.min(end))
+    }
+
+    /// The line whose top is at `eighth` of the bar (the first one at or past it).
+    pub fn line_at(&self, eighth: usize) -> usize {
+        let counted = if self.lines <= self.rows {
+            eighth / EIGHTHS
+        } else {
+            eighth * self.lines / (self.rows * EIGHTHS).max(1)
+        }
+        .min(self.lines - 1);
+        partition(self.total, |line| self.counted(line) < counted).min(self.total - 1)
+    }
+
+    /// The line `eighths` eighths of a row further down the bar than `line` (up when
+    /// negative): where a handle dragged that far from `line` puts the top of the view.
+    pub fn moved(&self, line: usize, eighths: isize) -> usize {
+        let lines_per_eighth = if self.lines <= self.rows {
+            1.0 / EIGHTHS as f64
+        } else {
+            self.lines as f64 / (self.rows * EIGHTHS) as f64
+        };
+        let counted = (self.counted(line) as f64 + eighths as f64 * lines_per_eighth)
+            .round()
+            .clamp(0.0, (self.lines - 1) as f64) as usize;
+        partition(self.total, |line| self.counted(line) < counted).min(self.total - 1)
     }
 
     /// The first and last of the lines `first..=last` on `row`, if any.
@@ -499,6 +554,57 @@ mod test {
         let defaults = ScrollbarConfig::default();
         let two = RowMark { mark, count: 2 };
         assert_eq!(two.text(&defaults), "=");
+    }
+
+    #[test]
+    fn the_handle_moves_by_eighths_of_rows() {
+        // 1000 lines on 10 rows: 12.5 lines an eighth
+        let layout = Layout::new(10, 1000, []);
+        // lines 1 to 50: half a row, made a row
+        assert_eq!(layout.handle(0, 49), (0, 8));
+        // 25 lines further: two eighths further
+        assert_eq!(layout.handle(25, 124), (2, 10));
+        // the last lines: at the bottom
+        assert_eq!(layout.handle(950, 999), (72, 80));
+        // lines that fit: whole rows
+        let fits = Layout::new(10, 6, []);
+        assert_eq!(fits.handle(1, 3), (8, 32));
+    }
+
+    #[test]
+    fn a_place_on_the_bar_is_a_line() {
+        let layout = Layout::new(10, 1000, []);
+        assert_eq!(layout.line_at(0), 0);
+        assert_eq!(layout.line_at(40), 500);
+        assert_eq!(layout.line_at(79), 987);
+        assert_eq!(layout.line_at(500), 999, "past the end: the last line");
+        // the way back of `handle`
+        for line in [0, 100, 512, 900] {
+            let (top, _) = layout.handle(line, line + 30);
+            assert!(layout.line_at(top) <= line && line - layout.line_at(top) < 13);
+        }
+        // folded lines: the line after a fold, not one in it
+        let folded = Layout::new(20, 14, [(2, 5)]);
+        assert_eq!(folded.line_at(2 * 8), 6);
+        assert_eq!(folded.line_at(8), 1);
+    }
+
+    #[test]
+    fn a_handle_dragged_moves_the_lines_by_as_much() {
+        // 1000 lines on 10 rows: 12.5 lines an eighth
+        let layout = Layout::new(10, 1000, []);
+        assert_eq!(layout.moved(500, 0), 500, "not moved: the same line");
+        assert_eq!(layout.moved(500, 4), 550);
+        assert_eq!(layout.moved(500, -3), 463, "37.5 lines up, rounded");
+        assert_eq!(layout.moved(500, -80), 0);
+        assert_eq!(layout.moved(500, 80), 999);
+        // lines that fit: 8 eighths a line
+        let fits = Layout::new(10, 6, []);
+        assert_eq!(fits.moved(2, 8), 3);
+        assert_eq!(fits.moved(2, 3), 2);
+        // a fold of 4 lines is one: past it
+        let folded = Layout::new(20, 14, [(2, 5)]);
+        assert_eq!(folded.moved(1, 8), 6);
     }
 
     #[test]

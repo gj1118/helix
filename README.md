@@ -1461,8 +1461,9 @@ A scrollbar on the right of each view, after
 [nvim-scrollbar](https://github.com/petertriho/nvim-scrollbar): the handle beside the lines on
 screen, and marks of the cursor, the last search's matches (while the cursor is on one),
 diagnostics, git changes and plugins along the whole buffer. Of the marks on a row the most
-important is drawn, `=` instead of `-` when there are more. It is off by default; every
-nvim-scrollbar setting that applies is a setting here:
+important is drawn, `=` instead of `-` when there are more. The handle moves by eighths of a
+row, so it glides with smooth scrolling; click the bar to scroll there, or drag the handle. It
+is off by default; every nvim-scrollbar setting that applies is a setting here:
 
 ```toml
 [editor.scrollbar]
@@ -1473,8 +1474,11 @@ hide-if-all-visible = false
 folds = 1000                  # folded lines left out in buffers up to this many lines
 excluded-languages = []
 
+mouse = true                  # click to scroll there, drag the handle
+
 [editor.scrollbar.handle]
 blend = 30                    # how much of the background shows through it
+smooth = true                 # moves by eighths of a row; false: whole rows
 # color = "#444442"
 
 [editor.scrollbar.marks.error]

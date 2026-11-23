@@ -1672,6 +1672,9 @@ pub struct ScrollbarConfig {
     pub search_calm_down: bool,
     /// Languages without a scrollbar, by their name in `languages.toml` (`"markdown"`).
     pub excluded_languages: Vec<String>,
+    /// A click on the bar scrolls there, dragging the handle scrolls the view (with
+    /// `editor.mouse`).
+    pub mouse: bool,
     pub handle: ScrollbarHandleConfig,
     pub marks: ScrollbarMarksConfig,
     pub handlers: ScrollbarHandlersConfig,
@@ -1688,6 +1691,7 @@ impl Default for ScrollbarConfig {
             throttle_ms: 100,
             search_calm_down: true,
             excluded_languages: Vec::new(),
+            mouse: true,
             handle: ScrollbarHandleConfig::default(),
             marks: ScrollbarMarksConfig::default(),
             handlers: ScrollbarHandlersConfig::default(),
@@ -1711,6 +1715,9 @@ pub struct ScrollbarHandleConfig {
     pub highlight: Option<String>,
     /// No handle while the whole buffer is on screen.
     pub hide_if_all_visible: bool,
+    /// Its ends move by eighths of a row (drawn with block characters) instead of whole
+    /// rows, when its `text` is blank: it shows small scrolls and glides with smooth scroll.
+    pub smooth: bool,
 }
 
 impl Default for ScrollbarHandleConfig {
@@ -1721,6 +1728,7 @@ impl Default for ScrollbarHandleConfig {
             color: None,
             highlight: None,
             hide_if_all_visible: true,
+            smooth: true,
         }
     }
 }

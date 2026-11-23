@@ -14,12 +14,15 @@ use helix_core::diagnostic::Severity;
 use helix_stdx::rope::{self, RopeSliceExt};
 use helix_view::editor::ScrollbarConfig;
 use helix_view::graphics::{Color, Modifier, Rect, Style};
-use helix_view::scrollbar::{line_count, Layout, Mark, MarkType, RowMark, Rows};
+use helix_view::scrollbar::{line_count, Layout, Mark, MarkType, RowMark, Rows, EIGHTHS};
 use helix_view::{Document, DocumentId, Editor, Theme, View, ViewId};
 use tui::buffer::Buffer as Surface;
 
 /// The most search matches marked (a pattern matching everything marks every line anyway).
 const MAX_SEARCH_MATCHES: usize = 100_000;
+
+/// Blocks as tall as eighths of a cell, from the bottom: none to all of it.
+const LOWER_BLOCKS: [&str; EIGHTHS + 1] = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
 
 /// The scrollbars' state: the matches of the last search, per buffer, and the last line on
 /// the screen of each view.
@@ -83,38 +86,46 @@ impl Query {
     }
 }
 
+/// A handle held with the mouse: its view, where it was pressed (in eighths of rows) and the
+/// first line on screen then.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Held {
+    pub view: ViewId,
+    at: usize,
+    first: usize,
+}
+
+/// Where a view's bar is and what it covers.
+struct Geometry {
+    /// The view's text area: the bar is in the column right of it.
+    inner: Rect,
+    layout: Layout,
+    /// The buffer's lines, and the first and last on screen.
+    lines: usize,
+    first: usize,
+    last: usize,
+    /// The handle, in eighths of rows.
+    handle: (usize, usize),
+}
+
 impl Scrollbars {
-    /// Draws the scrollbar of `view`, if it has one, beside its text area `inner`.
-    pub fn render(
-        &self,
-        editor: &Editor,
-        doc: &Document,
-        view: &View,
-        inner: Rect,
-        surface: &mut Surface,
-        is_focused: bool,
-    ) {
+    /// Where the bar of `view` is, if it has one.
+    fn geometry(&self, editor: &Editor, doc: &Document, view: &View) -> Option<Geometry> {
         let config = editor.config();
         let bar = &config.scrollbar;
+        let inner = view.inner_area(doc);
         if view.scrollbar_offset(doc) == 0 || inner.height == 0 {
-            return;
+            return None;
         }
-        if bar.show_in_active_only && !is_focused {
-            return;
-        }
-        let x = inner.right();
-        if x >= surface.area.right() {
-            return;
-        }
-        let theme = &editor.theme;
         let text = doc.text().slice(..);
         let lines = line_count(text);
         let offset = doc.view_offset(view.id);
-        let first = text.char_to_line(offset.anchor.min(text.len_chars()));
+        let first = text
+            .char_to_line(offset.anchor.min(text.len_chars()))
+            .min(lines - 1);
         let last = self
             .last_line_on_screen(doc, view, inner)
-            .clamp(first, lines.saturating_sub(1));
-
+            .clamp(first, lines - 1);
         let folds: Vec<(usize, usize)> = match doc.fold_container(view.id) {
             Some(container) if bar.folds > 0 && lines <= bar.folds => container
                 .start_points()
@@ -128,6 +139,50 @@ impl Scrollbars {
             _ => Vec::new(),
         };
         let layout = Layout::new(inner.height, lines, folds);
+        let handle = layout.handle(first, last);
+        Some(Geometry {
+            inner,
+            layout,
+            lines,
+            first,
+            last,
+            handle,
+        })
+    }
+
+    /// Draws the scrollbar of `view`, if it has one, beside its text area `inner`.
+    pub fn render(
+        &self,
+        editor: &Editor,
+        doc: &Document,
+        view: &View,
+        inner: Rect,
+        surface: &mut Surface,
+        is_focused: bool,
+    ) {
+        let config = editor.config();
+        let bar = &config.scrollbar;
+        if bar.show_in_active_only && !is_focused {
+            return;
+        }
+        let Some(Geometry {
+            inner: bar_inner,
+            layout,
+            lines,
+            first,
+            last,
+            handle: (handle_top, handle_bottom),
+        }) = self.geometry(editor, doc, view)
+        else {
+            return;
+        };
+        debug_assert_eq!(bar_inner, inner);
+        let x = inner.right();
+        if x >= surface.area.right() {
+            return;
+        }
+        let theme = &editor.theme;
+        let text = doc.text().slice(..);
 
         let all_visible = first == 0 && last + 1 >= lines;
         if all_visible && bar.hide_if_all_visible {
@@ -176,11 +231,36 @@ impl Scrollbars {
 
         let track = theme.try_get_exact("ui.scrollbar").unwrap_or_default();
         let handle = handle_style(theme, bar);
-        let handle_rows = layout.row(first)..=layout.row(last);
+        // The handle's ends by eighths of a row, a block character as tall as the part of
+        // the row it covers, when its text is blank (else by whole rows).
+        let smooth = bar.handle.smooth
+            && bar.handle.text.trim().is_empty()
+            && handle.bg.is_some_and(|bg| bg != Color::Reset);
+        let (handle_top, handle_bottom) = if smooth {
+            (handle_top, handle_bottom)
+        } else {
+            (
+                handle_top / EIGHTHS * EIGHTHS,
+                handle_bottom.div_ceil(EIGHTHS) * EIGHTHS,
+            )
+        };
+        let background = track
+            .bg
+            .or_else(|| theme.get("ui.background").bg)
+            .unwrap_or(Color::Reset);
         let mut styles: HashMap<MarkType, Style> = HashMap::new();
         for (row, mark) in rows.iter().enumerate() {
             let y = inner.y + row as u16;
-            let in_handle = show_handle && handle_rows.contains(&row);
+            // the eighths of the row the handle covers, and which end of it
+            let (row_top, row_bottom) = (row * EIGHTHS, (row + 1) * EIGHTHS);
+            let covered = if show_handle {
+                handle_bottom
+                    .min(row_bottom)
+                    .saturating_sub(handle_top.max(row_top))
+            } else {
+                0
+            };
+            let in_handle = covered * 2 >= EIGHTHS;
             let base = if in_handle {
                 track.patch(handle)
             } else {
@@ -194,7 +274,22 @@ impl Scrollbars {
                         .or_insert_with(|| mark_style(theme, bar, kind));
                     (mark.text(bar), base.patch(own_style(theme, mark, style)))
                 }
-                None if in_handle => (bar.handle.text.as_str(), base),
+                None if covered == EIGHTHS => (bar.handle.text.as_str(), base),
+                None if covered > 0 => {
+                    let colour = handle.bg.unwrap_or(Color::Reset);
+                    let style = Style::default().fg(colour).bg(background);
+                    if handle_top > row_top {
+                        // the top end: the handle in the lower part of the row
+                        (LOWER_BLOCKS[covered], style)
+                    } else {
+                        // the bottom end: the handle in the upper part, the background
+                        // (drawn in reverse video) in the lower part
+                        (
+                            LOWER_BLOCKS[EIGHTHS - covered],
+                            style.add_modifier(Modifier::REVERSED),
+                        )
+                    }
+                }
                 None => (" ", base),
             };
             surface[(x, y)].set_symbol(" ").set_style(base);
@@ -327,6 +422,56 @@ fn cursor_on_match(doc: &Document, view: &View, regex: &rope::Regex) -> bool {
 }
 
 impl Scrollbars {
+    /// A press of the mouse at `row`, `column`: on the bar of a view, it is focused and what
+    /// a drag starts from is returned: the view, the place pressed (in eighths of rows) and
+    /// the first line on screen. A press beside the handle first scrolls the view to put the
+    /// handle's middle there.
+    pub fn press(&self, editor: &mut Editor, row: u16, column: u16) -> Option<Held> {
+        if !editor.config().scrollbar.mouse {
+            return None;
+        }
+        let (view_id, geometry) = editor.tree.views().find_map(|(view, _)| {
+            let geometry = self.geometry(editor, &editor.documents[&view.doc], view)?;
+            let inner = geometry.inner;
+            (column == inner.right() && (inner.top()..inner.bottom()).contains(&row))
+                .then_some((view.id, geometry))
+        })?;
+        let at = usize::from(row - geometry.inner.y) * EIGHTHS + EIGHTHS / 2;
+        let (top, bottom) = geometry.handle;
+        editor.focus(view_id);
+        let first = if (top..bottom).contains(&at) {
+            geometry.first
+        } else {
+            let line = geometry
+                .layout
+                .line_at(at.saturating_sub((bottom - top) / 2));
+            scroll_to(editor, view_id, &geometry, line)
+        };
+        Some(Held {
+            view: view_id,
+            at,
+            first,
+        })
+    }
+
+    /// The mouse dragged to `row`, holding a handle: the view scrolls by as many lines as
+    /// the handle moved from where it was pressed (none for no move).
+    pub fn drag(&self, editor: &mut Editor, held: Held, row: u16) {
+        let Some(view) = editor.tree.try_get(held.view) else {
+            return;
+        };
+        let Some(geometry) = self.geometry(editor, &editor.documents[&view.doc], view) else {
+            return;
+        };
+        // (above the bar: as at its top)
+        let rows = usize::from(row.saturating_sub(geometry.inner.y));
+        let at = rows * EIGHTHS + EIGHTHS / 2;
+        let line = geometry
+            .layout
+            .moved(held.first, at as isize - held.at as isize);
+        scroll_to(editor, held.view, &geometry, line);
+    }
+
     /// The last line of `doc` on the screen of `view` (soft-wrapped lines counted by their
     /// rows): worked out again only when the view scrolls, resizes or the buffer changes.
     fn last_line_on_screen(&self, doc: &Document, view: &View, inner: Rect) -> usize {
@@ -356,6 +501,71 @@ impl Scrollbars {
         last_lines.insert(view.id, (key, line));
         line
     }
+}
+
+/// Scrolls `view_id` to put `line` at the top, as far as the last lines can go up, and keeps
+/// the cursor on screen, `scrolloff` rows from its edges, as the mouse wheel does. Returns
+/// the line at the top.
+fn scroll_to(editor: &mut Editor, view_id: ViewId, geometry: &Geometry, line: usize) -> usize {
+    let shown = geometry.last + 1 - geometry.first;
+    let line = line.min(geometry.lines.saturating_sub(shown));
+    editor.stop_scroll_animation();
+    let scrolloff = editor.config().scrolloff.vertical;
+    let select = editor.mode == helix_view::document::Mode::Select;
+    let Some(view) = editor.tree.try_get(view_id) else {
+        return line;
+    };
+    let Some(doc) = editor.documents.get_mut(&view.doc) else {
+        return line;
+    };
+    let anchor = doc.text().line_to_char(line);
+    let mut offset = doc.view_offset(view_id);
+    if offset.anchor == anchor && offset.vertical_offset == 0 {
+        return line;
+    }
+    offset.anchor = anchor;
+    offset.vertical_offset = 0;
+    doc.set_view_offset(view_id, offset);
+
+    let text = doc.text().slice(..);
+    let height = view.inner_height(doc);
+    let scrolloff = scrolloff.min(height.saturating_sub(1) / 2);
+    let text_format = doc.text_format(view.inner_area(doc).width, None);
+    let annotations = view.text_annotations(doc, None);
+    let at_row = |row: usize| {
+        helix_core::char_idx_at_visual_offset(
+            text,
+            offset.anchor,
+            row as isize,
+            0,
+            &text_format,
+            &annotations,
+        )
+        .0
+    };
+    let (first, last) = (
+        at_row(scrolloff),
+        at_row(height.saturating_sub(scrolloff + 1)),
+    );
+    let primary = doc.selection(view_id).primary();
+    let cursor = primary.cursor(text);
+    let head = if cursor < first {
+        first
+    } else if cursor > last {
+        last
+    } else {
+        return line;
+    };
+    drop(annotations);
+    let range = if select {
+        helix_core::Range::new(primary.anchor, head)
+    } else {
+        helix_core::Range::point(head)
+    };
+    let selection = doc.selection(view_id).clone();
+    let index = selection.primary_index();
+    doc.set_selection(view_id, selection.replace(index, range));
+    line
 }
 
 /// The last line of `doc` on the screen of `view` (soft-wrapped lines counted by their rows).

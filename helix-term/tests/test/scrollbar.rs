@@ -410,3 +410,128 @@ async fn folded_lines_are_left_out() -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+/// 160 lines on 20 rows: a line is an eighth of a row. The handle's ends are blocks as tall
+/// as the part of their row it covers: the handle moves by a line at a time.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_handle_moves_by_eighths_of_rows() -> anyhow::Result<()> {
+    use helix_view::graphics::Modifier;
+    let text: String = (1..=160).map(|i| format!("line {i}\n")).collect();
+    // (no cursor mark over the handle's ends)
+    let toml = format!("{COLOURED}[editor.scrollbar.handlers]\ncursor = false\n");
+    let (mut app, _dir) = app_with(&toml, &text, "a.txt").await?;
+    // lines 1 to 20: 20 eighths, rows 0 and 1 and the upper half of row 2
+    let cells = bar(&app);
+    assert_eq!(handle_rows(&cells), vec![0, 1]);
+    let row = |app: &Application, row: u16| {
+        let (view, doc) = helix_view::current_ref!(app.editor);
+        let inner = view.inner_area(doc);
+        let cell = app.rendered_cell(inner.right(), inner.y + row);
+        (cell.symbol.to_string(), cell.fg, cell.modifier)
+    };
+    // the upper half: the lower half in the background, the colours reversed
+    assert_eq!(row(&app, 2), ("▄".to_string(), RED, Modifier::REVERSED));
+
+    // three lines down: the handle from 3 eighths into row 0 to 7 eighths into row 2
+    send_keys(&mut app, "zjzjzj").await?;
+    assert_eq!(row(&app, 0), ("▅".to_string(), RED, Modifier::empty()));
+    assert_eq!(handle_rows(&bar(&app)), vec![1]);
+    assert_eq!(row(&app, 2), ("▁".to_string(), RED, Modifier::REVERSED));
+    assert_eq!(&bar(&app)[3].0, " ");
+
+    // whole rows with `smooth = false`: rows 0 to 2
+    let toml = toml.replace(
+        "[editor.scrollbar.handle]\n",
+        "[editor.scrollbar.handle]\nsmooth = false\n",
+    );
+    let (mut whole, _dir) = app_with(&toml, &text, "a.txt").await?;
+    send_keys(&mut whole, "zjzjzj").await?;
+    assert_eq!(handle_rows(&bar(&whole)), vec![0, 1, 2]);
+    Ok(())
+}
+
+/// A mouse event at `column`, `row`.
+async fn mouse(
+    app: &mut Application,
+    kind: termina::event::MouseEventKind,
+    column: u16,
+    row: u16,
+) -> anyhow::Result<()> {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    tx.send(Ok(termina::Event::Mouse(termina::event::MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers: termina::event::Modifiers::empty(),
+    })))?;
+    app.event_loop_until_idle(&mut UnboundedReceiverStream::new(rx))
+        .await;
+    Ok(())
+}
+
+/// A click on the bar scrolls the view to put the handle's middle there, the cursor kept
+/// on screen; dragging the handle scrolls along with it; above or below the bar, as far as
+/// the view goes.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_click_and_a_drag_on_the_bar_scroll() -> anyhow::Result<()> {
+    use termina::event::{MouseButton, MouseEventKind};
+    let toml = format!("{COLOURED}\n[editor]\nmouse = true\n")
+        .replace("[editor]\ntrue-color = true\n", "")
+        .replace(
+            "\n[editor]\nmouse = true\n",
+            "\n[editor]\nmouse = true\ntrue-color = true\n",
+        );
+    let (mut app, _dir) = app_with(&toml, &hundred_lines(), "a.txt").await?;
+    let top_line = |app: &Application| {
+        let (view, doc) = helix_view::current_ref!(app.editor);
+        doc.text().char_to_line(doc.view_offset(view.id).anchor)
+    };
+    let cursor_line = |app: &Application| {
+        let (view, doc) = helix_view::current_ref!(app.editor);
+        let text = doc.text().slice(..);
+        text.char_to_line(doc.selection(view.id).primary().cursor(text))
+    };
+    let (x, y) = {
+        let (view, doc) = helix_view::current_ref!(app.editor);
+        let inner = view.inner_area(doc);
+        (inner.right(), inner.y)
+    };
+    // 100 lines on 20 rows, 20 lines on screen: a handle of 4 rows. A click on row 10 (its
+    // middle 84 eighths): the handle from 68 eighths, line 42 at the top
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x, y + 10).await?;
+    mouse(&mut app, MouseEventKind::Up(MouseButton::Left), x, y + 10).await?;
+    assert_eq!(top_line(&app), 42);
+    let cursor = cursor_line(&app);
+    assert!((42..62).contains(&cursor), "the cursor on screen: {cursor}");
+    assert_eq!(handle_rows(&bar(&app)).first(), Some(&9));
+
+    // held, not moved: where it was; dragged 5 rows up: 40 eighths, 25 lines
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), x, y + 10).await?;
+    mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), x, y + 10).await?;
+    assert_eq!(top_line(&app), 42);
+    mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), x, y + 5).await?;
+    assert_eq!(top_line(&app), 17);
+    // past the bottom: the last lines on screen
+    mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), x, y + 40).await?;
+    assert_eq!(top_line(&app), 80);
+    // past the top: the first
+    mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), x, 0).await?;
+    assert_eq!(top_line(&app), 0);
+    mouse(&mut app, MouseEventKind::Up(MouseButton::Left), x, 0).await?;
+    assert_eq!(
+        cursor_line(&app),
+        14,
+        "kept on screen, 5 rows from its bottom"
+    );
+
+    // `mouse = false`: a click there is a click on the text's last column
+    let toml = toml.replace(
+        "[editor.scrollbar]\nenable = true\n",
+        "[editor.scrollbar]\nenable = true\nmouse = false\n",
+    );
+    let (mut off, _dir) = app_with(&toml, &hundred_lines(), "a.txt").await?;
+    mouse(&mut off, MouseEventKind::Down(MouseButton::Left), x, y + 10).await?;
+    mouse(&mut off, MouseEventKind::Up(MouseButton::Left), x, y + 10).await?;
+    assert_eq!(top_line(&off), 0);
+    Ok(())
+}

@@ -89,6 +89,8 @@ pub struct EditorView {
     split_drag: Option<helix_view::tree::SplitDivider>,
     /// The views' scrollbars (`[editor.scrollbar]`): the matches of the last search.
     scrollbars: crate::ui::scrollbar::Scrollbars,
+    /// The scrollbar handle held with the mouse.
+    scrollbar_drag: Option<crate::ui::scrollbar::Held>,
 }
 
 /// Cached data for bufferline rendering.
@@ -180,6 +182,7 @@ impl EditorView {
             bufferline_cache: BufferlineCache::default(),
             split_drag: None,
             scrollbars: Default::default(),
+            scrollbar_drag: None,
         }
     }
 
@@ -2847,6 +2850,29 @@ impl EditorView {
                 }
                 _ => {}
             }
+        }
+
+        // A scrollbar: a press scrolls there (or holds the handle), dragging scrolls along.
+        match kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if let Some(held) = self.scrollbars.press(cxt.editor, row, column) {
+                    self.clear_completion(cxt.editor);
+                    self.scrollbar_drag = Some(held);
+                    return EventResult::Consumed(None);
+                }
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if let Some(held) = self.scrollbar_drag {
+                    self.scrollbars.drag(cxt.editor, held, row);
+                    return EventResult::Consumed(None);
+                }
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                if self.scrollbar_drag.take().is_some() {
+                    return EventResult::Consumed(None);
+                }
+            }
+            _ => {}
         }
 
         // Hovering a split divider offers the resize pointer.

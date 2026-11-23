@@ -1387,9 +1387,15 @@ enable = true
 
 The bar takes the rightmost column of the view (the text is a column narrower, and soft-wrapped
 lines wrap a column earlier). A buffer that fits gets a row per line; a longer one is spread
-out over the rows. The handle covers the rows of the lines on screen. Of the marks on one row,
-the one of the lowest `priority` is drawn, with its type's next text when the row has more than
-one mark (`-` for one, `=` for more).
+out over the rows. The handle covers the lines on screen; its ends move by eighths of a row
+(block characters as tall as the part of the row they cover), so it shows small scrolls and
+glides with [smooth scrolling](#editorsmooth-scroll-section). Of the marks on one row, the one
+of the lowest `priority` is drawn, with its type's next text when the row has more than one
+mark (`-` for one, `=` for more).
+
+With the mouse, a click on the bar scrolls the view to put the handle's middle there, and
+dragging the handle scrolls the view along with it (by as many lines as it moves, none when it
+does not); the cursor stays on screen, as with the mouse wheel.
 
 | Key | Description | Default |
 |--|--|---------|
@@ -1401,6 +1407,7 @@ one mark (`-` for one, `=` for more).
 | `throttle-ms` | The least time in milliseconds between two searches of the buffer for the search marks (they run in the background) | `100` |
 | `search-calm-down` | Search marks only while the cursor is on a match of the last search (after `/`, `n`, `*`...), as nvim-hlslens's `calm_down`; `false`: as long as there is a last search | `true` |
 | `excluded-languages` | Languages without a scrollbar, by their name in `languages.toml` (nvim-scrollbar's `excluded_filetypes`) | `[]` |
+| `mouse` | A click on the bar scrolls there, dragging the handle scrolls (with `editor.mouse`) | `true` |
 
 #### `[editor.scrollbar.handle]`
 
@@ -1411,6 +1418,7 @@ one mark (`-` for one, `=` for more).
 | `color` | Its colour (`"#rrggbb"` or a colour name), instead of the theme's | none |
 | `highlight` | A theme key whose background is its colour, instead of `ui.scrollbar.handle` (then `ui.cursorcolumn.primary`, `ui.cursorline.primary`, `ui.selection`) | none |
 | `hide-if-all-visible` | No handle while the whole buffer is on screen | `true` |
+| `smooth` | Its ends move by eighths of a row, drawn with block characters, when its `text` is blank and it has a background colour; `false`: by whole rows, as nvim-scrollbar | `true` |
 
 #### `[editor.scrollbar.marks.<type>]`
 
@@ -1459,12 +1467,14 @@ folds = 1000
 throttle-ms = 100
 search-calm-down = true
 excluded-languages = ["markdown"]
+mouse = true
 
 [editor.scrollbar.handle]
 text = " "
 blend = 30
 color = "#444442"
 hide-if-all-visible = true
+smooth = true
 
 [editor.scrollbar.marks.cursor]
 text = "•"
