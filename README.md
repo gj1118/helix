@@ -35,6 +35,11 @@ directory-open = " "  # expanded folder icon (default: open-folder glyph, or 
    Add the `function-name` element to your editor.statusline config, e.g. `right = ["function-name", "diagnostics", "position"]`
    <img width="428" height="220" alt="image" src="https://github.com/user-attachments/assets/dea63278-a649-4561-a29a-b1c0eddacf9f" />
 
+   Show the language server in the status bar with the `language-servers` element (or `lsp`),
+   on the right by default: ` rust-analyzer `, or ` typescript-language-server +2 ` when the
+   language has more running (the first of its `language-servers`, and how many others).
+   A status line of your own needs it added, e.g. `right = ["language-servers", "diagnostics", "position"]`
+
 5. Explorer file tree panel — toggle with `<space>x`, pinned or floating, with file operations (see [Explorer](#explorer) below)
 6. LSP code lenses — `Run`, `Debug`, `12 references` labels at the end of lines, off by default (see [Code Lenses](#code-lenses) below)
 7. Lua plugins — event handlers, commands, buffer edits, annotations, overlay panels, prompts and pickers (see [Plugins](#plugins) below)

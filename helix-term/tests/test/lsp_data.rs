@@ -270,3 +270,65 @@ async fn switching_to_a_running_servers_language_asks_it() -> anyhow::Result<()>
     );
     session.quit().await
 }
+
+/// The status line of the window (the row with the mode).
+fn status_line(app: &Application) -> String {
+    app.rendered_rows()
+        .into_iter()
+        .rev()
+        .find(|row| row.contains("NOR"))
+        .unwrap_or_default()
+}
+
+/// The `language-servers` element (on by default) names the buffer's language server.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_status_line_names_the_language_server() -> anyhow::Result<()> {
+    let mut session = Session::new(&["fake-full"])?;
+    assert!(
+        session
+            .until(|app| status_line(app).contains(" fake-full "))
+            .await,
+        "{}",
+        status_line(&session.app)
+    );
+    let line: String = status_line(&session.app);
+    assert!(!line.contains('+'), "one server, no count: {line}");
+
+    // stopped: no name
+    session.send(":lsp-stop<ret>").await?;
+    assert!(
+        session
+            .until(|app| !status_line(app).contains("fake-full"))
+            .await,
+        "{}",
+        status_line(&session.app)
+    );
+    session.quit().await
+}
+
+/// With two servers, the first of the language's `language-servers` is named, and `+1` stands
+/// for the other; when the first stops, the other is named alone.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_status_line_names_the_first_server_and_counts_the_others() -> anyhow::Result<()> {
+    let mut session = Session::new(&["fake-links", "fake-full"])?;
+    assert!(
+        session
+            .until(|app| status_line(app).contains(" fake-links +1 "))
+            .await,
+        "{}",
+        status_line(&session.app)
+    );
+
+    session.send(":lsp-stop fake-links<ret>").await?;
+    assert!(
+        session
+            .until(|app| {
+                let line = status_line(app);
+                line.contains(" fake-full ") && !line.contains("+1") && !line.contains("fake-links")
+            })
+            .await,
+        "{}",
+        status_line(&session.app)
+    );
+    session.quit().await
+}

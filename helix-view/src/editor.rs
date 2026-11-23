@@ -1854,6 +1854,7 @@ impl Default for StatusLineConfig {
             center: vec![],
             right: vec![
                 E::DebugSession,
+                E::LanguageServers,
                 E::Diagnostics,
                 E::Selections,
                 E::Register,
@@ -1964,6 +1965,10 @@ pub enum StatusLineElement {
     CodeActionHint,
     /// The selected debug session: its name, whether it is stopped and how many sessions there are
     DebugSession,
+    /// The language server of the buffer (the first of its language's `language-servers`), and
+    /// `+N` for the N others
+    #[serde(alias = "lsp")]
+    LanguageServers,
 }
 
 // Cursor shape is read and used on every rendered frame and so needs
@@ -5733,5 +5738,35 @@ mod cursor_roundness_tests {
         assert_eq!(ScrollEasing::EaseOut.apply(0.5), 0.875_f64);
         assert_eq!(ScrollEasing::EaseInOut.apply(0.5), 0.5_f64);
         assert!(ScrollEasing::EaseInOut.apply(0.25) < 0.25_f64);
+    }
+}
+
+#[cfg(test)]
+mod statusline_tests {
+    use super::*;
+
+    /// `language-servers` (or `lsp`) is a status line element, on the right by default.
+    #[test]
+    fn the_language_servers_element_parses_and_is_on_by_default() {
+        let config: StatusLineConfig = toml::from_str(
+            r#"left = ["language-servers"]
+right = ["lsp", "position"]"#,
+        )
+        .unwrap();
+        assert_eq!(config.left, vec![StatusLineElement::LanguageServers]);
+        assert_eq!(
+            config.right,
+            vec![
+                StatusLineElement::LanguageServers,
+                StatusLineElement::Position
+            ]
+        );
+
+        let default: Vec<StatusLineElement> = StatusLineConfig::default().right;
+        assert!(
+            default.contains(&StatusLineElement::LanguageServers),
+            "{default:?}"
+        );
+        assert!(toml::from_str::<StatusLineConfig>(r#"right = ["language-server"]"#).is_err());
     }
 }

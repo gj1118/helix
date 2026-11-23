@@ -214,6 +214,7 @@ where
         helix_view::editor::StatusLineElement::CodeActionHint => render_code_action_hint,
         helix_view::editor::StatusLineElement::FunctionName => render_function_name,
         helix_view::editor::StatusLineElement::DebugSession => render_debug_session,
+        helix_view::editor::StatusLineElement::LanguageServers => render_language_servers,
     }
 }
 
@@ -686,6 +687,23 @@ where
     }
     text.push(' ');
     write(context, text.into())
+}
+
+/// The language server of the buffer: the first running one in the order of the language's
+/// `language-servers`, with `+N` for the N others (` rust-analyzer +1 `). Nothing without one.
+fn render_language_servers<'a, F>(context: &mut RenderContext<'a>, write: F)
+where
+    F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
+{
+    let mut servers = context.doc.language_servers();
+    let Some(first) = servers.next() else {
+        return;
+    };
+    let text = match servers.count() {
+        0 => format!(" {} ", first.name()),
+        others => format!(" {} +{others} ", first.name()),
+    };
+    write(context, text.into());
 }
 
 fn render_register<'a, F>(context: &mut RenderContext<'a>, write: F)

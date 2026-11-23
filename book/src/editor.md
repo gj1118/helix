@@ -277,7 +277,7 @@ The `[editor.statusline]` key takes the following sub-keys:
 | ---           | ---         | ---     |
 | `left`        | A list of elements aligned to the left of the statusline | `["mode", "spinner", "file-name", "read-only-indicator", "file-modification-indicator"]` |
 | `center`      | A list of elements aligned to the middle of the statusline | `[]` |
-| `right`       | A list of elements aligned to the right of the statusline | `["debug-session", "diagnostics", "selections", "register", "position", "file-encoding"]` |
+| `right`       | A list of elements aligned to the right of the statusline | `["debug-session", "language-servers", "diagnostics", "selections", "register", "position", "file-encoding"]` |
 | `separator`   | The character used to separate elements in the statusline | `"│"` |
 | `mode.normal` | The text shown in the `mode` element for normal mode | `"NOR"` |
 | `mode.insert` | The text shown in the `mode` element for insert mode | `"INS"` |
@@ -315,6 +315,7 @@ The following statusline elements can be configured:
 | `code-action-hint` | Indicator for when code actions are available |
 | `function-name` | The name of the function, method or closure the cursor is in, found with tree-sitter (with the `function` icon of `[icons.kind]` when enabled, see [Icons](./configuration.md#icons)) |
 | `debug-session` | The selected [debug session](./debugging.md#several-sessions): its name, whether it is stopped, and the number of sessions |
+| `language-servers` | The language server of the buffer, the first running one of its language's `language-servers` (` rust-analyzer `), with `+N` for the N others (` typescript-language-server +2 `). Nothing when none runs. Also `lsp` |
 
 ### `[editor.lsp]` Section
 
