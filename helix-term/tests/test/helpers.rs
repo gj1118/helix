@@ -358,6 +358,7 @@ pub struct AppBuilder {
     config: Config,
     syn_loader: helix_core::syntax::Loader,
     input: Option<(String, Selection)>,
+    file_history: bool,
 }
 
 impl Default for AppBuilder {
@@ -367,6 +368,7 @@ impl Default for AppBuilder {
             config: test_config(),
             syn_loader: test_syntax_loader(None),
             input: None,
+            file_history: false,
         }
     }
 }
@@ -404,6 +406,13 @@ impl AppBuilder {
         self
     }
 
+    /// Uses the file history (`[editor.persistence] old-files`, as configured): files open
+    /// where their cursor was in an earlier test opening them. Without it, `old-files` is off.
+    pub fn with_file_history(mut self) -> Self {
+        self.file_history = true;
+        self
+    }
+
     /// Changes the command line arguments (`hx --diff`, ...).
     pub fn with_args(mut self, change: impl FnOnce(&mut Args)) -> Self {
         change(&mut self.args);
@@ -425,6 +434,11 @@ impl AppBuilder {
         let recent = &mut config.editor.recent_picker;
         if recent.recents_path == helix_loader::default_recents_file() {
             recent.enable = false;
+        }
+        // A file opened again in a test (a second app on the same file) starts at its start,
+        // not where an earlier test left it: no file history unless the test asks for one.
+        if !self.file_history {
+            config.editor.persistence.old_files = false;
         }
 
         let mut app = Application::new(

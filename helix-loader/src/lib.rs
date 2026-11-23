@@ -220,6 +220,11 @@ pub fn file_histfile() -> PathBuf {
     FILE_HISTFILE.get().map(|path| path.to_path_buf()).unwrap()
 }
 
+/// [`file_histfile`], `None` before [`initialize_file_histfile`].
+pub fn try_file_histfile() -> Option<PathBuf> {
+    FILE_HISTFILE.get().cloned()
+}
+
 pub fn clipboard_file() -> PathBuf {
     CLIPBOARD_FILE.get().map(|path| path.to_path_buf()).unwrap()
 }

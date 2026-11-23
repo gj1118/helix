@@ -1491,6 +1491,33 @@ runs. The colours come from the theme (`ui.scrollbar.handle`, `ui.scrollbar.curs
 plugins add marks with `buffer:set_scrollbar_marks`. See
 [`[editor.scrollbar]`](book/src/editor.md#editorscrollbar-section) in the book.
 
+## Where the Cursor Was Last
+
+A buffer opens where its cursor was last, as with
+[nvim-lastplace](https://github.com/ethanholz/nvim-lastplace), in the core:
+
+- **After a restart.** A file opens at the place (and scroll) it had when Helix quit or the
+  buffer was closed. This is `[editor.persistence] old-files`, now on by default. A place
+  given on the command line (`hx file:12`) still wins. Files that changed since, so that the
+  place is past their end, open at their start.
+- **In the same session.** After `:buffer-close`, the file opens again where its cursor was,
+  with or without `old-files`.
+- **In a new window.** A window that shows a buffer for the first time (a split, a tab, `:open`
+  in another window) starts where the cursor was last. That is its place in the window it last
+  moved in, or where it was when that window closed. Each window keeps its own place after
+  that, as before.
+
+```toml
+[editor.persistence]
+old-files = true                                          # false: not after a restart
+old-files-exclusions = [".*/\\.git/.*", ".*/COMMIT_EDITMSG"]  # always open at their start
+old-files-trim = 100                                      # files kept in the history
+```
+
+The places are kept in `file_history` in Helix's state directory, one per file. Helix also
+writes them as it exits when it is stopped by a signal (`SIGTERM`, `SIGINT`). See
+[Where the cursor was last](book/src/editor.md#where-the-cursor-was-last) in the book.
+
 ## Persistent Undo
 
 Undo history that survives closing a file and quitting Helix. Saving a file also writes its

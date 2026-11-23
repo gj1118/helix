@@ -7056,10 +7056,11 @@ fn reload_history(
     }
 
     if cx.editor.config().persistence.old_files {
-        cx.editor.old_file_locs = HashMap::from_iter(
+        // what other instances wrote since, over what this one noted
+        cx.editor.old_file_locs.extend(
             persistence::read_file_history()
                 .into_iter()
-                .map(|entry| (entry.path.clone(), (entry.view_position, entry.selection))),
+                .map(|entry| (entry.path, (entry.view_position, entry.selection))),
         );
         let file_trim = cx.editor.config().persistence.old_files_trim;
         cx.jobs.add(

@@ -1103,6 +1103,8 @@ fn app_on_directory(dir: &std::path::Path, explorer: &str) -> anyhow::Result<App
     config.keys = helix_term::keymap::default();
     config.editor.lsp.enable = false;
     config.editor.recent_picker.enable = false;
+    // as the test builder: no file history (`old-files`)
+    config.editor.persistence.old_files = false;
     Application::new(
         args,
         config,

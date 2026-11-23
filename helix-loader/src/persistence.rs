@@ -125,6 +125,29 @@ pub fn trim_history<T: Clone + Serialize + for<'a> Deserialize<'a>>(
     }
 }
 
+/// [`trim_history`] for a history with one entry that counts for each `key` (each file's last
+/// place, say): past `limit` entries, the file is rewritten with the last entry of each of the
+/// last `limit` keys.
+pub fn trim_history_by<T, K>(filepath: PathBuf, limit: usize, key: impl Fn(&T) -> K)
+where
+    T: Clone + Serialize + for<'a> Deserialize<'a>,
+    K: Eq + std::hash::Hash,
+{
+    let (history, complete): (Vec<T>, _) = read_history_impl(&filepath);
+    if history.len() <= limit && complete {
+        return;
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut kept: Vec<T> = history
+        .into_iter()
+        .rev()
+        .filter(|entry| seen.insert(key(entry)))
+        .take(limit)
+        .collect();
+    kept.reverse();
+    write_history(filepath, &kept);
+}
+
 /// Writes `value` alone to `filepath`, creating its folder: to a temporary file next to it
 /// first, then moved over it, so a crash halfway leaves the old file (or none), never half a
 /// file.
@@ -212,5 +235,40 @@ mod test {
         assert_eq!(read_history::<String>(&path), ["bc", "def", "g"]);
 
         assert!(read_history::<String>(&dir.path().join("missing")).is_empty());
+    }
+
+    /// Past the limit, a history of places keeps the last place of each of the last files;
+    /// within it, the file is left as it is (repeated files and all).
+    #[test]
+    fn a_history_trimmed_by_key_keeps_the_last_entry_of_the_last_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("places");
+        let place = |file: &str, line: u32| (file.to_string(), line);
+        let places = [
+            place("a", 1),
+            place("b", 2),
+            place("a", 3),
+            place("c", 4),
+            place("b", 5),
+        ];
+        write_history(path.clone(), &places);
+        let by_file = |entry: &(String, u32)| entry.0.clone();
+
+        trim_history_by(path.clone(), 5, by_file);
+        let read: Vec<(String, u32)> = read_history(&path);
+        assert_eq!(read, places.to_vec(), "five entries are within the limit");
+
+        trim_history_by(path.clone(), 2, by_file);
+        let read: Vec<(String, u32)> = read_history(&path);
+        assert_eq!(read, vec![place("c", 4), place("b", 5)]);
+
+        write_history(path.clone(), &places);
+        trim_history_by(path.clone(), 4, by_file);
+        let read: Vec<(String, u32)> = read_history(&path);
+        assert_eq!(
+            read,
+            vec![place("a", 3), place("c", 4), place("b", 5)],
+            "each file once, its last place"
+        );
     }
 }

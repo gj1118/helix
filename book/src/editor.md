@@ -1576,16 +1576,36 @@ The state is formatted with bincode, and stored in files in the state directory 
 
 | Key | Description | Default |
 | --- | ----------- | ------- |
-| `old-files` | whether to persist file locations between sessions ( when you reopen the a file, it will open at the place you last closed it) | `false` |
+| `old-files` | whether files open where their cursor was last after a restart too (see [Where the cursor was last](#where-the-cursor-was-last)) | `true` |
 | `commands` | whether to persist command history between sessions | `false` |
 | `search` | whether to persist search history between sessions | `false` |
 | `clipboard` | whether to persist helix's internal clipboard between sessions | `false` |
-| `old-files-exclusions` | a list of regexes defining file paths to exclude from persistence | `[".*/\.git/.*", ".*/COMMIT_EDITMSG"]` |
-| `old-files-trim` | number of old-files entries to keep when helix trims the state files at startup | `100` |
+| `old-files-exclusions` | a list of regexes of file paths that always open at their start (in the same session too) | `[".*/\.git/.*", ".*/COMMIT_EDITMSG"]` |
+| `old-files-trim` | number of files whose last place is kept, when helix trims the state files at startup | `100` |
 | `commands-trim` | number of command history entries to keep when helix trims the state files at startup | `100` |
 | `search-trim` | number of search history entries to keep when helix trims the state files at startup | `100` |
 | `undo` | whether to keep each file's undo history when it is saved, and bring it back when the file is opened again (persistent undo, see below) | `false` |
 | `undo-dir` | the folder the undo histories are kept in | `undo` in the state directory |
+
+#### Where the cursor was last
+
+A buffer opens where its cursor was last (like Vim's `'"` mark with a "last place" plugin):
+
+- After a restart, with `old-files` (on by default): a file opens at the place it had, and the
+  scroll of its window, when Helix quit or the buffer was closed. A place given on the command
+  line (`hx file:12`, `hx +12 file`) still wins.
+- In the same session, whatever `old-files` says: after `:buffer-close`, the file opens again
+  where its cursor was.
+- In a window that shows the buffer for the first time (a split, a tab, `:open` in another
+  window): where the cursor is in the window it last moved in, or, that window closed, where it
+  was when it closed. A window that showed the buffer before keeps its own place.
+
+Files matching `old-files-exclusions` (commit messages, by default) always open at their
+start. So does a file changed by another program so that its place is past its end.
+
+The places are written to `file_history` in the state directory as buffers and windows
+close, and as Helix exits (when stopped by a signal too). At startup, past `old-files-trim`
+entries, the file is cut down to the last place of each of the last `old-files-trim` files.
 
 #### Persistent undo
 

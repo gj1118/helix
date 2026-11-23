@@ -381,6 +381,12 @@ pub struct Document {
     pub plugin_line_numbers: HashMap<ViewId, Vec<PluginLineNumberStyle>>,
     /// Marks plugins put on the scrollbar (`buffer:set_scrollbar_marks`).
     pub plugin_scrollbar_marks: Vec<PluginScrollbarMark>,
+    /// The window the cursor last moved in: the cursor was last where it is there.
+    last_view: Option<ViewId>,
+    /// Where the cursor was last, with the window's scroll, when that is not in a window
+    /// any more (the window closed, or the file was opened again): a window showing the
+    /// document for the first time starts there. Moved along by the edits since.
+    last_position: Option<(Selection, ViewPosition)>,
     fold_container: HashMap<ViewId, FoldContainer>,
     /// LSP document highlights for each view, stored as char ranges.
     pub(crate) document_highlights: HashMap<ViewId, DocumentHighlights>,
@@ -1337,6 +1343,8 @@ impl Document {
             plugin_overlays: HashMap::new(),
             plugin_line_numbers: HashMap::new(),
             plugin_scrollbar_marks: Vec::new(),
+            last_view: None,
+            last_position: None,
             document_highlights: HashMap::new(),
             code_action_hints: HashSet::new(),
             color_swatches: None,
@@ -2143,6 +2151,7 @@ impl Document {
         // TODO: use a transaction?
         self.selections
             .insert(view_id, selection.ensure_invariants(self.text().slice(..)));
+        self.last_view = Some(view_id);
 
         if let Some((container, selection)) = self
             .fold_container
@@ -2185,9 +2194,17 @@ impl Document {
 
     /// Initializes a new selection and view_data for the given view
     /// if it does not already have them.
+    /// A window new to the document starts where the cursor was last
+    /// ([`Document::last_position`]), at the start of the document when it never was anywhere.
     pub fn ensure_view_init(&mut self, view_id: ViewId) {
         if !self.selections.contains_key(&view_id) {
-            self.reset_selection(view_id);
+            match self.last_position() {
+                Some((selection, view_position)) => {
+                    self.set_selection(view_id, selection);
+                    self.view_data_mut(view_id).view_position = view_position;
+                }
+                None => self.reset_selection(view_id),
+            }
         }
 
         self.view_data_mut(view_id);
@@ -2204,6 +2221,14 @@ impl Document {
 
     /// Remove a view's selection and inlay hints from this document.
     pub fn remove_view(&mut self, view_id: ViewId) {
+        // the cursor was last in this window: where it is goes on being where it was last
+        if self.last_view == Some(view_id) {
+            self.last_view = None;
+            if let Some(selection) = self.selections.get(&view_id) {
+                let view_position = self.get_view_offset(view_id).unwrap_or_default();
+                self.last_position = Some((selection.clone(), view_position));
+            }
+        }
         self.selections.remove(&view_id);
         self.view_data.remove(&view_id);
         self.inlay_hints.remove(&view_id);
@@ -2357,6 +2382,10 @@ impl Document {
 
         self.modified_since_accessed = true;
         self.version += 1;
+        // an edit made in a window: the cursor is there
+        if self.selections.contains_key(&view_id) {
+            self.last_view = Some(view_id);
+        }
 
         for container in self.fold_container.values_mut() {
             container.update_by_transaction(self.text.slice(..), old_doc.slice(..), transaction);
@@ -2381,6 +2410,16 @@ impl Document {
             view_data.view_position.anchor = transaction
                 .changes()
                 .map_pos(view_data.view_position.anchor, Assoc::Before);
+        }
+
+        if let Some((selection, view_position)) = &mut self.last_position {
+            *selection = selection
+                .clone()
+                .map(transaction.changes())
+                .ensure_invariants(self.text.slice(..));
+            view_position.anchor = transaction
+                .changes()
+                .map_pos(view_position.anchor, Assoc::Before);
         }
 
         // generate revert to savepoint
@@ -3144,6 +3183,37 @@ impl Document {
         self.view_data(view_id).view_position
     }
 
+    /// Where the cursor was last in the document, and the scroll of its window: where it is
+    /// in the window it last moved in, or, that window closed, where it was when it closed
+    /// (or where [`Document::remember_position`] says). `None` when the document was never
+    /// shown.
+    pub fn last_position(&self) -> Option<(Selection, ViewPosition)> {
+        if let Some(view_id) = self.last_view {
+            if let Some(selection) = self.selections.get(&view_id) {
+                let view_position = self.get_view_offset(view_id).unwrap_or_default();
+                return Some((selection.clone(), view_position));
+            }
+        }
+        self.last_position.clone()
+    }
+
+    /// The window the cursor last moved in, while it is open.
+    pub fn last_view(&self) -> Option<ViewId> {
+        self.last_view
+            .filter(|view_id| self.selections.contains_key(view_id))
+    }
+
+    /// Notes where the cursor was last (when the file was last closed, say): the next window
+    /// to show the document starts there. Ignored when it lies past the end of the text (the
+    /// file changed since) or when the cursor has been somewhere in the document already.
+    pub fn remember_position(&mut self, selection: Selection, view_position: ViewPosition) {
+        let len = self.text.len_chars();
+        let fits = view_position.anchor <= len && selection.ranges().iter().all(|r| r.to() <= len);
+        if fits && self.last_position().is_none() {
+            self.last_position = Some((selection, view_position));
+        }
+    }
+
     pub fn set_view_offset(&mut self, view_id: ViewId, new_offset: ViewPosition) {
         self.view_data_mut(view_id).view_position = new_offset;
     }
@@ -3798,6 +3868,127 @@ mod test {
         let typed = Transaction::change(doc.text(), [(0, 0, Some("x".into()))].into_iter());
         doc.apply(&typed, view);
         assert!(!doc.has_unsent_changes());
+    }
+
+    fn doc_with_text(text: &str) -> Document {
+        Document::from(
+            Rope::from(text),
+            None,
+            Arc::new(ArcSwap::new(Arc::new(Config::default()))),
+            Arc::new(ArcSwap::from_pointee(syntax::Loader::default())),
+        )
+    }
+
+    /// A cursor on the character at `at` (one character selected).
+    fn cursor(at: usize) -> Selection {
+        Selection::single(at, at + 1)
+    }
+
+    /// Four different window ids.
+    fn view_ids() -> [ViewId; 4] {
+        let mut views = slotmap::SlotMap::<ViewId, ()>::with_key();
+        [(); 4].map(|()| views.insert(()))
+    }
+
+    /// A window new to a document starts where the cursor was last: in the window it last
+    /// moved in, while that one is open, where it was when it closed after.
+    #[test]
+    fn a_new_window_starts_where_the_cursor_was_last() {
+        let mut doc = doc_with_text("one\ntwo\nthree\nfour\n");
+        let [first, second, third, _] = view_ids();
+        let none: Option<(Selection, ViewPosition)> = doc.last_position();
+        assert_eq!(none, None, "never shown");
+
+        doc.ensure_view_init(first);
+        let start: Selection = doc.selection(first).clone();
+        assert_eq!(
+            start,
+            Selection::single(0, 1),
+            "a new document starts at its start"
+        );
+
+        // the cursor moves in the first window: the second starts there
+        doc.set_selection(first, cursor(9));
+        doc.set_view_offset(
+            first,
+            ViewPosition {
+                anchor: 4,
+                ..Default::default()
+            },
+        );
+        doc.ensure_view_init(second);
+        assert_eq!(doc.selection(second), &cursor(9));
+        let offset: ViewPosition = doc.view_offset(second);
+        assert_eq!(offset.anchor, 4_usize);
+
+        // it moves in the second, which then closes: where it was there is where it was last
+        doc.set_selection(second, cursor(14));
+        let last: Option<ViewId> = doc.last_view();
+        assert_eq!(last, Some(second));
+        doc.remove_view(second);
+        assert_eq!(doc.last_view(), None);
+        doc.ensure_view_init(third);
+        assert_eq!(doc.selection(third), &cursor(14));
+        // the first window keeps its own place
+        assert_eq!(doc.selection(first), &cursor(9));
+    }
+
+    /// Where the cursor was last, its window closed, moves with the edits made after (made
+    /// with no window of the document); an edit made in a window puts the cursor's last place
+    /// there.
+    #[test]
+    fn the_last_position_moves_with_edits() {
+        let mut doc = doc_with_text("one\ntwo\nthree\n");
+        let [first, second, third, fourth] = view_ids();
+        doc.ensure_view_init(first);
+        doc.ensure_view_init(second);
+        doc.set_selection(second, cursor(8));
+        doc.remove_view(second);
+        doc.remove_view(first);
+        let shown: usize = doc.selections().len();
+        assert_eq!(shown, 0_usize, "shown nowhere");
+
+        // a line put before it
+        let edit = Transaction::change(doc.text(), [(0, 0, Some("zero\n".into()))].into_iter());
+        let applied: bool = doc.apply_impl(&edit, third, true);
+        assert!(applied);
+        let (selection, _) = doc.last_position().expect("noted when the window closed");
+        assert_eq!(selection, cursor(13));
+        doc.ensure_view_init(third);
+        assert_eq!(doc.selection(third), &cursor(13));
+
+        // an edit made in a window: the cursor was last there, even without moving it
+        doc.ensure_view_init(fourth);
+        doc.set_selection(third, cursor(0));
+        let edit = Transaction::change(doc.text(), [(19, 19, Some("!".into()))].into_iter());
+        doc.apply(&edit, fourth);
+        let last: Option<ViewId> = doc.last_view();
+        assert_eq!(last, Some(fourth));
+    }
+
+    /// A remembered place (the file's, from when it was last closed) is where a new window
+    /// starts; one past the end of the text (the file changed since) is not used.
+    #[test]
+    fn a_remembered_position_is_used_when_it_fits() {
+        let [view, ..] = view_ids();
+        let position = ViewPosition {
+            anchor: 4,
+            horizontal_offset: 0,
+            vertical_offset: 0,
+        };
+
+        let mut doc = doc_with_text("one\ntwo\nthree\n");
+        doc.remember_position(cursor(10), position);
+        doc.ensure_view_init(view);
+        assert_eq!(doc.selection(view), &cursor(10));
+        assert_eq!(doc.view_offset(view), position);
+
+        let mut doc = doc_with_text("one\n");
+        doc.remember_position(cursor(10), position);
+        let ignored: Option<(Selection, ViewPosition)> = doc.last_position();
+        assert_eq!(ignored, None);
+        doc.ensure_view_init(view);
+        assert_eq!(doc.selection(view), &Selection::single(0, 1));
     }
 
     #[test]

@@ -2431,7 +2431,8 @@ pub struct PersistenceConfig {
 impl Default for PersistenceConfig {
     fn default() -> Self {
         Self {
-            old_files: false,
+            // files open where the cursor was last, after a restart too
+            old_files: true,
             commands: false,
             search: false,
             clipboard: false,
@@ -2991,7 +2992,9 @@ pub struct Editor {
     /// events (resize handles) and applied by the application.
     pub pointer_shape: PointerShape,
     pub workspace_trust: WorkspaceTrust,
-    /// File positions restored from / written to persistent state.
+    /// Where the cursor was last in each file closed (and the scroll of its window): the file
+    /// opens there again. Read from the file history at startup with `[editor.persistence]
+    /// old-files`, and written to it as files close.
     pub old_file_locs: HashMap<PathBuf, (ViewPosition, Selection)>,
     /// Run by [`Editor::save`] before a document is written (the application runs the plugins'
     /// `buffer_pre_save` handlers with it). It may edit the document: what it leaves is
@@ -4266,9 +4269,14 @@ impl Editor {
                 );
                 self.add_to_tab_of(Some(view_id), id);
                 // initialize selection for view
+                let scrolloff = self.config().scrolloff;
                 let doc = doc_mut!(self, &id);
                 doc.ensure_view_init(view_id);
                 doc.mark_as_focused();
+                // where the cursor was last, seen in a window of another size
+                if let Some(view) = self.tree.try_get(view_id) {
+                    view.ensure_cursor_in_view(doc, scrolloff);
+                }
                 focus_lost
             }
         };
@@ -4400,6 +4408,61 @@ impl Editor {
         }
     }
 
+    /// A file never remembered where its cursor was (`[editor.persistence]
+    /// old-files-exclusions`: a commit message opens at its start).
+    fn excluded_from_old_files(&self, path: &Path) -> bool {
+        let path = path.to_string_lossy();
+        self.config()
+            .persistence
+            .old_files_exclusions
+            .iter()
+            .any(|regex| regex.is_match(&path))
+    }
+
+    /// Notes where the cursor was last in a document, for when its file is opened again: in
+    /// this session, and in later ones with `[editor.persistence] old-files` (written to the
+    /// file history then).
+    pub fn note_last_position(&mut self, doc_id: DocumentId) {
+        let Some(doc) = self.documents.get(&doc_id) else {
+            return;
+        };
+        let (Some(path), Some((selection, view_position))) = (doc.path(), doc.last_position())
+        else {
+            return;
+        };
+        if self.excluded_from_old_files(path) {
+            return;
+        }
+        // noted already (the window closed, then the buffer)
+        if self
+            .old_file_locs
+            .get(path)
+            .is_some_and(|(noted_position, noted)| {
+                *noted_position == view_position && *noted == selection
+            })
+        {
+            return;
+        }
+        let path = path.to_path_buf();
+        if self.config().persistence.old_files {
+            persistence::push_file_history(&FileHistoryEntry::new(
+                path.clone(),
+                view_position,
+                selection.clone(),
+            ));
+        }
+        self.old_file_locs.insert(path, (view_position, selection));
+    }
+
+    /// [`Editor::note_last_position`] for every document (on exit: the windows still open
+    /// were not closed).
+    pub fn note_last_positions(&mut self) {
+        let ids: Vec<DocumentId> = self.documents.keys().copied().collect();
+        for doc_id in ids {
+            self.note_last_position(doc_id);
+        }
+    }
+
     /// Writes the recently used files still to write (on exit).
     pub fn flush_recent_files(&self) {
         let config = self.config();
@@ -4412,11 +4475,9 @@ impl Editor {
         let path = helix_stdx::path::canonicalize(path);
         let id = self.document_id_by_path(&path);
 
-        let mut id_was_new = false;
         let id = if let Some(id) = id {
             id
         } else {
-            id_was_new = true;
             let mut doc = Document::open(
                 &path,
                 None,
@@ -4440,6 +4501,14 @@ impl Editor {
                 self.diff_providers.get_current_head_name(&path, trust_full),
             );
 
+            // The file was open before (in this session, or in an earlier one with
+            // `[editor.persistence] old-files`): it opens where the cursor was last.
+            if !self.excluded_from_old_files(&path) {
+                if let Some((view_position, selection)) = self.old_file_locs.get(&path) {
+                    doc.remember_position(selection.clone(), *view_position);
+                }
+            }
+
             let id = self.new_document(doc);
 
             self.launch_language_servers(id);
@@ -4453,37 +4522,8 @@ impl Editor {
             id
         };
 
-        let new_doc = id_was_new;
         self.switch(id, action);
         self.record_recent_file(&path);
-
-        // Restore file position from persistent history when enabled.
-        // This needs to happen after switch, since switch messes with view offsets.
-        if new_doc
-            && self.config().persistence.old_files
-            && !self
-                .config()
-                .persistence
-                .old_files_exclusions
-                .iter()
-                .any(|r| r.is_match(&path.to_string_lossy()))
-        {
-            if let Some((view_position, selection)) =
-                self.old_file_locs.get(&path).map(|x| x.to_owned())
-            {
-                let (view, doc) = current!(self);
-
-                let doc_len = doc.text().len_chars();
-                // Don't restore if the selection or the view goes beyond the file's end (it
-                // changed since): a view anchored past the end can't be rendered.
-                if view_position.anchor <= doc_len
-                    && !selection.ranges().iter().any(|range| range.to() > doc_len)
-                {
-                    doc.set_view_offset(view.id, view_position);
-                    doc.set_selection(view.id, selection);
-                }
-            }
-        }
 
         Ok(id)
     }
@@ -4550,38 +4590,17 @@ impl Editor {
     }
 
     pub fn close(&mut self, id: ViewId) {
-        let mut file_locs = Vec::new();
-
+        // the documents whose cursor was last in this window
+        let mut left = Vec::new();
         for doc in self.documents_mut() {
-            // Persist file location history for this view
-            if doc.selections().contains_key(&id) {
-                if let Some(path) = doc.path() {
-                    file_locs.push(FileHistoryEntry::new(
-                        path.to_path_buf(),
-                        doc.view_offset(id),
-                        doc.selection(id).clone(),
-                    ));
-                }
+            if doc.last_view() == Some(id) {
+                left.push(doc.id());
             }
-
             // Remove selections for the closed view on all documents.
             doc.remove_view(id);
         }
-
-        if self.config().persistence.old_files {
-            for loc in file_locs {
-                if !self
-                    .config()
-                    .persistence
-                    .old_files_exclusions
-                    .iter()
-                    .any(|r| r.is_match(&loc.path.to_string_lossy()))
-                {
-                    persistence::push_file_history(&loc);
-                    self.old_file_locs
-                        .insert(loc.path, (loc.view_position, loc.selection));
-                }
-            }
+        for doc_id in left {
+            self.note_last_position(doc_id);
         }
 
         self.tree.remove(id);
@@ -4627,7 +4646,8 @@ impl Editor {
             ReplaceDoc(ViewId, DocumentId),
         }
 
-        let mut file_locs = Vec::new();
+        // where the cursor was last, for when the file is opened again
+        self.note_last_position(doc_id);
 
         // the windows of every tab: one in a tab not shown must not keep a closed buffer
         let actions: Vec<Action> = self
@@ -4637,14 +4657,6 @@ impl Editor {
                 view.remove_document(&doc_id);
 
                 if view.doc == doc_id {
-                    if let Some(path) = doc.path() {
-                        file_locs.push(FileHistoryEntry::new(
-                            path.to_path_buf(),
-                            doc.view_offset(view.id),
-                            doc.selection(view.id).clone(),
-                        ));
-                    }
-
                     // something was previously open in the view, switch to previous doc
                     if let Some(prev_doc) = view.docs_access_history.pop() {
                         Some(Action::ReplaceDoc(view.id, prev_doc))
@@ -4657,22 +4669,6 @@ impl Editor {
                 }
             })
             .collect();
-
-        if self.config().persistence.old_files {
-            for loc in file_locs {
-                if !self
-                    .config()
-                    .persistence
-                    .old_files_exclusions
-                    .iter()
-                    .any(|r| r.is_match(&loc.path.to_string_lossy()))
-                {
-                    persistence::push_file_history(&loc);
-                    self.old_file_locs
-                        .insert(loc.path, (loc.view_position, loc.selection));
-                }
-            }
-        }
 
         for action in actions {
             match action {

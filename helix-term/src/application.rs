@@ -328,6 +328,8 @@ impl Application {
             // If there are any more files specified, open them
             if files_it.peek().is_some() {
                 let mut nr_of_files = 0;
+                // the documents given a place to open at (`hx file:LINE`)
+                let mut placed = Vec::new();
                 for (file, pos) in files_it {
                     nr_of_files += 1;
                     if file.is_dir() {
@@ -383,6 +385,7 @@ impl Application {
                                 })
                                 .collect();
                             doc.set_selection(view_id, selection);
+                            placed.push(doc_id);
                         }
                     }
                 }
@@ -396,10 +399,13 @@ impl Application {
                         nr_of_files,
                         if nr_of_files == 1 { "" } else { "s" } // avoid "Loaded 1 files." grammo
                     ));
-                    // align the view to center after all files are loaded,
-                    // does not affect views without pos since it is at the top
+                    // align the view to center after all files are loaded, when the file shown
+                    // was given a place to open at: one opening where its cursor was last keeps
+                    // the scroll it had
                     let (view, doc) = current!(editor);
-                    align_view(doc, view, Align::Center);
+                    if placed.contains(&doc.id()) {
+                        align_view(doc, view, Align::Center);
+                    }
                 }
             } else {
                 editor.new_file(Action::VerticalSplit);
@@ -2565,6 +2571,10 @@ impl Application {
         }
 
         self.editor.close_language_servers(None).await;
+
+        // Where the cursor was last in the files still open (`:q` closed none of them when
+        // Helix was stopped by a signal).
+        self.editor.note_last_positions();
 
         // The recent files noted and not yet written (a tiny file).
         self.editor.flush_recent_files();

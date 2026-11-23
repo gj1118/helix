@@ -1,10 +1,11 @@
 use helix_core::Selection;
 use helix_loader::{
-    clipboard_file, command_histfile, file_histfile,
+    clipboard_file, command_histfile,
     persistence::{
-        push_history, read_history, read_state_file, trim_history, write_history, write_state_file,
+        push_history, read_history, read_state_file, trim_history, trim_history_by, write_history,
+        write_state_file,
     },
-    search_histfile,
+    search_histfile, try_file_histfile,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -28,16 +29,25 @@ impl FileHistoryEntry {
     }
 }
 
+// The file history is skipped when its file was never set (tests that don't ask for one).
+
 pub fn push_file_history(entry: &FileHistoryEntry) {
-    push_history(file_histfile(), entry)
+    if let Some(path) = try_file_histfile() {
+        push_history(path, entry)
+    }
 }
 
 pub fn read_file_history() -> Vec<FileHistoryEntry> {
-    read_history(&file_histfile())
+    try_file_histfile()
+        .map(|path| read_history(&path))
+        .unwrap_or_default()
 }
 
+/// Keeps the last `limit` files of the file history, each once (where its cursor was last).
 pub fn trim_file_history(limit: usize) {
-    trim_history::<FileHistoryEntry>(file_histfile(), limit)
+    if let Some(path) = try_file_histfile() {
+        trim_history_by::<FileHistoryEntry, _>(path, limit, |entry| entry.path.clone())
+    }
 }
 
 pub fn push_reg_history(register: char, line: &String) {
