@@ -1455,6 +1455,38 @@ typing during the animation. It draws about 60 frames a second. To see the diffe
 `:set smooth-scroll.duration 1000` and `:toggle smooth-scroll.enable` while the editor runs. See [`[editor.smooth-scroll]`](book/src/editor.md#editorsmooth-scroll-section)
 in the book.
 
+## Scrollbar
+
+A scrollbar on the right of each view, after
+[nvim-scrollbar](https://github.com/petertriho/nvim-scrollbar): the handle beside the lines on
+screen, and marks of the cursor, the last search's matches (while the cursor is on one),
+diagnostics, git changes and plugins along the whole buffer. Of the marks on a row the most
+important is drawn, `=` instead of `-` when there are more. It is off by default; every
+nvim-scrollbar setting that applies is a setting here:
+
+```toml
+[editor.scrollbar]
+enable = true
+show-in-active-only = false
+max-lines = 0                 # no bar in longer buffers; 0: no limit
+hide-if-all-visible = false
+folds = 1000                  # folded lines left out in buffers up to this many lines
+excluded-languages = []
+
+[editor.scrollbar.handle]
+blend = 30                    # how much of the background shows through it
+# color = "#444442"
+
+[editor.scrollbar.marks.error]
+text = ["-", "="]
+# priority, color, highlight (a theme key), modifiers
+```
+
+`:scrollbar-toggle`, `:scrollbar-show` and `:scrollbar-hide` show and hide it while the editor
+runs. The colours come from the theme (`ui.scrollbar.handle`, `ui.scrollbar.cursor`...);
+plugins add marks with `buffer:set_scrollbar_marks`. See
+[`[editor.scrollbar]`](book/src/editor.md#editorscrollbar-section) in the book.
+
 ## Persistent Undo
 
 Undo history that survives closing a file and quitting Helix. Saving a file also writes its

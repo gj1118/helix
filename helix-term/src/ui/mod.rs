@@ -21,6 +21,7 @@ pub mod popup;
 pub mod prompt;
 pub mod quickfix;
 pub mod rounded_cursor;
+pub mod scrollbar;
 mod select;
 mod spinner;
 mod statusline;

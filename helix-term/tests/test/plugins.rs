@@ -2102,3 +2102,58 @@ async fn overlays_take_the_rows_of_wrapped_lines() -> anyhow::Result<()> {
     assert_eq!(cells(2), " WAxw", "the next one: {context}");
     Ok(())
 }
+
+/// Plugins' marks on the scrollbar, as nvim-scrollbar's custom handlers give them: on their
+/// line's row, in their type's text and colour or their own; they move with edits.
+#[tokio::test(flavor = "multi_thread")]
+async fn plugins_put_marks_on_the_scrollbar() -> anyhow::Result<()> {
+    use helix_view::graphics::Color;
+    let text: String = (1..=100).map(|i| format!("line {i}\n")).collect();
+    let file = helpers::temp_file_with_contents(&text)?;
+    let init = r##"
+        helix.on("ready", function()
+            helix.buffer.get_current():set_scrollbar_marks({
+                -- a misc mark (the default type), its text and colour its own
+                { line = 51, text = "T", fg = "#010203" },
+                -- an error's: `-`
+                { line = 91, type = "error" },
+            })
+        end)
+    "##;
+    let dir = plugin_dir(&[("marks", init, None)])?;
+    let mut config = plugin_config(dir.path(), "[[plugins]]\nname = \"marks\"\n")?;
+    config.editor.true_color = true;
+    config.editor.scrollbar.enable = true;
+    config.editor.notifications.enable = false;
+    let mut app = helpers::AppBuilder::new()
+        .with_file(file.path(), None)
+        .with_config(config)
+        .build()?;
+    app.resize_terminal(40, 22).await;
+    send_keys(&mut app, "").await?;
+
+    // 100 lines on 20 rows: line 51 on row 10, line 91 on row 18
+    let cell = |app: &Application, row: u16| {
+        let (view, doc) = helix_view::current_ref!(app.editor);
+        let inner = view.inner_area(doc);
+        let cell = app.rendered_cell(inner.right(), inner.y + row);
+        (cell.symbol.to_string(), cell.fg)
+    };
+    assert_eq!(cell(&app, 10), ("T".to_string(), Color::Rgb(1, 2, 3)));
+    assert_eq!(cell(&app, 18).0, "-");
+
+    // ten lines added above: line 51 is line 61 now (110 lines on 20 rows: 60 × 20 / 110,
+    // row 10), line 91 is line 101 (row 18)
+    send_keys(&mut app, &"ggO<esc>".repeat(10)).await?;
+    let marks = {
+        let (_, doc) = helix_view::current_ref!(app.editor);
+        doc.plugin_scrollbar_marks
+            .iter()
+            .map(|mark| mark.line)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(marks, vec![60, 100]);
+    assert_eq!(cell(&app, 10).0, "T");
+    assert_eq!(cell(&app, 18).0, "-");
+    Ok(())
+}

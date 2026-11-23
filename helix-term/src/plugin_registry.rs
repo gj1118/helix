@@ -644,7 +644,10 @@ fn typable_permissions(name: &str) -> Option<&'static [Permission]> {
         | "notifications-history"
         | "notifications-clear"
         | "notifications-dismiss"
-        | "notifications-test" => &[Ui],
+        | "notifications-test"
+        | "scrollbar-toggle"
+        | "scrollbar-show"
+        | "scrollbar-hide" => &[Ui],
         // change buffers
         "format"
         | "indent-style"

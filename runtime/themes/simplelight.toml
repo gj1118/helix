@@ -144,6 +144,13 @@
 "diagnostic.unnecessary" = { modifiers = ["dim"] }
 "diagnostic.deprecated" = { modifiers = ["crossed_out"] }
 
+# The scrollbar (`[editor.scrollbar]`): the handle beside the lines on screen (mixed with the
+# background by `handle.blend`), and the marks of the cursor and of search matches (the
+# others take the diagnostics' and the diff's colours).
+"ui.scrollbar.handle" = { bg = "gray-3" }
+"ui.scrollbar.cursor" = { fg = "ink", modifiers = ["bold"] }
+"ui.scrollbar.search" = "dark-2"
+
 # The pile plugin (contrib/plugins/pile): the line beside the block around the cursor (a grey
 # as plain as hlchunk's violet on this background), the same line when the block has a syntax
 # error, and the numbers of the block's lines (the strongest ink).

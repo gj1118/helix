@@ -566,6 +566,9 @@ pub struct Config {
     pub bufferline: BufferLineConfig,
     /// Persistently display a breadcrumb navigation bar along the top of each view
     pub breadcrumb: BreadcrumbConfig,
+    /// A scrollbar on the right of each view, with marks of the cursor, search matches,
+    /// diagnostics, git changes and plugins (like nvim-scrollbar).
+    pub scrollbar: ScrollbarConfig,
     pub inline_completion: InlineCompletionConfig,
     /// Configuration of the file explorer
     pub file_explorer: FileExplorerConfig,
@@ -1643,6 +1646,155 @@ impl Default for InlineCompletionConfig {
     }
 }
 
+/// The scrollbar on the right of each view (`[editor.scrollbar]`), after nvim-scrollbar: its
+/// settings, by the same names (`show` is `enable`; `excluded_filetypes` is
+/// `excluded-languages`; colours come from the theme unless set here).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct ScrollbarConfig {
+    /// Show the scrollbar (it takes the rightmost column of each view). Defaults to false.
+    pub enable: bool,
+    /// Draw it only in the focused view (the others keep the column empty).
+    pub show_in_active_only: bool,
+    /// No scrollbar in buffers of more lines than this; `0`: no limit.
+    pub max_lines: usize,
+    /// Nothing drawn while the whole buffer is on screen.
+    pub hide_if_all_visible: bool,
+    /// In buffers of at most this many lines, folded lines are left out of the bar (it
+    /// spans the lines that can be seen); `0`: never.
+    pub folds: usize,
+    /// The least time in milliseconds between two searches of the buffer for the search
+    /// marks (they run in the background).
+    pub throttle_ms: u64,
+    /// The search marks only while the cursor is on a match of the last search, as
+    /// nvim-hlslens's `calm_down` (after `/`, `n`, `*`...); `false`: as long as there is a
+    /// last search.
+    pub search_calm_down: bool,
+    /// Languages without a scrollbar, by their name in `languages.toml` (`"markdown"`).
+    pub excluded_languages: Vec<String>,
+    pub handle: ScrollbarHandleConfig,
+    pub marks: ScrollbarMarksConfig,
+    pub handlers: ScrollbarHandlersConfig,
+}
+
+impl Default for ScrollbarConfig {
+    fn default() -> Self {
+        Self {
+            enable: false,
+            show_in_active_only: false,
+            max_lines: 0,
+            hide_if_all_visible: false,
+            folds: 1000,
+            throttle_ms: 100,
+            search_calm_down: true,
+            excluded_languages: Vec::new(),
+            handle: ScrollbarHandleConfig::default(),
+            marks: ScrollbarMarksConfig::default(),
+            handlers: ScrollbarHandlersConfig::default(),
+        }
+    }
+}
+
+/// The handle: the part of the bar beside the lines on screen.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct ScrollbarHandleConfig {
+    /// Drawn in each row of the handle without a mark.
+    pub text: String,
+    /// 0 to 100: how much of the editor's background shows through the handle's colour (0:
+    /// none, 100: only the background).
+    pub blend: u8,
+    /// Its colour (`"#rrggbb"` or a colour name), instead of the theme's.
+    pub color: Option<String>,
+    /// The theme key whose background is its colour, instead of `ui.scrollbar.handle` (then
+    /// `ui.cursorcolumn`, `ui.cursorline.primary`, `ui.selection`).
+    pub highlight: Option<String>,
+    /// No handle while the whole buffer is on screen.
+    pub hide_if_all_visible: bool,
+}
+
+impl Default for ScrollbarHandleConfig {
+    fn default() -> Self {
+        Self {
+            text: " ".to_string(),
+            blend: 30,
+            color: None,
+            highlight: None,
+            hide_if_all_visible: true,
+        }
+    }
+}
+
+/// The text of a mark: one, or one per level (the second for a row with more than one
+/// mark, and so on).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ScrollbarMarkText {
+    One(String),
+    Levels(Vec<String>),
+}
+
+/// One type of mark; what is not set is the type's default (see `crate::scrollbar`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct ScrollbarMarkConfig {
+    pub text: Option<ScrollbarMarkText>,
+    /// Of the marks on one row, the one of the lowest priority is drawn.
+    pub priority: Option<u8>,
+    /// Its colour (`"#rrggbb"` or a colour name), instead of the theme's.
+    pub color: Option<String>,
+    /// The theme key whose foreground is its colour, instead of its `ui.scrollbar.*` key.
+    pub highlight: Option<String>,
+    /// Modifiers of its text, as in themes (`["bold"]`): nvim-scrollbar's `gui`.
+    pub modifiers: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct ScrollbarMarksConfig {
+    pub cursor: ScrollbarMarkConfig,
+    pub search: ScrollbarMarkConfig,
+    pub error: ScrollbarMarkConfig,
+    pub warn: ScrollbarMarkConfig,
+    pub info: ScrollbarMarkConfig,
+    pub hint: ScrollbarMarkConfig,
+    pub misc: ScrollbarMarkConfig,
+    pub git_add: ScrollbarMarkConfig,
+    pub git_change: ScrollbarMarkConfig,
+    pub git_delete: ScrollbarMarkConfig,
+}
+
+/// What puts marks on the bar (and whether the handle is drawn).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
+pub struct ScrollbarHandlersConfig {
+    /// The primary cursor's line.
+    pub cursor: bool,
+    /// The diagnostics' lines.
+    pub diagnostic: bool,
+    /// The lines added, changed and deleted since the last commit.
+    pub git: bool,
+    /// The lines of the last search's matches.
+    pub search: bool,
+    /// The handle.
+    pub handle: bool,
+    /// The marks of plugins (`buffer:set_scrollbar_marks`).
+    pub plugins: bool,
+}
+
+impl Default for ScrollbarHandlersConfig {
+    fn default() -> Self {
+        Self {
+            cursor: true,
+            diagnostic: true,
+            git: true,
+            search: true,
+            handle: true,
+            plugins: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
 pub struct BreadcrumbConfig {
@@ -2358,6 +2510,7 @@ impl Default for Config {
             file_picker: FilePickerConfig::default(),
             bufferline: BufferLineConfig::default(),
             breadcrumb: BreadcrumbConfig::default(),
+            scrollbar: ScrollbarConfig::default(),
             inline_completion: InlineCompletionConfig::default(),
             file_explorer: FileExplorerConfig::default(),
             explorer: ExplorerConfig::default(),

@@ -220,6 +220,22 @@ pub struct PluginLineNumberStyle {
     pub style: crate::graphics::Style,
 }
 
+/// A mark a plugin puts on the scrollbar (`buffer:set_scrollbar_marks`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PluginScrollbarMark {
+    pub plugin: String,
+    /// The line (0-based).
+    pub line: usize,
+    /// Its type: its text, priority and colour unless given here.
+    pub kind: crate::scrollbar::MarkType,
+    /// The level of its type's text (1 the first).
+    pub level: usize,
+    pub text: Option<String>,
+    /// A theme key, under `style`.
+    pub scope: Option<String>,
+    pub style: Option<crate::graphics::Style>,
+}
+
 /// A range a plugin highlights with a theme key (`buffer:set_highlights`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PluginHighlight {
@@ -363,6 +379,8 @@ pub struct Document {
     pub plugin_overlays: HashMap<ViewId, Vec<PluginOverlay>>,
     /// Styles plugins give line numbers, by view (`buffer:set_line_number_styles`).
     pub plugin_line_numbers: HashMap<ViewId, Vec<PluginLineNumberStyle>>,
+    /// Marks plugins put on the scrollbar (`buffer:set_scrollbar_marks`).
+    pub plugin_scrollbar_marks: Vec<PluginScrollbarMark>,
     fold_container: HashMap<ViewId, FoldContainer>,
     /// LSP document highlights for each view, stored as char ranges.
     pub(crate) document_highlights: HashMap<ViewId, DocumentHighlights>,
@@ -1318,6 +1336,7 @@ impl Document {
             plugin_panels: HashMap::new(),
             plugin_overlays: HashMap::new(),
             plugin_line_numbers: HashMap::new(),
+            plugin_scrollbar_marks: Vec::new(),
             document_highlights: HashMap::new(),
             code_action_hints: HashSet::new(),
             color_swatches: None,
@@ -2258,7 +2277,10 @@ impl Document {
                 gutter.cells.sort_by_key(|cell| cell.line);
             }
         }
-        if !self.plugin_overlays.is_empty() || !self.plugin_line_numbers.is_empty() {
+        if !self.plugin_overlays.is_empty()
+            || !self.plugin_line_numbers.is_empty()
+            || !self.plugin_scrollbar_marks.is_empty()
+        {
             let old_lines = old_text.len_lines();
             let new_text = self.text.slice(..);
             let map_line = |line: usize| {
@@ -2279,6 +2301,9 @@ impl Document {
                     style.first = map_line(style.first);
                     style.last = map_line(style.last).max(style.first);
                 }
+            }
+            for mark in &mut self.plugin_scrollbar_marks {
+                mark.line = map_line(mark.line);
             }
         }
     }

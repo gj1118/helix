@@ -389,6 +389,13 @@ These scopes are used for theming the editor interface:
 | `ui.menu`                         | Code and command completion menus                                                              |
 | `ui.menu.selected`                | Selected autocomplete item                                                                     |
 | `ui.menu.scroll`                  | `fg` sets thumb color, `bg` sets track color of scrollbar                                      |
+| `ui.scrollbar`                    | The cells of the editor's scrollbar (`[editor.scrollbar]`) without the handle or a mark; none by default |
+| `ui.scrollbar.handle`             | Its handle: the background (mixed with `ui.background` by `handle.blend`) and the text's colour; falls back to the background of `ui.cursorcolumn.primary`, `ui.cursorline.primary`, then `ui.selection` |
+| `ui.scrollbar.cursor`             | The cursor's mark; falls back to `ui.text`                                                     |
+| `ui.scrollbar.search`             | The search matches' marks; falls back to `ui.cursor.match`, then the background of `ui.selection` |
+| `ui.scrollbar.error`, `.warning`, `.info`, `.hint` | The diagnostics' marks; fall back to `error`, `warning`, `info`, `hint`   |
+| `ui.scrollbar.misc`               | Plugins' marks without a type of their own; falls back to `ui.text`                            |
+| `ui.scrollbar.git.add`, `.change`, `.delete` | The git changes' marks; fall back to `diff.plus`, `diff.delta`, `diff.minus`     |
 | `ui.selection`                    | For selections in the editing area                                                             |
 | `ui.selection.primary`            |                                                                                                |
 | `ui.highlight`                    | Highlighted lines in the picker preview                                                        |

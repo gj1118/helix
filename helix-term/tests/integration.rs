@@ -57,6 +57,7 @@ mod test {
     mod remote;
     mod responsiveness;
     mod rounded_cursor;
+    mod scrollbar;
     mod smooth_scroll;
     mod snippets;
     mod splits;

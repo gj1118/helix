@@ -39,6 +39,7 @@
 - [`[editor.word-completion]` Section](#editorword-completion-section)
 - [`[editor.completion-highlight]` Section](#editorcompletion-highlight-section)
 - [`[editor.scrolloff]` Section](#editorscrolloff-section)
+- [`[editor.scrollbar]` Section](#editorscrollbar-section)
 - [`[editor.workspace-trust]` Section](#editorworkspace-trust-section)
 - [`[editor.persistence]` Section](#editorpersistence-section)
 - [Window resizing and focus mode](#window-resizing-and-focus-mode)
@@ -1371,6 +1372,123 @@ Settings the scrolloff to `999` for `vertical` will center the line with the cur
 vertical = 5
 horizontal = 5
 ```
+
+### `[editor.scrollbar]` Section
+
+A scrollbar on the right of each view, after
+[nvim-scrollbar](https://github.com/petertriho/nvim-scrollbar): the handle beside the lines on
+screen, and marks of the cursor, the last search's matches, diagnostics, git changes and plugins
+along the whole buffer. It is off by default.
+
+```toml
+[editor.scrollbar]
+enable = true
+```
+
+The bar takes the rightmost column of the view (the text is a column narrower, and soft-wrapped
+lines wrap a column earlier). A buffer that fits gets a row per line; a longer one is spread
+out over the rows. The handle covers the rows of the lines on screen. Of the marks on one row,
+the one of the lowest `priority` is drawn, with its type's next text when the row has more than
+one mark (`-` for one, `=` for more).
+
+| Key | Description | Default |
+|--|--|---------|
+| `enable` | Show the scrollbar (nvim-scrollbar's `show`) | `false` |
+| `show-in-active-only` | Draw it only in the focused view; the others keep the column, empty | `false` |
+| `max-lines` | No scrollbar (nor column) in buffers of more lines than this; `0`: no limit | `0` |
+| `hide-if-all-visible` | Nothing drawn while the whole buffer is on screen | `false` |
+| `folds` | In buffers of at most this many lines, folded lines are left out of the bar: it spans the lines that can be seen, a line in a fold is at its fold's header. `0`: never | `1000` |
+| `throttle-ms` | The least time in milliseconds between two searches of the buffer for the search marks (they run in the background) | `100` |
+| `search-calm-down` | Search marks only while the cursor is on a match of the last search (after `/`, `n`, `*`...), as nvim-hlslens's `calm_down`; `false`: as long as there is a last search | `true` |
+| `excluded-languages` | Languages without a scrollbar, by their name in `languages.toml` (nvim-scrollbar's `excluded_filetypes`) | `[]` |
+
+#### `[editor.scrollbar.handle]`
+
+| Key | Description | Default |
+|--|--|---------|
+| `text` | Drawn in each row of the handle without a mark | `" "` |
+| `blend` | 0 to 100: how much of the editor's background (`ui.background`) shows through the handle's colour; RGB colours only | `30` |
+| `color` | Its colour (`"#rrggbb"` or a colour name), instead of the theme's | none |
+| `highlight` | A theme key whose background is its colour, instead of `ui.scrollbar.handle` (then `ui.cursorcolumn.primary`, `ui.cursorline.primary`, `ui.selection`) | none |
+| `hide-if-all-visible` | No handle while the whole buffer is on screen | `true` |
+
+#### `[editor.scrollbar.marks.<type>]`
+
+The types: `cursor`, `search`, `error`, `warn`, `info`, `hint`, `misc` (plugins' marks unless
+they give a type), `git-add`, `git-change` and `git-delete`. What is not set keeps the type's
+default.
+
+| Key | Description |
+|--|--|
+| `text` | One text, or a list: the first for a row with one mark, the second for more |
+| `priority` | Of the marks on a row, the lowest is drawn |
+| `color` | Its colour (`"#rrggbb"` or a colour name), instead of the theme's |
+| `highlight` | A theme key whose foreground is its colour, instead of its own key |
+| `modifiers` | As in themes, `["bold"]` (nvim-scrollbar's `gui`) |
+
+| Type | Text | Priority | Theme key (then) |
+|--|--|--|--|
+| `cursor` | `"•"` | 0 | `ui.scrollbar.cursor` (`ui.text`) |
+| `search` | `["-", "="]` | 1 | `ui.scrollbar.search` (`ui.cursor.match`, the background of `ui.selection`) |
+| `error` | `["-", "="]` | 2 | `ui.scrollbar.error` (`error`) |
+| `warn` | `["-", "="]` | 3 | `ui.scrollbar.warning` (`warning`) |
+| `info` | `["-", "="]` | 4 | `ui.scrollbar.info` (`info`) |
+| `hint` | `["-", "="]` | 5 | `ui.scrollbar.hint` (`hint`) |
+| `misc` | `["-", "="]` | 6 | `ui.scrollbar.misc` (`ui.text`) |
+| `git-add` | `"┆"` | 7 | `ui.scrollbar.git.add` (`diff.plus`) |
+| `git-change` | `"┆"` | 7 | `ui.scrollbar.git.change` (`diff.delta`) |
+| `git-delete` | `"▁"` | 7 | `ui.scrollbar.git.delete` (`diff.minus`) |
+
+A mark in the handle has the handle's background. Rows without a mark or the handle take
+`ui.scrollbar` (none by default).
+
+#### `[editor.scrollbar.handlers]`
+
+What puts marks on the bar, each on by default: `cursor` (the primary cursor's line),
+`diagnostic`, `git` (lines added, changed and removed since the last commit, as gitsigns has
+them), `search`, `handle` (the handle itself) and `plugins` (their
+[`buffer:set_scrollbar_marks`](./plugins.md)).
+
+```toml
+[editor.scrollbar]
+enable = true
+show-in-active-only = false
+max-lines = 0
+hide-if-all-visible = false
+folds = 1000
+throttle-ms = 100
+search-calm-down = true
+excluded-languages = ["markdown"]
+
+[editor.scrollbar.handle]
+text = " "
+blend = 30
+color = "#444442"
+hide-if-all-visible = true
+
+[editor.scrollbar.marks.cursor]
+text = "•"
+priority = 0
+color = "#d6d6d0"
+modifiers = ["bold"]
+
+[editor.scrollbar.marks.error]
+text = ["-", "="]
+highlight = "error"
+
+[editor.scrollbar.handlers]
+cursor = true
+diagnostic = true
+git = true
+search = true
+handle = true
+plugins = true
+```
+
+`:scrollbar-show`, `:scrollbar-hide` and `:scrollbar-toggle` show and hide it for the session
+(as `:toggle scrollbar.enable`). nvim-scrollbar's `set_highlights` is the theme here; its
+`cterm`, `color_nr`, `autocmd` and `excluded_buftypes` have nothing to set in Helix (it draws the
+bar every frame and picks terminal colours itself).
 
 ### `[editor.smooth-scroll]` Section
 

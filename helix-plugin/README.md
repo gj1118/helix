@@ -278,7 +278,8 @@ functions that run commands then do nothing instead.
 
 Each function needs a [permission](#permissions): the `helix.buffer` and `helix.window`
 getters, `helix.lsp`, `helix.on` and the `helix.editor` getters need `read`; `helix.ui`,
-`set_status`, `set_annotations`, `set_overlays`, `set_line_number_styles` and `set_panel`
+`set_status`, `set_annotations`, `set_overlays`, `set_line_number_styles`,
+`set_scrollbar_marks` and `set_panel`
 need `ui`; changes of buffers (`insert`,
 `delete`, selections, cursor, modes, registers, undo/redo) need `edit`; `open`, `close`,
 `quit` and `window:focus()` need `windows`; `save` and `save_all` need `files`;
@@ -424,10 +425,36 @@ Buffer methods (they raise an error once the buffer is closed):
   the focused window, `{ { plugin, start_line, end_line } }` (`read`);
   `clear_line_number_styles()`: removes the calling plugin's of this buffer in every window
   (`ui`).
-- Signs, highlights, annotations, panels, overlays and line number styles move with the text
-  as it is edited: an anchor stays with the text after it, a highlight keeps what remains of
-  its text (text typed at its edges is not in it; it goes when all of it is deleted), a sign
-  or an overlay stays on its line, and line number styles with their lines.
+- `set_scrollbar_marks(list)`: marks on the [scrollbar](../book/src/editor.md#editorscrollbar-section)
+  (`[editor.scrollbar]`), as nvim-scrollbar's custom handlers give them: `{ { line, type,
+  text, level, ... } }`. `line` is 1-based; `type` is one of `cursor`, `search`, `error`,
+  `warn`, `info`, `hint`, `misc` (the default), `git-add`, `git-change` and `git-delete`: the
+  mark takes its text, priority and colour; `text` replaces the type's text (one cell), `level`
+  picks another of its texts (1 the first), and a [style](#styles) colours it. Replaces the
+  plugin's marks of the buffer; `{}` clears them. TODO comments, bookmarks, the lines a test
+  failed on (`ui`):
+
+  ```lua
+  local buffer = helix.buffer.create("one\ntwo\nthree\n")
+  buffer:set_scrollbar_marks({
+      { line = 2, type = "warn" },
+      { line = 3, text = "T", fg = "#ffc900" },
+  })
+  local marks = buffer:get_scrollbar_marks()
+  assert(#marks == 2 and marks[1].line == 2 and math.type(marks[1].line) == "integer")
+  assert(marks[1].type == "warn" and marks[1].level == 1 and marks[1].text == nil)
+  assert(marks[2].type == "misc" and marks[2].text == "T" and type(marks[2].text) == "string")
+  buffer:clear_scrollbar_marks()
+  assert(#buffer:get_scrollbar_marks() == 0)
+  ```
+- `get_scrollbar_marks()`: the scrollbar marks of all plugins in the buffer,
+  `{ { plugin, line, type, level, text } }` (`read`); `clear_scrollbar_marks()`: removes the
+  calling plugin's (`ui`).
+- Signs, highlights, annotations, panels, overlays, line number styles and scrollbar marks
+  move with the text as it is edited: an anchor stays with the text after it, a highlight
+  keeps what remains of its text (text typed at its edges is not in it; it goes when all of
+  it is deleted), a sign, an overlay or a scrollbar mark stays on its line, and line number
+  styles with their lines.
 - `get_info()`: `{ indent_style = "tabs"|"spaces", indent_width, tab_width, line_ending =
   "lf"|"crlf", encoding, readonly, text_width }`.
 - `save(force)`: writes the buffer (`files`); `close(force)`: closes it (`force`: even with

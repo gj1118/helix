@@ -737,6 +737,54 @@ fn any_open_buffer_can_be_edited_and_read() {
     assert!(texts.contains(&"ALPHA\n>beta\n".to_string()), "{texts:?}");
 }
 
+/// The example of the book; each plugin replaces its own marks; wrong marks are refused.
+#[test]
+fn scrollbar_marks_belong_to_their_plugin() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    run(
+        &engine,
+        &mut editor,
+        r##"
+        local buffer = helix.buffer.create("one\ntwo\nthree\n")
+        buffer:set_scrollbar_marks({
+            { line = 2, type = "warn" },
+            { line = 3, text = "T", fg = "#ffc900" },
+        })
+        local marks = buffer:get_scrollbar_marks()
+        assert(#marks == 2 and marks[1].line == 2 and math.type(marks[1].line) == "integer")
+        assert(marks[1].type == "warn" and marks[1].level == 1 and marks[1].text == nil)
+        assert(marks[2].type == "misc" and marks[2].text == "T" and type(marks[2].text) == "string")
+        buffer:clear_scrollbar_marks()
+        assert(#buffer:get_scrollbar_marks() == 0)
+        "##,
+    )
+    .unwrap();
+    let result = result_of(
+        &engine,
+        &mut editor,
+        r#"
+        local b = helix.buffer.create("a\nb\n")
+        b:set_scrollbar_marks({ { line = 1 }, { line = 2, level = 2 } })
+        b:set_scrollbar_marks({ { line = 2, type = "git-add" } })
+        local after = b:get_scrollbar_marks()
+        local bad = {}
+        for _, mark in ipairs({ { line = 0 }, { type = "error" }, { line = 1, type = "gitsigns" },
+            { line = 1, level = 0 } }) do
+            local ok, err = pcall(b.set_scrollbar_marks, b, { mark })
+            bad[#bad + 1] = ok and "accepted" or "refused"
+            assert(ok or tostring(err):find("scrollbar mark", 1, true) or tostring(err):find("Scrollbar mark", 1, true))
+        end
+        result = #after .. ":" .. after[1].type .. ":" .. after[1].plugin .. "|"
+            .. table.concat(bad, ",")
+        "#,
+    );
+    // the second call replaced the first's marks
+    assert_eq!(result, "1:git-add:p|refused,refused,refused,refused");
+}
+
 /// The example of the book, and line endings, tabs after spaces and ranges past the end.
 #[test]
 fn indents_are_widths_and_false_for_blank_lines() {

@@ -2,6 +2,7 @@ use crate::error::Result;
 use crate::lua::api::treesitter as ts;
 use crate::permissions::{require, Permission};
 use helix_core::Position;
+use helix_view::scrollbar::MarkType;
 use helix_view::DocumentId;
 use mlua::prelude::*;
 
@@ -1103,6 +1104,114 @@ impl LuaUserData for LuaBuffer {
                     styles.retain(|s| s.plugin != plugin);
                     !styles.is_empty()
                 });
+                helix_event::request_redraw();
+                Ok(())
+            })
+        });
+
+        // Marks on the scrollbar (`[editor.scrollbar]`), as nvim-scrollbar's handlers give them:
+        // { { line (1-based), type = "misc", text, level = 1, style... }, ... } (replaces the
+        // caller's in the buffer; `{}` clears them)
+        methods.add_method("set_scrollbar_marks", |lua, this, list: LuaTable| {
+            require(lua, Permission::Ui, "buffer:set_scrollbar_marks")?;
+            let plugin = crate::lua::current_plugin_name().to_string();
+            let mut mine = Vec::with_capacity(list.raw_len());
+            for i in 1..=list.raw_len() {
+                let item: LuaTable = list.raw_get(i)?;
+                let line: usize = match item.raw_get::<Option<usize>>("line")? {
+                    Some(line) if line > 0 => line,
+                    _ => {
+                        return Err(LuaError::RuntimeError(
+                            "A scrollbar mark needs a `line` (1-based)".into(),
+                        ))
+                    }
+                };
+                let kind = match item.raw_get::<Option<String>>("type")? {
+                    None => MarkType::Misc,
+                    Some(name) => MarkType::from_name(&name).ok_or_else(|| {
+                        LuaError::RuntimeError(format!(
+                            "Scrollbar mark type `{name}`: one of {}",
+                            MarkType::ALL
+                                .iter()
+                                .map(|kind| kind.name())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ))
+                    })?,
+                };
+                let level = match item.raw_get::<Option<usize>>("level")? {
+                    Some(0) => {
+                        return Err(LuaError::RuntimeError(
+                            "A scrollbar mark's `level` is 1 or more".into(),
+                        ))
+                    }
+                    level => level.unwrap_or(1),
+                };
+                let text: Option<String> = item.raw_get("text")?;
+                let (scope, style) = super::style::read_style(lua, &item)?;
+                mine.push(helix_view::document::PluginScrollbarMark {
+                    plugin: plugin.clone(),
+                    line: line - 1,
+                    kind,
+                    level,
+                    text,
+                    scope,
+                    style: (style != helix_view::graphics::Style::default()).then_some(style),
+                });
+            }
+            crate::lua::with_editor(|editor| {
+                let doc = editor.document_mut(this.document_id).ok_or_else(|| {
+                    LuaError::RuntimeError(format!(
+                        "Buffer {:?} no longer exists",
+                        this.document_id
+                    ))
+                })?;
+                doc.plugin_scrollbar_marks
+                    .retain(|mark| mark.plugin != plugin);
+                doc.plugin_scrollbar_marks.extend(mine);
+                helix_event::request_redraw();
+                Ok(())
+            })
+        });
+
+        // The scrollbar marks of every plugin: { { plugin, line, type, level, text } }
+        methods.add_method("get_scrollbar_marks", |lua, this, ()| {
+            require(lua, Permission::Read, "buffer:get_scrollbar_marks")?;
+            let marks = crate::lua::with_editor(|editor| {
+                let doc = editor.document(this.document_id).ok_or_else(|| {
+                    LuaError::RuntimeError(format!(
+                        "Buffer {:?} no longer exists",
+                        this.document_id
+                    ))
+                })?;
+                Ok(doc.plugin_scrollbar_marks.clone())
+            })?;
+            let list = lua.create_table_with_capacity(marks.len(), 0)?;
+            for mark in marks {
+                let item = lua.create_table_with_capacity(0, 5)?;
+                item.raw_set("plugin", mark.plugin)?;
+                item.raw_set("line", mark.line + 1)?;
+                item.raw_set("type", mark.kind.name())?;
+                item.raw_set("level", mark.level)?;
+                item.raw_set("text", mark.text)?;
+                list.raw_push(item)?;
+            }
+            Ok(list)
+        });
+
+        // Remove the caller's scrollbar marks of this buffer
+        methods.add_method("clear_scrollbar_marks", |lua, this, ()| {
+            require(lua, Permission::Ui, "buffer:clear_scrollbar_marks")?;
+            let plugin = crate::lua::current_plugin_name().to_string();
+            crate::lua::with_editor(|editor| {
+                let doc = editor.document_mut(this.document_id).ok_or_else(|| {
+                    LuaError::RuntimeError(format!(
+                        "Buffer {:?} no longer exists",
+                        this.document_id
+                    ))
+                })?;
+                doc.plugin_scrollbar_marks
+                    .retain(|mark| mark.plugin != plugin);
                 helix_event::request_redraw();
                 Ok(())
             })

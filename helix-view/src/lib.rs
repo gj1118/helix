@@ -30,6 +30,7 @@ pub mod quicklist;
 pub mod recent_files;
 pub mod regex;
 pub mod register;
+pub mod scrollbar;
 pub mod snippets;
 pub mod terminal_launcher;
 pub mod theme;

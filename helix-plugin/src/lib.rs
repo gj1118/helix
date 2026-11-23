@@ -196,6 +196,7 @@ impl PluginManager {
             doc.plugin_panels.clear();
             doc.plugin_overlays.clear();
             doc.plugin_line_numbers.clear();
+            doc.plugin_scrollbar_marks.clear();
         }
         if !editor.plugin_theme_overrides.is_empty() {
             editor.plugin_theme_overrides.clear();

@@ -2700,6 +2700,55 @@ fn toggle_option(
     Ok(())
 }
 
+/// Shows (`Some(true)`), hides or toggles the scrollbar for the session: `[editor.scrollbar]
+/// enable`, as `:toggle scrollbar.enable` (nvim-scrollbar's `:ScrollbarShow`, `:ScrollbarHide`
+/// and `:ScrollbarToggle`).
+fn show_scrollbar(cx: &mut compositor::Context, show: Option<bool>) -> anyhow::Result<()> {
+    let mut config = cx.editor.config_to_change();
+    let enable = show.unwrap_or(!config.scrollbar.enable);
+    config.scrollbar.enable = enable;
+    cx.editor.send_config(config)?;
+    cx.editor.set_status(if enable {
+        "Scrollbar shown"
+    } else {
+        "Scrollbar hidden"
+    });
+    Ok(())
+}
+
+fn scrollbar_toggle(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    show_scrollbar(cx, None)
+}
+
+fn scrollbar_show(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    show_scrollbar(cx, Some(true))
+}
+
+fn scrollbar_hide(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+    show_scrollbar(cx, Some(false))
+}
+
 /// Change the language of the current buffer at runtime.
 fn language(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow::Result<()> {
     if event != PromptEvent::Validate {
@@ -5684,6 +5733,39 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         aliases: &[],
         doc: "Clear and re-render the whole UI",
         fun: redraw,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "scrollbar-toggle",
+        aliases: &[],
+        doc: "Show or hide the scrollbar on the right of each view, for this session.",
+        fun: scrollbar_toggle,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "scrollbar-show",
+        aliases: &[],
+        doc: "Show the scrollbar on the right of each view, for this session.",
+        fun: scrollbar_show,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "scrollbar-hide",
+        aliases: &[],
+        doc: "Hide the scrollbar on the right of each view, for this session.",
+        fun: scrollbar_hide,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),

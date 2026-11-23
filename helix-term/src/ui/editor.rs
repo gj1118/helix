@@ -87,6 +87,8 @@ pub struct EditorView {
     bufferline_cache: BufferlineCache,
     /// The split divider being dragged with the mouse, if any.
     split_drag: Option<helix_view::tree::SplitDivider>,
+    /// The views' scrollbars (`[editor.scrollbar]`): the matches of the last search.
+    scrollbars: crate::ui::scrollbar::Scrollbars,
 }
 
 /// Cached data for bufferline rendering.
@@ -177,6 +179,7 @@ impl EditorView {
             notification_popup: NotificationPopup::new(),
             bufferline_cache: BufferlineCache::default(),
             split_drag: None,
+            scrollbars: Default::default(),
         }
     }
 
@@ -598,6 +601,10 @@ impl EditorView {
 
         // A plugin's panel goes over everything drawn in the view (it takes no rows).
         Self::render_plugin_panel(editor, doc, view, inner, surface, theme);
+
+        // The scrollbar, in the column on the right of the text kept for it.
+        self.scrollbars
+            .render(editor, doc, view, inner, surface, is_focused);
 
         // Statusline on the last row of the view area.
         // The cmdline space reservation is handled at the top level in EditorView::render.

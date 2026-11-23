@@ -252,6 +252,7 @@ impl View {
         self.area
             .clip_top(self.bar_offset() + self.breadcrumb_offset(doc))
             .clip_left(self.gutter_offset(doc))
+            .clip_right(self.scrollbar_offset(doc))
             .clip_bottom(1) // -1 for statusline
     }
 
@@ -264,7 +265,10 @@ impl View {
     }
 
     pub fn inner_width(&self, doc: &Document) -> u16 {
-        self.area.clip_left(self.gutter_offset(doc)).width
+        self.area
+            .clip_left(self.gutter_offset(doc))
+            .clip_right(self.scrollbar_offset(doc))
+            .width
     }
 
     pub fn gutters(&self) -> &[GutterType] {
@@ -316,6 +320,15 @@ impl View {
     /// Height in rows taken by the breadcrumb bar (0 or 1).
     pub fn breadcrumb_offset(&self, doc: &Document) -> u16 {
         u16::from(doc.config.load().breadcrumb.enable)
+    }
+
+    /// Columns taken by the scrollbar on the right (0 or 1): taken while it is on for the
+    /// buffer, drawn or not (in another view with `show-in-active-only`, with the whole buffer
+    /// on screen...), so that the text keeps its width. Not in a view too narrow for text
+    /// beside it.
+    pub fn scrollbar_offset(&self, doc: &Document) -> u16 {
+        let shown = crate::scrollbar::applies(&doc.config.load().scrollbar, doc);
+        u16::from(shown && self.area.width > self.gutter_offset(doc) + 1)
     }
 
     //

@@ -99,6 +99,9 @@
 | `:clear-register` | Clear given register. If no argument is provided, clear all registers. |
 | `:set-register` | Set contents of the given register. |
 | `:redraw` | Clear and re-render the whole UI |
+| `:scrollbar-toggle` | Show or hide the scrollbar on the right of each view, for this session. |
+| `:scrollbar-show` | Show the scrollbar on the right of each view, for this session. |
+| `:scrollbar-hide` | Hide the scrollbar on the right of each view, for this session. |
 | `:move`, `:mv` | Move the current buffer and its corresponding file to a different path |
 | `:move!`, `:mv!` | Move the current buffer and its corresponding file to a different path creating necessary subdirectories |
 | `:yank-diagnostic` | Yank diagnostic(s) under primary cursor to register, or clipboard by default |
