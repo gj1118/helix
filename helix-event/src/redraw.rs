@@ -30,13 +30,15 @@ pub fn request_redraw() {
 }
 
 /// In integration tests each runtime has its own redraw notifier,
-/// so the returned function enters the caller's runtime first.
+/// so the returned function enters the caller's runtime first. Made outside
+/// of a runtime (a unit test building a picker), it requests the redraw of
+/// whatever runtime it is called in, or of none.
 pub fn redraw_requester() -> impl Fn() + Send + Sync + 'static {
     #[cfg(feature = "integration_test")]
     {
-        let runtime = tokio::runtime::Handle::current();
+        let runtime = tokio::runtime::Handle::try_current().ok();
         move || {
-            let _guard = runtime.enter();
+            let _guard = runtime.as_ref().map(|runtime| runtime.enter());
             request_redraw();
         }
     }
@@ -73,5 +75,32 @@ pub struct RequestRedrawOnDrop;
 impl Drop for RequestRedrawOnDrop {
     fn drop(&mut self) {
         request_redraw();
+    }
+}
+
+#[cfg(test)]
+mod test {
+    /// Outside of a runtime (with or without the `integration_test` feature), the
+    /// requester is made and called without a panic.
+    #[test]
+    fn a_requester_works_outside_of_a_runtime() {
+        let request = super::redraw_requester();
+        request();
+        // and from inside one, for its runtime
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let request = runtime.block_on(async { super::redraw_requester() });
+        request();
+        let requested: bool = runtime.block_on(async {
+            tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                super::redraw_requested(),
+            )
+            .await
+            .is_ok()
+        });
+        assert!(requested);
     }
 }
