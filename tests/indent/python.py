@@ -25,6 +25,7 @@ class Example:
         if argument > 0:
             for index in range(argument):
                 print(index)
+#                           ^ 16
             return argument
         elif argument < 0:
             while argument < 0:
@@ -89,3 +90,11 @@ first line
     indented in string
 back"""
     return text
+
+
+call(first,
+     {
+         "x": 1,
+     })
+call(first, {
+     "x": 1})

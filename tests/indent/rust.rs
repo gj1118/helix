@@ -6,6 +6,8 @@ use std::{
 };
 mod test {
     fn hello_world() {
+        if a {}
+//            ^ 8
         1 + 1;
 
         let does_indentation_work = 1;
@@ -41,6 +43,7 @@ mod test {
         );
 
         let test_function = function_with_param(
+//                                              ^ 12 eof
             this_param,
             that_param
         );
@@ -105,6 +108,7 @@ where
 }
 
 trait Greet {
+//           ^ 4 eof
     fn hello(&self) -> String;
 
     fn default_greeting() -> String {
@@ -113,13 +117,16 @@ trait Greet {
 }
 
 enum Shape {
+//          ^ 4 eof
     Circle { radius: f64 },
     Square(f64),
     Point,
 }
 
 fn process(shape: Shape) -> i32 {
+//                               ^ 4 eof
     match shape {
+//               ^ 8 eof
         Shape::Circle { radius } if radius > 0.0 => {
             let area = 3.14 * radius * radius;
             area as i32
@@ -144,6 +151,7 @@ fn handle(opt: Option<i32>) {
     };
 
     let nested: Vec<Vec<i32>> = vec![
+//                                   ^ 8 eof
         vec![1, 2],
         vec![3, 4],
     ];

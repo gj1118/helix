@@ -299,19 +299,23 @@ impl MappableCommand {
                 // a custom command (which may shadow a built-in one)
                 let custom = cx.editor.config().commands.get(name.as_str()).cloned();
                 if let Some(custom) = custom {
+                    // the register selected (`"a`) is seen by the commands it runs
+                    cx.editor.selected_register = cx.register;
                     let mut compositor_cx = compositor::Context {
                         editor: cx.editor,
                         jobs: cx.jobs,
                         scroll: None,
                         plugin_manager: cx.plugin_manager.clone(),
                     };
-                    if let Err(e) = typed::run_custom_command(
+                    let res = typed::run_custom_command(
                         &mut compositor_cx,
                         name,
                         &custom,
                         args,
                         PromptEvent::Validate,
-                    ) {
+                    );
+                    compositor_cx.editor.selected_register = None;
+                    if let Err(e) = res {
                         compositor_cx.editor.set_error(format!("{}", e));
                     }
                     // what the commands asked of the compositor
@@ -319,15 +323,17 @@ impl MappableCommand {
                         compositor::defer(callback);
                     }
                 } else if let Some(command) = typed::TYPABLE_COMMAND_MAP.get(name.as_str()) {
+                    // Set the register early so it can be seen by the typable command
+                    cx.editor.selected_register = cx.register;
                     let mut cx = compositor::Context {
                         editor: cx.editor,
                         jobs: cx.jobs,
                         scroll: None,
                         plugin_manager: cx.plugin_manager.clone(),
                     };
-                    if let Err(e) =
-                        typed::execute_command(&mut cx, command, args, PromptEvent::Validate)
-                    {
+                    let res = typed::execute_command(&mut cx, command, args, PromptEvent::Validate);
+                    cx.editor.selected_register = None;
+                    if let Err(e) = res {
                         cx.editor.set_error(format!("{}", e));
                     }
                 } else if let Some(plugin_manager) = &cx.plugin_manager {
@@ -1794,8 +1800,14 @@ fn goto_file_impl(cx: &mut Context, action: Action) {
             continue;
         }
 
-        let path = path::expand(&sel);
-        let path = &rel_path.join(path);
+        // A `$` or `~` can be part of a file name (`posts.$slug.tsx`), so an existing literal path
+        // wins over its expansion.
+        let literal = rel_path.join(&sel);
+        let path = &if literal.exists() {
+            literal
+        } else {
+            rel_path.join(path::expand(&sel))
+        };
         if path.is_dir() {
             let picker = ui::file_picker(cx.editor, path.into());
             cx.push_layer(Box::new(overlaid(
@@ -2465,7 +2477,9 @@ fn copy_selection_on_line(cx: &mut Context, direction: Direction) {
     let (view, doc) = current!(cx.editor);
     let text = doc.text().slice(..);
     let selection = doc.selection(view.id);
-    let mut ranges = SmallVec::with_capacity(selection.ranges().len() * (count + 1));
+    // Each copy lands on a different line, so the line count bounds the copies.
+    let copies = count.min(text.len_lines());
+    let mut ranges = SmallVec::with_capacity(selection.ranges().len() * (copies + 1));
     ranges.extend_from_slice(selection.ranges());
     let mut primary_index = 0;
     for range in selection.iter() {
@@ -5235,7 +5249,9 @@ fn insert_with_indent(cx: &mut Context, cursor_fallback: IndentFallbackPos) {
                 IndentFallbackPos::LineEnd => line_end_char_index(&text, cursor_line),
             };
 
-            ranges.push(range.put_cursor(text, pos + offs, was_select_mode));
+            // `put_cursor` reads the old text, so shift by the indents inserted above only after.
+            let range = range.put_cursor(text, pos, was_select_mode);
+            ranges.push(Range::new(range.anchor + offs, range.head + offs));
 
             (cursor_line_start, cursor_line_start, None)
         }
@@ -5332,7 +5348,29 @@ fn continued_line_comment_token<'a>(
     line_num: usize,
     byte_pos: usize,
 ) -> Option<&'a str> {
+    if line_num == 0 && text.starts_with("#!") {
+        return None;
+    }
     if let Some(syntax) = doc.syntax() {
+        // A comment token outside a comment, like `#` in a string, doesn't start a comment.
+        // Languages without a `comment.around` textobject keep continuing it.
+        let pos = byte_pos as u32;
+        let in_comment = syntax
+            .layers_for_byte_range(pos, pos)
+            .filter_map(|layer| {
+                let layer = syntax.layer(layer);
+                loader.textobject_query(layer.language)?.capture_covers(
+                    "comment.around",
+                    &layer.tree()?.root_node(),
+                    text,
+                    pos,
+                )
+            })
+            .reduce(|a, b| a || b);
+        if in_comment == Some(false) {
+            return None;
+        }
+
         let mut token = None;
         for layer in syntax.layers_for_byte_range(byte_pos as u32, byte_pos as u32) {
             let config = loader.language(syntax.layer(layer).language).config();
@@ -5445,8 +5483,8 @@ fn open(cx: &mut Context, open: Open, comment_continuation: CommentContinuation)
             ),
         };
 
-        let indent_len = indent.len();
-        let mut text = String::with_capacity(1 + indent_len);
+        let indent_len = indent.chars().count();
+        let mut text = String::with_capacity(1 + indent.len());
 
         if open == Open::Above && next_new_line_num == 0 {
             text.push_str(&indent);
@@ -6041,10 +6079,13 @@ pub mod insert {
             if !cursors_after_whitespace {
                 if doc.active_snippet.is_some() {
                     goto_next_tabstop(cx);
-                } else {
-                    move_parent_node_end(cx);
+                    return;
                 }
-                return;
+                // Without a syntax tree there is no parent node to move to.
+                if doc.syntax().is_some() {
+                    move_parent_node_end(cx);
+                    return;
+                }
             }
         }
 
@@ -7065,6 +7106,9 @@ fn format_selections(cx: &mut Context) {
                 let transaction =
                     helix_lsp::util::generate_transaction_from_edits(&text, res, offset_encoding);
                 job::dispatch(move |editor, _compositor| {
+                    if !editor.tree.contains(view_id) {
+                        return;
+                    }
                     let Some(doc) = editor.document_mut(doc_id) else {
                         return;
                     };
@@ -7091,11 +7135,15 @@ fn join_selections_impl(cx: &mut Context, select_space: bool) {
 
     let mut changes = Vec::new();
 
+    // Joining onto the empty line after a final newline would delete that newline.
+    let last_line = slice.char_to_line(slice.len_chars().saturating_sub(1));
+
     for selection in doc.selection(view.id) {
         let (start, mut end) = selection.line_range(slice);
         if start == end {
-            end = (end + 1).min(text.len_lines() - 1);
+            end += 1;
         }
+        let end = end.min(last_line);
         let lines = start..end;
 
         changes.reserve(lines.len());
@@ -7588,7 +7636,8 @@ fn expand_selection(cx: &mut Context) {
             // check if selection is different from the last one
             if *current_selection != selection {
                 // save current selection so it can be restored using shrink_selection
-                view.object_selections.push(current_selection.clone());
+                view.object_selections
+                    .push(((doc.id(), doc.version()), current_selection.clone()));
 
                 doc.set_selection(view.id, selection);
             }
@@ -7601,9 +7650,9 @@ fn shrink_selection(cx: &mut Context) {
     let motion = |editor: &mut Editor| {
         let (view, doc) = current!(editor);
         let current_selection = doc.selection(view.id);
-        // try to restore previous selection
-        if let Some(prev_selection) = view.object_selections.pop() {
-            if current_selection.contains(&prev_selection) {
+        // try to restore previous selection unless stale
+        if let Some((key, prev_selection)) = view.object_selections.pop() {
+            if key == (doc.id(), doc.version()) && current_selection.contains(&prev_selection) {
                 doc.set_selection(view.id, prev_selection);
                 return;
             } else {
@@ -9039,6 +9088,9 @@ fn shell(cx: &mut compositor::Context, cmd: &str, behavior: &ShellBehavior) {
         })
         .collect();
 
+    // the output takes the document's line endings
+    let line_ending = doc.line_ending;
+
     // The command runs in the background so the editor stays responsive; its
     // output is applied afterwards, as long as the document did not change.
     let guard = ShellJobGuard::new();
@@ -9057,6 +9109,11 @@ fn shell(cx: &mut compositor::Context, cmd: &str, behavior: &ShellBehavior) {
                     output.pop();
                 }
             }
+            let output = Tendril::from(
+                LINE_ENDING_REGEX
+                    .replace_all(&output, line_ending.as_str())
+                    .as_ref(),
+            );
             if !pipe {
                 shared = Some(output.clone());
             }

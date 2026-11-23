@@ -453,7 +453,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         assert!(matcher_columns > 0);
         let matcher = Nucleo::new(
             Config::DEFAULT,
-            Arc::new(helix_event::request_redraw),
+            Arc::new(helix_event::redraw_requester()),
             None,
             matcher_columns,
         );
@@ -485,7 +485,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         assert!(matcher_columns > 0);
         let matcher = Nucleo::new(
             Config::DEFAULT,
-            Arc::new(helix_event::request_redraw),
+            Arc::new(helix_event::redraw_requester()),
             None,
             matcher_columns,
         );
@@ -1352,7 +1352,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                     return;
                 };
                 *entry = match loaded {
-                    Ok((rope, encoding, has_bom)) => {
+                    Ok((rope, encoding, has_bom, _lossy)) => {
                         let mut doc = Document::from(
                             rope,
                             Some((encoding, has_bom)),

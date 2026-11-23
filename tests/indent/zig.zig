@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const Point = struct {
+//                    ^ 4 eof
     x: i32,
     y: i32,
 };
@@ -11,11 +12,15 @@ const Color = enum {
 };
 
 const Value = union(enum) {
+//                         ^ 4 eof
     int: i32,
     float: f64,
 };
 
 fn classify(x: u32) u32 {
+//                       ^ 4 eof
+    if (a) {}
+//          ^ 4
     const result = switch (x) {
         0 => 1,
         1, 2 => 2,

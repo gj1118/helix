@@ -294,7 +294,7 @@ impl Completion {
                         doc.append_changes_to_history(view);
 
                         // item always present here
-                        let (transaction, additional_edits, snippet) = match item.clone() {
+                        let (transaction, additional_edits, snippet, command) = match item.clone() {
                             CompletionItem::Lsp(mut item) => {
                                 let language_server = language_server!(item);
 
@@ -318,18 +318,21 @@ impl Completion {
                                     replace_mode,
                                 );
                                 let add_edits = item.item.additional_text_edits;
+                                let command =
+                                    item.item.command.map(|command| (command, item.provider));
 
                                 (
                                     transaction,
                                     add_edits.map(|edits| (edits, encoding)),
                                     snippet,
+                                    command,
                                 )
                             }
                             CompletionItem::Other(core::CompletionItem {
                                 transaction,
                                 snippet,
                                 ..
-                            }) => (transaction, None, snippet),
+                            }) => (transaction, None, snippet, None),
                         };
 
                         doc.apply(&transaction, view.id);
@@ -357,6 +360,9 @@ impl Completion {
                                 );
                                 doc.apply(&transaction, view.id);
                             }
+                        }
+                        if let Some((command, server_id)) = command {
+                            editor.execute_lsp_command(command, server_id);
                         }
                         // we could have just inserted a trigger char (like a `crate::` completion for rust
                         // so we want to retrigger immediately when accepting a completion.

@@ -309,6 +309,25 @@ async fn insert_newline_continue_line_comment() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn continue_comment_only_in_comments() -> anyhow::Result<()> {
+    // A shebang isn't a comment leader.
+    test((
+        "#!/bin/sh#[|\n]#",
+        ":lang bash<ret>i<ret>",
+        "#!/bin/sh\n#[|\n]#",
+    ))
+    .await?;
+
+    // Nor is a comment token inside a string.
+    test((
+        "s = \"\"\"\n# Title#[|\n]#\"\"\"\n",
+        ":lang python<ret>i<ret>",
+        "s = \"\"\"\n# Title\n#[|\n]#\"\"\"\n",
+    ))
+    .await
+}
+
 /// NOTE: Language is set to markdown to check if the indentation is correct for the new line
 #[tokio::test(flavor = "multi_thread")]
 async fn test_open_above() -> anyhow::Result<()> {
@@ -696,4 +715,21 @@ async fn test_indent_with_spaces_3() -> anyhow::Result<()> {
     )
     .await?;
     Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn append_at_line_end_after_autoindented_cursor_in_select_mode() -> anyhow::Result<()> {
+    let mut app = AppBuilder::new()
+        .with_input_text("fn f() {\n#(\n|)##[}|]#\n")
+        .build()?;
+    test_key_sequence(
+        &mut app,
+        Some(":lang rust<ret>vAZ<esc>"),
+        Some(&|app| {
+            let text = helix_view::doc!(app.editor).text().to_string();
+            assert_eq!(text, "fn f() {\n    Z\n}Z\n");
+        }),
+        false,
+    )
+    .await
 }

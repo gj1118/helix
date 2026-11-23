@@ -561,6 +561,34 @@ pub fn symbol_picker(cx: &mut Context) {
     });
 }
 
+fn flatten_workspace_symbols(resp: lsp::WorkspaceSymbolResponse) -> Vec<lsp::SymbolInformation> {
+    match resp {
+        lsp::WorkspaceSymbolResponse::Flat(symbols) => symbols,
+        lsp::WorkspaceSymbolResponse::Nested(symbols) => symbols
+            .into_iter()
+            .map(|symbol| {
+                // A location without a range points at the start of the file, since we can't
+                // resolve it (no `resolveSupport`).
+                let location = match symbol.location {
+                    lsp::OneOf::Left(location) => location,
+                    lsp::OneOf::Right(lsp::WorkspaceLocation { uri }) => {
+                        lsp::Location::new(uri, lsp::Range::default())
+                    }
+                };
+                #[allow(deprecated)]
+                lsp::SymbolInformation {
+                    name: symbol.name,
+                    kind: symbol.kind,
+                    tags: symbol.tags,
+                    deprecated: None,
+                    location,
+                    container_name: symbol.container_name,
+                }
+            })
+            .collect(),
+    }
+}
+
 pub fn workspace_symbol_picker(cx: &mut Context) {
     use crate::ui::picker::Injector;
 
@@ -589,10 +617,7 @@ pub fn workspace_symbol_picker(cx: &mut Context) {
                 async move {
                     let symbols = request
                         .await?
-                        .and_then(|resp| match resp {
-                            lsp::WorkspaceSymbolResponse::Flat(symbols) => Some(symbols),
-                            lsp::WorkspaceSymbolResponse::Nested(_) => None,
-                        })
+                        .map(flatten_workspace_symbols)
                         .unwrap_or_default();
 
                     let response: Vec<_> = symbols
@@ -1355,6 +1380,7 @@ pub fn code_action_inner(cx: &mut Context, use_picker: bool) {
     let (view, doc) = current!(cx.editor);
 
     let selection_range = doc.selection(view.id).primary();
+    let (doc_id, version) = (doc.id(), doc.version());
 
     let mut futures: FuturesUnordered<_> =
         code_actions_for_range(doc, selection_range, None, CodeActionTriggerKind::INVOKED)
@@ -1375,7 +1401,7 @@ pub fn code_action_inner(cx: &mut Context, use_picker: bool) {
 
                 Ok(actions
                     .into_iter()
-                    .map(|lsp_item| CodeActionItem::lsp(ls_id, lsp_item))
+                    .map(|lsp_item| CodeActionItem::lsp(ls_id, lsp_item, doc_id, version))
                     .collect())
             })
             .collect();
@@ -1616,9 +1642,8 @@ fn code_action_kind_matches(action: &CodeAction, requested: &CodeActionKind) -> 
 fn merge_workspace_edits(edits: Vec<lsp::WorkspaceEdit>) -> lsp::WorkspaceEdit {
     let mut changes: HashMap<lsp::Url, Vec<lsp::TextEdit>> = HashMap::new();
     for edit in edits {
-        for (uri, text_edits) in edit.changes.into_iter().flatten() {
-            changes.entry(uri).or_default().extend(text_edits);
-        }
+        // `changes` and `documentChanges` are alternative encodings of the same edit, and
+        // `documentChanges` is preferred when present (as in `apply_workspace_edit`).
         let document_edits = match edit.document_changes {
             Some(lsp::DocumentChanges::Edits(edits)) => edits,
             Some(lsp::DocumentChanges::Operations(operations)) => operations
@@ -1631,7 +1656,12 @@ fn merge_workspace_edits(edits: Vec<lsp::WorkspaceEdit>) -> lsp::WorkspaceEdit {
                     }
                 })
                 .collect(),
-            None => Vec::new(),
+            None => {
+                for (uri, text_edits) in edit.changes.into_iter().flatten() {
+                    changes.entry(uri).or_default().extend(text_edits);
+                }
+                continue;
+            }
         };
         for document_edit in document_edits {
             changes
@@ -1750,7 +1780,7 @@ where
                                 .map(|location_link| {
                                     lsp::Location::new(
                                         location_link.target_uri,
-                                        location_link.target_range,
+                                        location_link.target_selection_range,
                                     )
                                 })
                                 .flat_map(|location| {
@@ -2507,5 +2537,22 @@ mod test {
         let transaction = generate_transaction_from_edits(&text, text_edits, OffsetEncoding::Utf8);
         assert!(transaction.apply(&mut text));
         assert_eq!(text, "alpha two gamma");
+    }
+
+    #[test]
+    fn nested_workspace_symbols_are_kept() {
+        // A single range-less location makes the whole response deserialize as `Nested`.
+        let resp: lsp::WorkspaceSymbolResponse = serde_json::from_str(
+            r#"[
+                {"name": "a", "kind": 12, "location": {"uri": "file:///a"}},
+                {"name": "b", "kind": 12, "location": {"uri": "file:///b",
+                    "range": {"start": {"line": 1, "character": 2}, "end": {"line": 1, "character": 3}}}}
+            ]"#,
+        )
+        .unwrap();
+        assert!(matches!(resp, lsp::WorkspaceSymbolResponse::Nested(_)));
+        let symbols = flatten_workspace_symbols(resp);
+        assert_eq!(symbols[0].location.range, lsp::Range::default());
+        assert_eq!(symbols[1].location.range.start, lsp::Position::new(1, 2));
     }
 }

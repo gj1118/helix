@@ -80,8 +80,11 @@ impl<T: Item> Component for Select<T> {
         // + 2 for borders and another + 2 for horizontal padding; centered, and never
         // larger than the screen (a frame past its edge would be drawn outside of it).
         let width = message_width.saturating_add(4).min(area.width);
-        let height = message_height
+        // A message too tall for the screen is cut: the options stay on it.
+        let message_box_height = message_height
             .saturating_add(2)
+            .min(area.height.saturating_sub(menu_height));
+        let height = message_box_height
             .saturating_add(menu_height)
             .min(area.height);
         let area = Rect {
@@ -95,7 +98,7 @@ impl<T: Item> Component for Select<T> {
         // Message
         let background = cx.editor.theme.get("ui.background");
         let text = cx.editor.theme.get("ui.text");
-        let message_box = area.with_height(message_height.saturating_add(2).min(area.height));
+        let message_box = area.with_height(message_box_height);
         // Only inside the border, like the popups (see `clear_bordered`).
         crate::ui::clear_bordered(
             surface,

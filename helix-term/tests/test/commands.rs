@@ -8,6 +8,7 @@ mod picker;
 mod reverse_selection_contents;
 mod rotate_selection_contents;
 mod text_folding;
+mod workspace_edit;
 mod write;
 
 #[tokio::test(flavor = "multi_thread")]

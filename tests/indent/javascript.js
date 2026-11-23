@@ -1,7 +1,11 @@
 function greet(name) {
+  if (a) {}
+//        ^ 2
   if (name) {
+//           ^ 4 eof
     return `hello ${name}`;
   } else {
+//        ^ 4 eof
     return "hello";
   }
 }
@@ -38,6 +42,7 @@ function iterate(items) {
   for (const item of items) {
     switch (item.type) {
       case "a":
+//             ^ 8 eof
         seen.push(item);
         break;
       default:

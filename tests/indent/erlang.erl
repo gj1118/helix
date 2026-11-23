@@ -2,7 +2,9 @@
 -export([process/1, classify/1, loop/0]).
 
 process(Items) ->
+%                ^ 4 eof
     Total = lists:foldl(
+%                       ^ 8 eof
         fun(X, Acc) ->
             X + Acc
         end,
@@ -37,9 +39,11 @@ safe(F) ->
         Result ->
             Result
     catch
+%        ^ 8 eof
         error:Reason ->
             {error, Reason}
     after
+%        ^ 8 eof
         cleanup()
     end.
 

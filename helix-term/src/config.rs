@@ -79,7 +79,14 @@ impl<'de> Deserialize<'de> for KeysRaw {
                                 "unknown key map `{name}`: expected `normal`, `select`, `insert`, `picker`, `menu`, `popup`, `prompt`, `explorer` or `explorer-filter`"
                             ))
                         })?;
-                        keys.modes.insert(mode, map.next_value()?);
+                        let trie: KeyTrie = map.next_value()?;
+                        // `normal = "no_op"`: a mode is a table of key bindings
+                        if trie.node().is_none() {
+                            return Err(serde::de::Error::custom(format!(
+                                "`keys.{mode}` must be a table of key bindings"
+                            )));
+                        }
+                        keys.modes.insert(mode, trie);
                     }
                 }
                 Ok(keys)
@@ -639,5 +646,14 @@ mod tests {
         let config = Config::load(Ok(&global), Ok(local)).unwrap();
         assert_eq!(config.editor.commands["a"].commands, [":write"]);
         assert_eq!(config.editor.commands["b"].commands, [":goto 1"]);
+    }
+
+    #[test]
+    fn scalar_mode_keymap_is_config_error() {
+        let toml = "[keys]\nnormal = \"no_op\"\n".to_string();
+        assert!(matches!(
+            Config::load(Ok(&toml), Err(ConfigLoadError::default())),
+            Err(ConfigLoadError::BadConfig(_))
+        ));
     }
 }

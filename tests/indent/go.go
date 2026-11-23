@@ -10,6 +10,14 @@ type Point struct {
 	Y int
 }
 
+type Empty struct {}
+//                 ^ 0
+
+func empty() {
+	switch nil {}
+//              ^ 4
+}
+
 func compute(a int, b int) int {
 	values := []int{
 		1,
@@ -29,11 +37,16 @@ func compute(a int, b int) int {
 	}
 	switch a {
 	case 1:
+//         ^ 8 eof
 		return b
+//              ^ 8
 	case 2:
 		return a
+//              ^ 8
 	default:
+//          ^ 8 eof
 		return 0
+//              ^ 8
 	}
 }
 
@@ -41,8 +54,10 @@ func pipe(ch chan int) {
 	select {
 	case msg := <-ch:
 		fmt.Println(msg)
+//                      ^ 8
 	default:
 		fmt.Println(strings.TrimSpace("none"))
+//                                            ^ 8
 	}
 Loop:
 	for {
@@ -83,8 +98,10 @@ func process(items []int) (int, error) {
 		switch x := any(v).(type) {
 		case int:
 			sum += x
+//                  ^ 12
 		default:
 			continue
+//                  ^ 12
 		}
 	}
 

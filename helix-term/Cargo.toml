@@ -79,6 +79,8 @@ thiserror.workspace = true
 # opening URLs
 open = "5.3.5"
 
+same-file = "1.0.1"
+
 # config
 toml.workspace = true
 
@@ -104,5 +106,4 @@ helix-loader = { path = "../helix-loader" }
 smallvec = "1.15"
 indoc = "2.0.6"
 tempfile.workspace = true
-same-file = "1.0.1"
 image = { version = "0.25", default-features = false, features = ["png"] }

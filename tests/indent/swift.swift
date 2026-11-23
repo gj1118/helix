@@ -37,6 +37,8 @@ class Rectangle: Shape {
   }
 
   func describe() -> String {
+    if a {}
+//        ^ 4
     return "rectangle"
   }
 
@@ -61,12 +63,14 @@ func process(_ direction: Direction, count: Int) {
   }
 
   let numbers = [
+//               ^ 4 eof
     1,
     2,
     3,
   ]
 
   let mapping = [
+//               ^ 4 eof
     "a": 1,
     "b": 2,
   ]
@@ -94,6 +98,7 @@ func process(_ direction: Direction, count: Int) {
     case .north:
       let label = "up"
       print(label)
+//                ^ 6
     case .south where count > 5:
       print("down")
     default:

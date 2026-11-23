@@ -13,7 +13,7 @@ use crate::{
     syntax,
     text_annotations::TextAnnotations,
     text_folding::{ropex::FoldedChars, RopeSliceFoldExt},
-    textobject::TextObject,
+    textobject::{textobject_layers, TextObject},
     tree_sitter::Node,
     visual_offset_from_block, Range, RopeSlice, Selection, Syntax,
 };
@@ -827,45 +827,42 @@ pub fn goto_treesitter_object(
     let get_range = move |range: Range| -> Option<Range> {
         let byte_pos = slice.char_to_byte(range.cursor(slice));
 
-        // Walk the layer at the cursor with that language's own tree and textobject query.
+        // Walk the layers at the cursor with each language's own tree and textobject query.
         // Resolved per step so the motion can cross into and out of injected regions.
-        let layer = syntax.layer_for_byte_range(byte_pos as u32, byte_pos as u32);
-        let slice_tree = syntax
-            .tree_for_byte_range(byte_pos as u32, byte_pos as u32)
-            .root_node();
-        let textobject_query = loader.textobject_query(syntax.layer(layer).language);
-
         let cap_name = |t: TextObject| format!("{}.{}", object_name, t);
-        let nodes = textobject_query?
-            .capture_nodes_any(
-                &[
-                    &cap_name(TextObject::Movement),
-                    &cap_name(TextObject::Around),
-                    &cap_name(TextObject::Inside),
-                ],
-                &slice_tree,
-                slice,
-            )?
-            // filter out folds that are entirely folded
-            .filter(|cap_node| {
-                let start = slice.byte_to_char(cap_node.start_byte());
-                let end = prev_grapheme_boundary(slice, slice.byte_to_char(cap_node.end_byte()));
-                [start, end].into_iter().any(|char| {
-                    annotations
-                        .folds
-                        .superest_fold_containing(char, |fold| fold.start.char..=fold.end.char)
-                        .is_none()
-                })
-            });
-
-        let node = match dir {
-            Direction::Forward => nodes
-                .filter(|n| n.start_byte() > byte_pos)
-                .min_by_key(|n| (n.start_byte(), Reverse(n.end_byte())))?,
-            Direction::Backward => nodes
-                .filter(|n| n.end_byte() < byte_pos)
-                .max_by_key(|n| (n.end_byte(), Reverse(n.start_byte())))?,
-        };
+        let cap_names = [
+            cap_name(TextObject::Movement),
+            cap_name(TextObject::Around),
+            cap_name(TextObject::Inside),
+        ];
+        let cap_names = cap_names.each_ref().map(String::as_str);
+        let node =
+            textobject_layers(syntax, loader, byte_pos as u32).find_map(|(query, root)| {
+                let nodes = query
+                    .capture_nodes_any(&cap_names, &root, slice)?
+                    // filter out folds that are entirely folded
+                    .filter(|cap_node| {
+                        let start = slice.byte_to_char(cap_node.start_byte());
+                        let end =
+                            prev_grapheme_boundary(slice, slice.byte_to_char(cap_node.end_byte()));
+                        [start, end].into_iter().any(|char| {
+                            annotations
+                                .folds
+                                .superest_fold_containing(char, |fold| {
+                                    fold.start.char..=fold.end.char
+                                })
+                                .is_none()
+                        })
+                    });
+                match dir {
+                    Direction::Forward => nodes
+                        .filter(|n| n.start_byte() > byte_pos)
+                        .min_by_key(|n| (n.start_byte(), Reverse(n.end_byte()))),
+                    Direction::Backward => nodes
+                        .filter(|n| n.end_byte() < byte_pos)
+                        .max_by_key(|n| (n.end_byte(), Reverse(n.start_byte()))),
+                }
+            })?;
 
         let len = slice.len_bytes();
         let start_byte = node.start_byte();
@@ -2924,5 +2921,27 @@ mod test {
                 )
             }
         }
+    }
+
+    #[test]
+    fn goto_function_from_comment() {
+        let loader = crate::config::default_lang_loader();
+        let lang = loader.language_for_name("rust").unwrap();
+        let source = "fn a() {\n    // hello\n}\nfn b() {}\n";
+        let doc = Rope::from(source);
+        let text = doc.slice(..);
+        let syntax = Syntax::new(text, lang, &loader).unwrap();
+        let range = goto_treesitter_object(
+            text,
+            &TextAnnotations::default(),
+            Range::point(source.find("hello").unwrap()),
+            "function",
+            Direction::Forward,
+            &syntax,
+            &loader,
+            1,
+        );
+        let b = source.find("fn b").unwrap();
+        assert_eq!(range, Range::new(b, b + "fn b() {}".len()));
     }
 }
