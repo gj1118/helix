@@ -529,8 +529,9 @@ permissions = ["edit", "commands"]  # what it may do beyond looking ("read") and
   Helix does not even queue an event that no plugin listens to.
 
 Plugin code runs in a sandbox (no `io`, no `os.execute`, `require` only from the plugin
-directories) with a 2 second limit per call and 512 MiB of memory. `:reload-all-plugins`
-reloads them. See the book's Plugins chapter (`book/src/plugins.md`) for the events and the
+directories) with a 2 second limit per call and 512 MiB of memory; an event handler that
+runs out of time 3 times in a row is switched off, with a message, so that a plugin gone
+wrong does not freeze the editor on every key. `:reload-all-plugins` reloads them. See the book's Plugins chapter (`book/src/plugins.md`) for the events and the
 API, and [helix-plugin/README.md](helix-plugin/README.md).
 
 ## Side-by-side Diffs
@@ -1415,8 +1416,26 @@ highlighting and injections failed at random places of large files and moved whi
 (`regexp.MustCompile("...")` sometimes not highlighted as a regular expression). And a parse
 stopped by its time limit no longer leaks into the next file parsed.
 
+A key that breaks or mends the tree at the top level (a `{` typed outside any function, which
+makes tree-sitter read the rest of the file as something else until the `}`) used to be the
+exception: everything under the root was "changed", so the whole file was looked through
+again, 37 to 60 ms per key in the 10,000-line file. Now the children of the root that are what
+they were are told apart from the ones that changed, and such a key takes 3 to 4 ms.
+
+The first file of a language also opens sooner, and `:config-reload` is quicker: the
+highlight and the injection queries of a language are compiled at the same time (tree-sitter
+takes about 150 ms for each of Rust's).
+
 This lives in Helix's copy of the [tree-house](https://github.com/helix-editor/tree-house)
 crates (`vendor/tree-house`, `vendor/tree-house-bindings`, see their `PATCHES.md`).
+
+## Random Input Testing
+
+`fuzz_long` sends random commands, keys, typable commands with random arguments, mouse events
+and resizes (down to 1×1) to an editor with most features and the bundled plugins on; nothing
+may panic and no step may hang. Every step is logged, a log can be replayed, and what it found
+has a test of its own (`helix-term/tests/test/robustness.rs`). See
+[`docs/CONTRIBUTING.md`](./docs/CONTRIBUTING.md#random-input) for how to run it.
 
 ## Keys after Esc, read together
 
