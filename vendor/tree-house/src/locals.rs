@@ -8,13 +8,12 @@ use std::{
 use hashbrown::HashMap;
 use kstring::KString;
 use ropey::RopeSlice;
-use tree_sitter::{Capture, InactiveQueryCursor, Node, Pattern};
+use tree_sitter::{Capture, Node, Pattern};
 
 use crate::highlighter::Highlight;
 use crate::incremental::{self, Shift};
-use crate::{
-    InjectionsQuery, LanguageConfig, LanguageLoader, Layer, Range, Syntax, TREE_SITTER_MATCH_LIMIT,
-};
+use crate::injections_query::Within;
+use crate::{InjectionsQuery, LanguageConfig, LanguageLoader, Layer, Range, Syntax};
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone, Copy)]
 pub struct Scope(u32);
@@ -231,8 +230,8 @@ impl Syntax {
         if layer_data.flags.modified || !layer_data.locals_queried {
             layer_data.locals_queried = true;
             let root = layer_data.parse_tree.as_ref().unwrap().root_node();
-            let query = |range: Range| {
-                injection_query.execute_locals(&root, range, source, &definition_captures)
+            let query = |within: Within| {
+                injection_query.execute_locals(&root, within, source, &definition_captures)
             };
             let changed = layer_data
                 .changed_ranges
@@ -244,13 +243,15 @@ impl Syntax {
                     take(&mut captures),
                     &pieces,
                     &root.byte_range(),
+                    layer_data.shell.as_ref(),
                     |capture: &LocalCapture| capture.anchor.as_ref(),
-                    query,
+                    |range| query(Within::Range(range)),
+                    |shell| query(Within::Shell(shell)),
                 )?;
                 updated.sort_by_key(LocalCapture::order);
                 Some(updated)
             });
-            captures = updated.unwrap_or_else(|| query(0..u32::MAX));
+            captures = updated.unwrap_or_else(|| query(Within::Range(0..u32::MAX)));
         }
 
         let mut locals = Locals::default();
@@ -332,15 +333,13 @@ impl InjectionsQuery {
     fn execute_locals(
         &self,
         root: &Node,
-        range: Range,
+        within: Within,
         source: RopeSlice,
         definition_captures: &HashMap<Capture, Highlight>,
     ) -> Vec<LocalCapture> {
-        let mut cursor = InactiveQueryCursor::new(range, TREE_SITTER_MATCH_LIMIT).execute_query(
-            &self.local_query,
-            root,
-            source,
-        );
+        let Some(mut cursor) = within.cursor(&self.local_query, root, source) else {
+            return Vec::new();
+        };
         let mut found = Vec::new();
         while let Some(query_match) = cursor.next_match() {
             let pattern = query_match.pattern();

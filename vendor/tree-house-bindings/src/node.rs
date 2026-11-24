@@ -66,6 +66,19 @@ impl<'tree> Node<'tree> {
         self.id.as_ptr() as usize
     }
 
+    /// What the node's subtree is (PATCH (helix fork)): the same value for a node of a tree and
+    /// a node of the tree parsed from it (both alive) means the parser kept the subtree, which
+    /// is then the same in both, every node of it. (`id` is the place of the subtree in its
+    /// parent: it differs for a kept subtree under a parent made anew.)
+    ///
+    /// Tree-sitter's `TSNode.id` points to the node's `Subtree`: a pointer to the subtree's
+    /// data, shared by the trees, or the data itself for a small token (its symbol, sizes and
+    /// flags, among them whether an edit touched it).
+    pub fn subtree_id(&self) -> u64 {
+        // SAFETY: `id` points to a `Subtree` (a union of 8 bytes) of the tree, alive for 'tree.
+        unsafe { self.id.as_ptr().cast::<u64>().read_unaligned() }
+    }
+
     /// Get this node's type as a string
     #[inline]
     pub fn kind(&self) -> &'tree str {

@@ -19,7 +19,8 @@ pub use tree_sitter;
 
 mod config;
 pub mod highlighter;
-mod incremental;
+#[doc(hidden)]
+pub mod incremental;
 mod injections_query;
 mod parse;
 // mod pretty_print;
@@ -110,6 +111,7 @@ impl Syntax {
             injection_matches: Vec::new(),
             next_match_id: 0,
             changed_ranges: None,
+            shell: None,
             queried: false,
             local_captures: Vec::new(),
             locals_queried: false,
@@ -287,6 +289,9 @@ pub struct LayerData {
     /// Where the syntax tree's structure changed in the update in progress, if it was parsed from
     /// the last one.
     changed_ranges: Option<Vec<Range>>,
+    /// The node the tree changed under in the update in progress, when its children were mostly
+    /// kept (see `incremental::refine`): `changed_ranges` are then the ranges to query for it.
+    shell: Option<incremental::Shell>,
     /// Whether the injections query ran on the layer: `injection_matches` are its matches.
     queried: bool,
     /// The captures of the locals query, which `locals` is built from.
@@ -426,6 +431,7 @@ mod unit_tests {
             injection_matches: Vec::new(),
             next_match_id: 0,
             changed_ranges: None,
+            shell: None,
             queried: false,
             local_captures: Vec::new(),
             locals_queried: false,

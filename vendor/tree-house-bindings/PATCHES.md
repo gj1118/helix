@@ -27,6 +27,10 @@ when a parse is cancelled (`src/parser.rs`).
 - `Tree::changed_ranges`: `ts_tree_get_changed_ranges`, the ranges whose structure differs
   between a tree and the tree parsed from it.
 - `Query::end_byte_for_pattern` and `Query::is_pattern_rooted`.
+- `Node::subtree_id`: what tells a subtree the parser kept from one it made anew, read from
+  the `Subtree` that `TSNode.id` points to.
+- `InactiveQueryCursor::set_max_start_depth` (`ts_query_cursor_set_max_start_depth`), reset
+  when a cursor is taken from the cache.
 
 ## For plugins
 

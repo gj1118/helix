@@ -366,6 +366,57 @@ fn incremental_updates_match_full_updates() {
     }
 }
 
+/// Large documents with many top-level items: an edit that breaks or mends the tree at the top
+/// level changes the root (a Rust file's root is an `ERROR` while `let x =` is typed between
+/// two functions) over children that stay what they were. Such updates query the root's
+/// children that changed instead of the whole file (tree-house's `incremental::refine`), and
+/// give what a full update gives.
+#[test]
+fn incremental_updates_of_a_changed_root_match_full_updates() {
+    use std::sync::atomic::Ordering;
+    let steps = std::env::var("SYNTAX_STEPS").map_or(120, |steps| steps.parse().unwrap());
+    let seeds = std::env::var("SYNTAX_SEEDS").map_or(1, |seeds| seeds.parse().unwrap());
+    let comments: String = (0..400)
+        .map(|i| {
+            format!("// TODO: item {i} with a [link](x)\nfn f{i}(a: u32) -> u32 {{ a + {i} }}\n\n")
+        })
+        .collect();
+    let documents = [
+        (
+            "rust",
+            first_lines(
+                include_str!("../../../helix-term/src/ui/statusline.rs"),
+                700,
+            ),
+        ),
+        ("rust", comments),
+        ("go", GO.repeat(30)),
+        ("javascript", JAVASCRIPT.repeat(25)),
+        (
+            "python",
+            include_str!("../../../helix-term/tests/test/fixtures/mock_dap.py").to_string(),
+        ),
+        ("html", HTML.repeat(12)),
+    ];
+    let shells = &tree_house::incremental::SHELL_UPDATES;
+    let before = shells.load(Ordering::Relaxed);
+    for (language, source) in documents {
+        for seed in 1..=seeds {
+            check(
+                language,
+                &source,
+                steps,
+                seed * 104_729 + source.len() as u64,
+            );
+        }
+    }
+    let refined: usize = shells.load(Ordering::Relaxed) - before;
+    assert!(
+        refined > 20,
+        "only {refined} updates went by a changed node's children"
+    );
+}
+
 /// The time an update takes in large documents, re-reading what changed and re-reading every
 /// changed layer whole: `cargo test --release -p helix-core --lib update_speed -- --ignored --nocapture`.
 #[test]
@@ -444,6 +495,59 @@ fn update_speed() {
             p90(&times[0]),
             median(&times[1]),
             p90(&times[1]),
+        );
+    }
+}
+
+/// The time of each update while a statement is typed in a function of a large file, a char at
+/// a time (the tree is broken, then whole again, as it is typed):
+/// `cargo test --release -p helix-core --lib typing_speed -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn typing_speed() {
+    let source = match std::env::var("TYPING_FILE") {
+        Ok(path) => std::fs::read_to_string(path).unwrap(),
+        Err(_) => include_str!("../../../helix-term/src/commands.rs").to_string(),
+    };
+    let source = source.as_str();
+    let lang = LOADER.language_for_name("rust").unwrap();
+    // (1-based, like `:goto`: the text is typed at the end of that line)
+    let line = std::env::var("TYPING_LINE").map_or(7000, |line| line.parse().unwrap());
+    let typed = std::env::var("TYPING_TEXT").unwrap_or("\n    let x = 1;\n    foo(a, b);".into());
+    for full in [false, true] {
+        let mut text = Rope::from(source);
+        let mut syntax = Syntax::new(text.slice(..), lang, &LOADER).unwrap();
+        let mut pos = text.line_to_char(line) - 1;
+        let mut report = String::new();
+        for c in typed.chars() {
+            let transaction = Transaction::change(
+                &text,
+                std::iter::once((pos, pos, Some(c.to_string().into()))),
+            );
+            let old = text.clone();
+            transaction.apply(&mut text);
+            let edits = generate_edits(old.slice(..), transaction.changes());
+            let start = std::time::Instant::now();
+            if full {
+                syntax
+                    .inner
+                    .update_full(text.slice(..), PARSE_TIMEOUT, &edits, &*LOADER)
+                    .unwrap();
+            } else {
+                syntax
+                    .inner
+                    .update(text.slice(..), PARSE_TIMEOUT, &edits, &*LOADER)
+                    .unwrap();
+            }
+            report.push_str(&format!(
+                "{c:?}:{:.1} ",
+                start.elapsed().as_secs_f64() * 1000.0
+            ));
+            pos += 1;
+        }
+        println!(
+            "{} (ms): {report}",
+            if full { "full       " } else { "incremental" }
         );
     }
 }

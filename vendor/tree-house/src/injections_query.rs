@@ -329,17 +329,15 @@ impl InjectionsQuery {
     fn execute(
         &self,
         root: &Node,
-        range: Range,
+        within: Within,
         source: RopeSlice,
         loader: &impl LanguageLoader,
         parent_ranges: &[tree_sitter::Range],
         next_id: &mut u32,
     ) -> Vec<InjectionMatch> {
-        let mut cursor = InactiveQueryCursor::new(range, TREE_SITTER_MATCH_LIMIT).execute_query(
-            &self.injection_query,
-            root,
-            source,
-        );
+        let Some(mut cursor) = within.cursor(&self.injection_query, root, source) else {
+            return Vec::new();
+        };
         let injection_content_capture = self.injection_content_capture.unwrap();
         let mut found = Vec::new();
         // Matches, not captures: a query limited to a range skips the captures outside it, but a
@@ -385,6 +383,44 @@ impl InjectionsQuery {
             .collect();
         matches.sort_by_key(InjectionMatch::order);
         matches
+    }
+}
+
+/// Where a query looks for matches (PATCH (helix fork)).
+pub(crate) enum Within<'a> {
+    /// The matches anchored in a range of the tree (all of it: `0..u32::MAX`).
+    Range(Range),
+    /// The matches anchored at the children of a node (see `incremental::Shell`), and what
+    /// else starts no deeper than their children.
+    Shell(&'a incremental::Shell),
+}
+
+impl Within<'_> {
+    /// A cursor of `query` over the tree of `root` that finds those matches. `None` when the
+    /// shell is not in the tree.
+    pub(crate) fn cursor<'a, 'tree>(
+        &self,
+        query: &'a Query,
+        root: &Node<'tree>,
+        source: RopeSlice<'a>,
+    ) -> Option<tree_sitter::QueryCursor<'a, 'tree, tree_sitter::RopeInput<'a>>> {
+        let cursor = match self {
+            Within::Range(range) => {
+                InactiveQueryCursor::new(range.clone(), TREE_SITTER_MATCH_LIMIT)
+                    .execute_query(query, root, source)
+            }
+            Within::Shell(shell) => {
+                let node = root
+                    .descendant_for_byte_range(shell.range.start, shell.range.end)
+                    .filter(|node| node.byte_range() == shell.range)?;
+                let mut cursor = InactiveQueryCursor::new(0..u32::MAX, TREE_SITTER_MATCH_LIMIT);
+                // the node's children, and theirs (a pattern of siblings anchored at a child
+                // starts at the child's children)
+                cursor.set_max_start_depth(2);
+                cursor.execute_query(query, &node, source)
+            }
+        };
+        Some(cursor)
     }
 }
 
@@ -488,8 +524,21 @@ impl Syntax {
                 .changed_ranges
                 .clone()
                 .filter(|_| !full && !layer_data.flags.ranges_changed);
-            let mut query = |range: Range| {
-                injections_query.execute(&root, range, source, loader, &parent_ranges, &mut next_id)
+            let shell = layer_data.shell.clone();
+            // (a cell: the queries of the pieces and of the shell both count the matches)
+            let next_id_cell = std::cell::Cell::new(next_id);
+            let query = |within: Within| {
+                let mut id = next_id_cell.get();
+                let found = injections_query.execute(
+                    &root,
+                    within,
+                    source,
+                    loader,
+                    &parent_ranges,
+                    &mut id,
+                );
+                next_id_cell.set(id);
+                found
             };
             let updated = changed.and_then(|changed| {
                 let pieces = incremental::changed_pieces(&changed, edits);
@@ -497,13 +546,16 @@ impl Syntax {
                     take(&mut matches),
                     &pieces,
                     &root.byte_range(),
+                    shell.as_ref(),
                     |mat: &InjectionMatch| mat.anchor.as_ref(),
-                    &mut query,
+                    |range| query(Within::Range(range)),
+                    |shell| query(Within::Shell(shell)),
                 )?;
                 updated.sort_by_key(InjectionMatch::order);
                 Some(updated)
             });
-            matches = updated.unwrap_or_else(|| query(0..u32::MAX));
+            matches = updated.unwrap_or_else(|| query(Within::Range(0..u32::MAX)));
+            next_id = next_id_cell.get();
             self.layer_mut(layer).next_match_id = next_id;
         }
 
@@ -768,6 +820,7 @@ impl Syntax {
                     injection_matches: Vec::new(),
                     next_match_id: 0,
                     changed_ranges: None,
+                    shell: None,
                     queried: false,
                     local_captures: Vec::new(),
                     locals_queried: false,

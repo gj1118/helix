@@ -59,6 +59,7 @@ impl Syntax {
         while let Some(layer) = queue.pop() {
             let layer_data = self.layer_mut(layer);
             layer_data.changed_ranges = None;
+            layer_data.shell = None;
             if layer_data.ranges.is_empty() {
                 // Skip re-parsing and querying layers without any ranges.
                 continue;
@@ -74,11 +75,11 @@ impl Syntax {
                 }
                 if layer_data.flags.modified {
                     // Re-parse the tree.
-                    layer_data.parse(&mut parser, source, timeout, loader)?;
+                    layer_data.parse(&mut parser, source, timeout, edits, loader)?;
                 }
             } else {
                 // always parse if this layer has never been parsed before
-                layer_data.parse(&mut parser, source, timeout, loader)?;
+                layer_data.parse(&mut parser, source, timeout, edits, loader)?;
             }
             // PATCH (helix fork): a layer the edits only moved, with nothing injected into it and
             // no local scopes (most comments), has nothing else to update.
@@ -116,6 +117,7 @@ impl LayerData {
         parser: &mut Parser,
         source: RopeSlice,
         timeout: Duration,
+        edits: &[tree_sitter::InputEdit],
         loader: &impl LanguageLoader,
     ) -> Result<(), Error> {
         let Some(config) = loader.get_config(self.language) else {
@@ -155,13 +157,24 @@ impl LayerData {
             .parse_with_timeout(source, tree, timeout)
             .ok_or(Error::Timeout)?;
         // PATCH (helix fork): what changed, to query only that (see `crate::incremental`).
-        self.changed_ranges = tree.map(|tree| {
-            let changed = tree.changed_ranges(&new_tree);
-            changed
+        let changed = tree.map(|tree| {
+            let changed: Vec<_> = tree
+                .changed_ranges(&new_tree)
                 .iter()
                 .map(|range| range.start_byte..range.end_byte)
-                .collect()
+                .collect();
+            // A large range under a node whose children the parser kept: less than all of it.
+            let edited = crate::incremental::changed_pieces(&[], edits);
+            let (old, new) = (tree.root_node(), new_tree.root_node());
+            match crate::incremental::refine(&old, &new, &changed, &edited) {
+                Some((shell, pieces)) => (pieces, Some(shell)),
+                None => (changed, None),
+            }
         });
+        (self.changed_ranges, self.shell) = match changed {
+            Some((changed, shell)) => (Some(changed), shell),
+            None => (None, None),
+        };
         self.parse_tree = Some(new_tree);
         Ok(())
     }
