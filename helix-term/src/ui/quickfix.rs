@@ -4,7 +4,8 @@
 //! With `[editor.quickfix] enable`, the lists of locations open in it instead of in a picker:
 //! the panel is a picker in its docked mode (see `Picker::docked`), so the lists keep their
 //! columns, filtering, live updates and preview. It stays open while you visit its entries:
-//! `Enter` jumps and gives the focus to the code, `Esc` gives it to the code without jumping,
+//! `Enter` jumps and gives the focus to the code (also from the query, while it is typed, as
+//! in a picker), `Esc` gives it to the code without jumping,
 //! `Ctrl-w j` (from the bottom view) gives it back, `]q`/`[q` visit the next and previous
 //! entry from anywhere, `q` closes it, and `<space>Q` (`quickfix`) shows and hides it.
 

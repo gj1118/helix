@@ -613,7 +613,8 @@ preview = true  # preview the selected location over the code while the panel is
 
 The panel sits under the views, beside a pinned explorer (nothing is covered), and stays
 open while you visit its entries: `j`/`k` move, `Enter` jumps, `]q`/`[q` visit the next and
-previous entry from the code, `/` filters, and `q` closes it. `<space>Q` / `:quickfix` shows
+previous entry from the code, `/` filters (`Enter` goes to the entry from the query too, as
+in a picker; `Esc` back to the list), and `q` closes it. `<space>Q` / `:quickfix` shows
 it with the focus (the last list it showed, or the quicklist) and hides it, like `<space>x`
 for the explorer; each key only toggles its own panel. `:copen` shows it again, `:cclose`
 closes it. The floating explorer and the pickers that choose one thing (files, buffers,

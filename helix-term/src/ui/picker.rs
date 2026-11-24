@@ -443,7 +443,8 @@ pub struct Picker<T: 'static + Send + Sync, D: 'static> {
 /// The state of a picker shown as the quickfix panel (see `ui::quickfix`).
 #[derive(Debug, Default)]
 struct Docked {
-    /// Whether the keys edit the query (after `/`) rather than move through the list.
+    /// Whether the keys edit the query (after `/`) rather than move through the list, until
+    /// `Esc` (the list) or `Enter` (the entry selected).
     filtering: bool,
     /// `Ctrl-w` was pressed: the next key picks the window to go to.
     window_key: bool,
@@ -2632,7 +2633,9 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
 
         if self.docked_typing() {
             match key_event {
-                // done typing: the keys move through the list again
+                // done typing: the keys move through the list again. `Enter` also visits
+                // the entry selected, as in a picker (with none yet, a search still on its
+                // way, it leaves the list to pick from).
                 key!(Esc) | key!(Enter) => {
                     let replacing = self.replace.as_ref().is_some_and(|replace| replace.focused);
                     if replacing {
@@ -2658,6 +2661,9 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                                     cx.editor.set_error(err.to_string());
                                 }
                             }
+                        }
+                        if key_event == key!(Enter) && self.selection().is_some() {
+                            self.docked_open(cx, self.default_action, false);
                         }
                     }
                 }

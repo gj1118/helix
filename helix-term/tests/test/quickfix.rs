@@ -265,6 +265,92 @@ async fn a_global_search_in_the_panel_starts_with_its_query() -> anyhow::Result<
     Ok(())
 }
 
+/// While the query is typed, `Enter` visits the entry selected, as in a picker: one `Enter`,
+/// not one to end the typing and another to visit. `Esc` only ends the typing.
+#[tokio::test(flavor = "multi_thread")]
+async fn enter_visits_the_entry_while_the_query_is_typed() -> anyhow::Result<()> {
+    let (mut app, _file) = app_with_quicklist(enabled()).await?;
+    let typing = |app: &Application| {
+        let area = app.compositor.size();
+        app.compositor.cursor(area, &app.editor).1 != helix_view::graphics::CursorKind::Hidden
+    };
+
+    send_keys(&mut app, "<space>q/%text row 19").await?;
+    assert!(typing(&app));
+    assert_eq!(cursor_line(&app), 0);
+    send_keys(&mut app, "<ret>").await?;
+    assert_eq!(cursor_line(&app), 19, "one Enter");
+    assert!(app.editor.quickfix_panel.visible);
+    assert!(!app.editor.quickfix_panel.focused, "the code has the focus");
+
+    // back in the panel: the query stays, and the keys move through the list
+    send_keys(&mut app, "<C-w>j").await?;
+    assert!(app.editor.quickfix_panel.focused);
+    assert!(!typing(&app));
+    let panel: Vec<String> = app.rendered_rows()[17..29].to_vec();
+    assert!(panel.iter().any(|row| row.contains("1/3")), "{panel:#?}");
+
+    // a query that matches nothing: Enter has nothing to visit, and leaves the list
+    send_keys(&mut app, "/x").await?;
+    assert!(typing(&app));
+    let panel: Vec<String> = app.rendered_rows()[17..29].to_vec();
+    assert!(panel.iter().any(|row| row.contains("0/3")), "{panel:#?}");
+    send_keys(&mut app, "<ret>").await?;
+    assert!(app.editor.quickfix_panel.focused, "nothing was visited");
+    assert!(!typing(&app));
+    assert_eq!(cursor_line(&app), 19);
+
+    // Esc ends the typing without visiting
+    send_keys(&mut app, "/<backspace>").await?;
+    let panel: Vec<String> = app.rendered_rows()[17..29].to_vec();
+    assert!(panel.iter().any(|row| row.contains("1/3")), "{panel:#?}");
+    send_keys(&mut app, "<esc><C-w>kgg<C-w>j/").await?;
+    assert!(typing(&app));
+    send_keys(&mut app, "<esc>").await?;
+    assert!(app.editor.quickfix_panel.focused);
+    assert!(!typing(&app));
+    assert_eq!(cursor_line(&app), 0, "Esc visits nothing");
+
+    send_keys(&mut app, "<C-w>k:q!<ret>").await?;
+    Ok(())
+}
+
+/// A global search in the panel: the query, then one `Enter` to its first result.
+#[tokio::test(flavor = "multi_thread")]
+async fn enter_goes_to_the_result_of_a_global_search() -> anyhow::Result<()> {
+    // qfix-marker-7391: the one line the search below finds (its own pattern, with the
+    // brackets, is not matched by itself)
+    let (mut app, _file) = app_with_quicklist(enabled()).await?;
+    send_keys(&mut app, "<space>/qfix-marker-739[1]").await?;
+    let mut found = false;
+    for _ in 0..400 {
+        found = app.rendered_rows()[17..29]
+            .iter()
+            .any(|row| row.contains("1/1"));
+        if found {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        send_keys(&mut app, "").await?;
+    }
+    assert!(found, "{:#?}", &app.rendered_rows()[17..29]);
+    assert!(app.editor.quickfix_panel.focused);
+
+    send_keys(&mut app, "<ret>").await?;
+    assert!(!app.editor.quickfix_panel.focused, "the code has the focus");
+    assert!(app.editor.quickfix_panel.visible);
+    let (view, doc) = helix_view::current_ref!(app.editor);
+    let path = doc.path().expect("a file").to_string_lossy().into_owned();
+    assert!(path.ends_with("quickfix.rs"), "{path}");
+    let text = doc.text().slice(..);
+    let line = text.line(text.char_to_line(doc.selection(view.id).primary().cursor(text)));
+    // (not the whole marker: this line is not to be found too)
+    assert!(line.to_string().contains("marker-7391:"), "{line}");
+
+    send_keys(&mut app, ":q!<ret>").await?;
+    Ok(())
+}
+
 /// The distinct colors of row `y` from column `from` to `to` (exclusive).
 fn colors(app: &Application, y: u16, from: u16, to: u16) -> Vec<helix_view::graphics::Color> {
     let mut colors: Vec<helix_view::graphics::Color> = Vec::new();

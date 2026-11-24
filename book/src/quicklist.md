@@ -89,7 +89,8 @@ of the editor's frame rather than a window over it, the panel has no border (its
 the rule at its top, the query under it), and its preview takes the place of the code, above
 the statusline, without a border either (also with `gradient-borders` on). A new list
 replaces the one it shows. It opens with the focus: on its list, or on its query for a list
-that needs one to show anything (the global search).
+that needs one to show anything (the global search): type it and press `Enter` to go to the
+first result, or `Esc` to move through the results first.
 
 | Key (in the panel) | Action |
 | --- | --- |
@@ -98,7 +99,7 @@ that needs one to show anything (the global search).
 | `Enter` | Visit the entry; the focus goes to the code and the panel stays |
 | `o`, `Alt-Enter` | Visit the entry, keeping the focus in the panel |
 | `Ctrl-s`, `Ctrl-v` | Visit the entry in a horizontal or vertical split |
-| `/` | Type the query (filter the list); `Esc` or `Enter` gives the keys back to the list |
+| `/` | Type the query (filter the list). `Enter` visits the entry selected, as in a picker; `Esc` gives the keys back to the list without visiting one |
 | `Esc`, `Ctrl-l`, `Ctrl-w k` (or `Ctrl-w w`, `Ctrl-w p`) | Give the focus to the code; the panel stays |
 | `Ctrl-h` | Give the focus to the explorer (opening it if hidden) |
 | `Ctrl-w h` / `Ctrl-w l` | Give the focus to the explorer, when it is pinned on that side |
