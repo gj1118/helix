@@ -380,7 +380,8 @@ pub(crate) fn refine(
     let shell_range = shell.byte_range();
     let mut kept = Vec::new();
     // One byte at the start of the shell: what is anchored at it and above it.
-    let mut pieces = vec![shell_range.start..shell_range.start.saturating_add(1)];
+    let mut pieces = Vec::with_capacity(8);
+    pieces.push(shell_range.start..shell_range.start.saturating_add(1));
     let mut anew_bytes = 0u32;
     let mut lookups = 0;
     let mut compared = REFINE_MAX_COMPARED;

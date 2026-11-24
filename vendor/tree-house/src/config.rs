@@ -22,12 +22,30 @@ impl LanguageConfig {
         injection_query_text: &str,
         local_query_text: &str,
     ) -> Result<Self, query::ParseError> {
-        // NOTE: the injection queries are parsed first since the local query is passed as-is
-        // to `Query::new` in `InjectionsQuery::new`. This ensures that the more readable error
-        // bubbles up first if the locals queries have an issue.
-        let injection_query =
-            InjectionsQuery::new(grammar, injection_query_text, local_query_text)?;
-        let highlight_query = HighlightQuery::new(grammar, highlight_query_text, local_query_text)?;
+        // PATCH (helix fork): the two queries are compiled at the same time. Analyzing a
+        // large query takes tree-sitter a long time (Rust's: about 150 ms each), and the
+        // editor waits for both before it shows the first file of a language.
+        let compile_highlights =
+            || HighlightQuery::new(grammar, highlight_query_text, local_query_text);
+        let (injection_query, highlight_query) = std::thread::scope(|scope| {
+            let highlights = std::thread::Builder::new()
+                .name("highlight-query".into())
+                .spawn_scoped(scope, compile_highlights);
+            let injections = InjectionsQuery::new(grammar, injection_query_text, local_query_text);
+            let highlights = match highlights {
+                Ok(thread) => thread
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+                // no thread to be had: one after the other
+                Err(_) => compile_highlights(),
+            };
+            (injections, highlights)
+        });
+        // NOTE: the error of the injection queries comes first since the local query is passed
+        // as-is to `Query::new` in `InjectionsQuery::new`. This ensures that the more readable
+        // error bubbles up first if the locals queries have an issue.
+        let injection_query = injection_query?;
+        let highlight_query = highlight_query?;
 
         Ok(Self {
             grammar,

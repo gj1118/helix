@@ -1269,6 +1269,48 @@ mod test {
     use super::*;
     use crate::{Rope, Transaction};
 
+    /// The highlights and the injections of a language are compiled at the same time: each
+    /// still reports its own error, the injections' first, and both are there afterwards.
+    #[test]
+    fn the_queries_of_a_language_compile_and_report_their_errors() {
+        let grammar = get_language("rust")
+            .unwrap()
+            .expect("the Rust grammar is built");
+        let highlights = "(identifier) @variable\n(line_comment) @comment";
+        let injections =
+            "((line_comment) @injection.content (#set! injection.language \"comment\"))";
+        let locals = "(function_item) @local.scope";
+
+        let config = SyntaxConfig::new(grammar, highlights, injections, locals).unwrap();
+        let mut scopes = Vec::new();
+        config.configure(|scope| {
+            scopes.push(scope.to_string());
+            None
+        });
+        scopes.sort();
+        scopes.dedup();
+        assert_eq!(scopes, ["comment", "local.scope", "variable"]);
+
+        let error = |highlights: &str, injections: &str, locals: &str| {
+            SyntaxConfig::new(grammar, highlights, injections, locals)
+                .unwrap_err()
+                .to_string()
+        };
+        let bad_highlights = error("(no_such_node) @variable", injections, locals);
+        assert!(bad_highlights.contains("no_such_node"), "{bad_highlights}");
+        let bad_injections = error(highlights, "(neither_this) @injection.content", locals);
+        assert!(bad_injections.contains("neither_this"), "{bad_injections}");
+        let both = error(
+            "(no_such_node) @variable",
+            "(neither_this) @injection.content",
+            "",
+        );
+        assert!(both.contains("neither_this"), "{both}");
+        assert!(!both.contains("no_such_node"), "{both}");
+        let bad_locals = error(highlights, injections, "(nor_this) @local.scope");
+        assert!(bad_locals.contains("nor_this"), "{bad_locals}");
+    }
+
     static LOADER: LazyLock<Loader> = LazyLock::new(crate::config::default_lang_loader);
 
     /// Rainbow highlights computed over a few lines are the ones of the whole document on

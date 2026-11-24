@@ -66,3 +66,13 @@ scopes), on small documents and on large ones whose root changes over its childr
 (`incremental_updates_of_a_changed_root_match_full_updates`, which also checks that such
 updates happen). With the predicate fix of the bindings undone, `update_full` gives exactly
 what upstream did. `Syntax::structure` prints a syntax tree for those comparisons.
+
+## A language's queries are compiled at the same time (`config.rs`)
+
+tree-sitter analyzes every pattern of a query when it is compiled, and for a large query that
+takes long: Rust's highlights and injections about 150 ms each. The editor waits for both
+before it shows the first file of a language, and again after `:config-reload`.
+`LanguageConfig::new` compiles the highlights on a thread of their own while the injections
+are compiled (a grammar is read-only, and `Grammar` and `Query` are `Send` and `Sync`). The
+error of the injections still comes first, and without a thread to be had they are compiled
+one after the other as before.
