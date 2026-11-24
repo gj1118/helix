@@ -75,6 +75,11 @@ pub struct ExplorerConfig {
     /// Draw the lines (`├─ └─ │`) that show the nesting of folders. Without them the tree is
     /// indented by two columns per level. Defaults to `true`.
     pub indent_guides: bool,
+    /// Close the pinned panel when a file is opened from it (`l`/Enter, `v`/`s`, a double
+    /// click), like nvim-tree's `quit_on_open`. The floating window always closes. Defaults
+    /// to `false`: the panel stays, the keyboard goes to the file.
+    #[serde(alias = "auto-close", alias = "quit-on-open")]
+    pub close_on_open: bool,
 }
 
 impl Default for ExplorerConfig {
@@ -93,6 +98,7 @@ impl Default for ExplorerConfig {
             directories_first: true,
             git_status: true,
             indent_guides: true,
+            close_on_open: false,
         }
     }
 }
@@ -2801,5 +2807,18 @@ mod tests {
         state.hide();
         assert!(!state.visible && !state.focused && !state.floating);
         assert_eq!(state.side(&config), ExplorerSide::Right);
+    }
+
+    /// `close-on-open` is off by default; `auto-close` and nvim-tree's `quit-on-open` name it
+    /// too.
+    #[test]
+    fn close_on_open_parses_under_its_names() {
+        let default: bool = ExplorerConfig::default().close_on_open;
+        assert!(!default);
+        for name in ["close-on-open", "auto-close", "quit-on-open"] {
+            let config: ExplorerConfig = toml::from_str(&format!("{name} = true")).unwrap();
+            assert!(config.close_on_open, "{name}");
+        }
+        assert!(toml::from_str::<ExplorerConfig>("close-on-opened = true").is_err());
     }
 }

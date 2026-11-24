@@ -1657,3 +1657,77 @@ async fn the_filter_box_keys_can_be_remapped() -> anyhow::Result<()> {
     assert!(!rows[1].contains("> txt"), "{}", rows.join("\n"));
     Ok(())
 }
+
+/// The path of the focused window's buffer.
+fn current_file(app: &Application) -> Option<std::path::PathBuf> {
+    let (_, doc) = helix_view::current_ref!(app.editor);
+    doc.path().map(std::path::Path::to_path_buf)
+}
+
+/// `close-on-open = true`: a file opened from the pinned panel (`l`, `v`) closes it, and the
+/// keyboard goes to the file; a folder opened with `l` keeps it. `<space>x` shows it again,
+/// on the file opened.
+#[tokio::test(flavor = "multi_thread")]
+async fn close_on_open_closes_the_panel_when_a_file_opens() -> anyhow::Result<()> {
+    let (_dir, root) = four_files()?;
+    let mut app = helpers::AppBuilder::new()
+        .with_config(config("close-on-open = true"))
+        .build()?;
+    open_explorer(&mut app, &root);
+
+    // a folder: expanded, the panel stays
+    goto(&mut app, "dest").await?;
+    send_keys(&mut app, "l").await?;
+    let panel = &app.editor.explorer_panel;
+    assert!(panel.visible && panel.focused);
+
+    goto(&mut app, "b.txt").await?;
+    send_keys(&mut app, "l").await?;
+    let panel = &app.editor.explorer_panel;
+    assert!(!panel.visible, "closed");
+    assert!(!panel.focused);
+    assert_eq!(current_file(&app), Some(root.join("b.txt")));
+    let views: usize = app.editor.tree.views().count();
+    assert_eq!(views, 1_usize);
+
+    // shown again, on the file opened; `v` opens one beside it and closes the panel too
+    send_keys(&mut app, "<space>x").await?;
+    let panel = &app.editor.explorer_panel;
+    assert!(panel.visible && panel.focused);
+    let selected = explorer(&app)
+        .cursor_path()
+        .map(std::path::Path::to_path_buf);
+    assert_eq!(selected, Some(root.join("b.txt")));
+    goto(&mut app, "c.txt").await?;
+    send_keys(&mut app, "v").await?;
+    assert!(!app.editor.explorer_panel.visible);
+    assert_eq!(current_file(&app), Some(root.join("c.txt")));
+    assert_eq!(app.editor.tree.views().count(), 2_usize);
+
+    // the file shown already: focused there, the panel closes
+    send_keys(&mut app, "<space>x").await?;
+    goto(&mut app, "b.txt").await?;
+    send_keys(&mut app, "l").await?;
+    assert!(!app.editor.explorer_panel.visible);
+    assert_eq!(current_file(&app), Some(root.join("b.txt")));
+    assert_eq!(app.editor.tree.views().count(), 2_usize);
+    send_keys(&mut app, "<C-w>o").await?;
+    helpers::quit(app).await
+}
+
+/// Without `close-on-open` (the default), the pinned panel stays after opening a file, the
+/// keyboard in the file.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_pinned_panel_stays_after_opening_a_file_by_default() -> anyhow::Result<()> {
+    let (_dir, root) = four_files()?;
+    let mut app = helpers::AppBuilder::new().with_config(config("")).build()?;
+    open_explorer(&mut app, &root);
+
+    goto(&mut app, "a.txt").await?;
+    send_keys(&mut app, "l").await?;
+    let panel = &app.editor.explorer_panel;
+    assert!(panel.visible, "still shown");
+    assert!(!panel.focused, "the keyboard is in the file");
+    assert_eq!(current_file(&app), Some(root.join("a.txt")));
+    helpers::quit(app).await
+}

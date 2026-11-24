@@ -103,7 +103,13 @@ buffer is symmetrical: opening a file with `l`/Enter lands focus on that buffer
 directly, `Esc` hands focus back to the editor while keeping the tree open, and
 `q` hides the panel entirely. When the panel floats, anything that hands focus
 back into an opened buffer (`l`/Enter, a split with `v`/`s`) — or plain `Esc` —
-also closes the float, since it would otherwise cover the editor.
+also closes the float, since it would otherwise cover the editor. A pinned panel can
+close the same way when a file is opened from it:
+
+```toml
+[editor.explorer]
+close-on-open = true   # `<space>x` shows it again, on the file opened
+```
 
 `hx .` (or `hx some/dir`) opens a file picker on the directory, as in Helix. To open the
 explorer on it instead, with the keyboard in the tree, set:
@@ -128,6 +134,7 @@ Default settings (`[editor.explorer]` in your `config.toml`):
 |`floating-x`, `floating-y` | No longer used: the floating window is always centered. Still accepted, so older configs keep loading | unset |
 |`icons` | Show per-file-type icons (honors the global `[icons.mime]` settings, see below) | `true` |
 |`auto-reveal` | Select the current buffer's file when the panel opens | `false` |
+|`close-on-open` | Close the pinned panel when a file is opened from it (`l`/Enter, `v`/`s`, a double click), like nvim-tree's `quit_on_open`; `<space>x` shows it again. The floating window always closes. Also `auto-close` | `false` |
 |`open-on-directory` | Open the explorer on the directory given on the command line (`hx .`, `hx some/dir`), with the keyboard in the tree. `false` (the default) opens a file picker on it, as Helix does | `false` |
 |`show-hidden` | Show dotfiles (hidden files) | `false` |
 |`directories-first` | Sort directories before files in directory listings | `true` |
