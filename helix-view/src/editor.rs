@@ -525,6 +525,10 @@ pub struct Config {
     /// The word motions (`w`, `b`, `e`, `ge`) stop at the parts of `camelCase` and
     /// `snake_case` names, like nvim-spider. Off by default.
     pub subword_motions: bool,
+    /// A buffer opens where its cursor was last: a file opened again (after `:buffer-close`,
+    /// or after a restart with `[editor.persistence] old-files`), and a window showing a
+    /// buffer for the first time. Off: they start at the start of the file. On by default.
+    pub remember_cursor_position: bool,
     /// Automatic save on focus lost and/or after delay.
     /// Time delay in milliseconds since last edit after which auto save timer triggers.
     /// Time delay defaults to false with 3000ms delay. Focus lost defaults to false.
@@ -2514,6 +2518,7 @@ impl Default for Config {
             yank_highlight: 200,
             smooth_scroll: SmoothScrollConfig::default(),
             subword_motions: false,
+            remember_cursor_position: true,
             auto_save: AutoSave::default(),
             auto_reload: AutoReload::default(),
             idle_timeout: Duration::from_millis(250),
@@ -4426,8 +4431,11 @@ impl Editor {
 
     /// Notes where the cursor was last in a document, for when its file is opened again: in
     /// this session, and in later ones with `[editor.persistence] old-files` (written to the
-    /// file history then).
+    /// file history then). Nothing without `remember-cursor-position`.
     pub fn note_last_position(&mut self, doc_id: DocumentId) {
+        if !self.config().remember_cursor_position {
+            return;
+        }
         let Some(doc) = self.documents.get(&doc_id) else {
             return;
         };
@@ -4508,7 +4516,7 @@ impl Editor {
 
             // The file was open before (in this session, or in an earlier one with
             // `[editor.persistence] old-files`): it opens where the cursor was last.
-            if !self.excluded_from_old_files(&path) {
+            if self.config().remember_cursor_position && !self.excluded_from_old_files(&path) {
                 if let Some((view_position, selection)) = self.old_file_locs.get(&path) {
                     doc.remember_position(selection.clone(), *view_position);
                 }
@@ -5768,5 +5776,21 @@ right = ["lsp", "position"]"#,
             "{default:?}"
         );
         assert!(toml::from_str::<StatusLineConfig>(r#"right = ["language-server"]"#).is_err());
+    }
+}
+
+#[cfg(test)]
+mod remember_cursor_tests {
+    use super::*;
+
+    /// `remember-cursor-position` is on by default, and can be turned off.
+    #[test]
+    fn remember_cursor_position_is_on_by_default() {
+        let default: bool = Config::default().remember_cursor_position;
+        assert!(default);
+        let config: Config = toml::from_str("remember-cursor-position = false").unwrap();
+        assert!(!config.remember_cursor_position);
+        let config: Config = toml::from_str("").unwrap();
+        assert!(config.remember_cursor_position);
     }
 }

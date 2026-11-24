@@ -168,3 +168,32 @@ async fn a_file_shortened_since_opens_at_its_start() -> anyhow::Result<()> {
     assert_eq!(cursor_of(&app), (0_usize, 0_usize));
     helpers::quit(app).await
 }
+
+/// `remember-cursor-position = false` (set while Helix runs): a file opened again, and a window
+/// new to a buffer, start at the start of the file.
+#[tokio::test(flavor = "multi_thread")]
+async fn without_the_setting_buffers_open_at_their_start() -> anyhow::Result<()> {
+    let file = helpers::temp_file_with_contents(SIX_LINES)?;
+    let path = helix_stdx::path::canonicalize(file.path());
+    let mut app = app_with(&path)?;
+    let on: bool = app.editor.config().remember_cursor_position;
+    assert!(on, "on by default");
+
+    helpers::send_keys(&mut app, ":set remember-cursor-position false<ret>").await?;
+    let on: bool = app.editor.config().remember_cursor_position;
+    assert!(!on);
+
+    // closed and opened again
+    helpers::send_keys(&mut app, "3jll:bc<ret>").await?;
+    helpers::send_keys(&mut app, &open_keys(&path)).await?;
+    assert_eq!(current_path(&app), Some(path.clone()));
+    assert_eq!(cursor_of(&app), (0_usize, 0_usize));
+
+    // in a new window while the first shows it on line 3
+    helpers::send_keys(&mut app, "3j:vnew<ret>").await?;
+    helpers::send_keys(&mut app, &open_keys(&path)).await?;
+    assert_eq!(app.editor.tree.views().count(), 2_usize);
+    assert_eq!(cursor_of(&app), (0_usize, 0_usize));
+    helpers::send_keys(&mut app, "<C-w>o").await?;
+    helpers::quit(app).await
+}

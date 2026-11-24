@@ -56,6 +56,7 @@
 | `middle-click-paste` | Middle click paste support | `true` |
 | `default-yank-register` | Default register used for yank/paste | `'"'` |
 | `subword-motions` | The word motions (`w`, `b`, `e`, and `ge`) stop at the parts of `camelCase` and `snake_case` names (`parse`, `Http`, `Response`), like nvim-spider; `W`, `B`, `E` still go by WORDs. The commands `move_next_sub_word_start` and the others can be bound to keys of their own instead | `false` |
+| `remember-cursor-position` | A buffer opens where its cursor was last: a file opened again (after `:buffer-close`, or after a restart with [`[editor.persistence] old-files`](#where-the-cursor-was-last)) and a window showing a buffer for the first time. `false`: they start at the start of the file | `true` |
 | `yank-highlight` | How long, in milliseconds, yanked text is highlighted (`ui.highlight.yank`), like Neovim's `vim.hl.on_yank`; `0` turns it off. An edit ends it at once | `200` |
 | `scroll-lines` | Number of lines to scroll per scroll wheel step | `3` |
 | `shell` | Shell to use when running external commands | Unix: `["sh", "-c"]`<br/>Windows: `["cmd", "/C"]` |
@@ -1580,7 +1581,7 @@ The state is formatted with bincode, and stored in files in the state directory 
 
 | Key | Description | Default |
 | --- | ----------- | ------- |
-| `old-files` | whether files open where their cursor was last after a restart too (see [Where the cursor was last](#where-the-cursor-was-last)) | `true` |
+| `old-files` | whether files open where their cursor was last after a restart too, with `remember-cursor-position` (see [Where the cursor was last](#where-the-cursor-was-last)) | `true` |
 | `commands` | whether to persist command history between sessions | `false` |
 | `search` | whether to persist search history between sessions | `false` |
 | `clipboard` | whether to persist helix's internal clipboard between sessions | `false` |
@@ -1593,7 +1594,8 @@ The state is formatted with bincode, and stored in files in the state directory 
 
 #### Where the cursor was last
 
-A buffer opens where its cursor was last (like Vim's `'"` mark with a "last place" plugin):
+A buffer opens where its cursor was last (like Vim's `'"` mark with a "last place" plugin),
+with `remember-cursor-position = true` in `[editor]` (the default):
 
 - After a restart, with `old-files` (on by default): a file opens at the place it had, and the
   scroll of its window, when Helix quit or the buffer was closed. A place given on the command
@@ -1606,6 +1608,16 @@ A buffer opens where its cursor was last (like Vim's `'"` mark with a "last plac
 
 Files matching `old-files-exclusions` (commit messages, by default) always open at their
 start. So does a file changed by another program so that its place is past its end.
+
+With `remember-cursor-position = false` (it can be changed with `:set` too), files and new
+windows start at the start of the file, and no place is written to the history. The places
+of earlier sessions are still read at startup (with `old-files`), so turning the setting on
+again with `:set` brings them back.
+
+```toml
+[editor]
+remember-cursor-position = false
+```
 
 The places are written to `file_history` in the state directory as buffers and windows
 close, and as Helix exits (when stopped by a signal too). At startup, past `old-files-trim`

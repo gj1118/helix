@@ -2195,10 +2195,17 @@ impl Document {
     /// Initializes a new selection and view_data for the given view
     /// if it does not already have them.
     /// A window new to the document starts where the cursor was last
-    /// ([`Document::last_position`]), at the start of the document when it never was anywhere.
+    /// ([`Document::last_position`]), at the start of the document when it never was anywhere
+    /// (or without `remember-cursor-position`).
     pub fn ensure_view_init(&mut self, view_id: ViewId) {
         if !self.selections.contains_key(&view_id) {
-            match self.last_position() {
+            let last = self
+                .config
+                .load()
+                .remember_cursor_position
+                .then(|| self.last_position())
+                .flatten();
+            match last {
                 Some((selection, view_position)) => {
                     self.set_selection(view_id, selection);
                     self.view_data_mut(view_id).view_position = view_position;
@@ -3964,6 +3971,35 @@ mod test {
         doc.apply(&edit, fourth);
         let last: Option<ViewId> = doc.last_view();
         assert_eq!(last, Some(fourth));
+    }
+
+    /// Without `remember-cursor-position`, a new window starts at the start of the document,
+    /// wherever the cursor was in the others.
+    #[test]
+    fn without_the_setting_a_new_window_starts_at_the_start() {
+        let config = Config {
+            remember_cursor_position: false,
+            ..Config::default()
+        };
+        let mut doc = Document::from(
+            Rope::from("one\ntwo\nthree\n"),
+            None,
+            Arc::new(ArcSwap::new(Arc::new(config))),
+            Arc::new(ArcSwap::from_pointee(syntax::Loader::default())),
+        );
+        let [first, second, ..] = view_ids();
+        doc.ensure_view_init(first);
+        doc.set_selection(first, cursor(8));
+        let last: Option<(Selection, ViewPosition)> = doc.last_position();
+        assert_eq!(last.map(|(selection, _)| selection), Some(cursor(8)));
+
+        doc.ensure_view_init(second);
+        assert_eq!(doc.selection(second), &Selection::single(0, 1));
+        assert_eq!(
+            doc.selection(first),
+            &cursor(8),
+            "the first keeps its place"
+        );
     }
 
     /// A remembered place (the file's, from when it was last closed) is where a new window

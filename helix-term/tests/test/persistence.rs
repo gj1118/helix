@@ -437,3 +437,59 @@ async fn a_place_is_written_once() -> anyhow::Result<()> {
     assert_eq!(text.char_to_line(cursor), 2_usize);
     Ok(())
 }
+
+/// `remember-cursor-position = false` with `old-files` on: no place is written, and a file opens
+/// at its start after a restart even with a place from an earlier session.
+#[tokio::test(flavor = "multi_thread")]
+async fn without_remember_cursor_position_no_place_is_kept() -> anyhow::Result<()> {
+    init_file_history()?;
+    let file = helpers::temp_file_with_contents(SIX_LINES)?;
+    let path = helix_stdx::path::canonicalize(file.path());
+    let off = || {
+        let mut config = helpers::test_config();
+        config.editor.remember_cursor_position = false;
+        config
+    };
+
+    // off: nothing written
+    let mut app = helpers::AppBuilder::new()
+        .with_config(off())
+        .with_file_history()
+        .with_file(file.path(), None)
+        .build()?;
+    assert!(app.editor.config().persistence.old_files);
+    helpers::send_keys(&mut app, "4j").await?;
+    helpers::quit(app).await?;
+    let places = persistence::read_file_history()
+        .into_iter()
+        .filter(|entry| entry.path == path)
+        .count();
+    assert_eq!(places, 0_usize);
+
+    // on: written
+    let mut app = helpers::AppBuilder::new()
+        .with_config(helpers::test_config())
+        .with_file_history()
+        .with_file(file.path(), None)
+        .build()?;
+    helpers::send_keys(&mut app, "2j").await?;
+    helpers::quit(app).await?;
+
+    // off again: the place written is not used
+    let app = helpers::AppBuilder::new()
+        .with_config(off())
+        .with_file_history()
+        .with_file(file.path(), None)
+        .build()?;
+    assert_eq!(cursor_of(&app), (0_usize, 0_usize));
+    helpers::quit(app).await?;
+
+    // on: it is
+    let app = helpers::AppBuilder::new()
+        .with_config(helpers::test_config())
+        .with_file_history()
+        .with_file(file.path(), None)
+        .build()?;
+    assert_eq!(cursor_of(&app), (2_usize, 0_usize));
+    helpers::quit(app).await
+}

@@ -1506,7 +1506,8 @@ plugins add marks with `buffer:set_scrollbar_marks`. See
 ## Where the Cursor Was Last
 
 A buffer opens where its cursor was last, as with
-[nvim-lastplace](https://github.com/ethanholz/nvim-lastplace), in the core:
+[nvim-lastplace](https://github.com/ethanholz/nvim-lastplace), in the core. It is on by
+default; `remember-cursor-position` turns it off (or on again, also with `:set`):
 
 - **After a restart.** A file opens at the place (and scroll) it had when Helix quit or the
   buffer was closed. This is `[editor.persistence] old-files`, now on by default. A place
@@ -1520,6 +1521,9 @@ A buffer opens where its cursor was last, as with
   that, as before.
 
 ```toml
+[editor]
+remember-cursor-position = true                           # false: files open at their start
+
 [editor.persistence]
 old-files = true                                          # false: not after a restart
 old-files-exclusions = [".*/\\.git/.*", ".*/COMMIT_EDITMSG"]  # always open at their start
