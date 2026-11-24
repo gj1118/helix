@@ -1396,6 +1396,7 @@ config = { chunk = { enable = true, delay = 0 }, line_num = { enable = true } }
 | `chars` | `horizontal_line`, `vertical_line`, `left_top`, `left_bottom`, `right_arrow`, over those of the line's thickness | those of thickness 1: `"─"`, `"│"`, `"╭"`, `"╰"`, `">"` |
 | `delay` | Milliseconds the cursor rests before another block is drawn, animated: one it moved to with a key, a click, or a scroll taking it along (`C-d`); `0`: at once, not animated. An edit, or another window or buffer, draws at once | `300` |
 | `duration` | Milliseconds the animation takes (from the first line's code to the corner, down, to the arrow); `0`: not animated | `200` |
+| `fps` | Frames a second the animation draws, at most. Every frame is the whole editor drawn again, so there are no more than show something new: one a cell at most, and none for the part of the line above and below the screen, which is there from the first frame. `60` is as smooth as a terminal gets, at twice the work | `30` |
 | `gradient` | The line in the colours of [`[editor.gradient-borders]`](./editor.md) (`start-color`, `middle-color`, `end-color`), from the first line's code (the start colour), down, to the arrow (the end colour), over `style`'s colour; a block with a syntax error keeps `error_style`. The colours follow `:set` and `:config-reload` | `false` |
 | `max_file_size` | Buffers larger than this (in characters) are left alone | `1048576` |
 | `exclude_languages` | Languages left alone, e.g. `{ "markdown" }` | `{}` |

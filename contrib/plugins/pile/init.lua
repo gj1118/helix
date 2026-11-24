@@ -52,6 +52,8 @@
 --                                        --   animation; 0: at once, not animated (in another
 --                                        --   window or buffer, or after an edit: at once)
 --     duration = 200,                    -- ms the animation takes; 0: not animated
+--     fps = 30,                          -- frames a second the animation draws, at most (and
+--                                        --   one a cell at most): each is the editor drawn again
 --     gradient = false,                  -- the line in the colours of [editor.gradient-borders]
 --                                        --   (start-color, middle-color, end-color): from the
 --                                        --   first line's code, down, to the arrow; a block with
@@ -108,6 +110,7 @@ local DEFAULTS = {
     },
     delay = 300,
     duration = 200,
+    fps = 30,
     gradient = false,
     max_file_size = 1024 * 1024,
     exclude_languages = {},
@@ -714,21 +717,48 @@ local function show(buffer, cells, style)
   buffer:set_overlays(overlays_of(cells, style))
 end
 
--- Draws the cells one after the other over `duration` ms (by the clock: firings of the
--- timer skipped while the editor is busy do not slow it down).
-local function animate(buffer, cells, style)
+-- Draws the cells on lines `top` to `bottom` (those on screen) one after the other over
+-- `duration` ms, by the clock: firings of the timer skipped while the editor is busy do not
+-- slow it down. Every frame is the whole editor drawn again, so there are no more of them
+-- than show something new: `fps` a second at most, one a cell at most, and none for the
+-- cells kept above and below the screen (for a scroll), which are there from the start. The
+-- first frame is drawn at once, with what takes the last block away.
+local function animate(buffer, cells, style, top, bottom)
   animation = cancel(animation)
-  local started = helix.now()
-  local all, shown = overlays_of(cells, style), {}
-  buffer:set_overlays({})
-  animation = helix.every(16, function()
-    local share = math.min(1, (helix.now() - started) / config.chunk.duration)
-    local count = math.max(1, math.ceil(#all * share))
-    for i = #shown + 1, count do
-      shown[i] = all[i]
+  local shown, coming = {}, {}
+  for _, item in ipairs(overlays_of(cells, style)) do
+    if item.line >= top and item.line <= bottom then
+      coming[#coming + 1] = item
+    else
+      shown[#shown + 1] = item
     end
-    -- the buffer may no longer be focused: the animation ends
-    if not pcall(buffer.set_overlays, buffer, shown) or count >= #all then
+  end
+  local duration = config.chunk.duration
+  local frames = math.floor(duration * config.chunk.fps / 1000 + 0.5)
+  frames = math.max(1, math.min(frames, #coming))
+  local kept, count = #shown, 0
+  -- Shows the cells of the frames up to `frame`: whether there are more to come.
+  local function draw(frame)
+    local now = math.ceil(#coming * math.min(frame, frames) / frames)
+    if now > count or frame == 1 then
+      for i = count + 1, now do
+        shown[kept + i] = coming[i]
+      end
+      count = now
+      buffer:set_overlays(shown)
+    end
+    return count < #coming
+  end
+  if not draw(1) then
+    return
+  end
+  local started, interval = helix.now(), duration / (frames - 1)
+  animation = helix.every(interval, function()
+    -- (a firing a moment early still draws its frame; a late one, those it missed too;
+    -- the buffer may no longer be focused: the animation ends)
+    local frame = 1 + math.floor((helix.now() - started) / interval + 0.5)
+    local ok, more = pcall(draw, frame)
+    if not ok or not more then
       animation = cancel(animation)
     end
   end)
@@ -799,7 +829,7 @@ local function update_chunk(buffer, window, how)
   local function draw()
     waiting = cancel(waiting)
     -- (where the window shows now: it may have scrolled while the block waited)
-    first_shown, last_shown = shown_lines(window)
+    first_shown, last_shown, top, bottom = shown_lines(window)
     local cells, length = chunk_cells(buffer, block, first_shown, last_shown, chars_of(faulty))
     local style = faulty and chunk_error_style or chunk_style
     if config.chunk.gradient and not faulty then
@@ -807,7 +837,7 @@ local function update_chunk(buffer, window, how)
     end
     local cells_now = signature(here, cells, faulty)
     if animated then
-      animate(buffer, cells, style)
+      animate(buffer, cells, style, top, bottom)
     elseif cells_now ~= drawn.cells or animation then
       -- (the same cells as drawn after most edits and scrolls: not sent again)
       animation = cancel(animation)

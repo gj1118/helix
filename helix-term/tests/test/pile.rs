@@ -293,6 +293,103 @@ async fn another_block_waits_for_the_cursor_to_rest() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Every frame of the animation is the whole editor drawn again: there are `fps` of them a
+/// second at most (here 3 for the 12 cells of the `if` block; one every 16 ms would be 37).
+#[tokio::test(flavor = "multi_thread")]
+async fn the_animation_draws_no_more_frames_than_its_fps() -> anyhow::Result<()> {
+    let rust = file(RUST, ".rs")?;
+    let frames_of = |config: &'static str| {
+        let rust = &rust;
+        async move {
+            let (mut app, _plugins) = app(config, rust).await?;
+            let function = overlays(&app);
+            let before = app.frames_drawn();
+            // (the editor is not idle before the animation is over)
+            send_keys(&mut app, "4gg").await?;
+            let mut polls = 0;
+            while overlays(&app) == function || overlays(&app).len() < 12 {
+                polls += 1;
+                assert!(polls < 300, "the animation does not end");
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                send_keys(&mut app, "").await?;
+            }
+            let done = overlays(&app);
+            assert!(done.contains(&(3, 4, "╭".to_string())), "{done:?}");
+            assert!(done.contains(&(8, 7, ">".to_string())), "{done:?}");
+            anyhow::Ok(app.frames_drawn() - before)
+        }
+    };
+    // what the keys and the cursor resting draw, without an animation
+    let plain = frames_of("{ chunk = { delay = 20, duration = 0 } }").await?;
+    let slow = frames_of("{ chunk = { delay = 20, duration = 600, fps = 5 } }").await?;
+    let fast = frames_of("{ chunk = { delay = 20, duration = 600, fps = 20 } }").await?;
+    // (the first frame also takes the last block away; one more at most: a firing of the
+    // timer a moment early)
+    assert!(
+        (plain + 1..=plain + 3 + 1).contains(&slow),
+        "3 frames at 5 a second: {slow} frames, {plain} without an animation"
+    );
+    assert!(
+        (slow..=plain + 12 + 1).contains(&fast),
+        "12 frames at 20 a second: {fast} frames, {plain} without an animation"
+    );
+    Ok(())
+}
+
+/// The cells kept above and below the screen (for a scroll) are not animated: a frame that
+/// shows nothing new would be the editor drawn again for nothing. They are there from the
+/// start, with the first frame of what is on screen.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_animation_is_of_the_cells_on_screen() -> anyhow::Result<()> {
+    let mut text = String::from("fn first() {\n    one();\n}\n\nfn tall() {\n");
+    for _ in 0..200 {
+        text.push_str("    line();\n");
+    }
+    text.push_str("}\n");
+    let rust = file(&text, ".rs")?;
+    // (so slow that only the first frame is drawn while the test looks)
+    let (mut app, _plugins) = app("{ chunk = { delay = 20, duration = 600000 } }", &rust).await?;
+    let first = overlays(&app);
+    assert!(first.iter().all(|(line, _, _)| *line <= 3), "{first:?}");
+    send_keys(&mut app, "100gg").await?;
+    let mut drawn = Vec::new();
+    for _ in 0..100 {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        send_keys(&mut app, "").await?;
+        drawn = overlays(&app);
+        if drawn != first {
+            break;
+        }
+    }
+    let (top, bottom) = {
+        let (view, doc) = helix_view::current_ref!(app.editor);
+        let text = doc.text().slice(..);
+        let top = text.char_to_line(doc.view_offset(view.id).anchor) + 1;
+        (top, top + usize::from(view.inner_area(doc).height))
+    };
+    assert!(
+        top > 60 && bottom < 140,
+        "the view is inside the block: {top} to {bottom}"
+    );
+    let above = drawn.iter().filter(|(line, _, _)| *line < top).count();
+    let below = drawn.iter().filter(|(line, _, _)| *line > bottom).count();
+    let on_screen = drawn.len() - above - below;
+    assert!(
+        above >= 10,
+        "the lines above the screen, at once: {drawn:?}"
+    );
+    assert!(
+        below >= 10,
+        "the lines below the screen, at once: {drawn:?}"
+    );
+    assert_eq!(
+        on_screen, 1,
+        "those on screen come with the animation, the first at once: {drawn:?}"
+    );
+    assert!(drawn.iter().all(|(_, col, text)| *col == 0 && text == "│"));
+    Ok(())
+}
+
 /// The commands switch each part, or both, on and off.
 #[tokio::test(flavor = "multi_thread")]
 async fn commands_switch_the_parts() -> anyhow::Result<()> {

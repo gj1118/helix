@@ -33,6 +33,8 @@ pub struct TestBackend {
     /// When set, what reaches the terminal, in order: `raw x,y` for `write_raw`, `x,y symbol`
     /// for each cell drawn.
     pub events: Option<Vec<String>>,
+    /// The frames drawn (flushed).
+    pub frames: usize,
 }
 
 /// Returns a string representation of the given buffer for debugging purpose.
@@ -80,6 +82,7 @@ impl TestBackend {
             title_stack: Vec::new(),
             titles_set: Vec::new(),
             events: None,
+            frames: 0,
         }
     }
 
@@ -230,6 +233,7 @@ impl Backend for TestBackend {
     }
 
     fn flush(&mut self) -> Result<(), io::Error> {
+        self.frames += 1;
         Ok(())
     }
 

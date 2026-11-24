@@ -2376,6 +2376,13 @@ impl Application {
         (&backend.title, &backend.title_stack)
     }
 
+    /// The frames drawn on the (test) terminal so far: what something costs that draws the
+    /// editor again (an animation, a timer).
+    #[cfg(feature = "integration")]
+    pub fn frames_drawn(&self) -> usize {
+        self.terminal.backend().frames
+    }
+
     /// The window titles sent to the (test) terminal, one per change.
     #[cfg(feature = "integration")]
     pub fn titles_set(&self) -> &[String] {
