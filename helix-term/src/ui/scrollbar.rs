@@ -123,6 +123,7 @@ impl Scrollbars {
         let first = text
             .char_to_line(offset.anchor.min(text.len_chars()))
             .min(lines - 1);
+        self.forget_closed_views(editor);
         let last = self
             .last_line_on_screen(doc, view, inner)
             .clamp(first, lines - 1);
@@ -500,6 +501,23 @@ impl Scrollbars {
         let line = last_line_on_screen(doc, view, inner);
         last_lines.insert(view.id, (key, line));
         line
+    }
+
+    /// How many windows something is kept for (tests).
+    pub fn windows_kept(&self) -> usize {
+        self.last_lines
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
+    }
+
+    /// Drops what is kept for the windows closed since (every split made and closed would
+    /// leave its entry otherwise).
+    fn forget_closed_views(&self, editor: &Editor) {
+        let mut last_lines = self.last_lines.lock().unwrap_or_else(|e| e.into_inner());
+        if last_lines.len() > editor.tree.views().count() {
+            last_lines.retain(|view, _| editor.tree.contains(*view));
+        }
     }
 }
 

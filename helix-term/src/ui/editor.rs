@@ -186,6 +186,11 @@ impl EditorView {
         }
     }
 
+    /// The views' scrollbars.
+    pub fn scrollbars(&self) -> &crate::ui::scrollbar::Scrollbars {
+        &self.scrollbars
+    }
+
     pub fn spinners_mut(&mut self) -> &mut ProgressSpinners {
         &mut self.spinners
     }

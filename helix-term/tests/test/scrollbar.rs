@@ -535,3 +535,26 @@ async fn a_click_and_a_drag_on_the_bar_scroll() -> anyhow::Result<()> {
     assert_eq!(top_line(&off), 0);
     Ok(())
 }
+
+/// What the bar keeps for a window (its last line on screen) goes with the window: splits
+/// made and closed all day leave nothing behind.
+#[tokio::test(flavor = "multi_thread")]
+async fn closed_windows_leave_nothing_behind() -> anyhow::Result<()> {
+    let (mut app, _dir) = app_with(COLOURED, &hundred_lines(), "a.txt").await?;
+    let kept = |app: &mut Application| -> usize {
+        app.compositor
+            .find::<helix_term::ui::EditorView>()
+            .expect("the editor view")
+            .scrollbars()
+            .windows_kept()
+    };
+    assert_eq!(kept(&mut app), 1_usize);
+    app.resize_terminal(120, 40).await;
+    send_keys(&mut app, ":vsplit<ret>:hsplit<ret>:vsplit<ret>").await?;
+    assert_eq!(app.editor.tree.views().count(), 4_usize);
+    assert_eq!(kept(&mut app), 4_usize);
+    send_keys(&mut app, ":q<ret>:q<ret>:q<ret>").await?;
+    assert_eq!(app.editor.tree.views().count(), 1_usize);
+    assert_eq!(kept(&mut app), 1_usize);
+    Ok(())
+}
