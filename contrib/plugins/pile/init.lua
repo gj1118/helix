@@ -47,11 +47,13 @@
 --                                        --   tree): between the braces around the cursor
 --     chars = { horizontal_line = "─", vertical_line = "│", left_top = "╭",
 --               left_bottom = "╰", right_arrow = ">" },   -- those of thickness 1
---     delay = 300,                       -- ms the cursor rests before another block is drawn
---                                        --   (moved to by a key, a click or a scroll), with an
---                                        --   animation; 0: at once, not animated (in another
---                                        --   window or buffer, or after an edit: at once)
---     duration = 200,                    -- ms the animation takes; 0: not animated
+--     delay = 300,                       -- with an animation (duration above 0): ms the
+--                                        --   cursor rests before another block is drawn (one
+--                                        --   moved to by a key, a click or a scroll); 0: at
+--                                        --   once, not animated (in another window or buffer,
+--                                        --   or after an edit: always at once)
+--     duration = 0,                      -- ms the animation takes (200 is hlchunk's); 0: not
+--                                        --   animated, another block is drawn at once
 --     fps = 30,                          -- frames a second the animation draws, at most (and
 --                                        --   one a cell at most): each is the editor drawn again
 --     gradient = false,                  -- the line in the colours of [editor.gradient-borders]
@@ -109,7 +111,7 @@ local DEFAULTS = {
       right_arrow = ">",
     },
     delay = 300,
-    duration = 200,
+    duration = 0,
     fps = 30,
     gradient = false,
     max_file_size = 1024 * 1024,

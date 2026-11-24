@@ -506,8 +506,8 @@ permissions = ["edit", "commands"]  # what it may do beyond looking ("read") and
   the line numbers in a style of their own (`line_num = { style = { line_color = "#96adc9" } }`);
   drawn again only when what it covers
   changes (typing in a line costs next to nothing), the indentation of the lines read with
-  `buffer:get_indents`, its animation at 30 frames a second at most (`fps`) and only of
-  what is on screen. Copy one to `~/.config/helix/plugins/` and name it in a
+  `buffer:get_indents`; the line can be drawn with an animation (`duration = 200`, off by
+  default), at 30 frames a second at most (`fps`) and only of what is on screen. Copy one to `~/.config/helix/plugins/` and name it in a
   `[[plugins.plugins]]` entry of `config.toml` to use it (only the plugins named there load).
 - Signs, highlights, annotations, panels, overlays and line number styles move with the text
   as it is edited. Annotations

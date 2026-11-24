@@ -246,13 +246,46 @@ async fn a_block_with_an_error_is_red() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Another block is drawn once the cursor has rested `delay` ms, animated over `duration`
-/// ms: until then the last one stays. An edit draws at once.
+/// By default there is no animation: another block is drawn at once, with the key that moved
+/// the cursor to it, whatever the `delay` (which is the animation's).
+#[tokio::test(flavor = "multi_thread")]
+async fn another_block_is_drawn_at_once_by_default() -> anyhow::Result<()> {
+    let rust = file(RUST, ".rs")?;
+    for config in ["{}", "{ chunk = { delay = 60000 } }"] {
+        let (mut app, _plugins) = app(config, &rust).await?;
+        let function = overlays(&app);
+        assert_eq!(
+            function.len(),
+            8,
+            "{config}: the function's chunk: {function:?}"
+        );
+        let before = app.frames_drawn();
+        send_keys(&mut app, "4gg").await?;
+        let block = overlays(&app);
+        assert_eq!(block.len(), 12, "{config}: the `if` block's: {block:?}");
+        assert!(
+            block.contains(&(3, 4, "╭".to_string())),
+            "{config}: {block:?}"
+        );
+        assert!(
+            block.contains(&(8, 7, ">".to_string())),
+            "{config}: {block:?}"
+        );
+        // the frames of the three keys and of the editor coming to rest: none of an animation
+        let frames = app.frames_drawn() - before;
+        assert!(frames <= 4, "{config}: {frames} frames");
+    }
+    Ok(())
+}
+
+/// With an animation (`duration`), another block is drawn once the cursor has rested `delay`
+/// ms, animated over `duration` ms: until then the last one stays. An edit draws at once.
 #[tokio::test(flavor = "multi_thread")]
 async fn another_block_waits_for_the_cursor_to_rest() -> anyhow::Result<()> {
     let rust = file(RUST, ".rs")?;
     // a long delay: the new block is not drawn yet
-    let (mut slow, _slow_plugins) = app("{ chunk = { delay = 60000 } }", &rust).await?;
+    let (mut slow, _slow_plugins) =
+        app("{ chunk = { delay = 60000, duration = 200 } }", &rust).await?;
     let function = overlays(&slow);
     assert!(
         function
@@ -978,7 +1011,7 @@ async fn the_chunk_stays_right_through_edits() -> anyhow::Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_new_window_draws_its_chunk_at_once() -> anyhow::Result<()> {
     let rust = file(RUST, ".rs")?;
-    let (mut app, _plugins) = app("{ chunk = { delay = 60000 } }", &rust).await?;
+    let (mut app, _plugins) = app("{ chunk = { delay = 60000, duration = 200 } }", &rust).await?;
     let first = overlays(&app);
     assert!(!first.is_empty(), "drawn at the start");
     let first_view = app.editor.tree.focus;
@@ -995,7 +1028,7 @@ async fn scrolling_into_another_block_waits_like_a_move() -> anyhow::Result<()> 
     let body = "    let x = 1;\n".repeat(30);
     let text = format!("fn a() {{\n{body}}}\nfn b() {{\n{body}}}\n");
     let rust = file(&text, ".rs")?;
-    let (mut app, _plugins) = app("{ chunk = { delay = 60000 } }", &rust).await?;
+    let (mut app, _plugins) = app("{ chunk = { delay = 60000, duration = 200 } }", &rust).await?;
     let a = overlays(&app);
     assert!(
         a.contains(&(2, 0, "│".to_string())),
