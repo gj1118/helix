@@ -70,7 +70,9 @@ config = { greeting = "hi", nested = { level = 2 } }   # helix.get_config() in t
 permissions = ["commands"]                     # beyond "read" and "ui", see Permissions
 ```
 
-Plugins without an entry are loaded. `:config-reload` reads the section again and loads the
+Only the plugins with an entry are loaded (one with the name alone gets the default
+permissions); a plugin found in `plugin_dirs` without one runs nothing, and a warning in the
+log names it with its path. `:config-reload` reads the section again and loads the
 plugins again when it changed (switching plugins on or off as a whole, `enabled`, takes a
 restart); `:reload-all-plugins` reloads the plugins' code with the settings in effect.
 

@@ -669,6 +669,64 @@ fn plugins_load_with_modules_config_and_editor_access() {
     assert_eq!(keys[0].0, "my-plugin");
 }
 
+/// Only the plugins with a `[[plugins.plugins]]` entry load: one found in a plugin directory
+/// without an entry runs nothing, nor does one whose entry has `enabled = false`.
+#[test]
+fn only_plugins_with_an_entry_load() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let dir = tempfile::TempDir::new().unwrap();
+    for name in ["named", "unnamed", "off"] {
+        let plugin = dir.path().join(name);
+        std::fs::create_dir_all(&plugin).unwrap();
+        std::fs::write(
+            plugin.join("init.lua"),
+            format!("helix.editor.set_status(\"{name} ran\")"),
+        )
+        .unwrap();
+    }
+    let entry = |name: &str, enabled: bool| crate::types::IndividualPluginConfig {
+        name: name.into(),
+        enabled,
+        config: serde_json::Value::Null,
+        permissions: Default::default(),
+    };
+    let config = crate::types::PluginConfig {
+        enabled: true,
+        plugin_dirs: vec![dir.path().to_path_buf()],
+        plugins: vec![entry("named", true), entry("off", false)],
+    };
+    let manager = crate::PluginManager::new(config).unwrap();
+    manager.engine().write().set_ui_handler(Arc::new(NoopUi));
+    manager.initialize(&mut editor).unwrap();
+
+    let loaded: Vec<String> = manager
+        .engine()
+        .read()
+        .plugins()
+        .map(|plugin| plugin.metadata.name.clone())
+        .collect();
+    assert_eq!(loaded, vec!["named".to_string()]);
+    // the last one to run set the status: the one loaded
+    assert_eq!(
+        editor.get_status().map(|(s, _)| s.to_string()),
+        Some("named ran".to_string())
+    );
+
+    // without any entry, none
+    let manager = crate::PluginManager::new(crate::types::PluginConfig {
+        enabled: true,
+        plugin_dirs: vec![dir.path().to_path_buf()],
+        plugins: vec![],
+    })
+    .unwrap();
+    manager.engine().write().set_ui_handler(Arc::new(NoopUi));
+    manager.initialize(&mut editor).unwrap();
+    let count: usize = manager.engine().read().plugins().count();
+    assert_eq!(count, 0_usize);
+}
+
 #[test]
 fn set_cursor_stays_on_its_line_and_mode_names_match() {
     let rt = runtime();

@@ -423,6 +423,9 @@ config = { greeting = "hi" }        # read by the plugin with helix.get_config()
 permissions = ["edit", "commands"]  # what it may do beyond looking ("read") and showing ("ui")
 ```
 
+- **Only the plugins named load** - a plugin directory without a `[[plugins.plugins]]` entry
+  runs nothing; the log (`:log-open`) names it with its path. An entry with the name alone
+  loads it with the default permissions.
 - **Permissions** - a plugin may only read the editor and show things unless its entry grants
   more: `edit`, `windows`, `files`, `commands`, `config`, `keymaps`, `explorer`, `diff`,
   `quickfix`, `shell` (or `"all"`). A plugin's `plugin.toml` can list what it needs (it then gets no more); what it asks
@@ -503,7 +506,8 @@ permissions = ["edit", "commands"]  # what it may do beyond looking ("read") and
   the line numbers in a style of their own (`line_num = { style = { line_color = "#96adc9" } }`);
   drawn again only when what it covers
   changes (typing in a line costs next to nothing), the indentation of the lines read with
-  `buffer:get_indents`. Copy one to `~/.config/helix/plugins/` to use it.
+  `buffer:get_indents`. Copy one to `~/.config/helix/plugins/` and name it in a
+  `[[plugins.plugins]]` entry of `config.toml` to use it (only the plugins named there load).
 - Signs, highlights, annotations, panels, overlays and line number styles move with the text
   as it is edited. Annotations
   belong to the plugin that drew them, and can be pinned to the window's right edge

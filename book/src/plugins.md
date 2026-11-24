@@ -68,8 +68,8 @@ The repository has four examples in `contrib/plugins/`: an `auto-save` skeleton,
 `plaintasks`, task lists like Sublime Text's [PlainTasks](https://github.com/aziz/PlainTasks)
 (see [Search lenses](#search-lenses-hlslens),
 [Inline diagnostics](#inline-diagnostics-inline-diagnostic) and
-[Task lists](#task-lists-plaintasks)). Copy a directory to `~/.config/helix/plugins/` to use
-it.
+[Task lists](#task-lists-plaintasks)). Copy a directory to `~/.config/helix/plugins/` and
+name it in a `[[plugins.plugins]]` entry (below) to use it.
 
 ## Configuration
 
@@ -97,7 +97,16 @@ enabled = false                         # skip this one
 | `plugin_dirs` | Directories to search for plugins. When set, the default directories are not searched. A leading `~` is expanded to the home directory, and a relative path is relative to the Helix config directory (`plugins` is `~/.config/helix/plugins` on Linux) | the default directories |
 | `plugins` | One `[[plugins.plugins]]` entry per plugin to configure: `name`, `enabled` (default `true`), `config`, a table the plugin reads with `helix.get_config()`, and `permissions`, what it may do beyond the defaults (see [Permissions](#permissions)) | `[]` |
 
-Plugins without an entry are loaded. The keys are written with underscores (`plugin_dirs`),
+Only the plugins with an entry are loaded: a plugin directory found in `plugin_dirs` without
+one runs nothing, and a line in the log (`:log-open`) says it was not loaded, with its path.
+An entry with the name alone loads the plugin with the default permissions (`read` and `ui`):
+
+```toml
+[[plugins.plugins]]
+name = "inline-diagnostic"
+```
+
+The keys are written with underscores (`plugin_dirs`),
 unlike the `[editor]` keys.
 
 - The section is read from the global config file only. A workspace's `.helix/config.toml`
@@ -112,8 +121,9 @@ unlike the `[editor]` keys.
 
 ## Permissions
 
-A plugin may look at the editor and show things; anything else is granted per plugin, in its
-`[[plugins.plugins]]` entry of `config.toml`:
+A plugin loads only when it has a `[[plugins.plugins]]` entry in `config.toml` (see
+[Configuration](#configuration)). It may then look at the editor and show things; anything
+else is granted per plugin, in that entry:
 
 ```toml
 [[plugins.plugins]]

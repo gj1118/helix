@@ -319,7 +319,7 @@ async fn the_inline_diagnostic_plugin_shows_a_panel_for_the_cursor_line() -> any
     }
     let mut config = config();
     config.plugins = Some(toml::from_str(&format!(
-        "plugin_dirs = [{:?}]",
+        "plugin_dirs = [{:?}]\n[[plugins]]\nname = \"inline-diagnostic\"",
         plugins.path()
     ))?);
 
@@ -442,7 +442,8 @@ fn code_diagnostic(
 }
 
 /// An app on 80x12 with `code()` and the `inline-diagnostic` plugin of `contrib/plugins`
-/// (`entry` is its `[[plugins]]` entry, if any), and plugins of `extra` (name, `init.lua`).
+/// (`entry` is its `[[plugins]]` entry; empty: one naming it, with its defaults), and plugins
+/// of `extra` (name, `init.lua`), each with an entry naming it.
 async fn inline_diagnostic_app(
     entry: &str,
     extra: &[(&str, &str)],
@@ -457,17 +458,23 @@ async fn inline_diagnostic_app(
     for name in ["init.lua", "plugin.toml"] {
         std::fs::copy(format!("{source}/{name}"), dir.join(name))?;
     }
+    let mut entries = if entry.is_empty() {
+        "[[plugins]]\nname = \"inline-diagnostic\"\n".to_string()
+    } else {
+        entry.to_string()
+    };
     for (name, init) in extra {
         let dir = plugins.path().join(name);
         std::fs::create_dir(&dir)?;
         std::fs::write(dir.join("init.lua"), init)?;
+        entries.push_str(&format!("[[plugins]]\nname = \"{name}\"\n"));
     }
     let mut config = config();
     // as the plugin's users have it: its panel instead of Helix's own end-of-line diagnostics
     config.editor.end_of_line_diagnostics =
         helix_view::annotations::diagnostics::DiagnosticFilter::Disable;
     config.plugins = Some(toml::from_str(&format!(
-        "plugin_dirs = [{:?}]\n{entry}",
+        "plugin_dirs = [{:?}]\n{entries}",
         plugins.path()
     ))?);
     let file = helpers::temp_file_with_contents(code())?;

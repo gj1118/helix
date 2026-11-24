@@ -120,12 +120,23 @@ impl PluginManager {
         // Load each plugin
         let mut engine = self.engine.write();
         for plugin in plugins {
-            // Check if plugin is enabled in config
-            let enabled = self.is_plugin_enabled(&plugin.metadata.name);
-
-            if !enabled {
-                info!("Skipping disabled plugin: {}", plugin.metadata.name);
-                continue;
+            // Only the plugins with an entry in config.toml load: a folder put in a plugin
+            // directory runs nothing until the user names it.
+            match self.is_plugin_enabled(&plugin.metadata.name) {
+                Some(true) => {}
+                Some(false) => {
+                    info!("Skipping disabled plugin: {}", plugin.metadata.name);
+                    continue;
+                }
+                None => {
+                    log::warn!(
+                        "Plugin '{}' ({}) not loaded: no [[plugins.plugins]] entry in \
+                         config.toml names it",
+                        plugin.metadata.name,
+                        plugin.path.display(),
+                    );
+                    continue;
+                }
             }
 
             info!("Loading plugin: {}", plugin.metadata.name);
@@ -222,15 +233,15 @@ impl PluginManager {
         self.initialize(editor)
     }
 
-    /// Check if a plugin is enabled in the configuration
-    fn is_plugin_enabled(&self, name: &str) -> bool {
-        // If there's specific config for this plugin, use that
-        if let Some(plugin_config) = self.config.read().plugins.iter().find(|p| p.name == name) {
-            return plugin_config.enabled;
-        }
-
-        // Otherwise, enabled by default
-        true
+    /// Whether the plugin `name` is to load: its `[[plugins.plugins]]` entry's `enabled`, or
+    /// `None` when it has no entry (it does not load).
+    fn is_plugin_enabled(&self, name: &str) -> Option<bool> {
+        self.config
+            .read()
+            .plugins
+            .iter()
+            .find(|p| p.name == name)
+            .map(|plugin_config| plugin_config.enabled)
     }
 
     /// Fire an event to all registered handlers

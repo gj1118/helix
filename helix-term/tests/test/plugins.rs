@@ -198,7 +198,8 @@ local function checks()
 end
 "#;
 
-/// A plugin gets `read` and `ui`, and what its entry grants; every call checks.
+/// A plugin gets `read` and `ui`, and what its entry grants (an entry with its name alone:
+/// those two); every call checks.
 #[tokio::test(flavor = "multi_thread")]
 async fn plugins_may_only_do_what_they_are_granted() -> anyhow::Result<()> {
     let limited = format!(
@@ -213,6 +214,9 @@ async fn plugins_may_only_do_what_they_are_granted() -> anyhow::Result<()> {
     let config = plugin_config(
         dir.path(),
         r#"
+        [[plugins]]
+        name = "limited"
+
         [[plugins]]
         name = "granted"
         permissions = ["edit", "commands", "windows"]
@@ -1393,6 +1397,9 @@ async fn plugins_add_keys_and_texts_to_the_explorer() -> anyhow::Result<()> {
         [[plugins]]
         name = "tree"
         permissions = ["edit", "explorer"]
+
+        [[plugins]]
+        name = "star"
         "#,
     )?;
     let mut app = helpers::AppBuilder::new().with_config(config).build()?;
