@@ -3296,3 +3296,257 @@ fn syntax_nodes_tell_their_errors() {
     )
     .unwrap();
 }
+
+/// Broken text gives error nodes inside error nodes of the same range, which a node table
+/// (kind and byte range) cannot tell apart: the parent of one was itself, for ever.
+#[test]
+fn the_parents_of_a_syntax_node_end_at_the_root() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    let result = result_of(
+        &engine,
+        &mut editor,
+        r##"
+        local b = helix.buffer.get_current()
+        local walks = 0
+        for _, lang in ipairs({ "json", "toml", "rust", "python" }) do
+          b:set_language(lang)
+          for _, text in ipairs({ "((", "# T\n\n0<[\")\n", "(a [b {c} d] e) 0<[\")", " ☐ one @today\n0<[\")\n" }) do
+            b:set_text(text)
+            assert(b:has_syntax(), lang)
+            local root = b:syntax_root()
+            for at = 0, #text do
+              for _, named in ipairs({ true, false }) do
+                local node = b:syntax_node(math.min(at, root.to), { named = named })
+                local steps, last = 0, node
+                while node do
+                  last = node
+                  local parent = b:syntax_parent(node)
+                  assert(
+                    parent == nil
+                      or parent.type ~= node.type
+                      or parent.start_byte ~= node.start_byte
+                      or parent.end_byte ~= node.end_byte,
+                    lang .. ": a " .. node.type .. " is its own parent"
+                  )
+                  assert(parent == nil or (parent.start_byte <= node.start_byte and parent.end_byte >= node.end_byte))
+                  node = parent
+                  steps = steps + 1
+                  assert(steps < 100, lang .. ": the parents of a node do not end")
+                end
+                assert(last.type == root.type and last.start_byte == root.start_byte and last.end_byte == root.end_byte)
+                walks = walks + 1
+              end
+            end
+            -- and down again: every node is reached from the root, in a bounded walk
+            local seen, queue = 0, { root }
+            while #queue > 0 do
+              local node = table.remove(queue)
+              seen = seen + 1
+              assert(seen < 1000, lang .. ": the children of a node do not end")
+              for _, child in ipairs(b:syntax_children(node)) do
+                assert(
+                  child.type ~= node.type or child.start_byte ~= node.start_byte or child.end_byte ~= node.end_byte,
+                  lang .. ": a " .. node.type .. " is its own child"
+                )
+                queue[#queue + 1] = child
+              end
+            end
+          end
+        end
+        result = tostring(walks)
+        "##,
+    );
+    assert_eq!(
+        result.parse::<usize>().ok().filter(|walks| *walks > 100),
+        result.parse().ok(),
+        "{result}"
+    );
+    assert!(result.parse::<usize>().is_ok(), "{result}");
+}
+
+#[test]
+fn the_parents_of_injected_code_go_on_in_the_language_around_it() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    let result = result_of(
+        &engine,
+        &mut editor,
+        r##"
+        local b = helix.buffer.get_current()
+        b:set_language("markdown")
+        b:set_text("# Title\n\n```rust\nfn main() { add(1, 2); }\n```\n\ntext\n")
+        local node = b:syntax_node(b:line_to_char(3) + 13)
+        assert(node.type == "identifier" and b:syntax_text(node) == "add", node.type)
+        local kinds = {}
+        while node do
+          kinds[#kinds + 1] = node.type
+          assert(#kinds < 50, "the parents of a node do not end")
+          node = b:syntax_parent(node)
+        end
+        local path = table.concat(kinds, " ")
+        assert(path:find("function_item", 1, true), path)
+        -- the root of the Rust code, then the Markdown nodes around it
+        assert(path:find("source_file code_fence_content fenced_code_block", 1, true), path)
+        assert(kinds[#kinds] == "document", path)
+
+        -- the root of the injected code can be navigated from like any node
+        local code = b:syntax_node(b:line_to_char(3) + 3)
+        while code.type ~= "source_file" do code = b:syntax_parent(code) end
+        assert(math.type(code.start_line) == "integer" and code.start_line == 4, code.start_line)
+        local items = b:syntax_children(code, { named = true })
+        assert(#items == 1 and items[1].type == "function_item", #items)
+        assert(b:syntax_text(code) == "fn main() { add(1, 2); }\n", b:syntax_text(code))
+        result = path
+        "##,
+    );
+    assert!(result.starts_with("identifier call_expression"), "{result}");
+}
+
+#[test]
+fn a_missing_syntax_node_can_be_navigated_from() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    let result = result_of(
+        &engine,
+        &mut editor,
+        r##"
+        local b = helix.buffer.get_current()
+        b:set_language("rust")
+        b:set_text("fn main() {\n    let a = 1\n}\n")
+        local missing, stack, seen = nil, { b:syntax_root() }, 0
+        while #stack > 0 do
+          local node = table.remove(stack)
+          seen = seen + 1
+          if node.missing then missing = node end
+          for _, child in ipairs(b:syntax_children(node)) do
+            stack[#stack + 1] = child
+          end
+        end
+        assert(seen > 10 and seen < 100, seen)
+        assert(missing and missing.type == ";" and missing.missing == true, "no missing node")
+        assert(missing.from == missing.to and missing.start_byte == missing.end_byte)
+        assert(b:syntax_text(missing) == "" and #b:syntax_children(missing) == 0)
+        local parent = b:syntax_parent(missing)
+        assert(parent.type == "let_declaration", parent.type)
+        assert(parent.has_error == true and parent.end_byte == missing.end_byte)
+        result = parent.type .. " " .. tostring(seen)
+        "##,
+    );
+    assert!(result.starts_with("let_declaration "), "{result}");
+}
+
+/// A handler that loops on every event froze the editor for the time limit on each one.
+#[test]
+fn a_handler_that_keeps_running_out_of_time_is_switched_off() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    load(
+        &engine,
+        r#"
+        runs, others, hooks = 0, 0, 0
+        helix.on("init", function()
+            runs = runs + 1
+            while true do end
+        end)
+        helix.on("init", function() others = others + 1 end)
+        helix.on("key_pre", function()
+            hooks = hooks + 1
+            while true do end
+        end)
+        "#,
+    )
+    .unwrap();
+    let count = |name: &str| lua(&engine).globals().get::<i64>(name).unwrap();
+    let init = PluginEvent {
+        event_type: EventType::OnInit,
+        data: EventData::None,
+    };
+    assert!(engine.has_handlers(EventType::OnInit));
+
+    for run in 1..=HANDLER_TIMEOUT_LIMIT {
+        assert!(editor.get_status().is_none(), "told before run {run}");
+        let err =
+            with_short_time_limit(|| engine.call_event_handlers(&mut editor, &init)).unwrap_err();
+        assert!(err.to_string().contains("time limit"), "{err}");
+        assert_eq!(count("runs"), i64::from(run));
+    }
+    let (message, severity) = editor.get_status().expect("the user is told");
+    assert_eq!(*severity, helix_view::editor::Severity::Error);
+    assert!(
+        message.contains("`init` handler ran out of time 3 times in a row"),
+        "{message}"
+    );
+    assert!(message.contains(":reload-all-plugins"), "{message}");
+
+    // It is gone; the other handler of the event is not.
+    let start = Instant::now();
+    with_short_time_limit(|| engine.call_event_handlers(&mut editor, &init)).unwrap();
+    assert!(start.elapsed() < SHORT_TIME_LIMIT, "{:?}", start.elapsed());
+    assert_eq!(count("runs"), i64::from(HANDLER_TIMEOUT_LIMIT));
+    assert_eq!(count("others"), i64::from(HANDLER_TIMEOUT_LIMIT) + 1);
+    assert!(engine.has_handlers(EventType::OnInit));
+
+    // The handlers of a hook (which the key waits for) are counted the same way.
+    let key = PluginEvent::with_fields(EventType::OnKeyPre, vec![("key", "x".into())]);
+    for _ in 0..HANDLER_TIMEOUT_LIMIT {
+        assert!(engine.has_handlers(EventType::OnKeyPre));
+        assert!(with_short_time_limit(|| engine.call_hook(&mut editor, &key)));
+    }
+    assert!(!engine.has_handlers(EventType::OnKeyPre));
+    assert_eq!(count("hooks"), i64::from(HANDLER_TIMEOUT_LIMIT));
+    assert!(engine.handler_timeouts.lock().is_empty());
+}
+
+/// Only running out of time in a row counts: a handler that is slow now and then, or fails
+/// for another reason, stays.
+#[test]
+fn a_handler_that_runs_out_of_time_now_and_then_stays() {
+    let rt = runtime();
+    let _rt = rt.enter();
+    let mut editor = test_editor();
+    let engine = engine();
+    load(
+        &engine,
+        r#"
+        runs, mode = 0, "loop"
+        helix.on("init", function()
+            runs = runs + 1
+            if mode == "loop" then
+                while true do end
+            elseif mode == "fail" then
+                error("not about time")
+            end
+        end)
+        "#,
+    )
+    .unwrap();
+    let init = PluginEvent {
+        event_type: EventType::OnInit,
+        data: EventData::None,
+    };
+    let set = |mode: &str| lua(&engine).globals().set("mode", mode).unwrap();
+    for round in 0..3 {
+        for _ in 1..HANDLER_TIMEOUT_LIMIT {
+            set("loop");
+            with_short_time_limit(|| engine.call_event_handlers(&mut editor, &init)).unwrap_err();
+        }
+        // a run that ends in time (even with an error) starts the count again
+        set(if round == 1 { "fail" } else { "fine" });
+        let ended = with_short_time_limit(|| engine.call_event_handlers(&mut editor, &init));
+        assert_eq!(ended.is_err(), round == 1, "{ended:?}");
+        assert!(engine.handler_timeouts.lock().is_empty());
+    }
+    assert!(engine.has_handlers(EventType::OnInit));
+    assert!(editor.get_status().is_none());
+    let runs: i64 = lua(&engine).globals().get("runs").unwrap();
+    assert_eq!(runs, 3 * i64::from(HANDLER_TIMEOUT_LIMIT));
+}

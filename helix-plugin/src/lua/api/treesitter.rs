@@ -10,7 +10,7 @@ use std::{cell::RefCell, collections::HashMap, sync::Arc};
 use helix_core::{
     ropey::RopeSlice,
     syntax::Syntax,
-    tree_sitter::{InactiveQueryCursor, Node, Query, RopeInput},
+    tree_sitter::{InactiveQueryCursor, Node, Query, RopeInput, Tree},
 };
 use mlua::prelude::*;
 
@@ -108,27 +108,97 @@ impl NodeRef {
         })
     }
 
+    /// Whether `node` has this kind and range.
+    fn is(&self, node: &Node) -> bool {
+        node.start_byte() == self.start_byte
+            && node.end_byte() == self.end_byte
+            && node.kind() == self.kind
+    }
+
+    /// This (empty) node among the nodes of `root` that touch its place: few, as at most two
+    /// children of a node touch a place besides the empty ones there.
+    fn touching<'a>(&self, root: Node<'a>) -> Option<Node<'a>> {
+        let mut left = vec![root];
+        while let Some(node) = left.pop() {
+            if self.is(&node) {
+                return Some(node);
+            }
+            left.extend(
+                node.children()
+                    .take_while(|child| child.start_byte() <= self.start_byte)
+                    .filter(|child| child.end_byte() >= self.end_byte),
+            );
+        }
+        None
+    }
+
     /// The node in the current tree: the deepest node of the range, then up through the
     /// nodes of the same range (a statement and its expression) to the one of this kind.
     pub(crate) fn find<'a>(&self, syntax: &'a Syntax) -> LuaResult<Node<'a>> {
-        let gone = || {
-            LuaError::RuntimeError(format!(
-                "The syntax node {} ({}..{}) is no longer in the tree",
-                self.kind, self.start_byte, self.end_byte
-            ))
-        };
-        let mut node = syntax
-            .descendant_for_byte_range(self.start_byte, self.end_byte)
-            .ok_or_else(gone)?;
-        loop {
-            if node.start_byte() != self.start_byte || node.end_byte() != self.end_byte {
-                return Err(gone());
+        self.place(syntax).map(|place| place.node)
+    }
+
+    /// The node and the trees around the one it is in. It is looked for in the smallest
+    /// injected language that holds its range first: the root of the code in a Markdown fence
+    /// has the range of the fence's content, a node of the Markdown tree.
+    fn place<'a>(&self, syntax: &'a Syntax) -> LuaResult<Place<'a>> {
+        // The layers of a range are those that hold its last byte too.
+        let last = self.end_byte.saturating_sub(1).max(self.start_byte);
+        let mut outer: Vec<&Tree> = syntax
+            .layers_for_byte_range(self.start_byte, last)
+            .filter_map(|layer| syntax.layer(layer).tree())
+            .collect();
+        while let Some(tree) = outer.pop() {
+            let mut node = tree
+                .root_node()
+                .descendant_for_byte_range(self.start_byte, self.end_byte);
+            while let Some(same) = node
+                .filter(|node| node.start_byte() == self.start_byte)
+                .filter(|node| node.end_byte() == self.end_byte)
+            {
+                if same.kind() == self.kind {
+                    return Ok(Place { outer, node: same });
+                }
+                node = same.parent();
             }
-            if node.kind() == self.kind {
-                return Ok(node);
+            // A missing node (the `;` that is not there) is empty, and the lookup by range
+            // gives the node before or after it.
+            if self.start_byte == self.end_byte {
+                if let Some(node) = self.touching(tree.root_node()) {
+                    return Ok(Place { outer, node });
+                }
             }
-            node = node.parent().ok_or_else(gone)?;
         }
+        Err(LuaError::RuntimeError(format!(
+            "The syntax node {} ({}..{}) is no longer in the tree",
+            self.kind, self.start_byte, self.end_byte
+        )))
+    }
+}
+
+/// A node and the trees around its own: the document's first, then one per injected language
+/// down to the one that holds the node's.
+struct Place<'a> {
+    outer: Vec<&'a Tree>,
+    node: Node<'a>,
+}
+
+impl Place<'_> {
+    /// The node around this one: its parent, or for the root of an injected language the
+    /// smallest node of the language around it that spans it. `None` at the document's root.
+    fn parent(mut self) -> Option<Self> {
+        if let Some(parent) = self.node.parent() {
+            self.node = parent;
+            return Some(self);
+        }
+        let (start, end) = (self.node.start_byte(), self.node.end_byte());
+        while let Some(tree) = self.outer.pop() {
+            if let Some(node) = tree.root_node().descendant_for_byte_range(start, end) {
+                self.node = node;
+                return Some(self);
+            }
+        }
+        None
     }
 }
 
@@ -172,13 +242,21 @@ pub(crate) fn root(doc: &helix_view::Document) -> LuaResult<NodeInfo> {
     ))
 }
 
+/// The nearest node around `node` that a plugin can tell from it, across injected languages:
+/// the parent of the root of the code in a Markdown fence is the fence's content.
+///
+/// Broken text gives error nodes inside error nodes of the same range. A node table holds a
+/// kind and a byte range only, so the outer one would be found as the inner one again and
+/// a plugin walking up (`while node do node = buffer:syntax_parent(node) end`) would never
+/// reach the root.
 pub(crate) fn parent(doc: &helix_view::Document, node: &NodeRef) -> LuaResult<Option<NodeInfo>> {
     let syntax = syntax_of(doc)?;
     let text = doc.text().slice(..);
-    Ok(node
-        .find(syntax)?
-        .parent()
-        .map(|parent| NodeInfo::new(&parent, text)))
+    let mut parent = node.place(syntax)?.parent();
+    while let Some(same) = parent.take_if(|parent| node.is(&parent.node)) {
+        parent = same.parent();
+    }
+    Ok(parent.map(|parent| NodeInfo::new(&parent.node, text)))
 }
 
 pub(crate) fn children(

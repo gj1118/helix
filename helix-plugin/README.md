@@ -134,7 +134,10 @@ the result is in.
   callback, may run for at most 2 seconds. Then it is aborted with the error
   `plugin code exceeded the execution time limit`. The error cannot be caught: `pcall`,
   `xpcall`, `coroutine.resume`, `coroutine.close` and `load` raise it again, and the string
-  pattern functions (`find`, `match`, `gmatch`, `gsub`) check the limit too.
+  pattern functions (`find`, `match`, `gmatch`, `gsub`) check the limit too. An event
+  handler that runs out of time 3 times in a row is switched off, with a message in the
+  status line (it would hold the editor for 2 seconds on every event);
+  `:reload-all-plugins` turns it on again.
 - **Memory limit**: the Lua state may use at most 512 MiB; beyond that, allocations fail
   with a `not enough memory` error.
 - **Errors** of a handler are written to the log (`:log-open`) and do not stop the
@@ -507,7 +510,12 @@ Buffer methods (they raise an error once the buffer is closed):
     language injected there: the code of a Markdown fence is Rust's), or the smallest
     spanning `char..options.to`; `options.named = false` includes anonymous nodes (`(`,
     keywords).
-  - `syntax_parent(node)`: the parent node, or `nil` for the root.
+  - `syntax_parent(node)`: the parent node, or `nil` for the root of the buffer's tree.
+    The parent of the root of injected code is the node around it (the content of the
+    Markdown fence), so `while node do node = buffer:syntax_parent(node) end` goes from any
+    node to the root of the buffer. A parent with the type and the range of the node
+    itself (an error node in an error node, in broken text) is skipped: a node table
+    could not tell the two apart.
   - `syntax_children(node, options)`: the children, only the named ones with
     `options.named = true`.
   - `syntax_text(node)`: the text of the node.

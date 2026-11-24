@@ -106,6 +106,10 @@ impl Drop for DeadlineRestore {
 /// callback, plugin init) may run before it is aborted with a Lua error.
 pub const PLUGIN_EXECUTION_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// How often in a row a handler of an event may run out of time before it is switched off: a
+/// handler that loops on every key would freeze the editor for the time limit on each one.
+pub const HANDLER_TIMEOUT_LIMIT: u8 = 3;
+
 /// How many VM instructions run between two deadline checks.
 const HOOK_INSTRUCTION_INTERVAL: u32 = 10_000;
 
@@ -308,6 +312,21 @@ where
     with_deadline(f)
 }
 
+/// Runs the plugin code `f` like [`with_editor_context`]: what it returned, and whether it
+/// failed because it used up its own time limit (not the rest of the limit of plugin code
+/// that was running already).
+fn timed<F, R>(editor: &mut Editor, f: F) -> (LuaResult<R>, bool)
+where
+    F: FnOnce() -> LuaResult<R>,
+{
+    let own_limit = DEADLINE.with(|d| d.get()).is_none();
+    with_editor_context(editor, || {
+        let result = f();
+        let timed_out = own_limit && result.is_err() && deadline_passed();
+        (result, timed_out)
+    })
+}
+
 /// Borrow the active editor for the duration of `f`.
 ///
 /// Errors if there is no active editor context or if the editor is already
@@ -461,6 +480,8 @@ pub struct LuaEngine {
     config: crate::types::PluginConfig,
     /// The plugins' timers.
     timers: Timers,
+    /// How often in a row each event handler (by the address of its key) ran out of time.
+    handler_timeouts: parking_lot::Mutex<HashMap<usize, u8>>,
 }
 
 impl LuaEngine {
@@ -478,6 +499,7 @@ impl LuaEngine {
             ui_handler: None,
             config: crate::types::PluginConfig::default(),
             timers: Arc::new(RwLock::new(HashMap::new())),
+            handler_timeouts: parking_lot::Mutex::new(HashMap::new()),
         })
     }
 
@@ -640,6 +662,7 @@ impl LuaEngine {
             event_type.unsubscribe(callbacks.len());
         }
         drop(handlers);
+        self.handler_timeouts.lock().clear();
         self.custom_handlers.write().clear();
         self.custom_events.lock().clear();
     }
@@ -1382,6 +1405,8 @@ impl LuaEngine {
             event_type.unsubscribe(before - callbacks.len());
         }
         drop(handlers);
+        // (counted by address: the handlers of another plugin start again too)
+        self.handler_timeouts.lock().clear();
         for callbacks in self.custom_handlers.write().values_mut() {
             callbacks.retain(|(plugin, _)| **plugin != *name);
         }
@@ -1442,7 +1467,7 @@ impl LuaEngine {
         editor: &mut Editor,
         event: &PluginEvent,
         plugin_name: &Arc<str>,
-        callback_ref: &RegistryKey,
+        callback_ref: &Arc<RegistryKey>,
     ) -> Result<()> {
         let handler_error = |error: String| PluginError::EventHandlerError {
             plugin: plugin_name.to_string(),
@@ -1456,13 +1481,60 @@ impl LuaEngine {
         // A fresh table per handler: a handler may modify it.
         let event_data = event_table(lua, event).map_err(PluginError::LuaError)?;
 
-        with_plugin(plugin_name, || {
-            with_editor_context(editor, || {
-                callback
-                    .call::<()>(event_data)
-                    .map_err(|e| handler_error(format!("Handler execution failed: {}", e)))
-            })
-        })
+        let (result, timed_out) = with_plugin(plugin_name, || {
+            timed(editor, || callback.call::<()>(event_data))
+        });
+        self.note_handler_run(
+            editor,
+            event.event_type,
+            plugin_name,
+            callback_ref,
+            timed_out,
+        );
+        result.map_err(|e| handler_error(format!("Handler execution failed: {}", e)))
+    }
+
+    /// Notes how the run of an event handler ended. One that ran out of time
+    /// [`HANDLER_TIMEOUT_LIMIT`] times in a row is switched off (until its plugin is loaded
+    /// again) and the user told: it would hold the editor for the time limit on every event.
+    fn note_handler_run(
+        &self,
+        editor: &mut Editor,
+        event_type: EventType,
+        plugin_name: &str,
+        handler: &Arc<RegistryKey>,
+        timed_out: bool,
+    ) {
+        let key = Arc::as_ptr(handler) as usize;
+        let mut timeouts = self.handler_timeouts.lock();
+        if !timed_out {
+            if !timeouts.is_empty() {
+                timeouts.remove(&key);
+            }
+            return;
+        }
+        let count = timeouts.entry(key).or_default();
+        *count += 1;
+        if *count < HANDLER_TIMEOUT_LIMIT {
+            return;
+        }
+        timeouts.remove(&key);
+        drop(timeouts);
+
+        let mut handlers = self.event_handlers.write();
+        if let Some(callbacks) = handlers.get_mut(&event_type) {
+            let before = callbacks.len();
+            callbacks.retain(|(_, callback)| !Arc::ptr_eq(callback, handler));
+            event_type.unsubscribe(before - callbacks.len());
+        }
+        drop(handlers);
+        let message = format!(
+            "Plugin '{plugin_name}': its `{}` handler ran out of time {HANDLER_TIMEOUT_LIMIT} \
+             times in a row and is switched off (:reload-all-plugins turns it on again)",
+            event_type.as_str()
+        );
+        log::error!("{message}");
+        editor.set_error(message);
     }
 
     /// Runs the handlers of a hook (`buffer_pre_save`, `key_pre`, `command_pre`) in order,
@@ -1481,9 +1553,17 @@ impl LuaEngine {
                     .map_err(|err| LuaError::RuntimeError(err.to_string()))?;
                 let callback: LuaFunction = lua.registry_value(callback_ref)?;
                 let event_data = event_table(lua, event)?;
-                with_plugin(plugin_name, || {
-                    with_editor_context(editor, || callback.call::<LuaValue>(event_data))
-                })
+                let (returned, timed_out) = with_plugin(plugin_name, || {
+                    timed(editor, || callback.call::<LuaValue>(event_data))
+                });
+                self.note_handler_run(
+                    editor,
+                    event.event_type,
+                    plugin_name,
+                    callback_ref,
+                    timed_out,
+                );
+                returned
             })();
             match returned {
                 Ok(LuaValue::Boolean(false)) => return false,
