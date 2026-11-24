@@ -196,8 +196,11 @@ pub fn render_text(
         last_line_end = grapheme.visual_pos.col + grapheme_width;
     }
 
-    renderer.draw_indent_guides(last_line_indent_level, last_line_pos.visual_line);
-    decorations.render_virtual_lines(renderer, last_line_pos, last_line_end)
+    // (no line was drawn in a view without rows: there is none to hang virtual lines from)
+    if last_line_pos.doc_line != usize::MAX {
+        renderer.draw_indent_guides(last_line_indent_level, last_line_pos.visual_line);
+        decorations.render_virtual_lines(renderer, last_line_pos, last_line_end)
+    }
 }
 
 #[derive(Debug)]

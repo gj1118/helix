@@ -4603,6 +4603,11 @@ impl Editor {
     }
 
     pub fn close(&mut self, id: ViewId) {
+        // Closed already: closing a window of a diff or of a merge closes the others with it,
+        // and a command closing several windows (`wonly`, `:quit-all`) gets to them after.
+        if !self.tree.contains(id) {
+            return;
+        }
         // the documents whose cursor was last in this window
         let mut left = Vec::new();
         for doc in self.documents_mut() {

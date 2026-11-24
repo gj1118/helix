@@ -32,6 +32,7 @@ mod test {
     mod editorconfig;
     mod explorer;
     mod fold_ui;
+    mod fuzz;
     mod history;
     mod hlslens;
     mod image_preview;
@@ -57,6 +58,7 @@ mod test {
     #[cfg(unix)]
     mod remote;
     mod responsiveness;
+    mod robustness;
     mod rounded_cursor;
     mod scrollbar;
     mod smooth_scroll;

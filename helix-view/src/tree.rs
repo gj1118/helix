@@ -762,6 +762,9 @@ impl Tree {
     /// Removes view `index`, of any tab. A tab whose last view goes is closed (unless it is
     /// the only one): the tab after it is shown in its place (the one before, for the last).
     pub fn remove(&mut self, index: ViewId) {
+        if !self.nodes.contains_key(index) {
+            return;
+        }
         let root = self.root_of(index);
         if root == self.root {
             self.remove_in_active(index);

@@ -1858,3 +1858,40 @@ async fn merges_need_trust() -> anyhow::Result<()> {
     assert!(app.editor.merge.is_none());
     Ok(())
 }
+
+/// Closing the new version's window of a diff closes the old version's with it: a command
+/// that closes several windows (`<C-w>o`, `:quit-all`) then gets to a window closed already,
+/// which is nothing to do (it was a panic: the window is not in the tree any more).
+#[tokio::test(flavor = "multi_thread")]
+async fn closing_a_window_the_diff_closed_already_is_nothing() -> anyhow::Result<()> {
+    let (mut app, _old, _new) = app_with_diff(helpers::test_config()).await?;
+    let session = app.editor.diff_sessions[0].clone();
+    send_keys(&mut app, ":vsplit-new<ret>").await?;
+    let third = app.editor.tree.focus;
+    assert_eq!(app.editor.tree.views().count(), 3_usize);
+
+    app.editor.close(session.right_view);
+    assert!(app.editor.diff_sessions.is_empty());
+    let left_open: bool = app.editor.tree.contains(session.left_view);
+    assert!(!left_open, "the snapshot's window went with the diff");
+    app.editor.close(session.left_view);
+    app.editor.close(session.right_view);
+    assert_eq!(app.editor.tree.views().count(), 1_usize);
+    assert_eq!(app.editor.tree.focus, third);
+
+    // and with the keys: a diff again, the third window on top, then only that one
+    send_keys(
+        &mut app,
+        &format!(
+            ":o {}<ret>:diff {}<ret>",
+            _new.path().display(),
+            _old.path().display()
+        ),
+    )
+    .await?;
+    assert_eq!(app.editor.diff_sessions.len(), 1_usize);
+    send_keys(&mut app, ":hsplit-new<ret><C-w>o").await?;
+    assert!(app.editor.diff_sessions.is_empty());
+    assert_eq!(app.editor.tree.views().count(), 1_usize);
+    helpers::quit(app).await
+}

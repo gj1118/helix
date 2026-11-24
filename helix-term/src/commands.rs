@@ -292,6 +292,13 @@ macro_rules! static_commands {
     }
 }
 
+/// The names of the typable commands (`write`, `buffer-close`...), without their aliases.
+pub fn typable_command_names() -> impl Iterator<Item = &'static str> {
+    typed::TYPABLE_COMMAND_LIST
+        .iter()
+        .map(|command| command.name)
+}
+
 impl MappableCommand {
     pub fn execute(&self, cx: &mut Context) {
         match &self {
@@ -2364,7 +2371,7 @@ pub fn scroll(cx: &mut Context, offset: usize, direction: Direction, sync_cursor
             head = char_idx_at_visual_offset(
                 doc_text,
                 view_offset.anchor,
-                (view_offset.vertical_offset + height - scrolloff - 1) as isize,
+                (view_offset.vertical_offset + height.saturating_sub(scrolloff + 1)) as isize,
                 0,
                 &text_fmt,
                 &annotations,

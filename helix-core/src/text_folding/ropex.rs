@@ -377,7 +377,9 @@ impl<'a, Items: TextItems<'a>> FoldedTextItems<'a, Items> {
 
     fn next_impl(&mut self) -> Option<Items::Item> {
         if let Some(position) = Items::consume_next(self.annotations, self.idx) {
-            self.idx = position + 1;
+            // Past the fold's last item: its line ending. A fold of the last line of a text
+            // without one ends at the end of the text, with nothing after it.
+            self.idx = (position + 1).min(Items::end_of(self.slice));
             self.items = Items::at(self.slice, self.idx);
 
             return self.next_impl();
@@ -410,6 +412,8 @@ trait TextItems<'a>: Iterator {
     fn reset_pos(annotations: &FoldAnnotations, idx: usize);
     fn prev_impl(&mut self) -> Option<Self::Item>;
     fn next_impl(&mut self) -> Option<Self::Item>;
+    /// The index after the last item of `slice`.
+    fn end_of(slice: RopeSlice) -> usize;
     fn consume_prev(annotations: &FoldAnnotations, idx: usize) -> Option<usize>;
     fn consume_next(annotations: &FoldAnnotations, idx: usize) -> Option<usize>;
     fn len_of(item: &Self::Item) -> usize;
@@ -422,6 +426,10 @@ impl<'a> TextItems<'a> for Chars<'a> {
 
     fn reset_pos(annotations: &FoldAnnotations, char_idx: usize) {
         annotations.reset_pos(char_idx, |fold| fold.start.char)
+    }
+
+    fn end_of(slice: RopeSlice) -> usize {
+        slice.len_chars()
     }
 
     fn prev_impl(&mut self) -> Option<Self::Item> {
@@ -458,6 +466,10 @@ impl<'a> TextItems<'a> for RopeGraphemes<'a> {
         annotations.reset_pos(byte_idx, |fold| fold.start.byte)
     }
 
+    fn end_of(slice: RopeSlice) -> usize {
+        slice.len_bytes()
+    }
+
     fn prev_impl(&mut self) -> Option<Self::Item> {
         self.prev()
     }
@@ -490,6 +502,10 @@ impl<'a> TextItems<'a> for Lines<'a> {
 
     fn reset_pos(annotations: &FoldAnnotations, line_idx: usize) {
         annotations.reset_pos(line_idx, |fold| fold.start.line)
+    }
+
+    fn end_of(slice: RopeSlice) -> usize {
+        slice.len_lines()
     }
 
     fn prev_impl(&mut self) -> Option<Self::Item> {

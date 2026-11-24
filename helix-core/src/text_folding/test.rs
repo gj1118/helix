@@ -574,3 +574,34 @@ fn duplicate_folds_are_added_once() {
     let container = FoldContainer::from(*TEXT_SAMPLE, doubled);
     assert!(folds_eq(&container, &expected));
 }
+
+/// A fold of the last lines of a text without a final line ending ends at the end of the
+/// text: the chars, graphemes and lines after it are none, where reading on from one past
+/// the end was a panic (a word motion over the last fold of such a file).
+#[test]
+fn a_fold_to_the_end_of_a_text_without_a_final_line_ending_has_nothing_after_it() {
+    use ropex::RopeSliceFoldExt;
+
+    let rope = Rope::from("fn f() {\n    a\n    é");
+    let text = rope.slice(..);
+    let points = new_fold_points(text, "function", 0, 1..=2);
+    let container = FoldContainer::from(text, vec![points]);
+    assert_eq!(container.len(), 1);
+    let end = &container.end_points[0];
+    assert_eq!(end.char, text.len_chars(), "the end of the text");
+    assert_eq!(end.byte, text.len_bytes());
+
+    let annotations = FoldAnnotations::new(Some(&container));
+    let chars: String = text.folded_chars_at(&annotations, 0).collect();
+    assert_eq!(chars, "fn f() {\n");
+    let graphemes: Vec<String> = text
+        .folded_graphemes_at(&annotations, 0)
+        .map(|grapheme| grapheme.to_string())
+        .collect();
+    assert_eq!(graphemes.concat(), "fn f() {\n");
+    let lines: Vec<String> = text
+        .folded_lines_at(&annotations, 0)
+        .map(|line| line.to_string())
+        .collect();
+    assert_eq!(lines, vec!["fn f() {\n".to_string()]);
+}

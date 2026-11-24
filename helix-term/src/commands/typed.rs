@@ -2498,19 +2498,29 @@ fn abort_goto_line_number_preview(cx: &mut compositor::Context) {
         let scrolloff = cx.editor.config().scrolloff;
 
         let (view, doc) = current!(cx.editor);
-        doc.set_selection(view.id, last_selection);
-        view.ensure_cursor_in_view(doc, scrolloff);
+        // The selection was noted for the text of then: one past the end of the text of now
+        // (another buffer in the window since, or a shorter text) is left aside.
+        let len = doc.text().len_chars();
+        if last_selection
+            .ranges()
+            .iter()
+            .all(|range| range.to() <= len)
+        {
+            doc.set_selection(view.id, last_selection);
+            view.ensure_cursor_in_view(doc, scrolloff);
+        }
     }
 }
 
 fn update_goto_line_number_preview(cx: &mut compositor::Context, args: Args) -> anyhow::Result<()> {
+    // (before the selection is noted: `:goto x` previews nothing, and has nothing to put back)
+    let line = args[0].parse::<usize>()?;
     cx.editor.last_selection.get_or_insert_with(|| {
         let (view, doc) = current!(cx.editor);
         doc.selection(view.id).clone()
     });
 
     let scrolloff = cx.editor.config().scrolloff;
-    let line = args[0].parse::<usize>()?;
     goto_line_without_jumplist(
         cx.editor,
         NonZeroUsize::new(line),
@@ -2538,7 +2548,12 @@ pub(super) fn goto_line_number(
             // If we are invoked directly via a keybinding, Validate is
             // sent without any prior Update events. Ensure the cursor
             // is moved to the appropriate location.
-            update_goto_line_number_preview(cx, args)?;
+            if let Err(err) = update_goto_line_number_preview(cx, args) {
+                // `:goto 12x`: the preview of `12` ends here, not when a later `:goto` (in
+                // another buffer, maybe) is aborted.
+                abort_goto_line_number_preview(cx);
+                return Err(err);
+            }
 
             let last_selection = cx
                 .editor
@@ -5243,7 +5258,7 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),
-            flags: &[WRITE_NO_FORMAT_FLAG],
+            flags: &[WRITE_NO_FORMAT_FLAG, WRITE_NO_CODE_ACTIONS_FLAG],
             ..Signature::DEFAULT
         },
     },

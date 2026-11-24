@@ -59,6 +59,24 @@ Contributors using MacOS might encounter `Too many open files (os error 24)`
 failures while running integration tests. This can be resolved by increasing
 the default value (e.g. to `10240` from `256`) by running `ulimit -n 10240`.
 
+### Random input
+
+`fuzz_long` (in `helix-term/tests/test/fuzz.rs`) sends random commands, keys, typable
+commands with random arguments, mouse events and resizes to an editor with most features
+and the repository's plugins on. Nothing may panic and no step may hang. It is ignored by
+default (it works in a directory of its own, and creates, renames and deletes files there),
+so run it alone, as an unprivileged user:
+
+```sh
+FUZZ_SEED=7 FUZZ_STEPS=20000 FUZZ_LOG=/tmp/fuzz.log cargo test --features integration \
+    --profile integration -p helix-term --test integration -- --ignored fuzz_long
+```
+
+Every step is written to `FUZZ_LOG` before it runs: the last line is the step that
+panicked or hung. `FUZZ_REPLAY=/tmp/fuzz.log` runs the steps of a log again; cut the log
+down to the few steps that matter and write a test for them (`robustness.rs` has the ones
+found so far).
+
 ## Minimum Stable Rust Version (MSRV) Policy
 
 Helix keeps an intentionally low MSRV for the sake of easy building and packaging
