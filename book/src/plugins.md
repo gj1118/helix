@@ -1372,7 +1372,7 @@ config = { chunk = { enable = true, delay = 0 }, line_num = { enable = true } }
 | `chunk` setting | Description | Default |
 | --- | --- | --- |
 | `enable` | Draw the block | `true` |
-| `style`, `error_style` | The line's [style](#styles) (a table, a colour `"#806d9c"` or a theme key), and its style when the block has a syntax error. A table can also have `line_color` (or `lineColor`; over `fg`) and `thickness` (below). A style without a colour or a theme key (`{ thickness = 3 }`) keeps the theme's colour or hlchunk's. `style` can also be hlchunk's list of the two | the theme's `pile.chunk` and `pile.chunk.error` when it sets them, else `{ fg = "#806d9c" }` and `{ fg = "#c21f30" }` |
+| `style`, `error_style` | The line's [style](#styles) (a table, a colour `"#806d9c"` or a theme key), and its style when the block has a syntax error. A table can also have `line_color` (or `lineColor`; over `fg`), `thickness` and `double` (below). A style without a colour or a theme key (`{ thickness = 3 }`) keeps the theme's colour or hlchunk's. `style` can also be hlchunk's list of the two | the theme's `pile.chunk` and `pile.chunk.error` when it sets them, else `{ fg = "#806d9c" }` and `{ fg = "#c21f30" }` |
 | `error_sign` | Use `error_style` for a block with a syntax error | `true` |
 | `use_treesitter` | Find the block in the syntax tree; `false` (or a buffer without one): between the braces `{`, `}` around the cursor, up to 2 000 lines each way | `true` |
 | `chars` | `horizontal_line`, `vertical_line`, `left_top`, `left_bottom`, `right_arrow`, over those of the line's thickness | those of thickness 1: `"─"`, `"│"`, `"╭"`, `"╰"`, `">"` |
@@ -1387,17 +1387,26 @@ config = { chunk = { enable = true, delay = 0 }, line_num = { enable = true } }
 | `line_num` setting | Description | Default |
 | --- | --- | --- |
 | `enable` | Colour the numbers of the block's lines | `false` |
-| `style` | Their [style](#styles) | the theme's `pile.line_num` when it sets it, else `{ fg = "#806d9c" }` |
+| `style` | Their [style](#styles): a table (with `line_color` too, and `modifiers`), a colour or a theme key, e.g. `{ line_color = "#96adc9", modifiers = ["bold"] }` | the theme's `pile.line_num` when it sets it, else `{ fg = "#806d9c" }` |
 | `use_treesitter`, `max_file_size`, `exclude_languages` | As for `chunk` | `true`, `1048576`, `{}` |
 
-The line's thickness is `thickness` in `style`, 1 to 5 like the gradient borders': thin
-and rounded (1, `─ │ ╭ ╰`), heavy (2, `━ ┃ ┏ ┗`), double (3, `═ ║ ╔ ╚`), half and full
-blocks (4, `▄ █ ▀`), full blocks (5); `error_style` can have its own for a block with a
+The line is a single line, `thickness` in `style` from 1 to 5: thin and rounded
+(1, `─ │ ╭ ╰`), heavy (2, `━ ┃ ┏ ┗`), half blocks (3, `▄ ▐ ▗ ▝ ▀`), half and full blocks
+(4, `▄ █ ▀`), full blocks (5). `double = true` makes it a double line (`═ ║ ╔ ╚`), whatever
+the thickness. `error_style` can have its own `thickness` and `double` for a block with a
 syntax error. With `gradient = true` the line takes the gradient borders' colours and its
-`line_color` is left aside; the thickness stays:
+`line_color` is left aside; the thickness and `double` stay:
+
+```
+thickness = 1      thickness = 2      thickness = 3      double = true
+╭───if ready {     ┏━━━if ready {     ▗▄▄▄if ready {     ╔═══if ready {
+│       run();     ┃       run();     ▐       run();     ║       run();
+╰──>}              ┗━━>}              ▝▀▀>}              ╚══>}
+```
 
 ```toml
 config = { chunk = { enable = true, gradient = false, style = { line_color = "#ffc900", thickness = 3 } } }
+config = { chunk = { enable = true, style = { line_color = "#ffc900", double = true } } }
 ```
 
 The colours are the settings' styles, else a theme's own: `pile.chunk`, `pile.chunk.error`

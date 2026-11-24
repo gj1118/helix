@@ -364,7 +364,8 @@ async fn braces_make_a_block_and_the_textobject_selects_it() -> anyhow::Result<(
 async fn wrong_settings_are_reported() -> anyhow::Result<()> {
     let rust = file(RUST, ".rs")?;
     let (app, _plugins) = app(
-        "{ chunk = { delay = \"soon\", colour = 1, style = { thickness = 9, line_color = \"yellowish\" } }, line_number = {} }",
+        "{ chunk = { delay = \"soon\", colour = 1, style = { thickness = 9, double = \"yes\", line_color = \"yellowish\" } }, \
+         line_num = { style = { thickness = 2 } }, line_number = {} }",
         &rust,
     )
     .await?;
@@ -378,7 +379,9 @@ async fn wrong_settings_are_reported() -> anyhow::Result<()> {
         "unknown setting chunk.colour",
         "unknown setting line_number",
         "chunk.style.thickness should be 1 to 5",
+        "chunk.style.double should be true or false",
         "chunk.style.line_color should be a colour",
+        "line_num.style.thickness is for the chunk's line",
     ] {
         assert!(status.contains(expected), "{expected}: {status}");
     }
@@ -563,6 +566,20 @@ async fn the_colours_come_from_the_settings_or_the_theme() -> anyhow::Result<()>
     assert_eq!(number_cell(&mine, 2).0, Color::Rgb(0x5f, 0x87, 0xaf));
     let corner: Color = mine.rendered_fg(text_column(&mine) + 4, 2);
     assert_eq!(corner, Color::Rgb(0x11, 0x22, 0x33));
+
+    // the numbers' style written like the line's: line_color, and modifiers
+    let (mut numbers, _numbers_plugins) = app(
+        "{ chunk = { delay = 0 }, \
+         line_num = { enable = true, style = { line_color = \"#96adc9\", modifiers = [\"bold\"] } } }",
+        &rust,
+    )
+    .await?;
+    send_keys(&mut numbers, ":theme simplelight<ret>4gg").await?;
+    let (fg, bold): (Color, bool) = number_cell(&numbers, 2);
+    assert_eq!(fg, Color::Rgb(0x96, 0xad, 0xc9));
+    assert!(bold);
+    let (outside, _): (Color, bool) = number_cell(&numbers, 0);
+    assert_ne!(outside, Color::Rgb(0x96, 0xad, 0xc9), "out of the block");
     Ok(())
 }
 
@@ -629,9 +646,10 @@ async fn the_line_can_take_the_gradient_colours() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The line's style: `line_color` (or `lineColor`) and `thickness`, 1 to 5 like the gradient
-/// borders' (thin and rounded, heavy, double, half and full blocks, full blocks); `chars` over
-/// the thickness's; `gradient` over `line_color`, not over the thickness.
+/// The line's style: `line_color` (or `lineColor`), `thickness`, 1 to 5, a single line from
+/// thin to full blocks (thin and rounded, heavy, half blocks, half and full blocks, full
+/// blocks), and `double`, a double line whatever the thickness; `chars` over the thickness's;
+/// `gradient` over `line_color`, not over the thickness.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_line_has_a_colour_and_a_thickness() -> anyhow::Result<()> {
     let rust = file(RUST, ".rs")?;
@@ -639,10 +657,32 @@ async fn the_line_has_a_colour_and_a_thickness() -> anyhow::Result<()> {
     for (style, top, middle, bottom, colour) in [
         (
             "{ line_color = \"#ffc900\", thickness = 3 }",
+            "▗▄▄▄if",
+            "▐   ",
+            "▝▀▀>}",
+            yellow,
+        ),
+        (
+            "{ line_color = \"#ffc900\", double = true }",
             "╔═══if",
             "║   ",
             "╚══>}",
             yellow,
+        ),
+        // double whatever the thickness; double = false: the thickness's single line
+        (
+            "{ thickness = 4, double = true }",
+            "╔═══if",
+            "║   ",
+            "╚══>}",
+            VIOLET,
+        ),
+        (
+            "{ thickness = 2, double = false }",
+            "┏━━━if",
+            "┃   ",
+            "┗━━>}",
+            VIOLET,
         ),
         (
             "{ lineColor = \"#ffc900\", thickness = 2 }",
@@ -697,9 +737,9 @@ async fn the_line_has_a_colour_and_a_thickness() -> anyhow::Result<()> {
     );
     assert_eq!(rows[3], "    ┆       item.run();");
 
-    // the gradient over line_color, the thickness kept
+    // the gradient over line_color, the double line kept
     let (mut gradient, _gradient_plugins) = app_with(
-        "{ chunk = { delay = 0, gradient = true, style = { line_color = \"#ffc900\", thickness = 3 } } }",
+        "{ chunk = { delay = 0, gradient = true, style = { line_color = \"#ffc900\", double = true } } }",
         &rust,
         |config| {
             config.editor.gradient_borders.start_color = "#ff0000".into();
@@ -722,16 +762,26 @@ async fn the_line_has_a_colour_and_a_thickness() -> anyhow::Result<()> {
         "the gradient's start, not line_color"
     );
 
-    // beside a block with a syntax error: the error colour, style's thickness (or its own)
+    // beside a block with a syntax error: the error colour, style's thickness and double (or
+    // its own)
     let broken = file(
         "fn main() {\n    if ready {\n        let = ;\n    }\n}\n",
         ".rs",
     )?;
     for (config, top) in [
-        ("{ chunk = { delay = 0, style = { thickness = 3 } } }", "╔═══if ready {"),
+        ("{ chunk = { delay = 0, style = { thickness = 3 } } }", "▗▄▄▄if ready {"),
+        ("{ chunk = { delay = 0, style = { double = true } } }", "╔═══if ready {"),
         (
             "{ chunk = { delay = 0, style = { thickness = 3 }, error_style = { fg = \"#c21f30\", thickness = 2 } } }",
             "┏━━━if ready {",
+        ),
+        (
+            "{ chunk = { delay = 0, style = { double = true }, error_style = { fg = \"#c21f30\", double = false } } }",
+            "╭───if ready {",
+        ),
+        (
+            "{ chunk = { delay = 0, style = { thickness = 2 }, error_style = { fg = \"#c21f30\", double = true } } }",
+            "╔═══if ready {",
         ),
     ] {
         let (mut app, _plugins) = app(config, &broken).await?;

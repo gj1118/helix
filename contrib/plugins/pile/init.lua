@@ -19,22 +19,29 @@
 -- the theme's `pile.chunk`, `pile.chunk.error` and `pile.line_num` are used when it sets them
 -- (simplelight and simpledark do), else hlchunk's colours (the defaults below).
 --
--- The line's style table can also have `line_color` (or `lineColor`; over `fg`) and
--- `thickness`, 1 to 5 like the gradient borders': thin and rounded (1, `─ │ ╭ ╰`), heavy
--- (2, `━ ┃ ┏ ┗`), double (3, `═ ║ ╔ ╚`), half and full blocks (4), full blocks (5):
+-- The line's style table can also have `line_color` (or `lineColor`; over `fg`),
+-- `thickness`, 1 to 5, a single line from thin to full blocks: thin and rounded (1,
+-- `─ │ ╭ ╰`), heavy (2, `━ ┃ ┏ ┗`), half blocks (3, `▄ ▐ ▗ ▝ ▀`), half and full blocks (4),
+-- full blocks (5); and `double = true`, a double line (`═ ║ ╔ ╚`) whatever the thickness:
 --
 --   chunk = { enable = true, gradient = false, style = { line_color = "#ffc900", thickness = 3 } }
+--   chunk = { enable = true, style = { line_color = "#ffc900", double = true } }
 --
 -- With `gradient = true` the line takes the gradient borders' colours and `line_color` is
 -- left aside (the thickness stays). `chars` set some characters over the thickness's.
+--
+-- The line numbers' colour is line_num's `style`, written the same way (a table, a colour or
+-- a theme key; `line_color` too):
+--
+--   line_num = { enable = true, style = { line_color = "#96adc9", modifiers = { "bold" } } }
 --
 --   chunk = {
 --     enable = true,
 --     style = { fg = "#806d9c" },        -- the line (or a list of two styles, like hlchunk's:
 --                                        --   the line, then the line of a block with an error),
---                                        --   with line_color and thickness (1, see above)
+--                                        --   with line_color, thickness (1) and double (false)
 --     error_style = { fg = "#c21f30" },  -- the line beside a block with an error (its own
---                                        --   thickness, or style's)
+--                                        --   thickness and double, or style's)
 --     error_sign = true,                 -- error_style when the block has a syntax error
 --     use_treesitter = true,             -- the block from the syntax tree; false (or no syntax
 --                                        --   tree): between the braces around the cursor
@@ -58,7 +65,7 @@
 --   },
 --   line_num = {
 --     enable = false,
---     style = { fg = "#806d9c" },
+--     style = { fg = "#806d9c" },        -- the numbers' colour (or line_color), modifiers...
 --     use_treesitter = true,
 --     max_file_size = 1048576,
 --     exclude_languages = {},
@@ -115,16 +122,20 @@ local DEFAULTS = {
   },
 }
 
--- The characters of each thickness of the line, those of the gradient borders' thicknesses:
--- the first line's horizontal line, the last line's, the vertical line and the corners (the
--- arrow is `right_arrow` in all of them).
+-- The characters of each thickness of the line, a single line from thin to full blocks: the
+-- first line's horizontal line, the last line's, the vertical line and the corners (the
+-- arrow is `right_arrow` in all of them). Half blocks (3): the right half of the cell down,
+-- the lower half along the first line and the upper half along the last, joined by quarters.
 local THICKNESS = {
   { horizontal_line = "─", bottom_line = "─", vertical_line = "│", left_top = "╭", left_bottom = "╰" },
   { horizontal_line = "━", bottom_line = "━", vertical_line = "┃", left_top = "┏", left_bottom = "┗" },
-  { horizontal_line = "═", bottom_line = "═", vertical_line = "║", left_top = "╔", left_bottom = "╚" },
+  { horizontal_line = "▄", bottom_line = "▀", vertical_line = "▐", left_top = "▗", left_bottom = "▝" },
   { horizontal_line = "▄", bottom_line = "▀", vertical_line = "█", left_top = "█", left_bottom = "█" },
   { horizontal_line = "█", bottom_line = "█", vertical_line = "█", left_top = "█", left_bottom = "█" },
 }
+
+-- The double line (`double = true`), the one weight there is of it.
+local DOUBLE = { horizontal_line = "═", bottom_line = "═", vertical_line = "║", left_top = "╔", left_bottom = "╚" }
 
 local problems = {}
 
@@ -183,9 +194,9 @@ if type(given.chunk) == "table" and type(given.chunk.chars) == "table" then
   end
 end
 
--- The characters of a line `thickness` thick (1 to 5), with the user's over them.
-local function line_chars(thickness)
-  local set = THICKNESS[thickness] or THICKNESS[1]
+-- The characters of a line `thickness` thick (1 to 5), or double, with the user's over them.
+local function line_chars(thickness, double)
+  local set = double and DOUBLE or THICKNESS[thickness] or THICKNESS[1]
   local chars = { right_arrow = DEFAULTS.chunk.chars.right_arrow }
   for key, value in pairs(set) do
     chars[key] = value
@@ -221,8 +232,9 @@ local function is_colour(value)
 end
 
 -- A style of the settings (a table, a colour or a theme key) as the fields of an overlay's
--- style, and the line's thickness when it sets one. `name` names it in the problems.
-local function style_fields(style, name)
+-- style, and the line's thickness and whether it is double when it sets them. `name` names
+-- it in the problems; a style of the line numbers (`numbers`) has no thickness.
+local function style_fields(style, name, numbers)
   if type(style) == "string" then
     if is_colour(style) then
       return { fg = style }
@@ -231,13 +243,21 @@ local function style_fields(style, name)
   elseif type(style) ~= "table" then
     return {}
   end
-  local fields, thickness = {}, nil
+  local fields, thickness, double = {}, nil, nil
   for key, value in pairs(style) do
-    if key == "thickness" then
+    if numbers and (key == "thickness" or key == "double") then
+      table.insert(problems, name .. "." .. key .. " is for the chunk's line (line_num colours numbers)")
+    elseif key == "thickness" then
       if math.type(value) == "integer" and value >= 1 and value <= 5 then
         thickness = value
       else
         table.insert(problems, name .. ".thickness should be 1 to 5")
+      end
+    elseif key == "double" then
+      if type(value) == "boolean" then
+        double = value
+      else
+        table.insert(problems, name .. ".double should be true or false")
       end
     elseif key ~= "line_color" and key ~= "lineColor" then
       fields[key] = value
@@ -257,7 +277,7 @@ local function style_fields(style, name)
       fields[key] = nil
     end
   end
-  return fields, thickness
+  return fields, thickness, double
 end
 
 -- The style of the theme's `key` when the theme sets it, else `fallback`.
@@ -283,13 +303,14 @@ do
     style_name, error_name = "chunk.style[1]", "chunk.style[2]"
   end
   if style ~= nil then
-    mine.chunk, mine.thickness = style_fields(style, style_name)
+    mine.chunk, mine.thickness, mine.double = style_fields(style, style_name)
   end
   if error_style ~= nil then
-    mine.chunk_error, mine.error_thickness = style_fields(error_style, error_name)
+    mine.chunk_error, mine.error_thickness, mine.error_double =
+      style_fields(error_style, error_name)
   end
   if config.line_num.style ~= nil then
-    mine.line_num = style_fields(config.line_num.style, "line_num.style")
+    mine.line_num = style_fields(config.line_num.style, "line_num.style", true)
   end
 end
 
@@ -324,13 +345,19 @@ local function resolve_styles()
 end
 resolve_styles()
 
--- The characters of the line beside a block (`faulty`: with a syntax error).
+-- The characters of the line beside a block (`faulty`: with a syntax error): error_style's
+-- thickness and double when it sets them, else style's.
 local function chars_of(faulty)
-  local thickness = mine.thickness or 1
-  if faulty and mine.error_thickness then
-    thickness = mine.error_thickness
+  local thickness, double = mine.thickness or 1, mine.double or false
+  if faulty then
+    if mine.error_thickness then
+      thickness = mine.error_thickness
+    end
+    if mine.error_double ~= nil then
+      double = mine.error_double
+    end
   end
-  return line_chars(thickness)
+  return line_chars(thickness, double)
 end
 
 -- `item` with the fields of `style`.
