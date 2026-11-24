@@ -23,8 +23,9 @@ impl LanguageConfig {
         local_query_text: &str,
     ) -> Result<Self, query::ParseError> {
         // PATCH (helix fork): the two queries are compiled at the same time. Analyzing a
-        // large query takes tree-sitter a long time (Rust's: about 150 ms each), and the
-        // editor waits for both before it shows the first file of a language.
+        // large query takes tree-sitter a long time (Rust's two: 105 to 145 ms one after the
+        // other, 65 to 80 ms side by side), and the editor waits for both before it shows the
+        // first file of a language.
         let compile_highlights =
             || HighlightQuery::new(grammar, highlight_query_text, local_query_text);
         let (injection_query, highlight_query) = std::thread::scope(|scope| {

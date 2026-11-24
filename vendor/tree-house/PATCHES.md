@@ -70,9 +70,13 @@ what upstream did. `Syntax::structure` prints a syntax tree for those comparison
 ## A language's queries are compiled at the same time (`config.rs`)
 
 tree-sitter analyzes every pattern of a query when it is compiled, and for a large query that
-takes long: Rust's highlights and injections about 150 ms each. The editor waits for both
-before it shows the first file of a language, and again after `:config-reload`.
+takes long. The editor waits for the highlights and the injections before it shows the first
+file of a language (and of each language written inside it), and again after `:config-reload`.
 `LanguageConfig::new` compiles the highlights on a thread of their own while the injections
 are compiled (a grammar is read-only, and `Grammar` and `Query` are `Send` and `Sync`). The
 error of the injections still comes first, and without a thread to be had they are compiled
 one after the other as before.
+
+Measured on two cores (best of three, noisy): Rust 105–145 ms → 65–80 ms, TypeScript
+145–160 ms → 85–115 ms. C++ (one of the two queries is nearly all of the time) and small
+grammars (Go, Python, Markdown: 5 to 25 ms) stay where they were.

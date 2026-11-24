@@ -1422,9 +1422,10 @@ exception: everything under the root was "changed", so the whole file was looked
 again, 37 to 60 ms per key in the 10,000-line file. Now the children of the root that are what
 they were are told apart from the ones that changed, and such a key takes 3 to 4 ms.
 
-The first file of a language also opens sooner, and `:config-reload` is quicker: the
-highlight and the injection queries of a language are compiled at the same time (tree-sitter
-takes about 150 ms for each of Rust's).
+The first file of a language also opens a little sooner, and `:config-reload` is a little
+quicker: the highlight and the injection queries of a language are compiled at the same time
+(Rust's two: 105–145 ms one after the other, 65–80 ms side by side; TypeScript's 145–160 ms →
+85–115 ms).
 
 This lives in Helix's copy of the [tree-house](https://github.com/helix-editor/tree-house)
 crates (`vendor/tree-house`, `vendor/tree-house-bindings`, see their `PATCHES.md`).
