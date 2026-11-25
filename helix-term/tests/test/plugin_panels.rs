@@ -487,6 +487,108 @@ async fn inline_diagnostic_app(
     Ok((app, plugins, file))
 }
 
+/// One diagnostic is one shape: a message wrapped over several rows is a single block (its
+/// corners on its first and last row, straight sides between), and a message of one row
+/// has the rounded caps. With `corners = false` every row has the caps, as it used to.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_inline_diagnostic_plugin_draws_one_block_for_a_wrapped_message() -> anyhow::Result<()>
+{
+    use helix_core::diagnostic::Severity;
+    const LONG: &str = "LONGONE one two three four five six seven eight nine ten eleven \
+                        twelve thirteen fourteen fifteen sixteen seventeen";
+    let (left_cap, right_cap) = ('\u{e0b6}', '\u{e0b4}');
+    let corners = ['\u{e0ba}', '\u{e0b8}', '\u{e0be}', '\u{e0bc}'];
+
+    for (entry, blocks) in [
+        ("", true),
+        (
+            "[[plugins]]\nname = \"inline-diagnostic\"\nconfig = { corners = false }\n",
+            false,
+        ),
+    ] {
+        let (mut app, _plugins, _file) = inline_diagnostic_app(entry, &[]).await?;
+        {
+            let doc = helix_view::doc_mut!(app.editor);
+            doc.replace_diagnostics(
+                [
+                    code_diagnostic(1, Severity::Error, LONG),
+                    code_diagnostic(1, Severity::Warning, "SHORTONE"),
+                ],
+                &[],
+                None,
+            );
+        }
+        send_keys(&mut app, "j").await?;
+        let rows = screen(&app, 80);
+        let row_of = |word: &str| {
+            rows.iter()
+                .position(|row| row.contains(word))
+                .unwrap_or_else(|| panic!("no {word}: {rows:#?}"))
+        };
+        // the long message takes three rows or more, the short one the row after them
+        let (first, short) = (row_of("LONGONE"), row_of("SHORTONE"));
+        let last = short - 1;
+        assert!(last >= first + 2, "{blocks}: {rows:#?}");
+        let ends = |row: usize| {
+            let text = rows[row].trim_end();
+            let start = text.find(|c| [left_cap, corners[0], corners[2]].contains(&c));
+            (
+                start.and_then(|at| text[at..].chars().next()),
+                text.chars().last().unwrap(),
+            )
+        };
+        if blocks {
+            assert_eq!(ends(first), (Some(corners[0]), corners[1]), "{rows:#?}");
+            assert_eq!(ends(last), (Some(corners[2]), corners[3]), "{rows:#?}");
+            // between them: straight sides, no cap and no corner
+            for row in first + 1..last {
+                let glyphs = [
+                    left_cap, right_cap, corners[0], corners[1], corners[2], corners[3],
+                ];
+                assert!(!rows[row].contains(glyphs), "row {row}: {rows:#?}");
+            }
+            // every row of the block is as wide as the others
+            let width = |row: usize| rows[row].trim_end().chars().count();
+            let middle_end = (first + 1..last).map(width).max().unwrap_or(0);
+            assert!(middle_end <= width(first), "{rows:#?}");
+        } else {
+            for row in first..=last {
+                assert_eq!(
+                    ends(row),
+                    (Some(left_cap), right_cap),
+                    "row {row}: {rows:#?}"
+                );
+            }
+        }
+        // a message of one row: the caps, either way
+        assert_eq!(ends(short), (Some(left_cap), right_cap), "{rows:#?}");
+
+        // the sides between the corners are the panel's color, like its text
+        if blocks {
+            let (x, _) = text_area(&app);
+            let text_row = &rows[first + 1];
+            let start = text_row
+                .char_indices()
+                .skip(x + LINE_LEN)
+                .find(|(_, c)| !c.is_whitespace())
+                .map(|(at, _)| text_row[..at].chars().count())
+                .expect("text");
+            let bg = |col: usize| app.rendered_cell(col as u16, (first + 1) as u16).bg;
+            let panel_bg = bg(start);
+            assert_eq!(panel_bg, Color::Rgb(0xcb, 0xa6, 0xf7));
+            // the side is under the corner of the row above
+            let corner_col = rows[first]
+                .chars()
+                .position(|c| c == corners[0])
+                .expect("the corner");
+            assert_eq!(bg(corner_col), panel_bg, "{rows:#?}");
+            assert_ne!(bg(corner_col - 1), panel_bg);
+        }
+        send_keys(&mut app, ":q!<ret>").await?;
+    }
+    Ok(())
+}
+
 /// `other_lines`: the other lines in view show their most severe diagnostic after their end,
 /// in its severity's color, the cursor line keeps the panel; they follow the cursor.
 #[tokio::test(flavor = "multi_thread")]

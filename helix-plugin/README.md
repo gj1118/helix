@@ -558,6 +558,10 @@ Buffer methods (they raise an error once the buffer is closed):
     line without icon), `fg`/`bg` (`"#rrggbb"`; default: the theme's `ui.popup`), `arrow`
     (`" ← "`), `under_arrow` (`"╰ "`, before the box under the line), `arrow_fg` (default:
     `bg`), `left_cap`/`right_cap` (drawn in `bg` around each row, e.g. powerline caps),
+    `corners` (`{ top_left = ..., top_right = ..., bottom_left = ..., bottom_right = ... }`:
+    with them an item wrapped over several rows is one block, the corners on its first and
+    last row and straight sides between, instead of a row with the caps for each of its
+    lines; an item of one row keeps the caps),
     `min_width` (`30`) and `show_in_insert` (`false`: hidden in insert mode).
   - The anchor moves with the text when it is edited.
 

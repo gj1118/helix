@@ -1650,9 +1650,10 @@ impl FromLua for LuaPluginAnnotation {
 
 /// Read a panel (`buffer:set_panel`) from a table: `char_idx` and `items` (each with `text`,
 /// and an optional `icon` and `icon_fg`) are required; the other fields keep their defaults
-/// when absent. A field of the wrong type is an error.
+/// when absent (`corners`: none, every row has the caps). A field of the wrong type is an
+/// error.
 fn panel_from_table(table: &LuaTable) -> LuaResult<helix_view::annotations::panel::PluginPanel> {
-    use helix_view::annotations::panel::{PanelItem, PluginPanel};
+    use helix_view::annotations::panel::{PanelCorners, PanelItem, PluginPanel};
 
     let defaults = PluginPanel::default();
     let items = table
@@ -1694,6 +1695,27 @@ fn panel_from_table(table: &LuaTable) -> LuaResult<helix_view::annotations::pane
         right_cap: table
             .get::<Option<String>>("right_cap")?
             .unwrap_or(defaults.right_cap),
+        // A table of the four corners (one left out is a square corner), or nothing.
+        corners: match table.get::<LuaValue>("corners")? {
+            LuaValue::Nil | LuaValue::Boolean(false) => None,
+            LuaValue::Table(corners) => {
+                let corner = |name: &str| -> LuaResult<String> {
+                    Ok(corners.get::<Option<String>>(name)?.unwrap_or_default())
+                };
+                Some(PanelCorners {
+                    top_left: corner("top_left")?,
+                    top_right: corner("top_right")?,
+                    bottom_left: corner("bottom_left")?,
+                    bottom_right: corner("bottom_right")?,
+                })
+            }
+            other => {
+                return Err(LuaError::RuntimeError(format!(
+                    "invalid panel corners: expected a table, got {}",
+                    other.type_name()
+                )))
+            }
+        },
         min_width,
         // Strictly a boolean: Lua would read any other value as true.
         show_in_insert: match table.get::<LuaValue>("show_in_insert")? {
@@ -1946,6 +1968,40 @@ mod tests {
         );
         assert_eq!(panel.min_width, 12);
         assert!(panel.show_in_insert);
+        assert_eq!(panel.corners, None);
+
+        // the corners of a message of several rows: all four, some, or none
+        let corners = |source: &str| read(source).map(|panel| panel.corners);
+        let all = corners(
+            r#"{ char_idx = 0, items = {},
+                 corners = { top_left = "a", top_right = "b", bottom_left = "c", bottom_right = "d" } }"#,
+        )
+        .unwrap()
+        .expect("corners");
+        assert_eq!(
+            [
+                &all.top_left,
+                &all.top_right,
+                &all.bottom_left,
+                &all.bottom_right
+            ],
+            ["a", "b", "c", "d"]
+        );
+        let some = corners(r#"{ char_idx = 0, items = {}, corners = { top_left = "a" } }"#)
+            .unwrap()
+            .expect("corners");
+        assert_eq!(
+            (some.top_left.as_str(), some.bottom_right.as_str()),
+            ("a", "")
+        );
+        assert_eq!(
+            corners("{ char_idx = 0, items = {}, corners = false }").unwrap(),
+            None
+        );
+        let err = corners(r#"{ char_idx = 0, items = {}, corners = "round" }"#).unwrap_err();
+        assert!(err.to_string().contains("invalid panel corners"), "{err}");
+        let err = corners("{ char_idx = 0, items = {}, corners = { top_left = {} } }").unwrap_err();
+        assert!(err.to_string().contains("string"), "{err}");
         assert_eq!(
             read("{ char_idx = 0, items = {}, min_width = 1e9 }")
                 .unwrap()
