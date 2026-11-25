@@ -35,11 +35,113 @@ struct Card {
     border: u16,
     /// The padding inside the border (each side), when there is room for it.
     padding: u16,
-    /// The icon (or emoji) and a space before the first line, when there is room for it.
+    /// The icon (or emoji) and a space before the first line, when there is room for it
+    /// (and no header, which has the icon).
     prefix: Option<String>,
+    /// The header above the message, when there is room for it.
+    header: Option<Header>,
     /// The message wrapped to the card; the last line ends in `…` when the message is longer
     /// than the card can show.
     lines: Vec<String>,
+}
+
+/// The header of a card: the icon and the severity on the left, the time on the right, and
+/// a line under them across the card.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Header {
+    /// The icon (or emoji), a space, and the severity: `⚠ Warning`.
+    title: String,
+    /// The time the notification came, when it is shown and there is room for it.
+    time: Option<String>,
+}
+
+/// Rows of a header: the title, and the line under it.
+const HEADER_ROWS: usize = 2;
+/// Columns between the title and the time, at least.
+const HEADER_GAP: usize = 2;
+
+/// The word in the header of a notification of `severity`.
+fn severity_title(severity: Severity) -> &'static str {
+    match severity {
+        Severity::Error => "Error",
+        Severity::Warning => "Warning",
+        Severity::Info => "Info",
+        Severity::Hint => "Hint",
+    }
+}
+
+/// The name of `severity` in theme scopes (`ui.notification.warning`).
+fn severity_scope(severity: Severity) -> &'static str {
+    match severity {
+        Severity::Error => "error",
+        Severity::Warning => "warning",
+        Severity::Info => "info",
+        Severity::Hint => "hint",
+    }
+}
+
+/// The styles of a card, from the theme.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CardStyles {
+    /// The card's background: `ui.notification`, else `ui.popup`.
+    background: Style,
+    /// The message: `ui.notification.text`; else, under a header, the text color of the
+    /// popups, and without one the severity's color (as it always was).
+    text: Style,
+    /// The icon and the severity of the header: `ui.notification.<severity>`, else the
+    /// severity's scope (`warning`).
+    title: Style,
+    /// The time: `ui.notification.time.<severity>`, `ui.notification.time`, else the title's.
+    time: Style,
+    /// The line under the header: `ui.notification.separator.<severity>`,
+    /// `ui.notification.separator`, else the title's.
+    separator: Style,
+    /// A plain border: `ui.notification.border.<severity>`, `ui.notification.border`, else
+    /// that of every popup.
+    border: Style,
+}
+
+impl CardStyles {
+    fn new(theme: &helix_view::Theme, severity: Severity, header: bool) -> Self {
+        let name = severity_scope(severity);
+        // a scope of the notifications, for this severity or for all
+        let scoped = |base: &str| {
+            theme
+                .try_get_exact(&format!("{base}.{name}"))
+                .or_else(|| theme.try_get_exact(base))
+        };
+        let background = theme
+            .try_get_exact("ui.notification")
+            .unwrap_or_else(|| theme.get("ui.popup"));
+        let severity_style = NotificationPopup::severity_style(severity, theme);
+        let title = theme
+            .try_get_exact(&format!("ui.notification.{name}"))
+            .unwrap_or(severity_style);
+        // (only the colors and modifiers of a text scope: the card has its background)
+        let text_color = |style: Style| Style {
+            bg: None,
+            underline_color: None,
+            ..style
+        };
+        let text = theme
+            .try_get_exact("ui.notification.text")
+            .unwrap_or_else(|| match header {
+                true => text_color(match background.fg {
+                    Some(fg) => Style::default().fg(fg),
+                    None => theme.get("ui.text"),
+                }),
+                false => severity_style,
+            });
+        Self {
+            background,
+            text,
+            title,
+            time: scoped("ui.notification.time").unwrap_or(title),
+            separator: scoped("ui.notification.separator").unwrap_or(title),
+            border: scoped("ui.notification.border")
+                .unwrap_or_else(|| crate::ui::border_style(theme)),
+        }
+    }
 }
 
 /// The sizes of a card's frame, from the configuration.
@@ -179,10 +281,39 @@ impl NotificationPopup {
             0
         };
         let text_width = inside_width.saturating_sub(padding * 2) as usize;
-        let text_rows = inside_height.saturating_sub(padding * 2).max(1) as usize;
+        let mut text_rows = inside_height.saturating_sub(padding * 2).max(1) as usize;
 
-        // The icon before the first line, when the line keeps a column for the text.
-        let prefix = severity_prefix(config, notification.severity)
+        // The header, when it leaves a row for the message: it has the icon then.
+        let icon = severity_prefix(config, notification.severity);
+        let header = (config.header && text_rows > HEADER_ROWS && text_width > 0).then(|| {
+            let mut title = match icon {
+                Some(icon) => format!("{icon} {}", severity_title(notification.severity)),
+                None => severity_title(notification.severity).to_string(),
+            };
+            if title.width() > text_width {
+                title = with_ellipsis(&title, text_width);
+            }
+            // the time, when it fits beside the title
+            let time = (config.show_time && !notification.clock.is_empty())
+                .then(|| notification.clock.clone())
+                .filter(|time| title.width() + HEADER_GAP + time.width() <= text_width);
+            Header { title, time }
+        });
+        if header.is_some() {
+            text_rows -= HEADER_ROWS;
+        }
+        let header_width = header.as_ref().map_or(0, |header| {
+            header.title.width()
+                + header
+                    .time
+                    .as_ref()
+                    .map_or(0, |time| HEADER_GAP + time.width())
+        });
+
+        // The icon before the first line (without a header), when the line keeps a column
+        // for the text.
+        let prefix = icon
+            .filter(|_| header.is_none())
             .map(|icon| format!("{icon} "))
             .filter(|prefix| prefix.width() < text_width);
         let prefix_width = prefix.as_deref().map_or(0, UnicodeWidthStr::width);
@@ -209,12 +340,14 @@ impl NotificationPopup {
             .map(|(i, line)| line.width() + if i == 0 { prefix_width } else { 0 })
             .max()
             .unwrap_or(0)
+            .max(header_width)
             .max(1) as u16;
         let frame_size = (border + padding) * 2;
         let width = content_width
             .saturating_add(frame_size)
             .clamp(MIN_WIDTH, max_width);
-        let height = (lines.len() as u16)
+        let rows = lines.len() + if header.is_some() { HEADER_ROWS } else { 0 };
+        let height = (rows as u16)
             .saturating_add(frame_size)
             .clamp(MIN_HEIGHT, max_height);
         let card = Card {
@@ -223,6 +356,7 @@ impl NotificationPopup {
             border,
             padding,
             prefix,
+            header,
             lines,
         };
         (width, height, card)
@@ -346,8 +480,9 @@ impl NotificationPopup {
             return;
         }
 
-        let text_style = Self::severity_style(notification.severity, theme);
-        let background_style = theme.get("ui.popup");
+        let styles = CardStyles::new(theme, notification.severity, card.header.is_some());
+        let text_style = styles.text;
+        let background_style = styles.background;
 
         // Per-notification corner radius override
         let corner_radius = notification.corner_radius.unwrap_or(config.border.radius);
@@ -398,7 +533,7 @@ impl NotificationPopup {
                 Self::render_simple_border(
                     card.area,
                     surface,
-                    crate::ui::border_style(theme),
+                    styles.border,
                     &look.symbols,
                     card.border,
                 );
@@ -416,8 +551,25 @@ impl NotificationPopup {
         if content.width == 0 || content.height == 0 {
             return;
         }
-        for (i, line) in card.lines.iter().enumerate().take(content.height as usize) {
-            let y = content.y + i as u16;
+        let mut top = content.y;
+        if let Some(header) = &card.header {
+            // the title on the left, the time on the right
+            let width = content.width as usize;
+            surface.set_stringn(content.x, top, &header.title, width, styles.title);
+            if let Some(time) = &header.time {
+                let x = content.right().saturating_sub(time.width() as u16);
+                surface.set_stringn(x, top, time, width, styles.time);
+            }
+            // and a line under them
+            if content.height > 1 {
+                let line = "─".repeat(width);
+                surface.set_stringn(content.x, top + 1, &line, width, styles.separator);
+            }
+            top += HEADER_ROWS as u16;
+        }
+        let rows = content.bottom().saturating_sub(top) as usize;
+        for (i, line) in card.lines.iter().enumerate().take(rows) {
+            let y = top + i as u16;
             let mut x = content.x;
             if let (0, Some(prefix)) = (i, &card.prefix) {
                 let (end, _) =
@@ -771,6 +923,7 @@ mod tests {
         let config = NotificationConfig {
             max_width: 30,
             max_height: 6,
+            header: false,
             ..Default::default()
         };
         let message = "the quick brown fox jumps over the lazy dog again and again and again";
@@ -803,9 +956,169 @@ mod tests {
         assert_eq!(card.prefix, None);
     }
 
+    /// By default a card has a header: the icon and the severity, the time on the right, and
+    /// a line under them; the message below has no icon of its own.
+    #[test]
+    fn a_card_has_a_header_with_the_severity_and_the_time() {
+        let config = NotificationConfig {
+            max_width: 40,
+            max_height: 10,
+            ..Default::default()
+        };
+        let mut n = notification(1, "Formatters unavailable for yaml file", Severity::Warning);
+        n.clock = "07:00:59".to_string();
+        let (width, height, card) = NotificationPopup::card(&n, 40, 10, &config, frame(1, 1));
+        let header = card.header.clone().expect("a header");
+        assert_eq!(header.title, "⚠️ Warning");
+        assert_eq!(header.time.as_deref(), Some("07:00:59"));
+        assert_eq!(card.prefix, None);
+        assert_eq!(card.lines, ["Formatters unavailable for yaml file"]);
+        // the message is the widest; the header, its line and the message, in the frame
+        assert_eq!(width, 36 + 4);
+        assert_eq!(height, 3 + 4);
+
+        // the title of each severity, with its icon (without emojis)
+        let icons = NotificationConfig {
+            show_emojis: false,
+            ..config.clone()
+        };
+        for (severity, title) in [
+            (Severity::Error, "✗ Error"),
+            (Severity::Warning, "⚠ Warning"),
+            (Severity::Info, "ℹ Info"),
+            (Severity::Hint, "ℹ Hint"),
+        ] {
+            let n = notification(2, "x", severity);
+            let (_, _, card) = NotificationPopup::card(&n, 40, 10, &icons, frame(1, 1));
+            assert_eq!(card.header.unwrap().title, title);
+        }
+        // without icons or emojis: the word alone
+        let bare = NotificationConfig {
+            show_emojis: false,
+            show_icons: false,
+            ..config.clone()
+        };
+        let (_, _, card) = NotificationPopup::card(&n, 40, 10, &bare, frame(1, 1));
+        assert_eq!(card.header.unwrap().title, "Warning");
+
+        // a short message: as wide as the header
+        let mut short = notification(3, "ok", Severity::Info);
+        short.clock = "12:34:56".to_string();
+        let (width, _, card) = NotificationPopup::card(&short, 40, 10, &config, frame(1, 1));
+        assert_eq!(card.lines, ["ok"]);
+        let header_width = "💡 Info".width() + HEADER_GAP + 8;
+        assert_eq!(width as usize, header_width + 4);
+
+        // without the time
+        let no_time = NotificationConfig {
+            show_time: false,
+            ..config.clone()
+        };
+        let (_, _, card) = NotificationPopup::card(&short, 40, 10, &no_time, frame(1, 1));
+        assert_eq!(card.header.unwrap().time, None);
+
+        // without a header, as before: the icon before the message
+        let off = NotificationConfig {
+            header: false,
+            ..config.clone()
+        };
+        let (_, height, card) = NotificationPopup::card(&n, 40, 10, &off, frame(1, 1));
+        assert_eq!(card.header, None);
+        assert_eq!(card.prefix.as_deref(), Some("⚠️ "));
+        // (with the icon in front, the message takes two rows of 36 columns)
+        assert_eq!(card.lines.len(), 2);
+        assert_eq!(height, 2 + 4);
+    }
+
+    /// The header leaves the time out where it doesn't fit, and is left out where it would
+    /// leave no row for the message.
+    #[test]
+    fn a_header_gives_way_in_a_small_card() {
+        let config = NotificationConfig::default();
+        let mut n = notification(1, "one two three four five six", Severity::Error);
+        n.clock = "07:00:59".to_string();
+        // 16 columns, 14 for the text: "❌ Error" (8) and the time (8) don't both fit
+        let (_, _, card) = NotificationPopup::card(&n, 16, 10, &config, frame(1, 0));
+        let header = card.header.expect("a header");
+        assert_eq!((header.title.as_str(), header.time), ("❌ Error", None));
+        // three rows inside: the header, its line, and a row of the message
+        let (_, height, card) = NotificationPopup::card(&n, 20, 5, &config, frame(1, 0));
+        assert!(card.header.is_some());
+        assert_eq!(card.lines.len(), 1);
+        assert!(card.lines[0].ends_with('…'));
+        assert_eq!(height, 5);
+        // two rows inside: no header
+        let (_, _, card) = NotificationPopup::card(&n, 30, 4, &config, frame(1, 0));
+        assert_eq!(card.header, None);
+        assert_eq!(card.prefix.as_deref(), Some("❌ "));
+    }
+
+    /// The scopes of the notifications in the theme: each part has its own, for a severity
+    /// or for all of them, and falls back to what was used before.
+    #[test]
+    fn the_parts_of_a_card_are_styled_by_the_theme() {
+        use helix_view::graphics::Color;
+        let theme = |toml: &str| -> helix_view::Theme {
+            let value: toml::Value = toml::from_str(toml).unwrap();
+            helix_view::Theme::from(value)
+        };
+        let fg = |style: Style| style.fg;
+
+        // only the base scopes
+        let base = theme(
+            r##"
+            "ui.popup" = { fg = "#111111", bg = "#222222" }
+            "ui.popup.border" = { fg = "#333333" }
+            "warning" = { fg = "#444444" }
+            "##,
+        );
+        let styles = CardStyles::new(&base, Severity::Warning, true);
+        assert_eq!(styles.background.bg, Some(Color::Rgb(0x22, 0x22, 0x22)));
+        assert_eq!(fg(styles.title), Some(Color::Rgb(0x44, 0x44, 0x44)));
+        assert_eq!(styles.time, styles.title);
+        assert_eq!(styles.separator, styles.title);
+        assert_eq!(fg(styles.border), Some(Color::Rgb(0x33, 0x33, 0x33)));
+        // the message in the popups' text color under a header, the severity's without
+        assert_eq!(fg(styles.text), Some(Color::Rgb(0x11, 0x11, 0x11)));
+        assert_eq!(styles.text.bg, None);
+        let plain = CardStyles::new(&base, Severity::Warning, false);
+        assert_eq!(fg(plain.text), Some(Color::Rgb(0x44, 0x44, 0x44)));
+
+        // the notifications' own
+        let own = theme(
+            r##"
+            "ui.popup" = { fg = "#111111", bg = "#222222" }
+            "warning" = { fg = "#444444" }
+            "ui.notification" = { bg = "#010101" }
+            "ui.notification.text" = { fg = "#020202" }
+            "ui.notification.warning" = { fg = "#030303", modifiers = ["bold"] }
+            "ui.notification.time" = { fg = "#040404" }
+            "ui.notification.separator" = { fg = "#050505" }
+            "ui.notification.separator.error" = { fg = "#060606" }
+            "ui.notification.border.warning" = { fg = "#070707" }
+            "##,
+        );
+        let styles = CardStyles::new(&own, Severity::Warning, true);
+        assert_eq!(styles.background.bg, Some(Color::Rgb(1, 1, 1)));
+        assert_eq!(fg(styles.text), Some(Color::Rgb(2, 2, 2)));
+        assert_eq!(fg(styles.title), Some(Color::Rgb(3, 3, 3)));
+        assert!(styles.title.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(fg(styles.time), Some(Color::Rgb(4, 4, 4)));
+        assert_eq!(fg(styles.separator), Some(Color::Rgb(5, 5, 5)));
+        assert_eq!(fg(styles.border), Some(Color::Rgb(7, 7, 7)));
+        // another severity: its own separator, the base scopes elsewhere
+        let error = CardStyles::new(&own, Severity::Error, true);
+        assert_eq!(fg(error.separator), Some(Color::Rgb(6, 6, 6)));
+        assert_eq!(error.title, own.get("error"));
+        assert_ne!(fg(error.border), Some(Color::Rgb(7, 7, 7)));
+    }
+
     #[test]
     fn the_newest_notifications_are_shown_when_not_all_fit() {
-        let config = NotificationConfig::default();
+        let config = NotificationConfig {
+            header: false,
+            ..Default::default()
+        };
         let notifications: Vec<Notification> = (1..=6)
             .map(|id| notification(id, &format!("message {id}"), Severity::Info))
             .collect();
@@ -839,6 +1152,7 @@ mod tests {
                 let config = NotificationConfig {
                     max_width,
                     position,
+                    header: max_width != 60,
                     ..Default::default()
                 };
                 for (border, padding) in [(0, 0), (1, 1), (3, 2)] {
@@ -858,7 +1172,12 @@ mod tests {
                                     .area
                                     .height
                                     .saturating_sub((card.border + card.padding) * 2);
-                                assert!(card.lines.len() <= (inside as usize).max(1));
+                                let header = if card.header.is_some() {
+                                    HEADER_ROWS
+                                } else {
+                                    0
+                                };
+                                assert!(card.lines.len() + header <= (inside as usize).max(1));
                             }
                         }
                     }
@@ -880,6 +1199,7 @@ mod tests {
             border: 1,
             padding: 0,
             prefix: None,
+            header: None,
             lines: Vec::new(),
         };
         let config = NotificationConfig::default();

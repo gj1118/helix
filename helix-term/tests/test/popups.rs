@@ -600,3 +600,103 @@ async fn popup_command_line_full_height_takes_the_bottom_row() -> anyhow::Result
     }
     Ok(())
 }
+
+/// A notification has a header: the icon and the severity, the time it came on the right,
+/// and a line under them, each part in the style of its theme scope; the message is below.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_notification_has_a_header_styled_by_the_theme() -> anyhow::Result<()> {
+    use helix_view::graphics::Color;
+    let mut app = helpers::AppBuilder::new()
+        .with_config(config(
+            "[editor.notifications]\nstyle = \"popup\"\nshow-emojis = false\nshadow.enable = false\n",
+        ))
+        .build()?;
+    app.editor.set_theme(toml::from_str(
+        r##"
+        "ui.selection" = { modifiers = ["reversed"] }
+        "ui.cursor" = { modifiers = ["reversed"] }
+        "ui.popup" = { fg = "#101010", bg = "#202020" }
+        "warning" = { fg = "#d0a050" }
+        "ui.notification.text" = { fg = "#c0c0c0" }
+        "ui.notification.time" = { fg = "#a0a0a0" }
+        "ui.notification.separator.warning" = { fg = "#806030" }
+        "##,
+    )?)?;
+    app.editor
+        .set_warning("Formatters unavailable for yaml file");
+    send_keys(&mut app, "").await?;
+
+    let rows = app.rendered_rows();
+    if std::env::var_os("SHOW_CARD").is_some() {
+        for row in &rows[..8] {
+            eprintln!("CARD|{row}");
+        }
+    }
+    let row_of = |text: &str| {
+        rows.iter()
+            .position(|row| row.contains(text))
+            .unwrap_or_else(|| panic!("no {text}: {rows:#?}"))
+    };
+    let (title, message) = (row_of("⚠ Warning"), row_of("Formatters unavailable"));
+    // the title, then its line, then the message
+    assert_eq!(message, title + 2, "{rows:#?}");
+    let line = &rows[title + 1];
+    assert!(line.contains(&"─".repeat(30)), "{rows:#?}");
+
+    // the time of the notification, at the right end of the title's row
+    let clock = {
+        let notifications = app.editor.get_active_notifications();
+        notifications[0].clock.clone()
+    };
+    assert_eq!(clock.len(), 8, "HH:MM:SS: {clock}");
+    assert_eq!(clock.as_bytes()[2], b':');
+    let header = rows[title].trim_end();
+    assert!(header.contains(&clock), "{rows:#?}");
+    let message_end = rows[message]
+        .trim_end()
+        .trim_end_matches('│')
+        .trim_end()
+        .chars()
+        .count();
+    let time_end = header.trim_end_matches('│').trim_end().chars().count();
+    // (the card is as wide as the message: the time ends where its column ends)
+    assert!(time_end <= message_end + 1, "{rows:#?}");
+
+    // each part in its color
+    let x_of = |row: usize, text: &str| {
+        rows[row]
+            .find(text)
+            .map(|at| rows[row][..at].chars().count())
+    };
+    let color = |x: usize, y: usize| app.rendered_cell(x as u16, y as u16).fg;
+    let title_x = x_of(title, "Warning").unwrap();
+    assert_eq!(color(title_x, title), Color::Rgb(0xd0, 0xa0, 0x50));
+    let time_x = x_of(title, &clock).unwrap();
+    assert_eq!(color(time_x, title), Color::Rgb(0xa0, 0xa0, 0xa0));
+    let line_x = x_of(title + 1, "─").unwrap();
+    assert_eq!(color(line_x + 3, title + 1), Color::Rgb(0x80, 0x60, 0x30));
+    let message_x = x_of(message, "Formatters").unwrap();
+    assert_eq!(color(message_x, message), Color::Rgb(0xc0, 0xc0, 0xc0));
+    assert_eq!(
+        app.rendered_cell(message_x as u16, message as u16).bg,
+        Color::Rgb(0x20, 0x20, 0x20)
+    );
+
+    // without a header: the icon before the message, in the severity's color
+    let mut app = helpers::AppBuilder::new()
+        .with_config(config(
+            "[editor.notifications]\nstyle = \"popup\"\nshow-emojis = false\nheader = false\n",
+        ))
+        .build()?;
+    app.editor
+        .set_warning("Formatters unavailable for yaml file");
+    send_keys(&mut app, "").await?;
+    let rows = app.rendered_rows();
+    assert!(
+        rows.iter()
+            .any(|row| row.contains("⚠ Formatters unavailable")),
+        "{rows:#?}"
+    );
+    assert!(!rows.iter().any(|row| row.contains("Warning")), "{rows:#?}");
+    Ok(())
+}

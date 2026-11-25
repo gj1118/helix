@@ -1059,6 +1059,8 @@ max-height = 10            # Maximum height for notification popups
 default-timeout = 5000     # Default timeout in milliseconds (0 = no timeout)
 show-icons = true          # Show notification type icons
 show-emojis = true         # Show notification type emojis
+header = true              # "⚠ Warning" and the time above the message, with a line under them
+show-time = true           # The time (HH:MM:SS) in the header
 max-history = 100          # Maximum notifications to keep in history
 enable-history = true      # Allow :notifications-history
 padding = 1                # Blank cells inside the popup
@@ -1090,24 +1092,41 @@ error = "err"
 success = "ok"
 ```
 
+A notification has a header: the icon and its severity (`Error`, `Warning`, `Info` or
+`Hint`) on the left, the time it came on the right, and a line under them; the message is
+below, in the popups' text color.
+
+```
+╭──────────────────────────────────────╮
+│ ⚠ Warning                   07:00:59 │
+│ ──────────────────────────────────── │
+│ Formatters unavailable for yaml file │
+╰──────────────────────────────────────╯
+```
+
 **Styling Notifications:**
 
-Notification appearance is controlled via theme settings. If notifications look poor with your theme, add these to your theme file:
+Each part of a notification has a theme scope, for one severity or for all of them, and
+falls back to the scopes every popup uses:
 
 ```toml
 # In ~/.config/helix/themes/my-theme.toml
 inherits = "your-base-theme"
 
-# Popup background and border
-"ui.popup" = { bg = "#1a1a1a", fg = "#ffffff" }
-"ui.popup.border" = { fg = "#888888" }
-
-# Notification text colors by severity
-"error" = { fg = "#ff5555" }
-"warning" = { fg = "#ffaa00" }
-"info" = { fg = "#55aaff" }
-"hint" = { fg = "#888888" }
+"ui.notification" = { bg = "#0b0b0b" }                   # background (else ui.popup)
+"ui.notification.text" = { fg = "#cdd6f4" }              # the message
+"ui.notification.warning" = { fg = "#e0b060" }           # icon and title (else `warning`)
+"ui.notification.error" = { fg = "#f38ba8", modifiers = ["bold"] }
+"ui.notification.info" = { fg = "#89b4fa" }
+"ui.notification.time" = { fg = "#7f849c" }              # the time (else the title's)
+"ui.notification.separator.warning" = { fg = "#7a6030" } # the line under the header
+"ui.notification.border" = { fg = "#313244" }            # the border (else ui.popup.border)
+"ui.notification.border.error" = { fg = "#f38ba8" }      # an error's border
 ```
+
+The scopes with a severity (`.error`, `.warning`, `.info`, `.hint`) are for that severity
+only; see [the book](book/src/themes.md#notification-and-cmdline-popup-styling) for all of
+them.
 
 **Commands:**
 - `:notifications-history` - Show notification history

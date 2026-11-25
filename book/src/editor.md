@@ -863,6 +863,8 @@ command line.
 | `default-timeout` | Time before a popup disappears, in milliseconds. `0` keeps it until dismissed | `5000` |
 | `show-icons` | Show an icon for the severity (only when `show-emojis` is off) | `true` |
 | `show-emojis` | Show an emoji for the severity; takes the place of the icon | `true` |
+| `header` | A header above the message: the icon and the severity (`Error`, `Warning`, `Info` or `Hint`) on the left, the time the notification came on the right, and a line under them. Left out of a popup too small to keep a row for the message. `false`: the icon in front of the message, which is in the severity's color | `true` |
+| `show-time` | The time (`HH:MM:SS`) in the header, when it fits beside the title | `true` |
 | `padding` | Blank space inside the popup, in cells | `1` |
 | `max-history` | Number of notifications kept for `:notifications-history` | `100` |
 | `enable-history` | Allow `:notifications-history` | `true` |
@@ -877,8 +879,12 @@ command line.
 | `icons.info`, `icons.warning`, `icons.error`, `icons.success` | Icon text for each severity | `ℹ`, `⚠`, `✗`, `✓` |
 | `emojis.info`, `emojis.warning`, `emojis.error`, `emojis.success` | Emoji text for each severity | `💡`, `⚠️`, `❌`, `✅` |
 
-The colors come from the theme: `ui.popup` for the background and the `error`, `warning`,
-`info` and `hint` scopes for the text; the border uses `ui.popup.border`, or the gradient when
+The colors come from the theme: `ui.notification` for the background (else `ui.popup`), the
+`error`, `warning`, `info` and `hint` scopes for the header, and the popups' text color for
+the message; each part has a scope of its own, for one severity or for all of them
+(`ui.notification.warning`, `ui.notification.time`, `ui.notification.separator.error`, ...,
+see [Notification styling](./themes.md#notification-and-cmdline-popup-styling)). The
+border uses `ui.notification.border` (else `ui.popup.border`), or the gradient when
 `border.gradient` or `[editor.gradient-borders]` is enabled. The border cells follow the same
 rule as the other popups (see `border-style`, or `border.style` when it names one): with
 `"none"`, `"plain"` and `"quadrant-outside"` (and without a border) they take the

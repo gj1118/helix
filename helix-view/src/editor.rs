@@ -1033,6 +1033,11 @@ pub struct NotificationConfig {
     pub padding: u16,
     /// Show notification emojis. Defaults to true.
     pub show_emojis: bool,
+    /// A header above the message: the icon and the severity ("Warning"), the time on the
+    /// right, and a line under them. Defaults to true.
+    pub header: bool,
+    /// The time in the header. Defaults to true.
+    pub show_time: bool,
     /// Notification emojis for different severity levels.
     pub emojis: NotificationEmojis,
     /// Enable notification history command. Defaults to true.
@@ -1057,6 +1062,8 @@ impl Default for NotificationConfig {
             icons: NotificationIcons::default(),
             padding: 1,
             show_emojis: true,
+            header: true,
+            show_time: true,
             emojis: NotificationEmojis::default(),
             enable_history: true,
             border: NotificationBorderConfig::default(),
@@ -2629,10 +2636,18 @@ pub struct Notification {
     pub message: Cow<'static, str>,
     pub severity: Severity,
     pub timestamp: Instant,
+    /// The local time of `timestamp`, `HH:MM:SS`, shown in the notification's header.
+    pub clock: String,
     pub timeout: Option<Duration>,
     pub dismissed: bool,
     /// Optional corner radius override for this notification
     pub corner_radius: Option<u8>,
+}
+
+/// The local time now, `HH:MM:SS`.
+fn clock_now() -> String {
+    let now = crate::snippets::variables::DateTime::now();
+    format!("{:02}:{:02}:{:02}", now.hour, now.minute, now.second)
 }
 
 impl Notification {
@@ -2642,6 +2657,7 @@ impl Notification {
             message: message.into(),
             severity,
             timestamp: Instant::now(),
+            clock: clock_now(),
             timeout: None,
             dismissed: false,
             corner_radius: None,
@@ -2701,6 +2717,7 @@ impl NotificationManager {
                 && !n.is_expired()
         }) {
             existing.timestamp = Instant::now();
+            existing.clock = clock_now();
             return existing.id;
         }
 

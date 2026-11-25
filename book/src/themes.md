@@ -484,18 +484,45 @@ When using noice-style notifications (`editor.notifications.style = "popup"`) or
 | --- | ----------- |
 | `ui.popup` | Background color for notification and cmdline popups |
 | `ui.popup.border` | Border color for popups |
-| `error` | Text color for error notifications |
-| `warning` | Text color for warning notifications |
-| `info` | Text color for info notifications |
-| `hint` | Text color for hint notifications |
+| `error`, `warning`, `info`, `hint` | The header of a notification of that severity (its icon, its title, the time and the line under them); without a header, its text |
 | `ui.text.focus` | Command icon styling in cmdline popup |
 
-If your theme has poor contrast for notifications, you can override these values:
+A notification has a header: the icon and the severity (`⚠ Warning`) on the left, the time
+on the right, a line under them, and the message below. Each part has a scope of its own,
+and falls back to the ones above. The scopes with `<severity>` (`error`, `warning`, `info`
+or `hint`) are for the notifications of that severity, and the same scope without it for
+all of them:
+
+| Key | Description | Falls back to |
+| --- | ----------- | ------------- |
+| `ui.notification` | The background of a notification | `ui.popup` |
+| `ui.notification.text` | The message | the text color of `ui.popup`, or the severity's scope without a header |
+| `ui.notification.<severity>` | The icon and the title in the header | the severity's scope (`warning`) |
+| `ui.notification.time`, `ui.notification.time.<severity>` | The time in the header | the title's |
+| `ui.notification.separator`, `ui.notification.separator.<severity>` | The line under the header | the title's |
+| `ui.notification.border`, `ui.notification.border.<severity>` | The border (not a gradient one) | `ui.popup.border` |
+
+For example, a dark card with the header in the severity's color, a dimmer line, the time in
+gray, and an error with a red border:
 
 ```toml
 # In ~/.config/helix/themes/my-theme.toml
 inherits = "your-base-theme"
 
+"ui.notification" = { bg = "#0b0b0b" }
+"ui.notification.text" = { fg = "#cdd6f4" }
+"ui.notification.warning" = { fg = "#e0b060" }
+"ui.notification.error" = { fg = "#f38ba8", modifiers = ["bold"] }
+"ui.notification.info" = { fg = "#89b4fa" }
+"ui.notification.time" = { fg = "#7f849c" }
+"ui.notification.separator.warning" = { fg = "#7a6030" }
+"ui.notification.border" = { fg = "#313244" }
+"ui.notification.border.error" = { fg = "#f38ba8" }
+```
+
+If your theme has poor contrast for notifications, the base scopes do for all popups:
+
+```toml
 "ui.popup" = { bg = "#1a1a1a", fg = "#ffffff" }
 "ui.popup.border" = { fg = "#888888" }
 "error" = { fg = "#ff5555" }
