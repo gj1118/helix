@@ -19,6 +19,7 @@ pub fn default() -> HashMap<Mode, KeyTrie> {
         "R" => replace_with_yanked,
         "A-r" => replace_selections_with_text,
         "A-." =>  repeat_last_motion,
+        "." => repeat_last_insert,
 
         "~" => switch_to_alternate_case,
         "`" => { "Case"

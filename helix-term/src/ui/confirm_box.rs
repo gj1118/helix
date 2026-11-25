@@ -135,9 +135,19 @@ fn contains(rect: Rect, column: u16, row: u16) -> bool {
 }
 
 impl Component for ConfirmBox {
-    fn handle_event(&mut self, event: &Event, _cx: &mut Context) -> EventResult {
+    fn handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
         match event {
-            Event::Key(key) => self.on_key(*key),
+            // (the user's `[keys.confirm]`: a key bound to an action is that action's key)
+            Event::Key(key) => {
+                match super::component_key(
+                    cx.editor,
+                    helix_view::component_keys::Component::Confirm,
+                    *key,
+                ) {
+                    Some(key) => self.on_key(key),
+                    None => EventResult::Consumed(None),
+                }
+            }
             Event::Mouse(mouse) => {
                 if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
                     if contains(self.confirm_button, mouse.column, mouse.row) {

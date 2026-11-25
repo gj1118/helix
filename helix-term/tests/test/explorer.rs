@@ -1556,6 +1556,61 @@ fn remapped(tree: &[(&str, &str)], filter: &[(&str, &str)]) -> Config {
     config
 }
 
+/// The keys of a confirmation box (here before the tree deletes a file) are actions of
+/// `[keys.confirm]`: another key can be given each, and a key taken away.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_keys_of_a_confirmation_can_be_bound() -> anyhow::Result<()> {
+    use helix_view::component_keys::Component;
+    let (_dir, root) = repo()?;
+    let doomed = root.join("new.txt");
+    let mut config = config("");
+    let table: std::collections::HashMap<String, String> =
+        [("o", "confirm"), ("y", "no_op"), ("c", "cancel")]
+            .into_iter()
+            .map(|(key, action)| (key.to_string(), action.to_string()))
+            .collect();
+    config
+        .editor
+        .component_keys
+        .extend(Component::Confirm, &table)
+        .unwrap();
+    let mut app = helpers::AppBuilder::new()
+        .with_file(&doomed, None)
+        .with_config(config)
+        .build()?;
+    open_explorer(&mut app, &root);
+    let asked = |app: &Application| {
+        app.rendered_rows()
+            .iter()
+            .any(|row| row.contains("Delete "))
+    };
+
+    // on the buffer's file: `d` asks
+    send_keys(&mut app, ".d").await?;
+    assert!(asked(&app), "{:#?}", app.rendered_rows());
+    // `c` cancels
+    send_keys(&mut app, "c").await?;
+    assert!(
+        !asked(&app) && doomed.exists(),
+        "{:#?}",
+        app.rendered_rows()
+    );
+    // `y` no longer confirms, `o` does
+    send_keys(&mut app, "dy").await?;
+    assert!(asked(&app) && doomed.exists(), "{:#?}", app.rendered_rows());
+    send_keys(&mut app, "o").await?;
+    for _ in 0..100 {
+        if !doomed.exists() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        send_keys(&mut app, "").await?;
+    }
+    assert!(!doomed.exists(), "{:#?}", app.rendered_rows());
+    assert!(root.join("a.txt").exists());
+    Ok(())
+}
+
 /// `[keys.explorer]` moves the tree's own keys: a key bound to an action does it, `no_op` takes
 /// a key away (it reaches neither the tree nor the buffer), and the hints show the new keys.
 #[tokio::test(flavor = "multi_thread")]

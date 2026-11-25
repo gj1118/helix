@@ -109,6 +109,13 @@ first result, or `Esc` to move through the results first.
 | `q`, `Ctrl-c` | Close the panel |
 | `:` | The command line |
 
+Every one of these keys can be given to another key or taken away: the keys of the list are
+the actions of `[keys.quickfix]` (and `[keys.quickfix-window]` for the key after `Ctrl-w`),
+the others those of `[keys.picker]`, see
+[Key remapping](./remapping.md#keys-of-pickers-menus-popups-and-prompts). A key of your normal
+keymap that the panel should leave to it (your key for the command line, say) is bound to
+`editor_key` there.
+
 `Space Q` (`quickfix`, `:quickfix`) shows the panel with the focus (the last list it showed,
 or the quicklist) and hides it when it is open, like `Space x` for the explorer; each only
 toggles its own panel. `]q` / `[q` visit the next and previous entry of the panel from the

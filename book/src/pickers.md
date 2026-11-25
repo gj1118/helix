@@ -30,6 +30,9 @@ shown:
 | `Ctrl-Enter`, `Alt-a` | Replace the matches of every result that matches the picker's filters |
 | `Alt-r` | Move the focus between the query and the replacement |
 
+`Alt-r` and `Alt-a` are the picker's `toggle_replace` and `replace_all` actions: `[keys.picker]`
+gives them other keys (see [Key remapping](./remapping.md#keys-of-pickers-menus-popups-and-prompts)).
+
 Regex captures expand in the replacement (`$1`, `${name}`) and `$$` is a literal `$`. Open
 buffers are edited in place, unsaved changes included, as one undo step per buffer; other
 files are rewritten on disk in the background; files that aren't UTF-8 are rewritten byte for

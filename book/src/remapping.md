@@ -73,11 +73,15 @@ t = ":run-shell-command cargo test"
 ## Keys of pickers, menus, popups and prompts
 
 The pickers (`Space f`, `Space /`, ...), the completion menu, popups (hover, signature help, ...),
-the prompts (the `:` command line, the search prompt, ...) and the
-[explorer](./editor.md#editorexplorer-section) handle their keys themselves.
-Their keys are configured in the tables `[keys.picker]`, `[keys.menu]`, `[keys.popup]`,
-`[keys.prompt]`, `[keys.explorer]` (the tree) and `[keys.explorer-filter]` (the explorer's filter
-box, while you type in it). A table maps a key to the name of an *action* of that component:
+the prompts (the `:` command line, the search prompt, ...), the
+[explorer](./editor.md#editorexplorer-section), the [quickfix panel](./quicklist.md#quickfix-panel)
+and a few more parts of the interface handle their keys themselves.
+Their keys are configured in tables of their own: `[keys.picker]`, `[keys.menu]`, `[keys.popup]`,
+`[keys.prompt]`, `[keys.explorer]` (the tree), `[keys.explorer-filter]` (the explorer's filter
+box, while you type in it), `[keys.quickfix]`, and the others listed below. Every key such a
+part handles is the key of an action in its table (or does what one does, like `Tab` beside
+`Down` in a picker), so every one of them can be given to another key or taken away. A table
+maps a key to the name of an *action* of that component:
 
 ```toml
 [keys.picker]
@@ -99,6 +103,17 @@ C-f = "filter"
 [keys.explorer-filter]
 C-j = "next_result"
 C-k = "prev_result"
+
+[keys.quickfix]
+n = "move_down"
+e = "move_up"
+";" = "editor_key"      # `;` is your key for the command line: it goes to the normal keymap
+
+[keys.changed-files]
+C-a = "stage"
+
+[keys.confirm]
+o = "confirm"
 ```
 
 The keys of the default bindings stay bound unless you bind them to another action or to
@@ -111,14 +126,30 @@ the prompt at the top of a picker, but not to the picker's own keys.
 
 | Component | Action (default key) |
 | --------- | -------------------- |
-| `picker`  | `move_up` (`Up`), `move_down` (`Down`), `half_page_up` (`C-u`), `half_page_down` (`C-d`), `page_up` (`PageUp`), `page_down` (`PageDown`), `to_start` (`Home`), `to_end` (`End`), `select` (`Enter`), `select_in_background` (`A-Enter`), `select_horizontal` (`C-s`), `select_vertical` (`C-v`), `toggle_preview` (`C-t`), `copy_to_quicklist` (`C-q`), `copy_to_location_list` (`A-q`), `scroll_preview_up` (`A-k`), `scroll_preview_down` (`A-j`), `close` (`Esc`) |
+| `picker`  | `move_up` (`Up`), `move_down` (`Down`), `half_page_up` (`C-u`), `half_page_down` (`C-d`), `page_up` (`PageUp`), `page_down` (`PageDown`), `to_start` (`Home`), `to_end` (`End`), `select` (`Enter`), `select_in_background` (`A-Enter`), `select_horizontal` (`C-s`), `select_vertical` (`C-v`), `toggle_preview` (`C-t`), `copy_to_quicklist` (`C-q`), `copy_to_location_list` (`A-q`), `scroll_preview_up` (`A-k`), `scroll_preview_down` (`A-j`), `toggle_replace` (`A-r`, in global search), `replace_all` (`A-a`, also `C-Enter`), `close` (`Esc`) |
 | `menu`    | `move_up` (`Up`), `move_down` (`Down`), `half_page_up` (`C-u`), `half_page_down` (`C-d`), `select` (`Enter`), `abort` (`Esc`) |
-| `popup`   | `scroll_half_page_up` (`PageUp`), `scroll_half_page_down` (`PageDown`), `close` (`Esc`) |
+| `popup`   | `scroll_half_page_up` (`PageUp`), `scroll_half_page_down` (`PageDown`), `previous` (`A-p`) and `next` (`A-n`): the previous / next signature of signature help, or hover of another language server, `close` (`Esc`) |
 | `explorer` | `open` (`l`, also `Right` and `Enter`), `open_vsplit` (`v`), `open_hsplit` (`s`), `collapse` (`h`, also `Left`), `parent_folder` (`-`), `first_row` (`Home`), `last_row` (`End`, also `G`), `reveal_buffer` (`.`), `filter` (`/`), `refresh` (`R`), `toggle_hidden` (`H`), `create` (`a`), `create_folder` (`A`), `rename` (`r`), `delete` (`d`), `cut` (`x`), `copy` (`c`), `paste` (`p`), `toggle_mark` (`m`), `mark_range` (`M`), `unmark_all` (`u`), `close` (`q`), `leave` (`Esc`) |
 | `explorer-filter` | `accept` (`Enter`), `next_result` (`Down`), `prev_result` (`Up`), `browse_results` (`Tab`), `clear` (`Esc`), `move_char_back` (`Left`), `move_char_forward` (`Right`), `move_start` (`Home`), `move_end` (`End`), `delete_char_back` (`Backspace`), `delete_char_forward` (`Delete`), `delete_word_back` (`C-w`), `kill_to_start` (`C-u`) |
 | `prompt`  | `abort` (`Esc`), `submit` (`Enter`), `move_char_back` (`Left`), `move_char_forward` (`Right`), `move_word_back` (`A-b`), `move_word_forward` (`A-f`), `move_start` (`Home`), `move_end` (`End`), `delete_char_back` (`Backspace`), `delete_char_forward` (`Delete`), `delete_word_back` (`C-w`), `delete_word_forward` (`A-d`), `kill_to_start` (`C-u`), `kill_to_end` (`C-k`), `history_prev` (`Up`), `history_next` (`Down`), `complete_next` (`Tab`), `complete_prev` (`S-Tab`), `insert_word_under_cursor` (`C-s`), `insert_register` (`C-r`), `exit_selection` (`C-q`) |
 
-In all of them, `no_op` is also an action.
+| `quickfix` | The list of the [quickfix panel](./quicklist.md#quickfix-panel): `move_down` (`j`), `move_up` (`k`), `to_start` (`g`, also `Home`), `to_end` (`G`, also `End`), `open_and_stay` (`o`), `filter` (`/`), `window` (`C-w`, then a key of `quickfix-window`), `editor_key` (`:`, also `Space`, `C-h` and `C-l`: the key goes to the normal keymap as it is), `leave` (`Esc`), `close` (`q`). The other keys of the list, and all of them while its query is typed, are the picker's and the prompt's |
+| `quickfix-window` | The key after the quickfix panel's `window` key: `up` (`k`: to the code), `left` (`h`) and `right` (`l`): to the explorer pinned on that side |
+| `confirm` | A confirmation box: `confirm` (`y`), `cancel` (`n`, also `q` and `Esc`), `accept` (`Enter`: the button that has the focus), `switch` (`Tab`, also `Left`, `Right`, `h` and `l`: the other button) |
+| `blame` | The blame details popup: `copy_commit` (`y`), `copy_message` (`Y`) |
+| `plugin-window` | A [floating window of a plugin](./plugins.md): `move_down` (`j`), `move_up` (`k`), `half_page_down` (`C-d`), `half_page_up` (`C-u`), `page_down` (`PageDown`), `page_up` (`PageUp`), `to_start` (`g`, also `Home`), `to_end` (`G`, also `End`), `close` (`q`, also `Esc`). The keys the plugin binds come first |
+| `file-explorer` | The file explorer picker (`Space e`, `Space .`): `create` (`A-n`), `move` (`A-m`), `delete` (`A-d`), `copy` (`A-c`), `yank_path` (`A-y`) |
+| `changed-files` | The changed files picker (`Space g`): `stage` (`A-s`), `unstage` (`A-u`), `stash` (`A-z`), `stashes` (`A-l`), `commit` (`A-c`) |
+| `stashes` | The stash picker: `apply` (`A-s`), `apply_with_index` (`A-i`) |
+| `git-history` | The commits of a file or of the repository, and a commit's files: `yank_commit` (`A-y`), `open_version` (`A-o`), `back_to_commits` (`A-h`) |
+| `quicklist` | The quicklist and location list pickers: `remove` (`C-x`) |
+
+In all of them, `no_op` is also an action. The table of a picker's own keys comes before
+`[keys.picker]`, and `[keys.quickfix]` before it for the keys of the panel's list.
+
+In the normal keymap itself, `.` (repeat the last insert) is the command `repeat_last_insert`:
+bind it to another key, or `.` to something else, like any command. The keys of the
+[diff views](./diff.md#keys) are in `[editor.diff.keys]`.
 
 Moving up and down the explorer's tree (`j`/`k`, `gg`, `C-d`, ...) is not in `[keys.explorer]`:
 it uses your `[keys.normal]` keymap, so remapping those motions there moves the tree too. Keys

@@ -84,7 +84,7 @@ Normal mode is the default mode when you launch helix. You can return to it from
 | `A`         | Insert at the end of the line                                        | `insert_at_line_end`      |
 | `o`         | Open new line below selection                                        | `open_below`              |
 | `O`         | Open new line above selection                                        | `open_above`              |
-| `.`         | Repeat last insert                                                   | N/A                       |
+| `.`         | Repeat last insert                                                   | `repeat_last_insert`      |
 | `u`         | Undo change                                                          | `undo`                    |
 | `U`         | Redo change                                                          | `redo`                    |
 | `Alt-u`     | Move backward in history                                             | `earlier`                 |
@@ -444,6 +444,7 @@ Displays documentation for item under cursor. Remap its keys in `[keys.popup]` (
 | ----     | ----------- |
 | `Ctrl-u` | Scroll up   |
 | `Ctrl-d` | Scroll down |
+| `Alt-p`, `Alt-n` | The hover of the previous / next language server, when several answered |
 
 ##### Completion Menu
 
@@ -460,7 +461,8 @@ Any other keypresses result in the completion being accepted.
 
 ##### Signature-help Popup
 
-Displays the signature of the selected completion item. Remapping currently not supported.
+Displays the signature of the selected completion item. Remap its keys in `[keys.popup]`
+(the `previous` and `next` actions, see [Remapping](./remapping.md#keys-of-pickers-menus-popups-and-prompts)).
 
 | Key     | Description        |
 | ----    | -----------        |
@@ -644,7 +646,13 @@ See the documentation page on [pickers](./pickers.md) for more info.
 | `PageDown`                   | Scroll the preview down a page (page down the list when no preview is shown) |
 | `Alt-k`, `Shift-Up`          | Scroll the preview up a line                              |
 | `Alt-j`, `Shift-Down`        | Scroll the preview down a line                            |
+| `Alt-r`                      | In global search: show the replacement, or move between it and the query (see [Replacing from global search](./pickers.md#replacing-from-global-search)) |
+| `Alt-a`, `Ctrl-Enter`        | In global search: replace every result                     |
 | `Escape`, `Ctrl-c`           | Close picker                                               |
+
+The keys a picker has of its own (the changed files' `Alt-s`, the file explorer's `Alt-n`, ...)
+have tables of their own: `[keys.changed-files]`, `[keys.stashes]`, `[keys.git-history]`,
+`[keys.file-explorer]` and `[keys.quicklist]`.
 
 ### Changed Files
 

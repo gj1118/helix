@@ -1222,6 +1222,17 @@ pub mod completers {
     }
 }
 
+/// A typed uppercase letter arrives with SHIFT from some terminals (`G` as `Char('G')` +
+/// SHIFT) and without from others: without it here, as in the editor's keymap, so that `G`
+/// is `G` to a component and to its table.
+pub(crate) fn canonical_key(mut key: helix_view::input::KeyEvent) -> helix_view::input::KeyEvent {
+    if let helix_view::keyboard::KeyCode::Char(_) = key.code {
+        key.modifiers
+            .remove(helix_view::keyboard::KeyModifiers::SHIFT);
+    }
+    key
+}
+
 /// Applies the user's `[keys.<component>]` table to a key: the key the component handles, or
 /// `None` when the key was bound to `no_op`.
 pub(crate) fn component_key(
@@ -1230,6 +1241,7 @@ pub(crate) fn component_key(
     key: helix_view::input::KeyEvent,
 ) -> Option<helix_view::input::KeyEvent> {
     use helix_view::component_keys::Translated;
+    let key = canonical_key(key);
     match editor.config().component_keys.translate(component, key) {
         Translated::Unchanged => Some(key),
         Translated::Key(key) => Some(key),

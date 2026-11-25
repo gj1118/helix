@@ -444,6 +444,7 @@ impl MappableCommand {
         extend_till_prev_char, "Extend till previous occurrence of char",
         extend_prev_char, "Extend to previous occurrence of char",
         repeat_last_motion, "Repeat last motion",
+        repeat_last_insert, "Repeat last insert",
         replace, "Replace with new char",
         switch_to_alternate_case, "Switch to aLTERNATE cASE",
         switch_to_uppercase, "Switch to UPPERCASE",
@@ -2183,6 +2184,42 @@ fn extend_prev_char(cx: &mut Context) {
 
 fn repeat_last_motion(cx: &mut Context) {
     cx.editor.repeat_last_motion(cx.count())
+}
+
+/// The name of [`repeat_last_insert`], which the editor view runs itself for a key.
+pub const REPEAT_LAST_INSERT: &str = "repeat_last_insert";
+
+/// `.`: the command that entered insert mode last, and what was typed there, again. From a
+/// key the editor view replays it at once; from elsewhere (the command palette) it does once
+/// the command returned, and what a key's handling does after its command is done here.
+fn repeat_last_insert(cx: &mut Context) {
+    let count = cx.count();
+    cx.callback.push(Box::new(move |compositor, cx| {
+        let Some(view) = compositor.find::<ui::EditorView>() else {
+            return;
+        };
+        let mut cxt = Context {
+            editor: cx.editor,
+            count: None,
+            register: None,
+            callback: Vec::new(),
+            on_next_key_callback: None,
+            jobs: cx.jobs,
+            plugin_manager: cx.plugin_manager.clone(),
+        };
+        view.repeat_last_insert(&mut cxt, count);
+        let callbacks = std::mem::take(&mut cxt.callback);
+        let config = cxt.editor.config();
+        let mode = cxt.editor.mode();
+        let (view, doc) = current!(cxt.editor);
+        view.ensure_cursor_in_view(doc, config.scrolloff);
+        if mode != Mode::Insert {
+            doc.append_changes_to_history(view);
+        }
+        for callback in callbacks {
+            callback(compositor, cx);
+        }
+    }));
 }
 
 fn replace(cx: &mut Context) {

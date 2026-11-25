@@ -493,13 +493,15 @@ fn static_permissions(name: &str) -> &'static [Permission] {
         "tab_new" | "tab_close" | "tab_next" | "tab_previous" => &[Windows],
         // the saved selections may be in another buffer, shown in the window
         "restore_selections" | "add_saved_selections" => &[Edit, Windows],
-        // running programs or debuggees; replaying a macro (any keys)
+        // running programs or debuggees; replaying a macro, or the keys of the last insert
+        // (any keys)
         "shell_pipe"
         | "shell_pipe_to"
         | "shell_insert_output"
         | "shell_append_output"
         | "shell_keep_pipe"
         | "replay_macro"
+        | "repeat_last_insert"
         | "code_lens" => &[Shell],
         name if name.starts_with("dap_") => &[Shell],
         // edits other files, may create, rename or delete them
@@ -868,7 +870,7 @@ mod tests {
     fn static_commands_are_classified() {
         let count = crate::commands::MappableCommand::STATIC_COMMAND_LIST.len();
         assert_eq!(
-            count, 428,
+            count, 429,
             "commands were added or removed: check `static_permissions` for them"
         );
         use helix_plugin::types::EditorCommandRegistry;
@@ -877,6 +879,7 @@ mod tests {
         let needs = |name: &str| registry.static_permissions(name);
         assert_eq!(needs("move_line_down"), Some(vec![Edit]));
         assert_eq!(needs("shell_pipe"), Some(vec![Shell]));
+        assert_eq!(needs("repeat_last_insert"), Some(vec![Shell]));
         assert_eq!(needs("dap_launch"), Some(vec![Shell]));
         assert_eq!(needs("vsplit"), Some(vec![Windows]));
         assert_eq!(needs("file_picker"), Some(vec![Ui]));

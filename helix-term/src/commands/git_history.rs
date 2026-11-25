@@ -344,7 +344,9 @@ fn commit_picker(
             ),
         );
     }
-    picker.with_key_handlers(handlers).with_title(title)
+    picker
+        .with_key_handlers(helix_view::component_keys::Component::GitHistory, handlers)
+        .with_title(title)
 }
 
 /// The files `commit` changed; Enter shows one file's diff.
@@ -433,7 +435,7 @@ fn files_picker(
         }
     };
     Picker::new(columns, 1, files, FilesData { root, commit }, callback)
-        .with_key_handlers(handlers)
+        .with_key_handlers(helix_view::component_keys::Component::GitHistory, handlers)
         .with_title("Commit Files")
 }
 

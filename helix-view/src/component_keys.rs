@@ -1,10 +1,12 @@
-//! Key bindings of the editor's UI components (pickers, menus, popups, prompts and the explorer).
+//! Key bindings of the editor's UI components (pickers, menus, popups, prompts, the explorer,
+//! the quickfix panel, ...).
 //!
 //! The keys of the editor itself are a [`KeyTrie`](../../helix_term/keymap/enum.KeyTrie.html)
 //! per mode. The components handle their keys themselves, so their bindings are not commands but
-//! *actions*: a table in `[keys.picker]` (and `menu`, `popup`, `prompt`, `explorer`,
-//! `explorer-filter`) maps a key to the name of an action of that component, for example
-//! `"C-j" = "move_down"`.
+//! *actions*: a table in `[keys.picker]` (and `menu`, `popup`, `prompt`, `explorer`, ... see
+//! [`Component::ALL`]) maps a key to the name of an action of that component, for example
+//! `"C-j" = "move_down"`. Every key a component handles is the default key of an action (or
+//! does what one does, like `Tab` beside `Down`), so that all of them can be bound elsewhere.
 //!
 //! An action stands for the key the component has always handled it with. A pressed key that has
 //! an entry in the user's table is replaced by that key before the component looks at it, so a
@@ -27,19 +29,50 @@ pub enum Component {
     Explorer,
     /// The explorer's filter box, while it has the keyboard.
     ExplorerFilter,
+    /// The list of the quickfix panel (while its query is typed, the keys are the picker's
+    /// and the prompt's).
+    Quickfix,
+    /// The key after the quickfix panel's `window` key.
+    QuickfixWindow,
+    /// A confirmation box (yes / no).
+    Confirm,
+    /// The blame details popup.
+    Blame,
+    /// A floating window of a plugin.
+    PluginWindow,
+    /// The file explorer picker's own actions.
+    FileExplorer,
+    /// The changed files picker's own actions.
+    ChangedFiles,
+    /// The stash picker's own actions.
+    Stashes,
+    /// The own actions of the git history pickers (the commits, and a commit's files).
+    GitHistory,
+    /// The quicklist and location list pickers' own actions.
+    Quicklist,
 }
 
 /// The name of the action that does nothing, to take a key away from a component.
 pub const NO_OP: &str = "no_op";
 
 impl Component {
-    pub const ALL: [Component; 6] = [
+    pub const ALL: [Component; 16] = [
         Component::Picker,
         Component::Menu,
         Component::Popup,
         Component::Prompt,
         Component::Explorer,
         Component::ExplorerFilter,
+        Component::Quickfix,
+        Component::QuickfixWindow,
+        Component::Confirm,
+        Component::Blame,
+        Component::PluginWindow,
+        Component::FileExplorer,
+        Component::ChangedFiles,
+        Component::Stashes,
+        Component::GitHistory,
+        Component::Quicklist,
     ];
 
     /// The name of the table in the `[keys]` section.
@@ -51,6 +84,16 @@ impl Component {
             Component::Prompt => "prompt",
             Component::Explorer => "explorer",
             Component::ExplorerFilter => "explorer-filter",
+            Component::Quickfix => "quickfix",
+            Component::QuickfixWindow => "quickfix-window",
+            Component::Confirm => "confirm",
+            Component::Blame => "blame",
+            Component::PluginWindow => "plugin-window",
+            Component::FileExplorer => "file-explorer",
+            Component::ChangedFiles => "changed-files",
+            Component::Stashes => "stashes",
+            Component::GitHistory => "git-history",
+            Component::Quicklist => "quicklist",
         }
     }
 
@@ -79,6 +122,8 @@ impl Component {
                 ("copy_to_location_list", "A-q"),
                 ("scroll_preview_up", "A-k"),
                 ("scroll_preview_down", "A-j"),
+                ("toggle_replace", "A-r"),
+                ("replace_all", "A-a"),
                 ("close", "esc"),
             ],
             Component::Menu => &[
@@ -92,6 +137,8 @@ impl Component {
             Component::Popup => &[
                 ("scroll_half_page_up", "pageup"),
                 ("scroll_half_page_down", "pagedown"),
+                ("previous", "A-p"),
+                ("next", "A-n"),
                 ("close", "esc"),
             ],
             Component::Prompt => &[
@@ -157,6 +204,58 @@ impl Component {
                 ("delete_word_back", "C-w"),
                 ("kill_to_start", "C-u"),
             ],
+            Component::Quickfix => &[
+                ("move_down", "j"),
+                ("move_up", "k"),
+                ("to_start", "g"),
+                ("to_end", "G"),
+                ("open_and_stay", "o"),
+                ("filter", "/"),
+                ("window", "C-w"),
+                ("editor_key", ":"),
+                ("leave", "esc"),
+                ("close", "q"),
+            ],
+            Component::QuickfixWindow => &[("up", "k"), ("left", "h"), ("right", "l")],
+            Component::Confirm => &[
+                ("confirm", "y"),
+                ("cancel", "n"),
+                ("accept", "ret"),
+                ("switch", "tab"),
+            ],
+            Component::Blame => &[("copy_commit", "y"), ("copy_message", "Y")],
+            Component::PluginWindow => &[
+                ("move_down", "j"),
+                ("move_up", "k"),
+                ("half_page_down", "C-d"),
+                ("half_page_up", "C-u"),
+                ("page_down", "pagedown"),
+                ("page_up", "pageup"),
+                ("to_start", "g"),
+                ("to_end", "G"),
+                ("close", "q"),
+            ],
+            Component::FileExplorer => &[
+                ("create", "A-n"),
+                ("move", "A-m"),
+                ("delete", "A-d"),
+                ("copy", "A-c"),
+                ("yank_path", "A-y"),
+            ],
+            Component::ChangedFiles => &[
+                ("stage", "A-s"),
+                ("unstage", "A-u"),
+                ("stash", "A-z"),
+                ("stashes", "A-l"),
+                ("commit", "A-c"),
+            ],
+            Component::Stashes => &[("apply", "A-s"), ("apply_with_index", "A-i")],
+            Component::GitHistory => &[
+                ("yank_commit", "A-y"),
+                ("open_version", "A-o"),
+                ("back_to_commits", "A-h"),
+            ],
+            Component::Quicklist => &[("remove", "C-x")],
         }
     }
 }
@@ -277,6 +376,81 @@ mod tests {
 
     fn key(s: &str) -> KeyEvent {
         s.parse().unwrap()
+    }
+
+    #[test]
+    fn the_name_of_every_component_reads_back() {
+        let mut names = std::collections::HashSet::new();
+        for component in Component::ALL {
+            assert_eq!(Component::from_name(component.name()), Some(component));
+            assert!(names.insert(component.name()), "{}", component.name());
+            assert!(!component.actions().is_empty(), "{}", component.name());
+        }
+        assert_eq!(Component::from_name("pickers"), None);
+    }
+
+    /// An action stands for its default key: two actions of a component with one key
+    /// would be one action.
+    #[test]
+    fn no_two_actions_of_a_component_share_a_key_or_a_name() {
+        for component in Component::ALL {
+            let mut keys = std::collections::HashSet::new();
+            let mut names = std::collections::HashSet::new();
+            for (name, default) in component.actions() {
+                assert!(keys.insert(key(default)), "{}: {default}", component.name());
+                assert!(names.insert(name), "{}: {name}", component.name());
+                assert_ne!(*name, NO_OP);
+            }
+        }
+    }
+
+    /// The keys the components handled with nothing to bind them by, once.
+    #[test]
+    fn the_keys_of_every_component_have_an_action() {
+        let default = |component: Component, action: &str| {
+            ComponentKeys::default()
+                .key_for(component, action)
+                .unwrap_or_else(|| panic!("{}: no action {action}", component.name()))
+        };
+        assert_eq!(default(Component::Picker, "toggle_replace"), key("A-r"));
+        assert_eq!(default(Component::Picker, "replace_all"), key("A-a"));
+        assert_eq!(default(Component::Popup, "previous"), key("A-p"));
+        assert_eq!(default(Component::Popup, "next"), key("A-n"));
+        assert_eq!(default(Component::Quickfix, "open_and_stay"), key("o"));
+        assert_eq!(default(Component::Quickfix, "window"), key("C-w"));
+        assert_eq!(default(Component::Quickfix, "editor_key"), key(":"));
+        assert_eq!(default(Component::QuickfixWindow, "up"), key("k"));
+        assert_eq!(default(Component::Confirm, "confirm"), key("y"));
+        assert_eq!(default(Component::Blame, "copy_message"), key("Y"));
+        assert_eq!(default(Component::PluginWindow, "close"), key("q"));
+        assert_eq!(default(Component::FileExplorer, "delete"), key("A-d"));
+        assert_eq!(default(Component::ChangedFiles, "stage"), key("A-s"));
+        assert_eq!(default(Component::Stashes, "apply_with_index"), key("A-i"));
+        assert_eq!(default(Component::GitHistory, "open_version"), key("A-o"));
+        assert_eq!(default(Component::Quicklist, "remove"), key("C-x"));
+
+        // the same key is another action in another table
+        let mut keys = ComponentKeys::default();
+        keys.extend(Component::ChangedFiles, &table(&[("C-a", "stage")]))
+            .unwrap();
+        keys.extend(Component::Stashes, &table(&[("C-a", "apply_with_index")]))
+            .unwrap();
+        assert_eq!(
+            keys.translate(Component::ChangedFiles, key("C-a")),
+            Translated::Key(key("A-s"))
+        );
+        assert_eq!(
+            keys.translate(Component::Stashes, key("C-a")),
+            Translated::Key(key("A-i"))
+        );
+        assert_eq!(
+            keys.translate(Component::Picker, key("C-a")),
+            Translated::Unchanged
+        );
+        assert_eq!(
+            keys.key_for(Component::ChangedFiles, "stage"),
+            Some(key("C-a"))
+        );
     }
 
     #[test]

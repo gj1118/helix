@@ -494,7 +494,7 @@ pub fn picker_of(editor: &Editor, list: List) -> Option<Picker<QuickItem, ()>> {
         };
         Some((location, Some((item.line, item.line))))
     })
-    .with_key_handlers(handlers)
+    .with_key_handlers(helix_view::component_keys::Component::Quicklist, handlers)
     .with_live_refresh(
         move |editor| list.get(editor).map_or(0, Quicklist::version),
         Some(Box::new(move |editor, injector| {

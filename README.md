@@ -235,7 +235,12 @@ tree's own (open, rename, delete, ...) take precedence over the keymap.
 
 Every key of the tree in this table can be changed in `[keys.explorer]`, and the keys of the
 filter box in `[keys.explorer-filter]`; see
-[Key remapping](book/src/remapping.md#keys-of-pickers-menus-popups-and-prompts) for the action names:
+[Key remapping](book/src/remapping.md#keys-of-pickers-menus-popups-and-prompts) for the action names.
+The same goes for every other part of the interface that handles its keys itself: pickers
+(`[keys.picker]`, with the replace keys of global search, and a table for the keys each
+special picker has of its own, such as `[keys.changed-files]`), menus, popups, prompts, the
+quickfix panel (`[keys.quickfix]`), confirmation boxes (`[keys.confirm]`), the blame popup
+and plugins' floating windows. `.` is the command `repeat_last_insert` of the normal keymap.
 
 ```toml
 [keys.explorer]
@@ -614,7 +619,8 @@ preview = true  # preview the selected location over the code while the panel is
 The panel sits under the views, beside a pinned explorer (nothing is covered), and stays
 open while you visit its entries: `j`/`k` move, `Enter` jumps, `]q`/`[q` visit the next and
 previous entry from the code, `/` filters (`Enter` goes to the entry from the query too, as
-in a picker; `Esc` back to the list), and `q` closes it. `<space>Q` / `:quickfix` shows
+in a picker; `Esc` back to the list), and `q` closes it. All of these keys can be rebound:
+the list's in `[keys.quickfix]`, the others in `[keys.picker]`. `<space>Q` / `:quickfix` shows
 it with the focus (the last list it showed, or the quicklist) and hides it, like `<space>x`
 for the explorer; each key only toggles its own panel. `:copen` shows it again, `:cclose`
 closes it. The floating explorer and the pickers that choose one thing (files, buffers,

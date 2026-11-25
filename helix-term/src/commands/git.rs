@@ -761,7 +761,10 @@ pub fn changed_files_picker(
         },
     )
     .with_preview(|_editor, change| Some((change.path.as_path().into(), None)))
-    .with_key_handlers(handlers)
+    .with_key_handlers(
+        helix_view::component_keys::Component::ChangedFiles,
+        handlers,
+    )
     .with_title("Changed Files");
 
     feed_status(editor, cwd.clone(), trusted, picker.injector());
@@ -859,11 +862,19 @@ impl compositor::Component for BlameDetailsView {
         let helix_view::input::Event::Key(key) = event else {
             return EventResult::Ignored(None);
         };
+        // (the user's `[keys.blame]`)
+        let Some(key) = ui::component_key(
+            cx.editor,
+            helix_view::component_keys::Component::Blame,
+            *key,
+        ) else {
+            return EventResult::Consumed(None);
+        };
         // Both keys close the popup once copied.
         let close: compositor::Callback = Box::new(|compositor, _| {
             compositor.remove(BLAME_POPUP_ID);
         });
-        match *key {
+        match key {
             crate::key!('y') => {
                 let commit = self.commit.clone().unwrap_or_default();
                 self.copy(cx.editor, "commit id", commit);
@@ -983,7 +994,7 @@ fn stash_picker(stashes: Vec<Stash>, cwd: PathBuf) -> Picker<Stash, PathBuf> {
         let cwd = helix_stdx::env::current_working_dir();
         apply(cx, stash, cwd, false);
     })
-    .with_key_handlers(handlers)
+    .with_key_handlers(helix_view::component_keys::Component::Stashes, handlers)
     .with_title("Stashes")
 }
 

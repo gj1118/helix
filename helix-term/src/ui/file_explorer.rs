@@ -477,13 +477,16 @@ pub fn file_explorer(
     )
     .with_cursor(cursor.unwrap_or_default())
     .with_preview(|_editor, (path, _is_dir)| Some((path.as_path().into(), None)))
-    .with_key_handlers(hashmap! {
-        alt!('n') => create,
-        alt!('m') => move_,
-        alt!('d') => delete,
-        alt!('c') => copy,
-        alt!('y') => yank_path,
-    })
+    .with_key_handlers(
+        helix_view::component_keys::Component::FileExplorer,
+        hashmap! {
+            alt!('n') => create,
+            alt!('m') => move_,
+            alt!('d') => delete,
+            alt!('c') => copy,
+            alt!('y') => yank_path,
+        },
+    )
     .with_title("File Explorer");
 
     Ok(picker)

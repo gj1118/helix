@@ -351,6 +351,91 @@ async fn enter_goes_to_the_result_of_a_global_search() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The keys of the panel's list are actions of `[keys.quickfix]` (and the key after its
+/// window key of `[keys.quickfix-window]`): another key can be given each, and a key taken
+/// away.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_keys_of_the_list_can_be_bound() -> anyhow::Result<()> {
+    use helix_view::component_keys::Component;
+    let table = |pairs: &[(&str, &str)]| -> std::collections::HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(key, action)| (key.to_string(), action.to_string()))
+            .collect()
+    };
+    let mut config = enabled();
+    let keys = &mut config.editor.component_keys;
+    keys.extend(
+        Component::Quickfix,
+        &table(&[
+            ("n", "move_down"),
+            ("j", "no_op"),
+            ("x", "close"),
+            ("C-e", "window"),
+            ("w", "editor_key"),
+            ("e", "open_and_stay"),
+            ("f", "filter"),
+        ]),
+    )
+    .unwrap();
+    keys.extend(
+        Component::QuickfixWindow,
+        &table(&[("u", "up"), ("k", "no_op")]),
+    )
+    .unwrap();
+    let (mut app, _file) = app_with_quicklist(config).await?;
+    let focused = |app: &Application| app.editor.quickfix_panel.focused;
+
+    // `n` moves down; `j` was taken away
+    send_keys(&mut app, "<space>qn<ret>").await?;
+    assert_eq!(cursor_line(&app), 9, "n moved to the second entry");
+    send_keys(&mut app, "<C-w>jj<ret>").await?;
+    assert_eq!(cursor_line(&app), 9, "j does nothing");
+    // the keys left alone keep working
+    send_keys(&mut app, "<C-w>jk<ret>").await?;
+    assert_eq!(cursor_line(&app), 2);
+
+    // `e` visits and stays in the list
+    send_keys(&mut app, "<C-w>jGe").await?;
+    assert_eq!(cursor_line(&app), 19);
+    assert!(focused(&app));
+
+    // the window key and the key after it
+    send_keys(&mut app, "<C-e>k").await?;
+    assert!(focused(&app), "k after the window key was taken away");
+    send_keys(&mut app, "<C-e>u").await?;
+    assert!(!focused(&app) && app.editor.quickfix_panel.visible);
+    // (the default window key still is one)
+    send_keys(&mut app, "<C-w>j<C-w>u").await?;
+    assert!(!focused(&app));
+
+    // a key given to the editor's keymap does there what it does in the code
+    send_keys(&mut app, "<C-w>j").await?;
+    let before = {
+        let (view, doc) = helix_view::current_ref!(app.editor);
+        doc.selection(view.id).primary()
+    };
+    send_keys(&mut app, "w").await?;
+    let after = {
+        let (view, doc) = helix_view::current_ref!(app.editor);
+        doc.selection(view.id).primary()
+    };
+    assert!(focused(&app));
+    assert_ne!(before, after, "`w` moved in the code");
+
+    // `f` types the query
+    send_keys(&mut app, "f%text row 09").await?;
+    let panel: Vec<String> = app.rendered_rows()[17..29].to_vec();
+    assert!(panel.iter().any(|row| row.contains("1/3")), "{panel:#?}");
+    send_keys(&mut app, "<esc>").await?;
+
+    // `x` closes the panel
+    send_keys(&mut app, "x").await?;
+    assert!(!app.editor.quickfix_panel.visible);
+    send_keys(&mut app, ":q!<ret>").await?;
+    Ok(())
+}
+
 /// The distinct colors of row `y` from column `from` to `to` (exclusive).
 fn colors(app: &Application, y: u16, from: u16, to: u16) -> Vec<helix_view::graphics::Color> {
     let mut colors: Vec<helix_view::graphics::Color> = Vec::new();

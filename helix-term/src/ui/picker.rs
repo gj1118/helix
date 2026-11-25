@@ -399,6 +399,9 @@ pub struct Picker<T: 'static + Send + Sync, D: 'static> {
     /// The action of `Enter` and `Alt-Enter`, see [`Picker::with_default_action`].
     default_action: Action,
     custom_key_handlers: PickerKeyHandlers<T, D>,
+    /// The table of the user's keys for `custom_key_handlers` (`[keys.changed-files]`, ...):
+    /// each handler's key is the default key of an action of this component.
+    custom_keys: Option<helix_view::component_keys::Component>,
 
     pub truncate_start: bool,
     /// Whether the selected item shows all the text of its columns, wrapped (`wrap_selected`).
@@ -572,6 +575,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             preview_cache_order: VecDeque::new(),
             default_action: Action::Replace,
             custom_key_handlers: HashMap::new(),
+            custom_keys: None,
             read_buffer: Vec::with_capacity(1024),
             file_fn: None,
             text_preview: None,
@@ -836,8 +840,23 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         self.refresh_results();
     }
 
-    pub fn with_key_handlers(mut self, handlers: PickerKeyHandlers<T, D>) -> Self {
+    /// Keys of this picker's own, each the default key of an action of `component`, whose
+    /// table (`[keys.<component>]`) gives the action other keys or takes its key away.
+    pub fn with_key_handlers(
+        mut self,
+        component: helix_view::component_keys::Component,
+        handlers: PickerKeyHandlers<T, D>,
+    ) -> Self {
+        debug_assert!(
+            handlers.keys().all(|key| component
+                .actions()
+                .iter()
+                .any(|(_, default)| default.parse::<KeyEvent>().ok() == Some(*key))),
+            "every key of a picker's own is the default key of an action of {}",
+            component.name()
+        );
         self.custom_key_handlers = handlers;
+        self.custom_keys = Some(component);
         self
     }
 
@@ -1063,6 +1082,24 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             EventResult::Consumed(None)
         } else {
             EventResult::Ignored(None)
+        }
+    }
+
+    /// A key the user bound in the table of this picker's own actions: the action runs (or
+    /// nothing does, for `no_op`). `Ignored` for a key that table does not bind.
+    fn custom_bound_key(&mut self, key: KeyEvent, cx: &mut Context) -> EventResult {
+        use helix_view::component_keys::Translated;
+        let Some(component) = self.custom_keys else {
+            return EventResult::Ignored(None);
+        };
+        let translated = cx.editor.config().component_keys.translate(component, key);
+        match translated {
+            Translated::Unchanged => EventResult::Ignored(None),
+            Translated::Disabled => EventResult::Consumed(None),
+            Translated::Key(key) => {
+                self.custom_key_event_handler(&key, cx);
+                EventResult::Consumed(None)
+            }
         }
     }
 
@@ -2120,6 +2157,10 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
             Event::Mouse(_) => return EventResult::Consumed(None),
             _ => return EventResult::Ignored(None),
         };
+        let key_event = super::canonical_key(key_event);
+        if let EventResult::Consumed(_) = self.custom_bound_key(key_event, ctx) {
+            return EventResult::Consumed(None);
+        }
         let Some(key_event) = super::component_key(
             ctx.editor,
             helix_view::component_keys::Component::Picker,
@@ -2563,23 +2604,22 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             Event::Key(key) => *key,
             _ => return EventResult::Ignored(None),
         };
-        let Some(key_event) = super::component_key(
-            cx.editor,
-            helix_view::component_keys::Component::Picker,
-            key_event,
-        ) else {
-            return EventResult::Consumed(None);
-        };
+        use helix_view::component_keys::{Component as Keys, Translated};
+        let key_event = super::canonical_key(key_event);
 
         // Navigating cancels restoring the selection after a refresh.
         if let Some(live) = &mut self.live {
             live.reselect = None;
         }
 
-        // `Ctrl-w` then a window key: up to the code, or left / right to the explorer when it
-        // is pinned on that side.
+        // The `window` key (`Ctrl-w`) then a window key: up to the code, or left / right to
+        // the explorer when it is pinned on that side (`[keys.quickfix-window]`).
         if let Some(docked) = self.docked.as_mut().filter(|docked| docked.window_key) {
             docked.window_key = false;
+            let Some(key_event) = super::component_key(cx.editor, Keys::QuickfixWindow, key_event)
+            else {
+                return EventResult::Consumed(None);
+            };
             if matches!(
                 key_event,
                 key!('k') | key!(Up) | ctrl!('k') | key!('w') | ctrl!('w') | key!('p') | ctrl!('p')
@@ -2590,6 +2630,37 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             }
             return EventResult::Consumed(None);
         }
+
+        // The user's tables. The list has its own (`[keys.quickfix]`), before the pickers';
+        // while the query is typed the keys are the pickers' and the prompt's.
+        let typing = self.docked_typing();
+        if !typing {
+            if let EventResult::Consumed(_) = self.custom_bound_key(key_event, cx) {
+                return EventResult::Consumed(None);
+            }
+        }
+        let list = match typing {
+            true => Translated::Unchanged,
+            false => cx
+                .editor
+                .config()
+                .component_keys
+                .translate(Keys::Quickfix, key_event),
+        };
+        // A key of the list (its own or one bound to an action of the list) is the list's:
+        // `j` is not typed into anything, and is not looked up as a key of the pickers.
+        let list_key = match list {
+            Translated::Disabled => return EventResult::Consumed(None),
+            Translated::Key(key) => Some(key),
+            Translated::Unchanged => None,
+        };
+        let key_event = match list_key {
+            Some(key) => key,
+            None => match super::component_key(cx.editor, Keys::Picker, key_event) {
+                Some(key) => key,
+                None => return EventResult::Consumed(None),
+            },
+        };
 
         // The replacement of a global search, as in the picker.
         if self.replace_fn.is_some() {
