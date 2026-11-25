@@ -494,7 +494,8 @@ permissions = ["edit", "commands"]  # what it may do beyond looking ("read") and
   the cursor line in a panel, hidden while a prompt is open, each diagnostic one shape: a
   message wrapped over several rows (at 60 columns, `max_width`) is a single block with
   rounded corners, which the terminal draws where it has kitty graphics, not a row with
-  rounded ends for each of its lines; with `other_lines`, those of the other lines in view after their end) and `hlslens`, a port of
+  rounded ends for each of its lines; with `other_lines`, those of the other lines in view
+  after their end) and `hlslens`, a port of
   [nvim-hlslens](https://github.com/kevinhwang91/nvim-hlslens): `[3/12]` at the end of the
   nearest match's line and `[5]` at the others', with the matches highlighted, while the
   search is typed and after it, until `:hlslens-stop`; and `plaintasks`, task lists like
@@ -516,6 +517,34 @@ permissions = ["edit", "commands"]  # what it may do beyond looking ("read") and
   `buffer:get_indents`; the line can be drawn with an animation (`duration = 200`, off by
   default), at 30 frames a second at most (`fps`) and only of what is on screen. Copy one to `~/.config/helix/plugins/` and name it in a
   `[[plugins.plugins]]` entry of `config.toml` to use it (only the plugins named there load).
+  A configuration of `inline-diagnostic`, the commented lines being the defaults:
+
+  ```toml
+  [[plugins.plugins]]
+  name = "inline-diagnostic"
+  [plugins.plugins.config]
+  panel_bg = "#9ac1c3"        # a "#rrggbb" color (needed for rounded corners)
+  panel_fg = "#1e1e2e"        # dark text on a light background, light on a dark one
+  error_color = "#f38ba8"     # the bullets' colors, by severity
+  warning_color = "#f9e2af"
+  info_color = "#a6e3a1"
+  hint_color = "#89b4fa"
+  # corners = "round"         # a wrapped message is one rounded block, drawn by terminals
+  #                           #   with kitty graphics (kitty, Ghostty, WezTerm), a plain
+  #                           #   rectangle in others; "square": always a rectangle;
+  #                           #   false: rounded caps on every row
+  # max_width = 60            # columns a message wraps at (0: only at the window's edge)
+  # left_cap = "\uE0B6"       # ends of a one-row message (needs a Nerd Font);
+  # right_cap = "\uE0B4"      #   " " for square ends
+  # bullet = "●"
+  # arrow = "←"
+  # arrow_dropped = "╰"
+  # max_lines = 4
+  # show_in_insert = false
+  # other_lines = false
+  ```
+
+  The other settings are in [the book](book/src/plugins.md#inline-diagnostics-inline-diagnostic).
 - Signs, highlights, annotations, panels, overlays and line number styles move with the text
   as it is edited. Annotations
   belong to the plugin that drew them, and can be pinned to the window's right edge

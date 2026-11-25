@@ -1249,6 +1249,38 @@ name = "inline-diagnostic"
 config = { other_lines = true }
 ```
 
+Each diagnostic is one shape. A message that fits on one row is a pill with the rounded
+caps (`left_cap`, `right_cap`). A message wrapped over several rows (at `max_width`
+columns) is a single block with rounded corners (`corners = "round"`): the terminal draws
+the corners as small images where it has the kitty graphics protocol (kitty, Ghostty,
+WezTerm), and the block is a plain rectangle in other terminals. A full configuration,
+with the settings left at their defaults commented out:
+
+```toml
+[[plugins.plugins]]
+name = "inline-diagnostic"
+[plugins.plugins.config]
+panel_bg = "#9ac1c3"        # panel background, a "#rrggbb" color (needed for rounded corners)
+panel_fg = "#1e1e2e"        # panel text: dark on a light background, light on a dark one
+error_color = "#f38ba8"     # the bullets' colors, by severity
+warning_color = "#f9e2af"
+info_color = "#a6e3a1"
+hint_color = "#89b4fa"
+# corners = "round"         # a wrapped message: one rounded block ("square": a plain
+#                           #   rectangle; false: rounded caps on every row)
+# max_width = 60            # columns a message wraps at (0: only at the window's edge)
+# left_cap = "\uE0B6"       # ends of a one-row message: rounded (needs a Nerd Font);
+# right_cap = "\uE0B4"      #   " " for square ends
+# bullet = "●"
+# arrow = "←"               # from the line to the panel beside it
+# arrow_dropped = "╰"       # from the line to the panel under it (no room beside)
+# max_lines = 4             # diagnostics shown before "+N more"
+# show_in_insert = false
+# other_lines = false
+```
+
+For rectangles everywhere: `left_cap = " "`, `right_cap = " "` and `corners = "square"`.
+
 | Setting | Description | Default |
 | --- | --- | --- |
 | `panel_bg`, `panel_fg` | The panel's colors | `"#cba6f7"`, `"#1e1e2e"` |
