@@ -1650,8 +1650,8 @@ impl FromLua for LuaPluginAnnotation {
 
 /// Read a panel (`buffer:set_panel`) from a table: `char_idx` and `items` (each with `text`,
 /// and an optional `icon` and `icon_fg`) are required; the other fields keep their defaults
-/// when absent (`corners`: none, every row has the caps). A field of the wrong type is an
-/// error.
+/// when absent (`corners`: none, every row has the caps; `max_width`: 0, the text wraps at
+/// the edge of the view). A field of the wrong type is an error.
 fn panel_from_table(table: &LuaTable) -> LuaResult<helix_view::annotations::panel::PluginPanel> {
     use helix_view::annotations::panel::{PanelCorners, PanelItem, PluginPanel};
 
@@ -1667,15 +1667,17 @@ fn panel_from_table(table: &LuaTable) -> LuaResult<helix_view::annotations::pane
             })
         })
         .collect::<LuaResult<_>>()?;
-    let min_width = match table.get::<Option<i64>>("min_width")? {
-        None => defaults.min_width,
-        Some(width) if width < 0 => {
-            return Err(LuaError::RuntimeError(format!(
-                "invalid panel min_width: {width} is negative"
-            )))
+    let width = |name: &str, default: u16| -> LuaResult<u16> {
+        match table.get::<Option<i64>>(name)? {
+            None => Ok(default),
+            Some(width) if width < 0 => Err(LuaError::RuntimeError(format!(
+                "invalid panel {name}: {width} is negative"
+            ))),
+            Some(width) => Ok(u16::try_from(width).unwrap_or(u16::MAX)),
         }
-        Some(width) => u16::try_from(width).unwrap_or(u16::MAX),
     };
+    let min_width = width("min_width", defaults.min_width)?;
+    let max_width = width("max_width", defaults.max_width)?;
     Ok(PluginPanel {
         char_idx: table.get("char_idx")?,
         items,
@@ -1695,28 +1697,39 @@ fn panel_from_table(table: &LuaTable) -> LuaResult<helix_view::annotations::pane
         right_cap: table
             .get::<Option<String>>("right_cap")?
             .unwrap_or(defaults.right_cap),
-        // A table of the four corners (one left out is a square corner), or nothing.
+        // "round" (the terminal rounds them), a table of the four corners' glyphs (one left
+        // out is a square corner), or nothing.
         corners: match table.get::<LuaValue>("corners")? {
             LuaValue::Nil | LuaValue::Boolean(false) => None,
+            LuaValue::String(name) if name.to_str().is_ok_and(|name| &*name == "round") => {
+                Some(PanelCorners::Round)
+            }
             LuaValue::Table(corners) => {
                 let corner = |name: &str| -> LuaResult<String> {
                     Ok(corners.get::<Option<String>>(name)?.unwrap_or_default())
                 };
-                Some(PanelCorners {
+                Some(PanelCorners::Glyphs {
                     top_left: corner("top_left")?,
                     top_right: corner("top_right")?,
                     bottom_left: corner("bottom_left")?,
                     bottom_right: corner("bottom_right")?,
                 })
             }
+            LuaValue::String(name) => {
+                return Err(LuaError::RuntimeError(format!(
+                    "invalid panel corners: \"{}\" (expected \"round\" or a table)",
+                    name.to_string_lossy()
+                )))
+            }
             other => {
                 return Err(LuaError::RuntimeError(format!(
-                    "invalid panel corners: expected a table, got {}",
+                    "invalid panel corners: expected \"round\" or a table, got {}",
                     other.type_name()
                 )))
             }
         },
         min_width,
+        max_width,
         // Strictly a boolean: Lua would read any other value as true.
         show_in_insert: match table.get::<LuaValue>("show_in_insert")? {
             LuaValue::Nil => defaults.show_in_insert,
@@ -1970,38 +1983,62 @@ mod tests {
         assert!(panel.show_in_insert);
         assert_eq!(panel.corners, None);
 
-        // the corners of a message of several rows: all four, some, or none
+        // the corners of a message of several rows: rounded by the terminal, glyphs (all
+        // four or some), or none
+        use helix_view::annotations::panel::PanelCorners;
         let corners = |source: &str| read(source).map(|panel| panel.corners);
-        let all = corners(
-            r#"{ char_idx = 0, items = {},
-                 corners = { top_left = "a", top_right = "b", bottom_left = "c", bottom_right = "d" } }"#,
-        )
-        .unwrap()
-        .expect("corners");
         assert_eq!(
-            [
-                &all.top_left,
-                &all.top_right,
-                &all.bottom_left,
-                &all.bottom_right
-            ],
-            ["a", "b", "c", "d"]
+            corners(r#"{ char_idx = 0, items = {}, corners = "round" }"#).unwrap(),
+            Some(PanelCorners::Round)
         );
-        let some = corners(r#"{ char_idx = 0, items = {}, corners = { top_left = "a" } }"#)
-            .unwrap()
-            .expect("corners");
+        let glyphs = |top_left: &str, top_right: &str, bottom_left: &str, bottom_right: &str| {
+            Some(PanelCorners::Glyphs {
+                top_left: top_left.to_string(),
+                top_right: top_right.to_string(),
+                bottom_left: bottom_left.to_string(),
+                bottom_right: bottom_right.to_string(),
+            })
+        };
         assert_eq!(
-            (some.top_left.as_str(), some.bottom_right.as_str()),
-            ("a", "")
+            corners(
+                r#"{ char_idx = 0, items = {},
+                     corners = { top_left = "a", top_right = "b", bottom_left = "c", bottom_right = "d" } }"#,
+            )
+            .unwrap(),
+            glyphs("a", "b", "c", "d")
+        );
+        assert_eq!(
+            corners(r#"{ char_idx = 0, items = {}, corners = { top_left = "a" } }"#).unwrap(),
+            glyphs("a", "", "", "")
+        );
+        // (an empty table: square corners)
+        assert_eq!(
+            corners("{ char_idx = 0, items = {}, corners = {} }").unwrap(),
+            glyphs("", "", "", "")
         );
         assert_eq!(
             corners("{ char_idx = 0, items = {}, corners = false }").unwrap(),
             None
         );
-        let err = corners(r#"{ char_idx = 0, items = {}, corners = "round" }"#).unwrap_err();
+        let err = corners(r#"{ char_idx = 0, items = {}, corners = "oval" }"#).unwrap_err();
+        assert!(
+            err.to_string().contains("\"oval\" (expected \"round\""),
+            "{err}"
+        );
+        let err = corners("{ char_idx = 0, items = {}, corners = 3 }").unwrap_err();
         assert!(err.to_string().contains("invalid panel corners"), "{err}");
         let err = corners("{ char_idx = 0, items = {}, corners = { top_left = {} } }").unwrap_err();
         assert!(err.to_string().contains("string"), "{err}");
+
+        // the width the text wraps at
+        let max_width = |source: &str| read(source).map(|panel| panel.max_width);
+        assert_eq!(max_width("{ char_idx = 0, items = {} }").unwrap(), 0);
+        assert_eq!(
+            max_width("{ char_idx = 0, items = {}, max_width = 60 }").unwrap(),
+            60
+        );
+        let err = max_width("{ char_idx = 0, items = {}, max_width = -1 }").unwrap_err();
+        assert!(err.to_string().contains("invalid panel max_width"), "{err}");
         assert_eq!(
             read("{ char_idx = 0, items = {}, min_width = 1e9 }")
                 .unwrap()

@@ -11,7 +11,8 @@
 //! Every row has the caps on either side (rounded ones make it a pill). With
 //! [`PluginPanel::corners`], a message wrapped over several rows is one block instead: its
 //! first row has the top corners, its last the bottom ones, and the rows between straight
-//! sides.
+//! sides. The corners are glyphs, or [`PanelCorners::Round`]: rounded by the terminal where
+//! it can draw images, square elsewhere.
 
 use helix_core::unicode::width::UnicodeWidthStr;
 
@@ -38,20 +39,66 @@ pub struct PluginPanel {
     /// The corners of a message (or footer) wrapped over several rows, which is then drawn
     /// as one block rather than a row with caps for each of its lines.
     pub corners: Option<PanelCorners>,
+    /// The text is wrapped to this many columns at most, also where more are left to the
+    /// edge of the view (0: only there).
+    pub max_width: u16,
     /// Fewer columns than this left for the text beside the line put the panel under it.
     pub min_width: u16,
     /// Whether the panel is shown in insert mode.
     pub show_in_insert: bool,
 }
 
-/// The corners of a block of several rows, drawn in the panel's background color like the
-/// caps (an empty one is a square corner).
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct PanelCorners {
-    pub top_left: String,
-    pub top_right: String,
-    pub bottom_left: String,
-    pub bottom_right: String,
+/// The corners of a block of several rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PanelCorners {
+    /// Glyphs drawn in the panel's background color, like the caps (an empty one is a
+    /// square corner).
+    Glyphs {
+        top_left: String,
+        top_right: String,
+        bottom_left: String,
+        bottom_right: String,
+    },
+    /// Rounded, with the radius of a cell's width (that of a rounded cap): drawn by the
+    /// terminal as an image in each corner's cell where it can, square where it can't.
+    Round,
+}
+
+impl PanelCorners {
+    /// The glyphs of the top and of the bottom corner on the left, or on the `right`.
+    fn glyphs(&self, right: bool) -> (&str, &str) {
+        match self {
+            PanelCorners::Glyphs {
+                top_left,
+                top_right,
+                bottom_left,
+                bottom_right,
+            } => match right {
+                false => (top_left, bottom_left),
+                true => (top_right, bottom_right),
+            },
+            PanelCorners::Round => ("", ""),
+        }
+    }
+}
+
+/// A corner of a block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Corner {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+impl Corner {
+    pub fn is_right(self) -> bool {
+        matches!(self, Corner::TopRight | Corner::BottomRight)
+    }
+
+    pub fn is_bottom(self) -> bool {
+        matches!(self, Corner::BottomLeft | Corner::BottomRight)
+    }
 }
 
 /// One message of a panel, with its icon (a bullet, say) in front of its first row.
@@ -77,6 +124,7 @@ impl Default for PluginPanel {
             left_cap: String::new(),
             right_cap: String::new(),
             corners: None,
+            max_width: 0,
             min_width: 30,
             show_in_insert: false,
         }
@@ -91,6 +139,9 @@ pub enum PanelPart {
     /// The icon of the item with this index.
     Icon(usize),
     Text,
+    /// A corner of a block with [`PanelCorners::Round`]: the cells the terminal rounds, or
+    /// else part of the text's background.
+    Corner(Corner),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -129,16 +180,24 @@ pub fn layout(
         .map(|item| width(&item.icon))
         .max()
         .unwrap_or(0);
-    // The sides are as wide as the widest of what is drawn there: a cap or a corner.
+    // The sides are as wide as the widest of what is drawn there: a cap or a corner (a
+    // rounded one is a cell).
     let corners = panel.corners.as_ref();
-    let side =
-        |cap: &str, top: fn(&PanelCorners) -> &String, bottom: fn(&PanelCorners) -> &String| {
-            corners
-                .map_or(0, |corners| width(top(corners)).max(width(bottom(corners))))
-                .max(width(cap))
-        };
-    let left_width = side(&panel.left_cap, |c| &c.top_left, |c| &c.bottom_left);
-    let right_width = side(&panel.right_cap, |c| &c.top_right, |c| &c.bottom_right);
+    let round = matches!(corners, Some(PanelCorners::Round));
+    let side = |cap: &str, right: bool| {
+        let (top, bottom) = corners.map_or(("", ""), |corners| corners.glyphs(right));
+        width(cap)
+            .max(width(top))
+            .max(width(bottom))
+            .max(usize::from(round))
+    };
+    let left_width = side(&panel.left_cap, false);
+    let right_width = side(&panel.right_cap, true);
+    // No wider than the panel wants its text.
+    let limit = |text_width: usize| match panel.max_width {
+        0 => text_width,
+        max => text_width.min(max as usize),
+    };
     // The sides, the icon, and a space on either side of the text.
     let frame = left_width + icon_width + 2 + right_width;
 
@@ -152,7 +211,7 @@ pub fn layout(
             arrow_col,
             &panel.arrow,
             panel_col,
-            text_width,
+            limit(text_width),
         ))
     });
     let (first_row, arrow_col, arrow, panel_col, text_width) = match beside {
@@ -164,7 +223,7 @@ pub fn layout(
                 .and_then(|w| w.checked_sub(frame))
             {
                 Some(text_width) if text_width > 0 => {
-                    (1, 0, &panel.under_arrow, panel_col, text_width)
+                    (1, 0, &panel.under_arrow, panel_col, limit(text_width))
                 }
                 _ => return Vec::new(),
             }
@@ -205,13 +264,15 @@ pub fn layout(
         // corners and, between them, straight sides.
         let (left, right) = match (corners, place) {
             (None, _) | (_, Place::Only) => (panel.left_cap.as_str(), panel.right_cap.as_str()),
-            (Some(corners), Place::First) => {
-                (corners.top_left.as_str(), corners.top_right.as_str())
-            }
-            (Some(corners), Place::Last) => {
-                (corners.bottom_left.as_str(), corners.bottom_right.as_str())
-            }
+            (Some(corners), Place::First) => (corners.glyphs(false).0, corners.glyphs(true).0),
+            (Some(corners), Place::Last) => (corners.glyphs(false).1, corners.glyphs(true).1),
             (Some(_), Place::Between) => ("", ""),
+        };
+        // The corners the terminal rounds: a side's cells are theirs.
+        let rounded = match place {
+            Place::First if round => Some((Corner::TopLeft, Corner::TopRight)),
+            Place::Last if round => Some((Corner::BottomLeft, Corner::BottomRight)),
+            _ => None,
         };
         let mut spans = Vec::new();
         if n == 0 && !arrow.is_empty() {
@@ -229,8 +290,13 @@ pub fn layout(
             }
             col += w;
         };
-        push(left.to_string(), PanelPart::Cap);
-        push(" ".repeat(left_width - width(left)), PanelPart::Text);
+        match rounded {
+            Some((corner, _)) => push(" ".repeat(left_width), PanelPart::Corner(corner)),
+            None => {
+                push(left.to_string(), PanelPart::Cap);
+                push(" ".repeat(left_width - width(left)), PanelPart::Text);
+            }
+        }
         if icon_width > 0 {
             match item {
                 Some(idx) if first => {
@@ -242,15 +308,23 @@ pub fn layout(
             }
         }
         let pad = box_width - width(&line);
-        push(
-            format!(
-                " {line}{} {}",
-                " ".repeat(pad),
-                " ".repeat(right_width - width(right))
-            ),
-            PanelPart::Text,
-        );
-        push(right.to_string(), PanelPart::Cap);
+        match rounded {
+            Some((_, corner)) => {
+                push(format!(" {line}{} ", " ".repeat(pad)), PanelPart::Text);
+                push(" ".repeat(right_width), PanelPart::Corner(corner));
+            }
+            None => {
+                push(
+                    format!(
+                        " {line}{} {}",
+                        " ".repeat(pad),
+                        " ".repeat(right_width - width(right))
+                    ),
+                    PanelPart::Text,
+                );
+                push(right.to_string(), PanelPart::Cap);
+            }
+        }
         rows.push(PanelRow {
             row: first_row + n,
             spans,
@@ -351,12 +425,86 @@ mod tests {
 
     fn corners(sides: [&str; 4]) -> PanelCorners {
         let [top_left, top_right, bottom_left, bottom_right] = sides.map(str::to_string);
-        PanelCorners {
+        PanelCorners::Glyphs {
             top_left,
             top_right,
             bottom_left,
             bottom_right,
         }
+    }
+
+    /// Rounded corners are the terminal's to draw: the layout marks their cells (the first
+    /// and the last cell of the first and last row of a block), which are spaces for a
+    /// terminal that can't. A message of one row keeps the caps.
+    #[test]
+    fn round_corners_are_cells_of_their_own() {
+        let mut blocks = panel(&["one two three four five six seven", "second"]);
+        blocks.corners = Some(PanelCorners::Round);
+        // the text gets 15 columns: three rows, the box 13 wide
+        let rows = layout(&blocks, Some(6), 30);
+        let drawn = draw(&rows);
+        assert_eq!(drawn[0].1.trim_end(), "        ←  ● one two three");
+        assert_eq!(drawn[1].1.trim_end(), "             four five six");
+        assert_eq!(drawn[2].1.trim_end(), "             seven");
+        assert_eq!(drawn[3].1, "          (● second        )");
+        let corners = |row: &PanelRow| -> Vec<(usize, Corner)> {
+            row.spans
+                .iter()
+                .filter_map(|span| match span.part {
+                    PanelPart::Corner(corner) => Some((span.col, corner)),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(
+            corners(&rows[0]),
+            [(10, Corner::TopLeft), (27, Corner::TopRight)]
+        );
+        assert_eq!(corners(&rows[1]), []);
+        assert_eq!(
+            corners(&rows[2]),
+            [(10, Corner::BottomLeft), (27, Corner::BottomRight)]
+        );
+        assert_eq!(corners(&rows[3]), []);
+        // every row ends in the same column
+        let end = |row: &PanelRow| {
+            let last = row.spans.last().unwrap();
+            last.col + width(&last.text)
+        };
+        assert!(rows.iter().all(|row| end(row) == 28), "{rows:#?}");
+        assert!(Corner::TopRight.is_right() && !Corner::TopRight.is_bottom());
+        assert!(Corner::BottomLeft.is_bottom() && !Corner::BottomLeft.is_right());
+        // without caps the corners still have a cell each
+        blocks.left_cap.clear();
+        blocks.right_cap.clear();
+        let rows = layout(&blocks, Some(6), 30);
+        assert_eq!(corners(&rows[0]).len(), 2);
+    }
+
+    /// `max_width` wraps the text sooner than the edge of the view does, beside the line and
+    /// under it; 0 leaves it to the edge.
+    #[test]
+    fn the_text_is_no_wider_than_max_width() {
+        let mut narrow = panel(&["one two three four five six seven eight"]);
+        narrow.max_width = 12;
+        // 80 columns: without the limit all of it fits on one row
+        assert_eq!(
+            draw(&layout(&narrow, Some(6), 80)),
+            [
+                (0, "        ← (● one two     )".to_string()),
+                (1, "          (  three four  )".to_string()),
+                (2, "          (  five six    )".to_string()),
+                (3, "          (  seven eight )".to_string()),
+            ]
+        );
+        // under the line too
+        let under = layout(&narrow, None, 80);
+        assert_eq!(under[0].row, 1);
+        assert_eq!(under.len(), 4);
+        // the edge of the view, when it is nearer
+        assert_eq!(layout(&narrow, Some(6), 16).len(), 5);
+        narrow.max_width = 0;
+        assert_eq!(layout(&narrow, Some(6), 80).len(), 1);
     }
 
     /// With corners, a message wrapped over several rows is one block: corners on its first

@@ -60,6 +60,8 @@ fn panel(char_idx: usize) -> PluginPanel {
 fn config() -> Config {
     let mut config = helpers::test_config();
     config.editor.notifications.enable = false;
+    // whether the terminal shows images is the test's to say, not the one the tests run in
+    config.editor.image_preview.protocol = helix_view::image_preview::ProtocolConfig::Halfblocks;
     config
 }
 
@@ -487,102 +489,271 @@ async fn inline_diagnostic_app(
     Ok((app, plugins, file))
 }
 
-/// One diagnostic is one shape: a message wrapped over several rows is a single block (its
-/// corners on its first and last row, straight sides between), and a message of one row
-/// has the rounded caps. With `corners = false` every row has the caps, as it used to.
-#[tokio::test(flavor = "multi_thread")]
-async fn the_inline_diagnostic_plugin_draws_one_block_for_a_wrapped_message() -> anyhow::Result<()>
-{
+/// A long message and a short one on line 1 of `code()`, the cursor on the line.
+async fn two_diagnostics(app: &mut Application) -> anyhow::Result<()> {
     use helix_core::diagnostic::Severity;
     const LONG: &str = "LONGONE one two three four five six seven eight nine ten eleven \
                         twelve thirteen fourteen fifteen sixteen seventeen";
-    let (left_cap, right_cap) = ('\u{e0b6}', '\u{e0b4}');
-    let corners = ['\u{e0ba}', '\u{e0b8}', '\u{e0be}', '\u{e0bc}'];
+    {
+        let doc = helix_view::doc_mut!(app.editor);
+        doc.replace_diagnostics(
+            [
+                code_diagnostic(1, Severity::Error, LONG),
+                code_diagnostic(1, Severity::Warning, "SHORTONE"),
+            ],
+            &[],
+            None,
+        );
+    }
+    send_keys(app, "j").await
+}
 
-    for (entry, blocks) in [
-        ("", true),
-        (
-            "[[plugins]]\nname = \"inline-diagnostic\"\nconfig = { corners = false }\n",
-            false,
-        ),
-    ] {
-        let (mut app, _plugins, _file) = inline_diagnostic_app(entry, &[]).await?;
-        {
-            let doc = helix_view::doc_mut!(app.editor);
-            doc.replace_diagnostics(
-                [
-                    code_diagnostic(1, Severity::Error, LONG),
-                    code_diagnostic(1, Severity::Warning, "SHORTONE"),
-                ],
-                &[],
-                None,
-            );
-        }
-        send_keys(&mut app, "j").await?;
-        let rows = screen(&app, 80);
-        let row_of = |word: &str| {
-            rows.iter()
-                .position(|row| row.contains(word))
-                .unwrap_or_else(|| panic!("no {word}: {rows:#?}"))
-        };
-        // the long message takes three rows or more, the short one the row after them
-        let (first, short) = (row_of("LONGONE"), row_of("SHORTONE"));
-        let last = short - 1;
-        assert!(last >= first + 2, "{blocks}: {rows:#?}");
-        let ends = |row: usize| {
-            let text = rows[row].trim_end();
-            let start = text.find(|c| [left_cap, corners[0], corners[2]].contains(&c));
-            (
-                start.and_then(|at| text[at..].chars().next()),
-                text.chars().last().unwrap(),
-            )
-        };
-        if blocks {
-            assert_eq!(ends(first), (Some(corners[0]), corners[1]), "{rows:#?}");
-            assert_eq!(ends(last), (Some(corners[2]), corners[3]), "{rows:#?}");
-            // between them: straight sides, no cap and no corner
-            for row in first + 1..last {
-                let glyphs = [
-                    left_cap, right_cap, corners[0], corners[1], corners[2], corners[3],
-                ];
-                assert!(!rows[row].contains(glyphs), "row {row}: {rows:#?}");
-            }
-            // every row of the block is as wide as the others
-            let width = |row: usize| rows[row].trim_end().chars().count();
-            let middle_end = (first + 1..last).map(width).max().unwrap_or(0);
-            assert!(middle_end <= width(first), "{rows:#?}");
-        } else {
-            for row in first..=last {
-                assert_eq!(
-                    ends(row),
-                    (Some(left_cap), right_cap),
-                    "row {row}: {rows:#?}"
-                );
-            }
-        }
-        // a message of one row: the caps, either way
-        assert_eq!(ends(short), (Some(left_cap), right_cap), "{rows:#?}");
+/// Where the panel of `two_diagnostics` is on the screen: its left and right column, the
+/// first and last row of the long message, and the row of the short one.
+fn block(app: &Application, width: usize) -> (usize, usize, usize, usize, usize) {
+    let rows = screen(app, width);
+    let row_of = |word: &str| {
+        rows.iter()
+            .position(|row| row.contains(word))
+            .unwrap_or_else(|| panic!("no {word}: {rows:#?}"))
+    };
+    let (first, short) = (row_of("LONGONE"), row_of("SHORTONE"));
+    let chars: Vec<char> = rows[first].chars().collect();
+    // the bullet is the cell after the left side
+    let left = chars.iter().position(|c| *c == '●').expect("the bullet") - 1;
+    let short_chars: Vec<char> = rows[short].trim_end().chars().collect();
+    // the short message has its right cap in the block's last column
+    let right = short_chars.len() - 1;
+    (left, right, first, short - 1, short)
+}
 
-        // the sides between the corners are the panel's color, like its text
-        if blocks {
-            let (x, _) = text_area(&app);
-            let text_row = &rows[first + 1];
-            let start = text_row
-                .char_indices()
-                .skip(x + LINE_LEN)
-                .find(|(_, c)| !c.is_whitespace())
-                .map(|(at, _)| text_row[..at].chars().count())
-                .expect("text");
-            let bg = |col: usize| app.rendered_cell(col as u16, (first + 1) as u16).bg;
-            let panel_bg = bg(start);
-            assert_eq!(panel_bg, Color::Rgb(0xcb, 0xa6, 0xf7));
-            // the side is under the corner of the row above
-            let corner_col = rows[first]
+const PANEL_BG: Color = Color::Rgb(0xcb, 0xa6, 0xf7);
+const CAPS: [char; 2] = ['\u{e0b6}', '\u{e0b4}'];
+
+/// One diagnostic is one shape. A message of one row has the rounded caps; one wrapped over
+/// several rows is a single block, not a row with caps for each of its lines. Without
+/// terminal graphics the block is a plain rectangle.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_inline_diagnostic_plugin_draws_one_block_for_a_wrapped_message() -> anyhow::Result<()>
+{
+    let (mut app, _plugins, _file) = inline_diagnostic_app("", &[]).await?;
+    two_diagnostics(&mut app).await?;
+    let rows = screen(&app, 80);
+    let (left, right, first, last, short) = block(&app, 80);
+    assert!(last >= first + 2, "three rows or more: {rows:#?}");
+    let cell = |x: usize, y: usize| app.rendered_cell(x as u16, y as u16);
+
+    // every row of the block: the panel's color from side to side, and no cap
+    for y in first..=last {
+        for x in [left, left + 1, right - 1, right] {
+            assert_eq!(cell(x, y).bg, PANEL_BG, "({x}, {y}): {rows:#?}");
+        }
+        assert_eq!(cell(left, y).symbol.as_str(), " ", "{rows:#?}");
+        assert_eq!(cell(right, y).symbol.as_str(), " ", "{rows:#?}");
+        assert!(!rows[y].contains(CAPS), "row {y}: {rows:#?}");
+        // nothing of it beside the block
+        assert_ne!(cell(right + 1, y).bg, PANEL_BG, "{rows:#?}");
+    }
+    // the message of one row: the caps, in the panel's color on what is under them
+    assert_eq!(
+        cell(left, short).symbol.chars().next(),
+        Some(CAPS[0]),
+        "{rows:#?}"
+    );
+    assert_eq!(
+        cell(right, short).symbol.chars().next(),
+        Some(CAPS[1]),
+        "{rows:#?}"
+    );
+    assert_eq!(cell(left, short).fg, PANEL_BG);
+    assert_ne!(cell(left, short).bg, PANEL_BG);
+    // no image without terminal graphics
+    assert!(app.raw_output().is_empty(), "{:?}", app.raw_output());
+
+    send_keys(&mut app, ":q!<ret>").await?;
+    Ok(())
+}
+
+/// With the kitty graphics protocol the block's corners are rounded: each corner's cell
+/// keeps what is under the block and gets an image of the corner in the panel's color.
+/// The images are sent once, and taken away with the panel.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_inline_diagnostic_plugin_rounds_the_corners_of_a_block() -> anyhow::Result<()> {
+    let (mut app, _plugins, _file) = inline_diagnostic_app("", &[]).await?;
+    app.set_kitty_graphics(true);
+    app.set_cell_size(Some((10, 20)));
+    two_diagnostics(&mut app).await?;
+    let rows = screen(&app, 80);
+    let (left, right, first, last, short) = block(&app, 80);
+    let cell = |x: usize, y: usize| app.rendered_cell(x as u16, y as u16);
+
+    // the kitty graphics commands sent: (action, x, y, image id)
+    let commands = |app: &Application| -> Vec<(String, u16, u16, u32)> {
+        app.raw_output()
+            .iter()
+            .filter_map(|(x, y, bytes)| {
+                let text = String::from_utf8_lossy(bytes).into_owned();
+                let control = text.strip_prefix("\x1b_G")?.split([';', '\x1b']).next()?;
+                let id = control
+                    .split(',')
+                    .find_map(|pair| pair.strip_prefix("i="))?
+                    .parse()
+                    .ok()?;
+                let action: String = control.chars().take(3).collect();
+                Some((action, *x, *y, id))
+            })
+            .collect()
+    };
+    let sent = commands(&app);
+    let placed: Vec<(u16, u16, u32)> = sent
+        .iter()
+        .filter(|(action, ..)| action == "a=p")
+        .map(|(_, x, y, id)| (*x, *y, *id))
+        .collect();
+    let corners = [(left, first), (right, first), (left, last), (right, last)];
+    let mut places: Vec<(u16, u16)> = placed.iter().map(|(x, y, _)| (*x, *y)).collect();
+    places.sort();
+    let mut expected: Vec<(u16, u16)> = corners
+        .iter()
+        .map(|(x, y)| (*x as u16, *y as u16))
+        .collect();
+    expected.sort();
+    assert_eq!(places, expected, "an image in each corner: {rows:#?}");
+    // four images (one a corner), each sent once
+    let mut images: Vec<u32> = placed.iter().map(|(_, _, id)| *id).collect();
+    images.sort();
+    images.dedup();
+    assert_eq!(images.len(), 4);
+    let mut transmitted: Vec<u32> = sent
+        .iter()
+        .filter(|(action, ..)| action == "a=t")
+        .map(|(.., id)| *id)
+        .collect();
+    transmitted.sort();
+    assert_eq!(transmitted, images);
+
+    // the corners' cells are not the panel's color: what is under the block shows around
+    // the curve; the cells beside and under them are the panel's
+    for (x, y) in corners {
+        assert_ne!(cell(x, y).bg, PANEL_BG, "({x}, {y}): {rows:#?}");
+        assert_eq!(cell(x, y).symbol.as_str(), " ");
+    }
+    assert_eq!(cell(left + 1, first).bg, PANEL_BG);
+    assert_eq!(cell(right - 1, last).bg, PANEL_BG);
+    for y in first + 1..last {
+        assert_eq!(cell(left, y).bg, PANEL_BG, "{rows:#?}");
+        assert_eq!(cell(right, y).bg, PANEL_BG, "{rows:#?}");
+    }
+    // the message of one row keeps its caps
+    assert_eq!(cell(left, short).symbol.chars().next(), Some(CAPS[0]));
+
+    // drawn again without a change: nothing is sent again
+    let before = app.raw_output().len();
+    send_keys(&mut app, "l").await?;
+    assert_eq!(app.raw_output().len(), before, "{:?}", commands(&app));
+
+    // off the line: the placements are taken away
+    send_keys(&mut app, "k").await?;
+    let taken: Vec<_> = commands(&app)
+        .into_iter()
+        .skip(before)
+        .filter(|(action, ..)| action == "a=d")
+        .collect();
+    assert_eq!(taken.len(), 4, "{:?}", commands(&app));
+
+    send_keys(&mut app, ":q!<ret>").await?;
+    Ok(())
+}
+
+/// The `corners` setting: `"square"` is a plain rectangle also where the terminal could
+/// round it, a table gives glyphs, `false` every row its caps. `max_width` is where the
+/// messages wrap when the window is wider.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_inline_diagnostic_corners_and_width_follow_the_settings() -> anyhow::Result<()> {
+    let entry = |settings: &str| {
+        format!("[[plugins]]\nname = \"inline-diagnostic\"\nconfig = {{ {settings} }}\n")
+    };
+
+    // square: no image, even with terminal graphics
+    let (mut app, _plugins, _file) =
+        inline_diagnostic_app(&entry("corners = \"square\""), &[]).await?;
+    app.set_kitty_graphics(true);
+    app.set_cell_size(Some((10, 20)));
+    two_diagnostics(&mut app).await?;
+    let (left, right, first, last, _) = block(&app, 80);
+    assert!(app.raw_output().is_empty(), "{:?}", app.raw_output());
+    for (x, y) in [(left, first), (right, first), (left, last), (right, last)] {
+        assert_eq!(app.rendered_cell(x as u16, y as u16).bg, PANEL_BG);
+    }
+    send_keys(&mut app, ":q!<ret>").await?;
+
+    // glyphs of the user's
+    let glyphs = "corners = { top_left = \"▟\", top_right = \"▙\", bottom_left = \"▜\", \
+                  bottom_right = \"▛\" }";
+    let (mut app, _plugins, _file) = inline_diagnostic_app(&entry(glyphs), &[]).await?;
+    two_diagnostics(&mut app).await?;
+    let rows = screen(&app, 80);
+    let (left, right, first, last, _) = block(&app, 80);
+    let symbol = |x: usize, y: usize| app.rendered_cell(x as u16, y as u16).symbol.to_string();
+    assert_eq!(
+        [
+            symbol(left, first),
+            symbol(right, first),
+            symbol(left, last),
+            symbol(right, last)
+        ],
+        ["▟", "▙", "▜", "▛"],
+        "{rows:#?}"
+    );
+    assert_eq!(symbol(left, first + 1), " ");
+    send_keys(&mut app, ":q!<ret>").await?;
+
+    // no block: every row has the caps
+    let (mut app, _plugins, _file) = inline_diagnostic_app(&entry("corners = false"), &[]).await?;
+    two_diagnostics(&mut app).await?;
+    let rows = screen(&app, 80);
+    let (left, right, first, last, short) = block(&app, 80);
+    for y in first..=short {
+        let (start, end) = (
+            app.rendered_cell(left as u16, y as u16)
+                .symbol
                 .chars()
-                .position(|c| c == corners[0])
-                .expect("the corner");
-            assert_eq!(bg(corner_col), panel_bg, "{rows:#?}");
-            assert_ne!(bg(corner_col - 1), panel_bg);
+                .next(),
+            app.rendered_cell(right as u16, y as u16)
+                .symbol
+                .chars()
+                .next(),
+        );
+        assert_eq!(
+            (start, end),
+            (Some(CAPS[0]), Some(CAPS[1])),
+            "row {y}: {rows:#?}"
+        );
+    }
+    assert!(last > first);
+    send_keys(&mut app, ":q!<ret>").await?;
+
+    // in a wide window the messages wrap at `max_width` columns (60 by default)
+    for (settings, max) in [("", 60), ("max_width = 40", 40), ("max_width = 0", 200)] {
+        let (mut app, _plugins, _file) = inline_diagnostic_app(&entry(settings), &[]).await?;
+        app.resize_terminal(200, 12).await;
+        two_diagnostics(&mut app).await?;
+        let rows = screen(&app, 200);
+        let (left, right, first, last, _) = block(&app, 200);
+        // the side, the bullet and a space; a space and the side
+        let text_width = right - left + 1 - 5;
+        assert!(
+            text_width <= max,
+            "{settings}: {text_width} columns: {rows:#?}"
+        );
+        if max == 200 {
+            assert_eq!(first, last, "all of it on one row: {rows:#?}");
+        } else {
+            assert!(
+                text_width > max - 12,
+                "{settings}: {text_width} columns: {rows:#?}"
+            );
+            assert!(last > first, "{settings}: {rows:#?}");
         }
         send_keys(&mut app, ":q!<ret>").await?;
     }

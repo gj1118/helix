@@ -492,8 +492,9 @@ permissions = ["edit", "commands"]  # what it may do beyond looking ("read") and
   last search pattern (`helix.editor.last_search()`).
 - **Examples** - `contrib/plugins/` has `auto-save`, `inline-diagnostic` (the diagnostics of
   the cursor line in a panel, hidden while a prompt is open, each diagnostic one shape: a
-  message wrapped over several rows is a single block, not a row with rounded ends for
-  each of its lines; with `other_lines`, those of the other lines in view after their end) and `hlslens`, a port of
+  message wrapped over several rows (at 60 columns, `max_width`) is a single block with
+  rounded corners, which the terminal draws where it has kitty graphics, not a row with
+  rounded ends for each of its lines; with `other_lines`, those of the other lines in view after their end) and `hlslens`, a port of
   [nvim-hlslens](https://github.com/kevinhwang91/nvim-hlslens): `[3/12]` at the end of the
   nearest match's line and `[5]` at the others', with the matches highlighted, while the
   search is typed and after it, until `:hlslens-stop`; and `plaintasks`, task lists like

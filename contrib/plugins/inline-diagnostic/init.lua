@@ -6,7 +6,9 @@
 -- insert mode and while a prompt is open (a search, the command line) by default.
 --
 -- One diagnostic is one shape: a message of one row has the rounded caps, and one wrapped
--- over several rows is a single block with `corners` (not a row with caps for each line).
+-- over several rows is a single block with rounded corners (not a row with caps for each
+-- line). The corners are drawn by the terminal, where it has the kitty graphics protocol
+-- (kitty, Ghostty, WezTerm); elsewhere the block is a plain rectangle.
 --
 -- With `other_lines`, the other lines in view show their most severe diagnostic after
 -- their end too, in one line (tiny-inline-diagnostic's `multilines`); on a line too long
@@ -32,19 +34,22 @@ local config = {
   -- Bullet character
   bullet = "●",
 
-  -- Powerline rounded caps, on either side of a message of one row
+  -- The ends of a message of one row: the powerline rounded caps (" " for square ends)
   left_cap = utf8.char(0xE0B6),    --
   right_cap = utf8.char(0xE0B4),   --
 
-  -- The corners of a message wrapped over several rows, which is one block: the powerline
-  -- triangles, which with the rows between them make one large cap on either side.
-  -- `false`: every row has the caps (a row with rounded ends for each line of a message).
-  corners = {
-    top_left = utf8.char(0xE0BA),      -- (the lower right triangle: all but the corner)
-    top_right = utf8.char(0xE0B8),     -- (the lower left triangle)
-    bottom_left = utf8.char(0xE0BE),   -- (the upper right triangle)
-    bottom_right = utf8.char(0xE0BC),  -- (the upper left triangle)
-  },
+  -- A message wrapped over several rows is one block. Its corners:
+  --   "round"   rounded like the caps, drawn by the terminal (kitty graphics); square
+  --             where the terminal can't
+  --   "square"  a plain rectangle
+  --   a table   glyphs in the panel's color: { top_left = "...", top_right = "...",
+  --             bottom_left = "...", bottom_right = "..." } (one left out is square)
+  --   false     no block: every row has the caps
+  corners = "round",
+
+  -- Columns of the messages at most: they wrap there, also where more are left to the
+  -- window's edge (0: only at the edge)
+  max_width = 60,
 
   -- Diagnostics shown before "+N more"
   max_lines = 4,
@@ -76,15 +81,19 @@ local user_config = helix.get_config()
 
 if user_config then
   for k, v in pairs(user_config) do
-    if type(v) == "table" and type(config[k]) == "table" then
-      -- (some of the corners: the others keep their defaults)
-      for name, value in pairs(v) do
-        config[k][name] = value
-      end
-    else
-      config[k] = v
-    end
+    config[k] = v
   end
+end
+
+-- What `buffer:set_panel` takes for the corners (a word it does not know: "round").
+local function panel_corners()
+  local corners = config.corners
+  if corners == "square" then
+    return {}
+  elseif type(corners) == "string" then
+    return "round"
+  end
+  return corners or nil
 end
 
 local severity_priority = {
@@ -213,8 +222,9 @@ local function update_diagnostics()
     arrow_fg = config.panel_bg,
     left_cap = config.left_cap,
     right_cap = config.right_cap,
-    corners = config.corners or nil,
+    corners = panel_corners(),
     min_width = config.min_width,
+    max_width = config.max_width,
     show_in_insert = config.show_in_insert,
   })
 end

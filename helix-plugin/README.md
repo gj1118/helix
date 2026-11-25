@@ -558,10 +558,14 @@ Buffer methods (they raise an error once the buffer is closed):
     line without icon), `fg`/`bg` (`"#rrggbb"`; default: the theme's `ui.popup`), `arrow`
     (`" ← "`), `under_arrow` (`"╰ "`, before the box under the line), `arrow_fg` (default:
     `bg`), `left_cap`/`right_cap` (drawn in `bg` around each row, e.g. powerline caps),
-    `corners` (`{ top_left = ..., top_right = ..., bottom_left = ..., bottom_right = ... }`:
-    with them an item wrapped over several rows is one block, the corners on its first and
-    last row and straight sides between, instead of a row with the caps for each of its
-    lines; an item of one row keeps the caps),
+    `corners` (with them an item wrapped over several rows is one block, the corners on its
+    first and last row and straight sides between, instead of a row with the caps for each
+    of its lines; an item of one row keeps the caps. `"round"`: rounded with the radius of
+    a rounded cap, drawn by the terminal as an image in each corner's cell where it has the
+    kitty graphics protocol and `bg` is a `"#rrggbb"` color, square elsewhere; or the glyphs
+    `{ top_left = ..., top_right = ..., bottom_left = ..., bottom_right = ... }`, drawn in
+    `bg` like the caps, one left out being a square corner), `max_width` (the text wraps at
+    this many columns at most; `0`, the default: at the edge of the window),
     `min_width` (`30`) and `show_in_insert` (`false`: hidden in insert mode).
   - The anchor moves with the text when it is edited.
 

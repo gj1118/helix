@@ -636,10 +636,14 @@ Buffer methods (they raise an error once the buffer is closed):
     line without icon), `fg`/`bg` (`"#rrggbb"`; default: the theme's `ui.popup`), `arrow`
     (`" ← "`), `under_arrow` (`"╰ "`, before the box under the line), `arrow_fg` (default:
     `bg`), `left_cap`/`right_cap` (drawn in `bg` around each row, e.g. powerline caps),
-    `corners` (`{ top_left = ..., top_right = ..., bottom_left = ..., bottom_right = ... }`:
-    with them an item wrapped over several rows is one block, the corners on its first and
-    last row and straight sides between, instead of a row with the caps for each of its
-    lines; an item of one row keeps the caps),
+    `corners` (with them an item wrapped over several rows is one block, the corners on its
+    first and last row and straight sides between, instead of a row with the caps for each
+    of its lines; an item of one row keeps the caps. `"round"`: rounded with the radius of
+    a rounded cap, drawn by the terminal as an image in each corner's cell where it has the
+    kitty graphics protocol and `bg` is a `"#rrggbb"` color, square elsewhere; or the glyphs
+    `{ top_left = ..., top_right = ..., bottom_left = ..., bottom_right = ... }`, drawn in
+    `bg` like the caps, one left out being a square corner), `max_width` (the text wraps at
+    this many columns at most; `0`, the default: at the edge of the window),
     `min_width` (`30`) and `show_in_insert` (`false`: hidden in insert mode).
   - The anchor moves with the text when it is edited.
 
@@ -1250,8 +1254,9 @@ config = { other_lines = true }
 | `panel_bg`, `panel_fg` | The panel's colors | `"#cba6f7"`, `"#1e1e2e"` |
 | `error_color`, `warning_color`, `info_color`, `hint_color` | The bullets' colors, by severity (and of the other lines' messages) | `"#ff6b6b"`, `"#ffd93d"`, `"#6bcb77"`, `"#4d96ff"` |
 | `arrow`, `arrow_dropped` | The arrow from the line to the panel beside it, and to the panel under it | `"←"`, `"╰"` |
-| `bullet`, `left_cap`, `right_cap` | The bullet, and the caps on either side of a message of one row | `"●"`, and the powerline rounded caps U+E0B6 and U+E0B4 |
-| `corners` | One diagnostic is one shape: a message wrapped over several rows is a single block with these corners (`top_left`, `top_right`, `bottom_left`, `bottom_right`) and straight sides between them. Some of them can be set, the others keep their defaults. In a font without the powerline symbols, the block elements work: `{ top_left = "▟", top_right = "▙", bottom_left = "▜", bottom_right = "▛" }`. `false`: every row of a message has the caps, a row with rounded ends for each of its lines | The powerline triangles U+E0BA, U+E0B8, U+E0BE and U+E0BC |
+| `bullet`, `left_cap`, `right_cap` | The bullet, and the caps on either side of a message of one row (`" "` for square ends) | `"●"`, and the powerline rounded caps U+E0B6 and U+E0B4 |
+| `corners` | One diagnostic is one shape: a message wrapped over several rows is a single block, not a row with the caps for each of its lines. `"round"`: its corners are rounded like the caps, drawn by the terminal where it has the kitty graphics protocol (kitty, Ghostty, WezTerm; `panel_bg` has to be a `"#rrggbb"` color), and it is a plain rectangle elsewhere. `"square"`: a plain rectangle everywhere. A table: glyphs for the corners, in the panel's color, such as the block elements `{ top_left = "▟", top_right = "▙", bottom_left = "▜", bottom_right = "▛" }`. `false`: no block, every row of a message has the caps | `"round"` |
+| `max_width` | Columns of the messages at most: they wrap there, also in a window with more room to its edge. `0`: only at the edge | `60` |
 | `max_lines` | Diagnostics shown before `+N more` | `4` |
 | `min_width` | Fewer columns than this left beside the line put the panel under it | `30` |
 | `show_in_insert` | Show the panel in insert mode too | `false` |

@@ -638,6 +638,7 @@ impl EditorView {
     ) {
         use helix_view::annotations::panel::{layout, PanelPart};
         use helix_view::graphics::Color;
+        use helix_view::graphics::Rect;
 
         let Some(panel) = doc.plugin_panels.get(&view.id) else {
             return;
@@ -684,6 +685,21 @@ impl EditorView {
         // Caps and arrows: in the panel's color, on whatever is under them.
         let edge = Style::default().fg(hex(&panel.arrow_fg).or(body.bg).unwrap_or(Color::Reset));
         let cap = Style::default().fg(body.bg.unwrap_or(Color::Reset));
+        // Rounded corners are images: where the terminal shows them, and the panel's color
+        // is one an image can have (not one of the terminal's palette).
+        let rounded = match body.bg {
+            Some(Color::Rgb(r, g, b)) if super::rounded_cursor::kitty_graphics(editor) => {
+                Some(([r, g, b], super::rounded_corner::cell_size(editor)))
+            }
+            _ => None,
+        };
+        // (the placements of this view's corners, in the order they are drawn)
+        let mut corners = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            view.id.hash(&mut hasher);
+            (hasher.finish() as u32 & 0x00ff_ff00) + 1
+        };
 
         for row in layout(panel, Some(end.col), inner.width as usize) {
             let Some(y) = u16::try_from(end.row + row.row)
@@ -705,7 +721,13 @@ impl EditorView {
                         (style, false)
                     }
                     PanelPart::Text => (body, false),
+                    // drawn below: a corner the terminal can't round is square
+                    PanelPart::Corner(_) => (body, rounded.is_some()),
                 };
+                let placement = corners;
+                if matches!(span.part, PanelPart::Corner(_)) {
+                    corners += 1;
+                }
                 let Some(x) = u16::try_from(span.col)
                     .ok()
                     .and_then(|col| inner.x.checked_add(col))
@@ -716,6 +738,16 @@ impl EditorView {
                 let width = (inner.right() - x) as usize;
                 // Whatever the text below had (its underlines, say) must not show through.
                 let span_width = span.text.width().min(width) as u16;
+                // A corner cut by the edge of the view is square too.
+                let (keep_bg, round) = match (span.part, rounded) {
+                    (PanelPart::Corner(corner), Some(image))
+                        if usize::from(span_width) == span.text.width() =>
+                    {
+                        (true, Some((corner, image)))
+                    }
+                    (PanelPart::Corner(_), _) => (false, None),
+                    _ => (keep_bg, None),
+                };
                 for cx in x..x + span_width {
                     let cell = &mut surface[(cx, y)];
                     let bg = cell.bg;
@@ -723,6 +755,12 @@ impl EditorView {
                     if keep_bg {
                         cell.bg = bg;
                     }
+                }
+                if let Some((corner, (color, cell))) = round {
+                    // the cells keep what is under the block: the image is the block's color
+                    let area = Rect::new(x, y, span_width, 1);
+                    super::rounded_corner::draw(surface, area, color, corner, cell, placement);
+                    continue;
                 }
                 surface.set_stringn(x, y, &span.text, width, style);
             }

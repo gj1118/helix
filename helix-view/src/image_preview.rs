@@ -334,6 +334,26 @@ pub fn rounded_rect(width: u32, height: u32, radius: f32, color: [u8; 3]) -> Rgb
     })
 }
 
+/// A `width` x `height` rectangle in `color` with one corner rounded with `radius` pixels
+/// (the one at its `right` or left, `bottom` or top), anti-aliased; transparent outside the
+/// curve. Four of them are the corners of a rounded block of any size.
+pub fn rounded_corner(
+    width: u32,
+    height: u32,
+    radius: f32,
+    color: [u8; 3],
+    right: bool,
+    bottom: bool,
+) -> RgbaImage {
+    // a quarter of a rounded rectangle twice the size
+    let whole = rounded_rect(width * 2, height * 2, radius, color);
+    let (x, y) = (
+        if right { width } else { 0 },
+        if bottom { height } else { 0 },
+    );
+    image::imageops::crop_imm(&whole, x, y, width, height).to_image()
+}
+
 /// The Kitty graphics protocol: the PNG is sent in chunks and shown over the cells, below the text
 /// (`z=-1`), without moving the cursor.
 pub fn kitty(png: &[u8], placement: &Placement, id: u32) -> Encoded {
@@ -526,6 +546,46 @@ mod tests {
         // lowercase `i`: the placement goes, the image stays
         let unplace = String::from_utf8(kitty_unplace(9, 2)).unwrap();
         assert_eq!(unplace, "\x1b_Ga=d,d=i,i=9,p=2,q=2\x1b\\".to_string());
+    }
+
+    /// One corner of a block: transparent outside its curve, the block's color inside, and
+    /// straight along its other three sides, where it meets the cells of the block.
+    #[test]
+    fn a_rounded_corner_is_a_quarter_of_a_rounded_rectangle() {
+        let (w, h, r) = (20u32, 40u32, 20.0);
+        let alpha = |right: bool, bottom: bool, x: u32, y: u32| {
+            rounded_corner(w, h, r, [10, 20, 30], right, bottom)
+                .get_pixel(x, y)
+                .0[3]
+        };
+        for (right, bottom) in [(false, false), (true, false), (false, true), (true, true)] {
+            let image = rounded_corner(w, h, r, [10, 20, 30], right, bottom);
+            assert_eq!((image.width(), image.height()), (w, h));
+            assert_eq!(&image.get_pixel(w / 2, h / 2).0[..3], [10, 20, 30]);
+            // the corner itself, and the three others
+            let (cx, cy) = (
+                if right { w - 1 } else { 0 },
+                if bottom { h - 1 } else { 0 },
+            );
+            assert_eq!(alpha(right, bottom, cx, cy), 0, "{right} {bottom}");
+            // (where the curve meets the straight side: all but opaque)
+            assert!(
+                alpha(right, bottom, w - 1 - cx, cy) >= 250,
+                "{right} {bottom}"
+            );
+            assert_eq!(
+                alpha(right, bottom, cx, h - 1 - cy),
+                255,
+                "{right} {bottom}"
+            );
+            assert_eq!(alpha(right, bottom, w - 1 - cx, h - 1 - cy), 255);
+            // the curve ends a radius from the corner: the rest of that side is straight
+            let below = if bottom { h - 1 - r as u32 } else { r as u32 };
+            assert_eq!(alpha(right, bottom, cx, below), 255, "{right} {bottom}");
+        }
+        // without a radius: the whole cell
+        let square = rounded_corner(w, h, 0.0, [1, 2, 3], false, false);
+        assert!(square.pixels().all(|pixel| pixel.0 == [1, 2, 3, 255]));
     }
 
     #[test]

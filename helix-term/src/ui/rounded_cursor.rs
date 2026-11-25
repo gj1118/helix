@@ -49,13 +49,19 @@ pub fn roundness(editor: &Editor) -> Option<u8> {
     if roundness == 0 || config.cursor_shape.from_mode(editor.mode()) != CursorKind::Block {
         return None;
     }
-    let kitty = editor.kitty_graphics
-        || config
+    kitty_graphics(editor).then_some(roundness)
+}
+
+/// Whether the terminal shows images with the kitty graphics protocol: it said so, or the
+/// image previews are set (or found) to use it.
+pub fn kitty_graphics(editor: &Editor) -> bool {
+    editor.kitty_graphics
+        || editor
+            .config()
             .image_preview
             .protocol
             .resolve(|name| std::env::var(name).ok())
-            == Protocol::Kitty;
-    kitty.then_some(roundness)
+            == Protocol::Kitty
 }
 
 /// A cursor's image: its color, its size in pixels and its radius in tenths of a pixel.
