@@ -640,7 +640,11 @@ impl EditorView {
         use helix_view::graphics::Color;
         use helix_view::graphics::Rect;
 
-        let Some(panel) = doc.plugin_panels.get(&view.id) else {
+        let Some(panel) = doc
+            .plugin_panels
+            .get(&view.id)
+            .filter(|panel| !panel.hidden)
+        else {
             return;
         };
         if editor.mode() == Mode::Insert && !panel.show_in_insert {

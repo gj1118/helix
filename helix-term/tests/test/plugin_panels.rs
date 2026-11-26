@@ -871,6 +871,78 @@ async fn the_inline_diagnostic_panel_makes_room_and_waits_for_prompts() -> anyho
     Ok(())
 }
 
+/// With Helix's own inline and end-of-line diagnostics off, a prompt (`:`, `/`) hides the
+/// panel but doesn't bring Helix's diagnostics into the corner of the view: the panel is
+/// kept, hidden, not taken away.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_prompt_hides_the_panel_without_showing_the_corner_diagnostics() -> anyhow::Result<()> {
+    use helix_core::diagnostic::Severity;
+    use helix_view::annotations::diagnostics::DiagnosticFilter;
+    let (mut app, _plugins, _file) = inline_diagnostic_app("", &[]).await?;
+    {
+        let mut config = (*app.editor.config()).clone();
+        config.inline_diagnostics.cursor_line = DiagnosticFilter::Disable;
+        config.end_of_line_diagnostics = DiagnosticFilter::Disable;
+        app.editor
+            .config_events
+            .0
+            .send(helix_view::editor::ConfigEvent::Update(Box::new(config)))?;
+        let doc = helix_view::doc_mut!(app.editor);
+        doc.replace_diagnostics([code_diagnostic(1, Severity::Error, "BADTHING")], &[], None);
+    }
+    // the cursor on the diagnostic (columns 5 to 9 of line 1): the corner would show it
+    send_keys(&mut app, "j6l").await?;
+    assert_eq!(
+        app.editor.config().inline_diagnostics.cursor_line,
+        DiagnosticFilter::Disable
+    );
+    let count = |app: &Application| {
+        app.rendered_rows()
+            .iter()
+            .filter(|row| row.contains("BADTHING"))
+            .count()
+    };
+    let panel = |app: &Application| {
+        let (view, doc) = helix_view::current_ref!(app.editor);
+        doc.plugin_panels.get(&view.id).map(|panel| panel.hidden)
+    };
+    // (without the plugin's panel the corner does show it)
+    let taken = {
+        let (view, doc) = helix_view::current!(app.editor);
+        doc.plugin_panels.remove(&view.id)
+    };
+    send_keys(&mut app, "").await?;
+    assert_eq!(count(&app), 1, "the corner: {:#?}", app.rendered_rows());
+    {
+        let (view, doc) = helix_view::current!(app.editor);
+        doc.plugin_panels.insert(view.id, taken.expect("the panel"));
+    }
+    send_keys(&mut app, "").await?;
+    // the panel: once
+    assert_eq!(count(&app), 1, "{:#?}", app.rendered_rows());
+    assert_eq!(panel(&app), Some(false));
+
+    // (the command line's completions would cover the rows of the panel)
+    for prompt in [":ab", "/stuff"] {
+        // (the plugins hear of a prompt as it is drawn, with the next frame: a key that
+        // changes nothing draws one)
+        send_keys(&mut app, &format!("{prompt}<left>")).await?;
+        // nothing of it, in the panel or in the corner
+        assert_eq!(count(&app), 0, "{prompt}: {:#?}", app.rendered_rows());
+        assert_eq!(panel(&app), Some(true), "{prompt}");
+        send_keys(&mut app, "<esc>").await?;
+        assert_eq!(count(&app), 1, "{prompt}: {:#?}", app.rendered_rows());
+        assert_eq!(panel(&app), Some(false));
+    }
+
+    // a line without a diagnostic: no panel, and the corner shows nothing either
+    send_keys(&mut app, "k:ab<left>").await?;
+    assert_eq!(panel(&app), None);
+    assert_eq!(count(&app), 0);
+    send_keys(&mut app, "<esc>:q!<ret>").await?;
+    Ok(())
+}
+
 /// With neither inline nor end-of-line diagnostics, Helix shows the cursor's diagnostics in
 /// the corner of the view: a plugin's annotations (a search lens) don't hide them, a plugin's
 /// panel does (it shows them itself).

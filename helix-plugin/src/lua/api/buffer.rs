@@ -1676,6 +1676,17 @@ fn panel_from_table(table: &LuaTable) -> LuaResult<helix_view::annotations::pane
             Some(width) => Ok(u16::try_from(width).unwrap_or(u16::MAX)),
         }
     };
+    // Strictly a boolean: Lua would read any other value as true.
+    let flag = |name: &str, default: bool| -> LuaResult<bool> {
+        match table.get::<LuaValue>(name)? {
+            LuaValue::Nil => Ok(default),
+            LuaValue::Boolean(value) => Ok(value),
+            other => Err(LuaError::RuntimeError(format!(
+                "invalid panel {name}: expected a boolean, got {}",
+                other.type_name()
+            ))),
+        }
+    };
     let min_width = width("min_width", defaults.min_width)?;
     let max_width = width("max_width", defaults.max_width)?;
     Ok(PluginPanel {
@@ -1730,17 +1741,8 @@ fn panel_from_table(table: &LuaTable) -> LuaResult<helix_view::annotations::pane
         },
         min_width,
         max_width,
-        // Strictly a boolean: Lua would read any other value as true.
-        show_in_insert: match table.get::<LuaValue>("show_in_insert")? {
-            LuaValue::Nil => defaults.show_in_insert,
-            LuaValue::Boolean(show) => show,
-            other => {
-                return Err(LuaError::RuntimeError(format!(
-                    "invalid panel show_in_insert: expected a boolean, got {}",
-                    other.type_name()
-                )))
-            }
-        },
+        show_in_insert: flag("show_in_insert", defaults.show_in_insert)?,
+        hidden: flag("hidden", defaults.hidden)?,
     })
 }
 
@@ -1962,7 +1964,16 @@ mod tests {
         assert_eq!(panel.arrow, defaults.arrow);
         assert_eq!(panel.min_width, 30);
         assert!(!panel.show_in_insert);
+        assert!(!panel.hidden);
         assert_eq!(panel.footer, None);
+        let hidden = read("{ char_idx = 0, items = {}, hidden = true }").unwrap();
+        assert!(hidden.hidden);
+        let err = read("{ char_idx = 0, items = {}, hidden = 1 }").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("invalid panel hidden: expected a boolean, got integer"),
+            "{err}"
+        );
 
         let panel = read(
             r##"{ char_idx = 0, items = {}, footer = "+2 more", arrow = " < ",

@@ -190,7 +190,7 @@ local function update_diagnostics()
   update_other_lines(buffer, by_line, current_line_idx)
 
   local line_diags = by_line[current_line_idx] or {}
-  if #line_diags == 0 or (in_prompt and not config.show_in_prompt) then
+  if #line_diags == 0 then
     buffer:set_panel(nil)
     return
   end
@@ -226,6 +226,10 @@ local function update_diagnostics()
     min_width = config.min_width,
     max_width = config.max_width,
     show_in_insert = config.show_in_insert,
+    -- Hidden rather than taken away while a prompt is open: without a panel Helix would show
+    -- the diagnostics in the corner of the view instead (with its own inline and end-of-line
+    -- diagnostics off).
+    hidden = in_prompt and not config.show_in_prompt,
   })
 end
 

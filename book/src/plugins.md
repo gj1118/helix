@@ -644,6 +644,8 @@ Buffer methods (they raise an error once the buffer is closed):
     `{ top_left = ..., top_right = ..., bottom_left = ..., bottom_right = ... }`, drawn in
     `bg` like the caps, one left out being a square corner), `max_width` (the text wraps at
     this many columns at most; `0`, the default: at the edge of the window),
+    `hidden` (`true`: not drawn for now, but kept, so Helix's own diagnostics in the corner
+    of the view stay away; for a panel paused while a prompt is open, say),
     `min_width` (`30`) and `show_in_insert` (`false`: hidden in insert mode).
   - The anchor moves with the text when it is edited.
 

@@ -46,6 +46,9 @@ pub struct PluginPanel {
     pub min_width: u16,
     /// Whether the panel is shown in insert mode.
     pub show_in_insert: bool,
+    /// Not drawn for now (while a prompt is open, say), but kept: the view still has a panel
+    /// of a plugin, so Helix's own diagnostics in the corner stay away.
+    pub hidden: bool,
 }
 
 /// The corners of a block of several rows.
@@ -127,6 +130,7 @@ impl Default for PluginPanel {
             max_width: 0,
             min_width: 30,
             show_in_insert: false,
+            hidden: false,
         }
     }
 }
