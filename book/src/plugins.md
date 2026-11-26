@@ -255,7 +255,7 @@ error. The `event` table has a `type` field (the event name) and, depending on t
 | `diff_open` | `left_window_id`, `right_window_id`, `left_document_id`, `right_document_id` | when a side-by-side diff opens |
 | `diff_update` | the same | when the changes of a diff are worked out again (an edit, a save, staging) |
 | `diff_close` | the same | when a diff closes |
-| `prompt_open` | `prompt`, `kind`, `text`, `register` | when a prompt opens: the command line, a search, select, a plugin's prompt... (not a picker's filter). `prompt` is its label, `kind` one of `search` (both directions), `command`, `select`, `split`, `keep`, `remove`, `replace`, `shell` or `other`, `register` its history register, if any |
+| `prompt_open` | `prompt`, `kind`, `text`, `register` | when a prompt opens: the command line, a search, select, a plugin's prompt... (not a picker's filter). `prompt` is its label, `kind` one of `search` (both directions), `command`, `select`, `split`, `keep`, `remove`, `replace`, `shell` or `other`, `register` its history register, if any. The prompt reports itself as it is first drawn; what the handlers change is drawn right after, in a frame of its own, without waiting for a key |
 | `prompt_change` | `prompt`, `kind`, `text`, `register` | when its text changes: a key typed or deleted, a paste, a history entry, a completion |
 | `prompt_close` | `prompt`, `kind`, `text`, `register`, `accepted` | when it closes: `accepted` is `true` for Enter (`text` is then what runs, the last entry for an empty search), `false` for Esc or when something else closed it |
 
@@ -1294,7 +1294,7 @@ For rectangles everywhere: `left_cap = " "`, `right_cap = " "` and `corners = "s
 | `max_lines` | Diagnostics shown before `+N more` | `4` |
 | `min_width` | Fewer columns than this left beside the line put the panel under it | `30` |
 | `show_in_insert` | Show the panel in insert mode too | `false` |
-| `show_in_prompt` | Show the panel while a prompt is open too (a search moves the cursor from match to match as it is typed) | `false` |
+| `show_in_prompt` | Show the panel while a prompt is open too (a search moves the cursor from match to match as it is typed). Otherwise it is hidden from the frame that shows the prompt, a command line in a popup included | `false` |
 | `other_lines` | The other lines in view show their most severe diagnostic after their end, in one line in the color of its severity, with `(+N)` for the others (tiny-inline-diagnostic's `multilines`) | `false` |
 | `other_lines_width` | Columns of such a message, at most (cut with `…`) | `60` |
 | `other_lines_align` | Where they go (see `set_annotations`): `"eol_or_right"` (after the end of the line, or at the window's right edge on a line too long for it), `"right"` or `"eol"` | `"eol_or_right"` |

@@ -762,6 +762,14 @@ impl Application {
 
         let pos = pos.map(|pos| (pos.col as u16, pos.row as u16));
         self.terminal.draw(pos, kind).unwrap();
+
+        // What the frame itself told the plugins (a prompt it showed reports that it is open)
+        // gets a frame of its own: they would otherwise hear of it, and change what they show
+        // (the inline diagnostics hide their panel), only with the next key, and the prompt
+        // would be drawn next to what they no longer want shown.
+        if self.plugin_manager.is_enabled() && plugin_events::has_pending() {
+            helix_event::request_redraw();
+        }
     }
 
     pub async fn event_loop<S>(&mut self, input_stream: &mut S)

@@ -135,6 +135,11 @@ pub(crate) fn queue(event: PluginEvent) {
     }
 }
 
+/// Whether events are waiting for the next frame.
+pub(crate) fn has_pending() -> bool {
+    !pending().is_empty()
+}
+
 /// Queues an event with named fields.
 pub(crate) fn queue_fields(event_type: EventType, fields: Vec<(&'static str, EventValue)>) {
     if event_type.is_subscribed() {

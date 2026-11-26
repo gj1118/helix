@@ -1038,3 +1038,69 @@ async fn end_of_line_diagnostics_follow_pinned_annotations() -> anyhow::Result<(
     );
     Ok(())
 }
+
+/// The frame that shows a prompt is the one that tells the plugins it is open: the plugin
+/// hides its panel right away, with a frame of its own, not with the next key. Before, the
+/// command line in a popup at the top was drawn next to the panel until something was typed.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_prompt_hides_the_panel_without_waiting_for_a_key() -> anyhow::Result<()> {
+    use helix_core::diagnostic::Severity;
+    let (mut app, _plugins, _file) = inline_diagnostic_app("", &[]).await?;
+    {
+        let mut config = (*app.editor.config()).clone();
+        config.cmdline.style = helix_view::editor::CmdlineStyle::Popup;
+        config.cmdline.position = helix_view::editor::CmdlinePosition::Top;
+        // no frame drawn on the idle timer: only the keys and what they ask for draw one
+        config.idle_timeout = std::time::Duration::from_secs(3600);
+        app.editor
+            .config_events
+            .0
+            .send(helix_view::editor::ConfigEvent::Update(Box::new(config)))?;
+        let doc = helix_view::doc_mut!(app.editor);
+        doc.replace_diagnostics(
+            [code_diagnostic(
+                0,
+                Severity::Error,
+                "BADTHING one two three four five six seven eight nine ten eleven twelve thirteen",
+            )],
+            &[],
+            None,
+        );
+    }
+    app.resize_terminal(100, 14).await;
+    // the keys, and the frames they ask for: the idle timer never ends the loop
+    async fn send_keys(app: &mut Application, keys: &str) -> anyhow::Result<()> {
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            super::send_keys(app, keys),
+        )
+        .await;
+        Ok(())
+    }
+    send_keys(&mut app, "").await?;
+    let shown = |app: &Application| {
+        app.rendered_rows()
+            .iter()
+            .any(|row| row.contains("BADTHING") || row.contains("eleven twelve"))
+    };
+    let hidden = |app: &Application| {
+        let (view, doc) = helix_view::current_ref!(app.editor);
+        doc.plugin_panels.get(&view.id).map(|panel| panel.hidden)
+    };
+    send_keys(&mut app, "6l").await?;
+    assert!(shown(&app), "{:#?}", app.rendered_rows());
+    assert_eq!(hidden(&app), Some(false));
+
+    // only `:`: no other key draws a frame
+    send_keys(&mut app, ":").await?;
+    let rows = app.rendered_rows();
+    assert!(rows.iter().any(|row| row.contains("Cmdline")), "{rows:#?}");
+    assert!(!shown(&app), "{rows:#?}");
+    assert_eq!(hidden(&app), Some(true));
+
+    send_keys(&mut app, "<esc>").await?;
+    assert!(shown(&app), "{:#?}", app.rendered_rows());
+    assert_eq!(hidden(&app), Some(false));
+    send_keys(&mut app, ":q!<ret>").await?;
+    Ok(())
+}
