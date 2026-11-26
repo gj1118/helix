@@ -1104,3 +1104,96 @@ async fn a_prompt_hides_the_panel_without_waiting_for_a_key() -> anyhow::Result<
     send_keys(&mut app, ":q!<ret>").await?;
     Ok(())
 }
+
+/// A notification's card is drawn over the views: the inline-diagnostic panel under it makes
+/// way, narrower beside the line, or (no room for it at all) gone until the notification is.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_panel_makes_way_for_a_notification() -> anyhow::Result<()> {
+    use helix_core::diagnostic::Severity;
+    const MESSAGE: &str =
+        "BADTHING one two three four five six seven eight nine ten eleven twelve thirteen";
+    let (mut app, _plugins, _file) = inline_diagnostic_app("", &[]).await?;
+    {
+        let mut config = (*app.editor.config()).clone();
+        config.notifications.enable = true;
+        config.notifications.style = helix_view::editor::NotificationStyle::Popup;
+        config.notifications.position = helix_view::editor::NotificationPosition::TopRight;
+        config.notifications.default_timeout = std::time::Duration::ZERO;
+        app.editor
+            .config_events
+            .0
+            .send(helix_view::editor::ConfigEvent::Update(Box::new(config)))?;
+        let doc = helix_view::doc_mut!(app.editor);
+        doc.replace_diagnostics([code_diagnostic(0, Severity::Error, MESSAGE)], &[], None);
+    }
+    // every word of the message on screen, and of the notification
+    let all_shown = |app: &Application, words: &str| {
+        let screen = app.rendered_rows().join(" ");
+        let screen: Vec<&str> = screen.split_whitespace().collect();
+        words.split(' ').all(|word| screen.contains(&word))
+    };
+    const WARNING: &str = "Formatters unavailable for yaml file";
+
+    app.resize_terminal(120, 16).await;
+    send_keys(&mut app, "6l").await?;
+    assert!(all_shown(&app, MESSAGE), "{:#?}", app.rendered_rows());
+    let beside = app.rendered_rows();
+
+    // a card at the top right, over where the panel was: the panel is narrower, beside it
+    app.editor.set_warning(WARNING);
+    send_keys(&mut app, "").await?;
+    let rows = app.rendered_rows();
+    assert!(all_shown(&app, WARNING), "{rows:#?}");
+    assert!(all_shown(&app, MESSAGE), "{rows:#?}");
+    let panel_row = rows
+        .iter()
+        .position(|row| row.contains("BADTHING"))
+        .expect("the panel");
+    assert_eq!(panel_row, 0, "{rows:#?}");
+    assert_ne!(rows, beside, "the panel was laid out again");
+    if std::env::var_os("SHOW_PANEL").is_some() {
+        for row in &rows {
+            eprintln!("PANEL|{row}");
+        }
+    }
+    // its rows end before the card starts, with a column between them: the card does not
+    // cover the end of the panel
+    let panel_bg = helix_view::graphics::Color::Rgb(0xcb, 0xa6, 0xf7);
+    let (card_x, card_y) = (0..16u16)
+        .flat_map(|y| (0..120u16).map(move |x| (x, y)))
+        .find(|&(x, y)| app.rendered_cell(x, y).symbol.as_str() == "╭")
+        .expect("the card");
+    let mut panel_rows_by_card = 0;
+    for y in card_y..card_y + 3 {
+        let panel_cells: Vec<u16> = (0..120u16)
+            .filter(|&x| app.rendered_cell(x, y).bg == panel_bg)
+            .collect();
+        if let Some(&last) = panel_cells.last() {
+            panel_rows_by_card += 1;
+            assert!(last + 1 < card_x, "row {y}: {last} {card_x} {rows:#?}");
+        }
+    }
+    assert!(panel_rows_by_card > 0, "{rows:#?}");
+
+    // a narrow screen: no room beside the card, no panel until the card goes
+    app.resize_terminal(64, 16).await;
+    send_keys(&mut app, "").await?;
+    let rows = app.rendered_rows();
+    assert!(all_shown(&app, WARNING), "{rows:#?}");
+    assert!(
+        !rows.iter().any(|row| row.contains("BADTHING")),
+        "{rows:#?}"
+    );
+    app.editor.notifications.dismiss_all();
+    // (a key: a frame)
+    send_keys(&mut app, "<esc>").await?;
+    assert!(
+        app.rendered_rows()
+            .iter()
+            .any(|row| row.contains("BADTHING")),
+        "{:#?}",
+        app.rendered_rows()
+    );
+    send_keys(&mut app, ":q!<ret>").await?;
+    Ok(())
+}

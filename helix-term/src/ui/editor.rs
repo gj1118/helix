@@ -83,6 +83,9 @@ pub struct EditorView {
     /// whether something was drawn over them afterwards.
     terminal_secondary_cursors: Vec<(u16, u16, Cell)>,
     notification_popup: NotificationPopup,
+    /// Where the notifications' cards are drawn this frame (over the views): a plugin's panel
+    /// makes way for them.
+    notification_cards: Vec<Rect>,
     /// Cache for bufferline display names to avoid O(n³) recomputation per frame
     bufferline_cache: BufferlineCache,
     /// The split divider being dragged with the mouse, if any.
@@ -179,6 +182,7 @@ impl EditorView {
             prompt_active: false,
             terminal_secondary_cursors: Vec::new(),
             notification_popup: NotificationPopup::new(),
+            notification_cards: Vec::new(),
             bufferline_cache: BufferlineCache::default(),
             split_drag: None,
             scrollbars: Default::default(),
@@ -608,7 +612,15 @@ impl EditorView {
         }
 
         // A plugin's panel goes over everything drawn in the view (it takes no rows).
-        Self::render_plugin_panel(editor, doc, view, inner, surface, theme);
+        Self::render_plugin_panel(
+            editor,
+            doc,
+            view,
+            inner,
+            surface,
+            theme,
+            &self.notification_cards,
+        );
 
         // The scrollbar, in the column on the right of the text kept for it.
         self.scrollbars
@@ -628,6 +640,63 @@ impl EditorView {
     /// tiny-inline-diagnostic.nvim: beside the end of its line, or under it when too few
     /// columns are left, wrapping over the lines below. It takes no rows, so no line of the
     /// document moves and scrolling is unaffected; rows past the bottom of the view are cut.
+    /// The rows of `panel` (for a line ending at `end`, in the view's `inner` area), clear of
+    /// the notifications' cards: a panel that would go under one is laid out narrower, to end
+    /// before the card (beside the line, or under it when that leaves too few columns). When
+    /// that leaves it too narrow too (a card wide for the screen, or on the left), there is no
+    /// panel until the notification goes.
+    fn panel_rows_beside_cards(
+        panel: &helix_view::annotations::panel::PluginPanel,
+        end: helix_core::Position,
+        inner: Rect,
+        cards: &[Rect],
+    ) -> Option<Vec<helix_view::annotations::panel::PanelRow>> {
+        use helix_view::annotations::panel::layout;
+        // Narrower than this, the messages would be cut into a column of words.
+        const MIN_WIDTH: usize = 30;
+        let mut width = inner.width as usize;
+        // a few times: narrower, the panel may go under the line, next to another card
+        for _ in 0..4 {
+            let rows = layout(panel, Some(end.col), width);
+            // the left edge of the cards the panel would go under
+            let covered = rows
+                .iter()
+                .filter_map(|row| {
+                    let y = inner.y as usize + end.row + row.row;
+                    if y >= inner.bottom() as usize {
+                        return None;
+                    }
+                    let start = row.spans.first()?.col + inner.x as usize;
+                    let stop = row
+                        .spans
+                        .iter()
+                        .map(|span| span.col + span.text.width())
+                        .max()?
+                        + inner.x as usize;
+                    cards
+                        .iter()
+                        .filter(|card| {
+                            (card.top() as usize..card.bottom() as usize).contains(&y)
+                                && start < card.right() as usize
+                                && (card.left() as usize) < stop
+                        })
+                        .map(|card| card.left() as usize)
+                        .min()
+                })
+                .min();
+            let Some(left) = covered else {
+                return Some(rows);
+            };
+            // a column between the panel and the card
+            let narrower = left.saturating_sub(inner.x as usize + 1);
+            if narrower >= width || narrower < MIN_WIDTH.min(inner.width as usize) {
+                return None;
+            }
+            width = narrower;
+        }
+        None
+    }
+
     fn render_plugin_panel(
         editor: &Editor,
         doc: &Document,
@@ -635,8 +704,9 @@ impl EditorView {
         inner: Rect,
         surface: &mut Surface,
         theme: &Theme,
+        notification_cards: &[Rect],
     ) {
-        use helix_view::annotations::panel::{layout, PanelPart};
+        use helix_view::annotations::panel::PanelPart;
         use helix_view::graphics::Color;
         use helix_view::graphics::Rect;
 
@@ -705,7 +775,11 @@ impl EditorView {
             (hasher.finish() as u32 & 0x00ff_ff00) + 1
         };
 
-        for row in layout(panel, Some(end.col), inner.width as usize) {
+        let Some(rows) = Self::panel_rows_beside_cards(panel, end, inner, notification_cards)
+        else {
+            return;
+        };
+        for row in rows {
             let Some(y) = u16::try_from(end.row + row.row)
                 .ok()
                 .and_then(|row| inner.y.checked_add(row))
@@ -3465,6 +3539,10 @@ impl Component for EditorView {
         cx.editor.sync_diff_scrolling();
         // the changed words of the changes now in view
         cx.editor.prepare_diff_words();
+        // The notifications drawn over the views at the end of the frame, known before them.
+        cx.editor.cleanup_notifications();
+        self.notification_cards =
+            NotificationPopup::card_areas(cx.editor, notification_area(cx.editor, area));
         for (view, is_focused) in cx.editor.tree.views() {
             let doc = cx.editor.document(view.doc).unwrap();
             // The views' frame: a view ending short of it has a neighbour (and a divider) on
@@ -3561,25 +3639,14 @@ impl Component for EditorView {
             }
         }
 
-        // Cleanup expired notifications before rendering
-        cx.editor.cleanup_notifications();
-
-        // The quickfix panel (a layer above this one) takes the bottom rows of the views'
-        // frame: what is drawn here over the views stays above it, or the panel would cover it.
-        let panel = crate::ui::quickfix::panel_area(cx.editor, frame(cx.editor, area));
-        let above_panel = if panel.height > 0 {
-            area.with_height(panel.y.saturating_sub(area.y))
-        } else {
-            area
-        };
+        // (the expired ones were taken away before the views were drawn)
+        let above_panel = above_quickfix_panel(cx.editor, area);
 
         // The notifications: over the views, under what is being used. The completion menu
         // (below) and the layers above this one (pickers, popups, the command line) are
-        // drawn over them. A pinned explorer panel is drawn above this view, so they are
-        // laid out in the area the panel leaves free instead of being painted underneath it.
-        let notification_area = crate::ui::explorer::layout(cx.editor, above_panel);
+        // drawn over them.
         self.notification_popup
-            .render(notification_area, surface, cx);
+            .render(notification_area(cx.editor, area), surface, cx);
 
         if let Some(completion) = self.completion.as_mut() {
             completion.render(above_panel, surface, cx);
@@ -3650,6 +3717,23 @@ fn uses_bufferline(editor: &Editor) -> bool {
         BufferLineRenderMode::Multiple => editor.bufferline_documents().nth(1).is_some(),
         _ => false,
     }
+}
+
+/// The views' frame above the quickfix panel (a layer above the editor, at the bottom of the
+/// frame): what the editor draws over the views stays above it, or the panel would cover it.
+fn above_quickfix_panel(editor: &Editor, area: Rect) -> Rect {
+    let panel = crate::ui::quickfix::panel_area(editor, frame(editor, area));
+    if panel.height > 0 {
+        area.with_height(panel.y.saturating_sub(area.y))
+    } else {
+        area
+    }
+}
+
+/// Where the notifications are laid out: above the quickfix panel, and beside a pinned
+/// explorer panel (drawn above the editor), not under it.
+fn notification_area(editor: &Editor, area: Rect) -> Rect {
+    crate::ui::explorer::layout(editor, above_quickfix_panel(editor, area))
 }
 
 /// The frame of the views in the screen `area`: without the command line's row (unless the

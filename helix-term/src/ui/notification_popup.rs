@@ -201,6 +201,38 @@ impl NotificationPopup {
         }
     }
 
+    /// Where the cards of the notifications shown now are, with their shadows, when they are
+    /// laid out in `area` (what the editor gives them): what is drawn under them, and would
+    /// be covered (a plugin's panel), can make way.
+    pub fn card_areas(editor: &Editor, area: Rect) -> Vec<Rect> {
+        let editor_config = editor.config();
+        let config = &editor_config.notifications;
+        if !config.enable || config.style != NotificationStyle::Popup {
+            return Vec::new();
+        }
+        let active = editor.get_active_notifications();
+        if active.is_empty() {
+            return Vec::new();
+        }
+        let (dx, dy) = if config.shadow.enable {
+            (config.shadow.offset_x, config.shadow.offset_y)
+        } else {
+            (0, 0)
+        };
+        Self::layout(&active, area, config, Frame::new(&editor_config))
+            .into_iter()
+            .map(|card| {
+                let area = card.area;
+                Rect::new(
+                    area.x,
+                    area.y,
+                    area.width.saturating_add(dx),
+                    area.height.saturating_add(dy),
+                )
+            })
+            .collect()
+    }
+
     /// The cards of `notifications` (oldest first) in `viewport`. When they do not all fit,
     /// the oldest are left out: the newest notification is always shown (if anything fits).
     fn layout(

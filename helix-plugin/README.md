@@ -570,6 +570,11 @@ Buffer methods (they raise an error once the buffer is closed):
     of the view stay away; for a panel paused while a prompt is open, say),
     `min_width` (`30`) and `show_in_insert` (`false`: hidden in insert mode).
   - The anchor moves with the text when it is edited.
+  - A notification's card is drawn over the windows: a panel that would go under one is
+    laid out narrower, to end a column before the card (beside the line, or under it when
+    that leaves fewer than `min_width` columns). When even that leaves it fewer than 30
+    columns (a card about as wide as a small screen), the panel is not drawn until the
+    notification goes.
 
 ### `helix.editor`
 

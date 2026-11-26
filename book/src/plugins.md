@@ -648,6 +648,11 @@ Buffer methods (they raise an error once the buffer is closed):
     of the view stay away; for a panel paused while a prompt is open, say),
     `min_width` (`30`) and `show_in_insert` (`false`: hidden in insert mode).
   - The anchor moves with the text when it is edited.
+  - A notification's card is drawn over the windows: a panel that would go under one is
+    laid out narrower, to end a column before the card (beside the line, or under it when
+    that leaves fewer than `min_width` columns). When even that leaves it fewer than 30
+    columns (a card about as wide as a small screen), the panel is not drawn until the
+    notification goes.
 
 ### `helix.editor`
 
@@ -1255,7 +1260,9 @@ Each diagnostic is one shape. A message that fits on one row is a pill with the 
 caps (`left_cap`, `right_cap`). A message wrapped over several rows (at `max_width`
 columns) is a single block with rounded corners (`corners = "round"`): the terminal draws
 the corners as small images where it has the kitty graphics protocol (kitty, Ghostty,
-WezTerm), and the block is a plain rectangle in other terminals. A full configuration,
+WezTerm), and the block is a plain rectangle in other terminals. A notification never
+covers the panel: the panel narrows to end before its card, or waits for it to go on a
+screen too small for both. A full configuration,
 with the settings left at their defaults commented out:
 
 ```toml
