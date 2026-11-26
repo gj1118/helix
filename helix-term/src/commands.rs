@@ -531,6 +531,27 @@ impl MappableCommand {
         explorer_float, "Show the explorer as a floating window, or hide it when it is one",
         explorer_refresh, "Refresh the explorer panel from disk",
         explorer_reveal, "Reveal the current file in the explorer panel",
+        explorer_open, "In the explorer: expand the directory under the cursor, or open the file",
+        explorer_open_vsplit, "In the explorer: open the file under the cursor in a vertical split",
+        explorer_open_hsplit, "In the explorer: open the file under the cursor in a horizontal split",
+        explorer_collapse, "In the explorer: collapse the directory under the cursor, or go to its parent",
+        explorer_parent_folder, "In the explorer: move the cursor to the parent directory's row",
+        explorer_first_row, "In the explorer: jump to the first row",
+        explorer_last_row, "In the explorer: jump to the last row",
+        explorer_filter, "In the explorer: type in the filter box",
+        explorer_toggle_hidden, "In the explorer: show or hide hidden files",
+        explorer_create, "In the explorer: create a file (a directory when the name ends in /) in the selected directory",
+        explorer_create_folder, "In the explorer: create a directory in the selected directory",
+        explorer_rename, "In the explorer: rename the entry under the cursor, or the marked entries",
+        explorer_delete, "In the explorer: delete the entry under the cursor, or the marked entries",
+        explorer_cut, "In the explorer: cut the entry under the cursor, or the marked entries, to move them with explorer_paste",
+        explorer_copy, "In the explorer: copy the entry under the cursor, or the marked entries",
+        explorer_paste, "In the explorer: paste what was cut or copied into the directory under the cursor",
+        explorer_toggle_mark, "In the explorer: mark the entry under the cursor (or unmark it) and move down",
+        explorer_mark_range, "In the explorer: mark every entry from the last one marked to the cursor",
+        explorer_unmark_all, "In the explorer: unmark everything",
+        explorer_close, "Close the explorer",
+        explorer_leave, "In the explorer: unmark everything, else clear the filter, else hand the keyboard back to the editor",
         code_action, "Perform code action",
         code_lens, "Run a code lens (run, test, ...) of the current line",
         code_lens_picker, "Pick a code lens of the file to run",
@@ -4413,6 +4434,68 @@ pub fn explorer_reveal(cx: &mut Context) {
     }));
 }
 
+/// The commands of the explorer's own actions (`[keys.explorer]`): each runs its action on the
+/// explorer, from anywhere, showing the explorer and giving it the keyboard first.
+macro_rules! explorer_action_commands {
+    ($($name:ident),* $(,)?) => {
+        $(
+            fn $name(cx: &mut Context) {
+                explorer_action(cx, stringify!($name));
+            }
+        )*
+    };
+}
+explorer_action_commands!(
+    explorer_open,
+    explorer_open_vsplit,
+    explorer_open_hsplit,
+    explorer_collapse,
+    explorer_parent_folder,
+    explorer_first_row,
+    explorer_last_row,
+    explorer_filter,
+    explorer_toggle_hidden,
+    explorer_create,
+    explorer_create_folder,
+    explorer_rename,
+    explorer_delete,
+    explorer_cut,
+    explorer_copy,
+    explorer_paste,
+    explorer_toggle_mark,
+    explorer_mark_range,
+    explorer_unmark_all,
+    explorer_close,
+    explorer_leave
+);
+
+fn explorer_action(cx: &mut Context, action: &'static str) {
+    // (the explorer hides itself: nothing to show first)
+    if action == "explorer_close" {
+        cx.editor.explorer_panel.hide();
+        return;
+    }
+    cx.editor.explorer_panel.visible = true;
+    cx.editor.explorer_panel.focused = true;
+    cx.editor.quickfix_panel.focused = false;
+    cx.callback.push(Box::new(move |compositor, cx| {
+        if !install_explorer(cx.editor, compositor) {
+            return;
+        }
+        let Some(explorer) =
+            compositor.find_id::<ui::explorer::Explorer>(ui::explorer::EXPLORER_ID)
+        else {
+            return;
+        };
+        // a prompt or a confirmation box of the action
+        if let Some(crate::compositor::EventResult::Consumed(Some(callback))) =
+            explorer.run_action(action, cx)
+        {
+            callback(compositor, cx);
+        }
+    }));
+}
+
 /// Enqueues a full tree reload once the compositor is reachable.
 /// Refreshes the explorer tree from disk when the panel is showing, used by
 /// `:reload` and `:reload-all`. Unlike `explorer_refresh` this never opens a
@@ -4456,43 +4539,50 @@ fn explorer_refresh_job(cx: &mut Context, keep: Option<std::path::PathBuf>) {
 fn explorer_install_layer(cx: &mut Context) {
     cx.jobs.callback(Box::pin(async move {
         let call: Callback = Callback::EditorCompositor(Box::new(|editor, compositor| {
-            if !editor.explorer_panel.visible {
-                return;
-            }
-            if compositor
-                .find_id::<ui::explorer::Explorer>(ui::explorer::EXPLORER_ID)
-                .is_some()
-            {
-                return;
-            }
-
-            let root = find_workspace().0;
-            if !root.exists() {
-                editor.set_error("Workspace directory does not exist");
-                editor.explorer_panel.hide();
-                return;
-            }
-
-            match ui::explorer::Explorer::new(&root, editor) {
-                Ok(explorer) => compositor.push(Box::new(explorer)),
-                Err(err) => {
-                    editor.set_error(format!("Failed to open explorer: {err}"));
-                    editor.explorer_panel.hide();
-                    return;
-                }
-            }
-
-            // Best-effort reveal of the current file.
-            if editor.config().explorer.auto_reveal && helix_view::doc!(editor).path().is_some() {
-                if let Some(explorer) =
-                    compositor.find_id::<ui::explorer::Explorer>(ui::explorer::EXPLORER_ID)
-                {
-                    explorer.reveal_document(editor);
-                }
-            }
+            install_explorer(editor, compositor);
         }));
         Ok(call)
     }));
+}
+
+/// Pushes the explorer's layer when it is shown and not there yet (building the tree); whether
+/// it is there now.
+fn install_explorer(editor: &mut Editor, compositor: &mut crate::compositor::Compositor) -> bool {
+    if !editor.explorer_panel.visible {
+        return false;
+    }
+    if compositor
+        .find_id::<ui::explorer::Explorer>(ui::explorer::EXPLORER_ID)
+        .is_some()
+    {
+        return true;
+    }
+
+    let root = find_workspace().0;
+    if !root.exists() {
+        editor.set_error("Workspace directory does not exist");
+        editor.explorer_panel.hide();
+        return false;
+    }
+
+    match ui::explorer::Explorer::new(&root, editor) {
+        Ok(explorer) => compositor.push(Box::new(explorer)),
+        Err(err) => {
+            editor.set_error(format!("Failed to open explorer: {err}"));
+            editor.explorer_panel.hide();
+            return false;
+        }
+    }
+
+    // Best-effort reveal of the current file.
+    if editor.config().explorer.auto_reveal && helix_view::doc!(editor).path().is_some() {
+        if let Some(explorer) =
+            compositor.find_id::<ui::explorer::Explorer>(ui::explorer::EXPLORER_ID)
+        {
+            explorer.reveal_document(editor);
+        }
+    }
+    true
 }
 
 fn file_explorer(cx: &mut Context) {

@@ -1786,3 +1786,67 @@ async fn the_pinned_panel_stays_after_opening_a_file_by_default() -> anyhow::Res
     assert_eq!(current_file(&app), Some(root.join("a.txt")));
     helpers::quit(app).await
 }
+
+/// The explorer's actions are commands too (`explorer_toggle_mark`, `explorer_create`...): a
+/// key of the normal keymap runs one from the code, showing the explorer and giving it the
+/// keyboard, whatever keys `[keys.explorer]` gives the action. The table still takes the
+/// actions' old names (`toggle_mark`).
+#[tokio::test(flavor = "multi_thread")]
+async fn the_explorer_actions_are_commands() -> anyhow::Result<()> {
+    use helix_term::config::ConfigLoadError;
+    let (_dir, root) = four_files()?;
+    let config = Config::load(
+        Ok(&concat!(
+            "[keys.normal]\n",
+            "C-y = \"explorer_toggle_mark\"\n",
+            "C-n = \"explorer_create\"\n",
+            "[keys.explorer]\n",
+            "m = \"no_op\"\n",
+            "space = \"toggle_mark\"\n",
+        )
+        .to_owned()),
+        Err(ConfigLoadError::default()),
+    )
+    .unwrap();
+    let mut app = helpers::AppBuilder::new().with_config(config).build()?;
+    open_explorer(&mut app, &root);
+    goto(&mut app, "a.txt").await?;
+
+    // from the code: the tree gets the keyboard back, `a.txt` is marked, the cursor moves on
+    send_keys(&mut app, "<esc>").await?;
+    assert!(!app.editor.explorer_panel.focused);
+    send_keys(&mut app, "<C-y>").await?;
+    assert_eq!(marked(&app), vec!["a.txt".to_string()]);
+    assert!(app.editor.explorer_panel.focused);
+    let cursor = explorer(&app)
+        .cursor_path()
+        .and_then(|path| path.file_name())
+        .map(|name| name.to_string_lossy().into_owned());
+    assert_eq!(cursor.as_deref(), Some("b.txt"));
+
+    // in the tree: `m` was taken away, Space marks (the action's old name)
+    send_keys(&mut app, "m").await?;
+    assert_eq!(marked(&app), vec!["a.txt".to_string()]);
+    send_keys(&mut app, "<space>").await?;
+    assert_eq!(marked(&app), vec!["a.txt".to_string(), "b.txt".to_string()]);
+
+    // with the explorer closed, the command shows it first
+    send_keys(&mut app, "<esc>q").await?;
+    assert!(!app.editor.explorer_panel.visible);
+    send_keys(&mut app, "<C-y>").await?;
+    assert!(app.editor.explorer_panel.visible && app.editor.explorer_panel.focused);
+    assert_eq!(marked(&app).len(), 1, "{:?}", marked(&app));
+
+    // an action with a prompt: the file is created where the explorer is
+    send_keys(&mut app, "<esc><esc><C-n>").await?;
+    assert!(
+        app.rendered_rows()
+            .iter()
+            .any(|row| row.contains("New file/folder in")),
+        "{:#?}",
+        app.rendered_rows()
+    );
+    send_keys(&mut app, "made.txt<ret>").await?;
+    assert!(root.join("made.txt").is_file());
+    Ok(())
+}

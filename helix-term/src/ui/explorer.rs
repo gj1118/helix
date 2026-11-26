@@ -699,11 +699,11 @@ impl Explorer {
         if before == 0 && !self.marks.is_empty() {
             let keys = &editor.config().component_keys;
             let hints: Vec<String> = [
-                ("rename", "rename"),
-                ("delete", "delete"),
-                ("cut", "cut"),
-                ("copy", "copy"),
-                ("unmark_all", "unmark"),
+                ("explorer_rename", "rename"),
+                ("explorer_delete", "delete"),
+                ("explorer_cut", "cut"),
+                ("explorer_copy", "copy"),
+                ("explorer_unmark_all", "unmark"),
             ]
             .into_iter()
             .filter_map(|(action, word)| {
@@ -929,7 +929,7 @@ impl Explorer {
             avail,
             config
                 .component_keys
-                .key_for(ComponentKeys::Explorer, "filter")
+                .key_for(ComponentKeys::Explorer, "explorer_filter")
                 .map(|key| key.to_string())
                 .as_deref(),
         ) {
@@ -1152,6 +1152,17 @@ impl Explorer {
         // what the action changed of the tree (decorations, a refresh...) shows now
         self.plugin_requests(cx.editor);
         EventResult::Consumed(None)
+    }
+
+    /// Runs `action` of the `[keys.explorer]` table (`explorer_create`...), whatever keys the
+    /// user gave it: what its command does, from anywhere. `None` for no such action.
+    pub fn run_action(&mut self, action: &str, cx: &mut Context) -> Option<EventResult> {
+        let key = ComponentKeys::Explorer.default_key(action)?;
+        // a count typed before the command is not the tree's (`G` with one is a row)
+        cx.editor.count = None;
+        let result = self.on_nav_key(key, cx);
+        self.publish(cx.editor);
+        Some(result)
     }
 
     fn on_nav_key(&mut self, key: KeyEvent, cx: &mut Context) -> EventResult {

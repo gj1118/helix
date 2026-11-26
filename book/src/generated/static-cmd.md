@@ -139,6 +139,27 @@
 | `explorer_float` | Show the explorer as a floating window, or hide it when it is one | normal: `` <space>X ``, select: `` <space>X `` |
 | `explorer_refresh` | Refresh the explorer panel from disk |  |
 | `explorer_reveal` | Reveal the current file in the explorer panel |  |
+| `explorer_open` | In the explorer: expand the directory under the cursor, or open the file |  |
+| `explorer_open_vsplit` | In the explorer: open the file under the cursor in a vertical split |  |
+| `explorer_open_hsplit` | In the explorer: open the file under the cursor in a horizontal split |  |
+| `explorer_collapse` | In the explorer: collapse the directory under the cursor, or go to its parent |  |
+| `explorer_parent_folder` | In the explorer: move the cursor to the parent directory's row |  |
+| `explorer_first_row` | In the explorer: jump to the first row |  |
+| `explorer_last_row` | In the explorer: jump to the last row |  |
+| `explorer_filter` | In the explorer: type in the filter box |  |
+| `explorer_toggle_hidden` | In the explorer: show or hide hidden files |  |
+| `explorer_create` | In the explorer: create a file (a directory when the name ends in /) in the selected directory |  |
+| `explorer_create_folder` | In the explorer: create a directory in the selected directory |  |
+| `explorer_rename` | In the explorer: rename the entry under the cursor, or the marked entries |  |
+| `explorer_delete` | In the explorer: delete the entry under the cursor, or the marked entries |  |
+| `explorer_cut` | In the explorer: cut the entry under the cursor, or the marked entries, to move them with explorer_paste |  |
+| `explorer_copy` | In the explorer: copy the entry under the cursor, or the marked entries |  |
+| `explorer_paste` | In the explorer: paste what was cut or copied into the directory under the cursor |  |
+| `explorer_toggle_mark` | In the explorer: mark the entry under the cursor (or unmark it) and move down |  |
+| `explorer_mark_range` | In the explorer: mark every entry from the last one marked to the cursor |  |
+| `explorer_unmark_all` | In the explorer: unmark everything |  |
+| `explorer_close` | Close the explorer |  |
+| `explorer_leave` | In the explorer: unmark everything, else clear the filter, else hand the keyboard back to the editor |  |
 | `code_action` | Perform code action | normal: `` <space>a ``, select: `` <space>a `` |
 | `code_lens` | Run a code lens (run, test, ...) of the current line | normal: `` <space>A ``, select: `` <space>A `` |
 | `code_lens_picker` | Pick a code lens of the file to run | normal: `` <space>o ``, select: `` <space>o `` |

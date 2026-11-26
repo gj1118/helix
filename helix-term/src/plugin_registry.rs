@@ -595,6 +595,14 @@ fn static_permissions(name: &str) -> &'static [Permission] {
         | "blame_details"
         | "completion" => &[Ui],
         "explorer" => &[Explorer],
+        // the explorer's actions that change files (behind a prompt or a confirmation box,
+        // or not: a paste with nothing to overwrite) or open them in windows
+        "explorer_create"
+        | "explorer_create_folder"
+        | "explorer_rename"
+        | "explorer_delete"
+        | "explorer_paste" => &[Explorer, Files],
+        "explorer_open" | "explorer_open_vsplit" | "explorer_open_hsplit" => &[Explorer, Windows],
         name if name.starts_with("explorer_") => &[Explorer],
         // moving in a diff (applying a change from a side to the other edits)
         "diff_next_file" | "diff_previous_file" => &[Files, Windows],
@@ -870,7 +878,7 @@ mod tests {
     fn static_commands_are_classified() {
         let count = crate::commands::MappableCommand::STATIC_COMMAND_LIST.len();
         assert_eq!(
-            count, 429,
+            count, 450,
             "commands were added or removed: check `static_permissions` for them"
         );
         use helix_plugin::types::EditorCommandRegistry;
@@ -878,6 +886,10 @@ mod tests {
         let registry = super::TermCommandRegistry {};
         let needs = |name: &str| registry.static_permissions(name);
         assert_eq!(needs("move_line_down"), Some(vec![Edit]));
+        // the explorer's actions, as commands
+        assert_eq!(needs("explorer_toggle_mark"), Some(vec![Explorer]));
+        assert_eq!(needs("explorer_delete"), Some(vec![Explorer, Files]));
+        assert_eq!(needs("explorer_open_vsplit"), Some(vec![Explorer, Windows]));
         assert_eq!(needs("shell_pipe"), Some(vec![Shell]));
         assert_eq!(needs("repeat_last_insert"), Some(vec![Shell]));
         assert_eq!(needs("dap_launch"), Some(vec![Shell]));

@@ -101,6 +101,27 @@ impl Component {
         Self::ALL.into_iter().find(|c| c.name() == name)
     }
 
+    /// The name of an action as the component has it: the explorer's actions were named
+    /// without their `explorer_` (`create`, `reveal_buffer`), and those names still work.
+    pub fn action_name(self, name: &str) -> Option<&'static str> {
+        let actions = self.actions();
+        let find = |name: &str| actions.iter().find(|(n, _)| *n == name).map(|(n, _)| *n);
+        find(name).or_else(|| match self {
+            Component::Explorer if name == "reveal_buffer" => find("explorer_reveal"),
+            Component::Explorer if !name.starts_with("explorer_") => {
+                find(&format!("explorer_{name}"))
+            }
+            _ => None,
+        })
+    }
+
+    /// The key `action` is handled with by default.
+    pub fn default_key(self, action: &str) -> Option<KeyEvent> {
+        let name = self.action_name(action)?;
+        let (_, key) = self.actions().iter().find(|(n, _)| *n == name)?;
+        KeyEvent::from_str(key).ok()
+    }
+
     /// The actions of the component, each with the key it is handled with by default.
     pub fn actions(self) -> &'static [(&'static str, &'static str)] {
         match self {
@@ -164,30 +185,31 @@ impl Component {
                 ("insert_register", "C-r"),
                 ("exit_selection", "C-q"),
             ],
+            // Named as the commands that run them from anywhere (`explorer_create`...).
             Component::Explorer => &[
-                ("open", "l"),
-                ("open_vsplit", "v"),
-                ("open_hsplit", "s"),
-                ("collapse", "h"),
-                ("parent_folder", "-"),
-                ("first_row", "home"),
-                ("last_row", "end"),
-                ("reveal_buffer", "."),
-                ("filter", "/"),
-                ("refresh", "R"),
-                ("toggle_hidden", "H"),
-                ("create", "a"),
-                ("create_folder", "A"),
-                ("rename", "r"),
-                ("delete", "d"),
-                ("cut", "x"),
-                ("copy", "c"),
-                ("paste", "p"),
-                ("toggle_mark", "m"),
-                ("mark_range", "M"),
-                ("unmark_all", "u"),
-                ("close", "q"),
-                ("leave", "esc"),
+                ("explorer_open", "l"),
+                ("explorer_open_vsplit", "v"),
+                ("explorer_open_hsplit", "s"),
+                ("explorer_collapse", "h"),
+                ("explorer_parent_folder", "-"),
+                ("explorer_first_row", "home"),
+                ("explorer_last_row", "end"),
+                ("explorer_reveal", "."),
+                ("explorer_filter", "/"),
+                ("explorer_refresh", "R"),
+                ("explorer_toggle_hidden", "H"),
+                ("explorer_create", "a"),
+                ("explorer_create_folder", "A"),
+                ("explorer_rename", "r"),
+                ("explorer_delete", "d"),
+                ("explorer_cut", "x"),
+                ("explorer_copy", "c"),
+                ("explorer_paste", "p"),
+                ("explorer_toggle_mark", "m"),
+                ("explorer_mark_range", "M"),
+                ("explorer_unmark_all", "u"),
+                ("explorer_close", "q"),
+                ("explorer_leave", "esc"),
             ],
             Component::ExplorerFilter => &[
                 ("accept", "ret"),
@@ -303,24 +325,19 @@ impl ComponentKeys {
             let binding = if action == NO_OP {
                 Binding::Disabled
             } else {
-                let (_, default_key) = actions
-                    .iter()
-                    .find(|(name, _)| name == action)
-                    .ok_or_else(|| {
-                        let names = actions
-                            .iter()
-                            .map(|(name, _)| *name)
-                            .chain([NO_OP])
-                            .collect::<Vec<_>>()
-                            .join(", ");
-                        format!(
-                            "keys.{}: unknown action `{action}` for `{key}` (the actions are: {names})",
-                            component.name()
-                        )
-                    })?;
-                Binding::Key(
-                    KeyEvent::from_str(default_key).expect("default keys of actions are valid"),
-                )
+                let default_key = component.default_key(action).ok_or_else(|| {
+                    let names = actions
+                        .iter()
+                        .map(|(name, _)| *name)
+                        .chain([NO_OP])
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!(
+                        "keys.{}: unknown action `{action}` for `{key}` (the actions are: {names})",
+                        component.name()
+                    )
+                })?;
+                Binding::Key(default_key)
             };
             parsed.push((key_event, binding));
         }
@@ -331,11 +348,7 @@ impl ComponentKeys {
     /// The key to show for `action` of `component`: the first (in name order) of the keys the
     /// user bound to it, else its default key, unless that key was given to something else.
     pub fn key_for(&self, component: Component, action: &str) -> Option<KeyEvent> {
-        let (_, default) = component
-            .actions()
-            .iter()
-            .find(|(name, _)| *name == action)?;
-        let default = KeyEvent::from_str(default).ok()?;
+        let default = component.default_key(action)?;
         let table = self.tables.get(&component);
         let bound = table.into_iter().flatten().filter_map(|(key, binding)| {
             (*binding == Binding::Key(default) && *key != default).then_some(*key)
@@ -514,7 +527,11 @@ mod tests {
         let mut keys = ComponentKeys::default();
         keys.extend(
             Component::Explorer,
-            &table(&[("space", "toggle_mark"), ("D", "delete"), ("m", "no_op")]),
+            &table(&[
+                ("space", "explorer_toggle_mark"),
+                ("D", "explorer_delete"),
+                ("m", "no_op"),
+            ]),
         )
         .unwrap();
         keys.extend(Component::ExplorerFilter, &table(&[("C-j", "next_result")]))
@@ -541,22 +558,79 @@ mod tests {
             Translated::Unchanged
         );
         // what to show for an action: the user's key, else the default one, unless taken away
-        assert_eq!(keys.key_for(Component::Explorer, "delete"), Some(key("D")));
-        assert_eq!(keys.key_for(Component::Explorer, "rename"), Some(key("r")));
         assert_eq!(
-            keys.key_for(Component::Explorer, "toggle_mark"),
+            keys.key_for(Component::Explorer, "explorer_delete"),
+            Some(key("D"))
+        );
+        assert_eq!(
+            keys.key_for(Component::Explorer, "explorer_rename"),
+            Some(key("r"))
+        );
+        assert_eq!(
+            keys.key_for(Component::Explorer, "explorer_toggle_mark"),
             Some(key("space"))
         );
         keys.extend(Component::Explorer, &table(&[("u", "no_op")]))
             .unwrap();
-        assert_eq!(keys.key_for(Component::Explorer, "unmark_all"), None);
+        assert_eq!(
+            keys.key_for(Component::Explorer, "explorer_unmark_all"),
+            None
+        );
         assert_eq!(keys.key_for(Component::Explorer, "jump_around"), None);
         // an action of the filter box is not one of the tree
         let err = keys
             .extend(Component::Explorer, &table(&[("C-j", "next_result")]))
             .unwrap_err();
         assert!(err.contains("keys.explorer: unknown action"), "{err}");
-        assert!(err.contains("toggle_mark"), "{err}");
+        assert!(err.contains("explorer_toggle_mark"), "{err}");
+    }
+
+    /// The explorer's actions are named as their commands (`explorer_create`); the names they
+    /// had (`create`, `reveal_buffer`) still work.
+    #[test]
+    fn the_explorer_actions_keep_their_old_names() {
+        for (name, _) in Component::Explorer.actions() {
+            assert!(name.starts_with("explorer_"), "{name}");
+        }
+        let explorer = Component::Explorer;
+        assert_eq!(explorer.action_name("create"), Some("explorer_create"));
+        assert_eq!(
+            explorer.action_name("explorer_create"),
+            Some("explorer_create")
+        );
+        assert_eq!(
+            explorer.action_name("reveal_buffer"),
+            Some("explorer_reveal")
+        );
+        assert_eq!(explorer.action_name("jump_around"), None);
+        // only the explorer's: `create` is the file explorer picker's own name
+        assert_eq!(Component::Picker.action_name("explorer_close"), None);
+        assert_eq!(
+            Component::FileExplorer.action_name("create"),
+            Some("create")
+        );
+        assert_eq!(explorer.default_key("paste"), Some(key("p")));
+        assert_eq!(explorer.default_key("explorer_last_row"), Some(key("end")));
+
+        let mut keys = ComponentKeys::default();
+        keys.extend(
+            explorer,
+            &table(&[("space", "toggle_mark"), ("C-r", "reveal_buffer")]),
+        )
+        .unwrap();
+        assert_eq!(
+            keys.translate(explorer, key("space")),
+            Translated::Key(key("m"))
+        );
+        assert_eq!(
+            keys.translate(explorer, key("C-r")),
+            Translated::Key(key("."))
+        );
+        assert_eq!(
+            keys.key_for(explorer, "explorer_toggle_mark"),
+            Some(key("space"))
+        );
+        assert_eq!(keys.key_for(explorer, "toggle_mark"), Some(key("space")));
     }
 
     #[test]

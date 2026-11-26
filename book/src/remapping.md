@@ -95,10 +95,10 @@ C-t = "no_op"
 C-o = "delete_word_back"
 
 [keys.explorer]
-space = "toggle_mark"   # mark with Space as well as m
-D = "delete"
-d = "no_op"             # d no longer deletes
-C-f = "filter"
+space = "explorer_toggle_mark"   # mark with Space as well as m
+D = "explorer_delete"
+d = "no_op"                      # d no longer deletes
+C-f = "explorer_filter"
 
 [keys.explorer-filter]
 C-j = "next_result"
@@ -129,7 +129,7 @@ the prompt at the top of a picker, but not to the picker's own keys.
 | `picker`  | `move_up` (`Up`), `move_down` (`Down`), `half_page_up` (`C-u`), `half_page_down` (`C-d`), `page_up` (`PageUp`), `page_down` (`PageDown`), `to_start` (`Home`), `to_end` (`End`), `select` (`Enter`), `select_in_background` (`A-Enter`), `select_horizontal` (`C-s`), `select_vertical` (`C-v`), `toggle_preview` (`C-t`), `copy_to_quicklist` (`C-q`), `copy_to_location_list` (`A-q`), `scroll_preview_up` (`A-k`), `scroll_preview_down` (`A-j`), `toggle_replace` (`A-r`, in global search), `replace_all` (`A-a`, also `C-Enter`), `close` (`Esc`) |
 | `menu`    | `move_up` (`Up`), `move_down` (`Down`), `half_page_up` (`C-u`), `half_page_down` (`C-d`), `select` (`Enter`), `abort` (`Esc`) |
 | `popup`   | `scroll_half_page_up` (`PageUp`), `scroll_half_page_down` (`PageDown`), `previous` (`A-p`) and `next` (`A-n`): the previous / next signature of signature help, or hover of another language server, `close` (`Esc`) |
-| `explorer` | `open` (`l`, also `Right` and `Enter`), `open_vsplit` (`v`), `open_hsplit` (`s`), `collapse` (`h`, also `Left`), `parent_folder` (`-`), `first_row` (`Home`), `last_row` (`End`, also `G`), `reveal_buffer` (`.`), `filter` (`/`), `refresh` (`R`), `toggle_hidden` (`H`), `create` (`a`), `create_folder` (`A`), `rename` (`r`), `delete` (`d`), `cut` (`x`), `copy` (`c`), `paste` (`p`), `toggle_mark` (`m`), `mark_range` (`M`), `unmark_all` (`u`), `close` (`q`), `leave` (`Esc`) |
+| `explorer` | `explorer_open` (`l`, also `Right` and `Enter`), `explorer_open_vsplit` (`v`), `explorer_open_hsplit` (`s`), `explorer_collapse` (`h`, also `Left`), `explorer_parent_folder` (`-`), `explorer_first_row` (`Home`), `explorer_last_row` (`End`, also `G`), `explorer_reveal` (`.`), `explorer_filter` (`/`), `explorer_refresh` (`R`), `explorer_toggle_hidden` (`H`), `explorer_create` (`a`), `explorer_create_folder` (`A`), `explorer_rename` (`r`), `explorer_delete` (`d`), `explorer_cut` (`x`), `explorer_copy` (`c`), `explorer_paste` (`p`), `explorer_toggle_mark` (`m`), `explorer_mark_range` (`M`), `explorer_unmark_all` (`u`), `explorer_close` (`q`), `explorer_leave` (`Esc`). Each is also a command of the same name, to run it from anywhere (`[keys.normal]`, the command palette), and the names without `explorer_` (`create`, `reveal_buffer` for `explorer_reveal`) still work here |
 | `explorer-filter` | `accept` (`Enter`), `next_result` (`Down`), `prev_result` (`Up`), `browse_results` (`Tab`), `clear` (`Esc`), `move_char_back` (`Left`), `move_char_forward` (`Right`), `move_start` (`Home`), `move_end` (`End`), `delete_char_back` (`Backspace`), `delete_char_forward` (`Delete`), `delete_word_back` (`C-w`), `kill_to_start` (`C-u`) |
 | `prompt`  | `abort` (`Esc`), `submit` (`Enter`), `move_char_back` (`Left`), `move_char_forward` (`Right`), `move_word_back` (`A-b`), `move_word_forward` (`A-f`), `move_start` (`Home`), `move_end` (`End`), `delete_char_back` (`Backspace`), `delete_char_forward` (`Delete`), `delete_word_back` (`C-w`), `delete_word_forward` (`A-d`), `kill_to_start` (`C-u`), `kill_to_end` (`C-k`), `history_prev` (`Up`), `history_next` (`Down`), `complete_next` (`Tab`), `complete_prev` (`S-Tab`), `insert_word_under_cursor` (`C-s`), `insert_register` (`C-r`), `exit_selection` (`C-q`) |
 

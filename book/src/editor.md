@@ -502,45 +502,49 @@ Moving up and down uses your normal-mode keymap: the movement commands its keys 
 remapping them in `[keys.normal]` changes them in the tree too. The keys below that are the
 tree's own (open, rename, delete, ...) take precedence over the keymap.
 
-| Key | Description |
-|--|--|
-|`j`/`k`, up/down, with a count (`5j`) | Move within the tree |
-|`gg`/`ge` | Jump to the top/bottom of the tree (`10gg`: the tenth row) |
-|`C-d`/`C-u`, `C-f`/`C-b`, PageDown/PageUp | Move by half a page / a page |
-|`gt`/`gc`/`gb` | Jump to the top/middle/bottom of the visible rows |
-|`G`, `5G` | Jump to the last row; with a count, to that row (`5G`: the fifth row) |
-|Home/End | Jump to the first/last row |
-|`h`, left | Collapse the directory under the cursor, or ascend to its parent |
-|`-` | Move the cursor to the parent directory row |
-|`l`/Enter, right | Expand the directory under the cursor, or open the file |
-|`v` | Open the file under the cursor in a vertical split |
-|`s` | Open the file under the cursor in a horizontal split |
-|`.` | Reveal and select the current buffer's file |
-|`R` | Reload expanded directories from disk |
-|`H` | Toggle showing hidden files |
-|`l`/Enter on `...` | Go up: the parent directory becomes the explorer's root (the `...` row is the first row, hidden while filtering) |
-|`/` | Focus the filter box at the top of the panel (see below) |
-|`a` | Create a file (or a directory when the name ends in `/`) in the selected directory, or beside the selected file; at the root when nothing is selected |
-|`A` | Create a directory in the same place |
-|`r` | Rename the entry under the cursor (the popup is titled `Rename file <name>` / `Rename folder <name>` and prefilled), or each marked entry in turn (see below). Open buffers of the file follow it. Changing only the case of the name (`readme.md` to `README.md`) also works on case-insensitive file systems (macOS, Windows) |
-|`d` | Delete the entry under the cursor, or all the marked entries; one confirmation box opens first and defaults to Cancel |
-|`x` | Cut the entry under the cursor, or the marked entries, to move them with `p` |
-|`c` | Copy the entry under the cursor, or the marked entries |
-|`p` | Paste the explorer clipboard (one entry or several) into the directory under the cursor; one confirmation box lists what would be overwritten. FIFOs, sockets and devices inside a copied folder are skipped |
-|`m` | Mark the entry under the cursor (or unmark it) and move down, so `mmm` marks three entries in a row |
-|`M` | Mark every entry from the last one marked to the cursor |
-|`u` | Unmark everything |
-|`q` | Close the panel |
-|`Esc` | Unmark everything first, then clear an active filter; otherwise hand keyboard focus back to the editor (panel keeps its tree; a floating panel closes instead) |
+| Key | Command | Description |
+|--|--|--|
+|`j`/`k`, up/down, with a count (`5j`) | | Move within the tree |
+|`gg`/`ge` | | Jump to the top/bottom of the tree (`10gg`: the tenth row) |
+|`C-d`/`C-u`, `C-f`/`C-b`, PageDown/PageUp | | Move by half a page / a page |
+|`gt`/`gc`/`gb` | | Jump to the top/middle/bottom of the visible rows |
+|`G`, `5G` | `explorer_last_row` (without a count) | Jump to the last row; with a count, to that row (`5G`: the fifth row) |
+|Home/End | `explorer_first_row` / `explorer_last_row` | Jump to the first/last row |
+|`h`, left | `explorer_collapse` | Collapse the directory under the cursor, or ascend to its parent |
+|`-` | `explorer_parent_folder` | Move the cursor to the parent directory row |
+|`l`/Enter, right | `explorer_open` | Expand the directory under the cursor, or open the file |
+|`v` | `explorer_open_vsplit` | Open the file under the cursor in a vertical split |
+|`s` | `explorer_open_hsplit` | Open the file under the cursor in a horizontal split |
+|`.` | `explorer_reveal` | Reveal and select the current buffer's file |
+|`R` | `explorer_refresh` | Reload expanded directories from disk |
+|`H` | `explorer_toggle_hidden` | Toggle showing hidden files |
+|`l`/Enter on `...` | `explorer_open` | Go up: the parent directory becomes the explorer's root (the `...` row is the first row, hidden while filtering) |
+|`/` | `explorer_filter` | Focus the filter box at the top of the panel (see below) |
+|`a` | `explorer_create` | Create a file (or a directory when the name ends in `/`) in the selected directory, or beside the selected file; at the root when nothing is selected |
+|`A` | `explorer_create_folder` | Create a directory in the same place |
+|`r` | `explorer_rename` | Rename the entry under the cursor (the popup is titled `Rename file <name>` / `Rename folder <name>` and prefilled), or each marked entry in turn (see below). Open buffers of the file follow it. Changing only the case of the name (`readme.md` to `README.md`) also works on case-insensitive file systems (macOS, Windows) |
+|`d` | `explorer_delete` | Delete the entry under the cursor, or all the marked entries; one confirmation box opens first and defaults to Cancel |
+|`x` | `explorer_cut` | Cut the entry under the cursor, or the marked entries, to move them with `p` |
+|`c` | `explorer_copy` | Copy the entry under the cursor, or the marked entries |
+|`p` | `explorer_paste` | Paste the explorer clipboard (one entry or several) into the directory under the cursor; one confirmation box lists what would be overwritten. FIFOs, sockets and devices inside a copied folder are skipped |
+|`m` | `explorer_toggle_mark` | Mark the entry under the cursor (or unmark it) and move down, so `mmm` marks three entries in a row |
+|`M` | `explorer_mark_range` | Mark every entry from the last one marked to the cursor |
+|`u` | `explorer_unmark_all` | Unmark everything |
+|`q` | `explorer_close` | Close the panel |
+|`Esc` | `explorer_leave` | Unmark everything first, then clear an active filter; otherwise hand keyboard focus back to the editor (panel keeps its tree; a floating panel closes instead) |
 
-Every key of the tree in this table can be changed in `[keys.explorer]`, and the keys of the
+The commands run the same actions from anywhere: bind one in `[keys.normal]` (`C-n =
+"explorer_create"`), or pick it in the command palette. The explorer is shown first and given
+the keyboard. Moving up and down has no command of its own: those keys are the editor's
+motions. Every key of the tree in this table can be changed in `[keys.explorer]`, which takes
+the command names (the names without `explorer_`, `create`, still work), and the keys of the
 filter box in `[keys.explorer-filter]`; see
 [Key remapping](./remapping.md#keys-of-pickers-menus-popups-and-prompts) for the action names:
 
 ```toml
 [keys.explorer]
-space = "toggle_mark"
-D = "delete"
+space = "explorer_toggle_mark"
+D = "explorer_delete"
 d = "no_op"
 ```
 
