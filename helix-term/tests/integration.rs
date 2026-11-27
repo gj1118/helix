@@ -42,6 +42,7 @@ mod test {
     mod long_lines;
     mod lsp_data;
     mod match_highlight;
+    mod mouse_yank;
     mod movement;
     mod multi_cursor;
     mod navigation;

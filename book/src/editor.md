@@ -53,7 +53,7 @@
 |--|--|---------|
 | `mouse` | Enable mouse mode | `true` |
 | `mouse-yank-register` | Which register to use for mouse yanks. | `*` |
-| `middle-click-paste` | Middle click paste support | `true` |
+| `middle-click-paste` | Middle click paste support: what a drag with the left button selects is yanked to the primary clipboard (`*`) when it is released, and the middle button pastes it. A click yanks nothing, and moving the pointer a column while clicking (a trackpad) is still a click, not a drag | `true` |
 | `default-yank-register` | Default register used for yank/paste | `'"'` |
 | `subword-motions` | The word motions (`w`, `b`, `e`, and `ge`) stop at the parts of `camelCase` and `snake_case` names (`parse`, `Http`, `Response`), like nvim-spider; `W`, `B`, `E` still go by WORDs. The commands `move_next_sub_word_start` and the others can be bound to keys of their own instead | `false` |
 | `remember-cursor-position` | A buffer opens where its cursor was last: a file opened again (after `:buffer-close`, or after a restart with [`[editor.persistence] old-files`](#where-the-cursor-was-last)) and a window showing a buffer for the first time. `false`: they start at the start of the file | `true` |

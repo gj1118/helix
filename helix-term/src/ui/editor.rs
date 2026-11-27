@@ -87,6 +87,9 @@ pub struct EditorView {
     /// Where the notifications' cards are drawn this frame (over the views): a plugin's panel
     /// makes way for them.
     notification_cards: Vec<Rect>,
+    /// Where the left button went down in the text (row, column), and whether the pointer has
+    /// moved far enough since for a drag (see [`MousePress`]).
+    mouse_press: Option<MousePress>,
     /// The rainbow brackets of each view, as last worked out, and what they depend on.
     rainbow_cache:
         std::cell::RefCell<std::collections::HashMap<ViewId, (ViewSyntaxKey, OverlayHighlights)>>,
@@ -191,6 +194,7 @@ impl EditorView {
             terminal_secondary_cursors: Vec::new(),
             notification_popup: NotificationPopup::new(),
             notification_cards: Vec::new(),
+            mouse_press: None,
             rainbow_cache: Default::default(),
             highlight_cache: Default::default(),
             bufferline_cache: BufferlineCache::default(),
@@ -3134,6 +3138,9 @@ impl EditorView {
         match kind {
             MouseEventKind::Down(MouseButton::Left) => {
                 let editor = &mut cxt.editor;
+                // a press anywhere but in the text selects nothing, and yanks nothing
+                editor.mouse_down_range = None;
+                self.mouse_press = None;
 
                 let config = editor.config();
                 let bufferline_visible = match config.bufferline.render_mode {
@@ -3211,11 +3218,17 @@ impl EditorView {
                             pos,
                             true,
                         );
-                        editor.mouse_down_range = Some(primary);
                         doc.set_selection(view_id, Selection::single(primary.anchor, primary.head));
                     } else {
                         doc.set_selection(view_id, Selection::point(pos));
                     }
+                    // What the press selected: what the release yanks, if a drag changed it.
+                    editor.mouse_down_range = Some(doc.selection(view_id).primary());
+                    self.mouse_press = Some(MousePress {
+                        row,
+                        column,
+                        dragging: false,
+                    });
 
                     editor.ensure_cursor_in_view(view_id);
 
@@ -3255,6 +3268,17 @@ impl EditorView {
             }
 
             MouseEventKind::Drag(MouseButton::Left) => {
+                // A click moves the pointer a little now and then (a trackpad): not a drag
+                // until it leaves the cells next to where it went down, or it would select two
+                // characters, and the release would yank them.
+                if let Some(press) = &mut self.mouse_press {
+                    if !press.dragging {
+                        if row == press.row && column.abs_diff(press.column) <= 1 {
+                            return EventResult::Consumed(None);
+                        }
+                        press.dragging = true;
+                    }
+                }
                 let (view, doc) = current!(cxt.editor);
 
                 let pos = match view.pos_at_screen_coords(doc, row, column, true) {
@@ -3301,17 +3325,16 @@ impl EditorView {
 
                 let (view, doc) = current!(cxt.editor);
 
+                // Only a drag that started in the text and changed what the press selected
+                // yanks: not a click (whatever was selected before it), and not a release after
+                // a press somewhere else (the status line, a tab).
+                let pressed = self.mouse_press.take();
                 let should_yank = match cxt.editor.mouse_down_range.take() {
-                    Some(down_range) => doc.selection(view.id).primary() != down_range,
-                    None => {
-                        // This should not happen under normal cases. We fall back to the original
-                        // behavior of yanking on non-single-char selections.
-                        doc.selection(view.id)
-                            .primary()
-                            .slice(doc.text().slice(..))
-                            .len_chars()
-                            > 1
+                    Some(down_range) => {
+                        pressed.is_some_and(|press| press.dragging)
+                            && doc.selection(view.id).primary() != down_range
                     }
+                    None => false,
                 };
 
                 if should_yank {
@@ -4086,4 +4109,13 @@ impl PartialEq for ViewSyntaxKey {
             && Arc::ptr_eq(&self.scopes, &other.scopes)
             && self.rainbow_length == other.rainbow_length
     }
+}
+
+/// The left button down in the text.
+#[derive(Debug, Clone, Copy)]
+struct MousePress {
+    row: u16,
+    column: u16,
+    /// The pointer left the cells next to where it went down: a drag, that selects.
+    dragging: bool,
 }
