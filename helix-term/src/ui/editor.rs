@@ -6,7 +6,7 @@ use crate::{
     key,
     keymap::{KeymapResult, Keymaps},
     ui::{
-        document::{render_document, LinePos, TextRenderer},
+        document::{render_document, LinePos, RecordedHighlights, SyntaxHighlights, TextRenderer},
         statusline,
         text_decorations::{
             self, Decoration, DecorationManager, FoldDecoration, InlineDiagnostics,
@@ -50,6 +50,7 @@ use std::{
     ops,
     path::{PathBuf, MAIN_SEPARATOR, MAIN_SEPARATOR_STR},
     rc::Rc,
+    sync::Arc,
 };
 
 use tui::{
@@ -86,6 +87,13 @@ pub struct EditorView {
     /// Where the notifications' cards are drawn this frame (over the views): a plugin's panel
     /// makes way for them.
     notification_cards: Vec<Rect>,
+    /// The rainbow brackets of each view, as last worked out, and what they depend on.
+    rainbow_cache:
+        std::cell::RefCell<std::collections::HashMap<ViewId, (ViewSyntaxKey, OverlayHighlights)>>,
+    /// The syntax highlights of each view, as last recorded, and what they depend on.
+    highlight_cache: std::cell::RefCell<
+        std::collections::HashMap<ViewId, (ViewSyntaxKey, Arc<RecordedHighlights>)>,
+    >,
     /// Cache for bufferline display names to avoid O(n³) recomputation per frame
     bufferline_cache: BufferlineCache,
     /// The split divider being dragged with the mouse, if any.
@@ -183,6 +191,8 @@ impl EditorView {
             terminal_secondary_cursors: Vec::new(),
             notification_popup: NotificationPopup::new(),
             notification_cards: Vec::new(),
+            rainbow_cache: Default::default(),
+            highlight_cache: Default::default(),
             bufferline_cache: BufferlineCache::default(),
             split_drag: None,
             scrollbars: Default::default(),
@@ -401,8 +411,9 @@ impl EditorView {
             decorations.add_decoration(line_decoration);
         }
 
-        let syntax_highlighter = Self::doc_syntax_highlighter(
+        let syntax_highlighter = self.cached_syntax_highlights(
             doc,
+            view.id,
             &text_annotations,
             view_offset.anchor,
             inner.height,
@@ -422,8 +433,9 @@ impl EditorView {
             .and_then(|config| config.rainbow_brackets)
             .unwrap_or(config.rainbow_brackets)
         {
-            if let Some(overlay) = Self::doc_rainbow_highlights(
+            if let Some(overlay) = self.cached_rainbow_highlights(
                 doc,
+                view.id,
                 &text_annotations,
                 view_offset.anchor,
                 inner.height,
@@ -1072,6 +1084,103 @@ impl EditorView {
         range = text.byte_to_char(range.start)..text.byte_to_char(range.end);
 
         text_annotations.collect_overlay_highlights(range)
+    }
+
+    /// Forgets the highlights kept from the frames before: the next frame works all of them out
+    /// again (what a test compares the kept ones with).
+    pub fn forget_render_caches(&mut self) {
+        self.rainbow_cache.get_mut().clear();
+        self.highlight_cache.get_mut().clear();
+    }
+
+    /// What the highlights of the lines in view of `doc` depend on.
+    fn view_syntax_key(
+        doc: &Document,
+        annotations: &TextAnnotations,
+        anchor: usize,
+        height: u16,
+        loader: &Arc<syntax::Loader>,
+        rainbow_length: usize,
+    ) -> ViewSyntaxKey {
+        let text = doc.text().slice(..);
+        let row = text.char_to_line(anchor.min(text.len_chars()));
+        ViewSyntaxKey {
+            doc: doc.id(),
+            syntax: doc.syntax_generation(),
+            range: Self::viewport_byte_range(text, annotations, row, height),
+            loader: Arc::clone(loader),
+            scopes: Arc::clone(&loader.scopes()),
+            rainbow_length,
+        }
+    }
+
+    /// The syntax highlights of the lines in view, as recorded from the highlighter the last
+    /// time they were drawn while nothing they depend on changed since (the text and its tree,
+    /// the lines in view, the queries and the theme's scopes): the highlight queries are run
+    /// over the lines in view only when something did, not on every frame in every window
+    /// (for a cursor that moved, in one of them). Drawn live when there are too many events.
+    fn cached_syntax_highlights<'d>(
+        &self,
+        doc: &'d Document,
+        view_id: ViewId,
+        annotations: &TextAnnotations,
+        anchor: usize,
+        height: u16,
+        loader: &'d Arc<syntax::Loader>,
+    ) -> Option<SyntaxHighlights<'d>> {
+        doc.syntax()?;
+        let key = Self::view_syntax_key(doc, annotations, anchor, height, loader, 0);
+        let mut cache = self.highlight_cache.borrow_mut();
+        if let Some((cached_key, highlights)) = cache.get(&view_id) {
+            if *cached_key == key {
+                return Some(Arc::clone(highlights).into());
+            }
+        }
+        let highlighter = Self::doc_syntax_highlighter(doc, annotations, anchor, height, loader)?;
+        let Some(recorded) = RecordedHighlights::record(highlighter) else {
+            cache.remove(&view_id);
+            return Self::doc_syntax_highlighter(doc, annotations, anchor, height, loader)
+                .map(Into::into);
+        };
+        let recorded = Arc::new(recorded);
+        cache.insert(view_id, (key, Arc::clone(&recorded)));
+        Some(recorded.into())
+    }
+
+    /// [`Self::doc_rainbow_highlights`], worked out again only when the lines in view, the
+    /// syntax tree, the queries or the theme's number of colors changed: the query is run over
+    /// the lines in view on every frame otherwise, in every window (a third of a frame's time,
+    /// in a large file), for a cursor that only moved.
+    #[allow(clippy::too_many_arguments)]
+    fn cached_rainbow_highlights(
+        &self,
+        doc: &Document,
+        view_id: ViewId,
+        annotations: &TextAnnotations,
+        anchor: usize,
+        height: u16,
+        theme: &Theme,
+        loader: &Arc<syntax::Loader>,
+    ) -> Option<OverlayHighlights> {
+        doc.syntax()?;
+        let key = Self::view_syntax_key(
+            doc,
+            annotations,
+            anchor,
+            height,
+            loader,
+            theme.rainbow_length(),
+        );
+        let mut cache = self.rainbow_cache.borrow_mut();
+        if let Some((cached_key, highlights)) = cache.get(&view_id) {
+            if *cached_key == key {
+                return Some(highlights.clone());
+            }
+        }
+        let highlights =
+            Self::doc_rainbow_highlights(doc, annotations, anchor, height, theme, loader)?;
+        cache.insert(view_id, (key, highlights.clone()));
+        Some(highlights)
     }
 
     pub fn doc_rainbow_highlights(
@@ -2015,7 +2124,7 @@ impl EditorView {
                 doc,
                 offset,
                 &annotations,
-                highlighter,
+                highlighter.map(Into::into),
                 Vec::new(),
                 theme,
                 decorations,
@@ -3539,6 +3648,13 @@ impl Component for EditorView {
         cx.editor.sync_diff_scrolling();
         // the changed words of the changes now in view
         cx.editor.prepare_diff_words();
+        // (the rainbow brackets of the windows that were closed)
+        self.rainbow_cache
+            .get_mut()
+            .retain(|view, _| cx.editor.tree.contains(*view));
+        self.highlight_cache
+            .get_mut()
+            .retain(|view, _| cx.editor.tree.contains(*view));
         // The notifications drawn over the views at the end of the frame, known before them.
         cx.editor.cleanup_notifications();
         self.notification_cards =
@@ -3941,5 +4057,33 @@ mod tests {
         // A double width char straddling the clip point is dropped whole.
         assert_eq!(skip_display_columns("日本", 1), ("本".into(), 1));
         assert_eq!(skip_display_columns("ab", 5), ("".into(), 0));
+    }
+}
+
+/// What the highlights of the lines in view of a window depend on: the same key, the same
+/// highlights.
+#[derive(Debug, Clone)]
+struct ViewSyntaxKey {
+    doc: helix_view::DocumentId,
+    /// [`Document::syntax_generation`]: the tree, changed by every edit.
+    syntax: u64,
+    /// The bytes in view.
+    range: std::ops::Range<usize>,
+    /// The languages and their queries (all of them read again by `:config-reload`).
+    loader: Arc<syntax::Loader>,
+    /// The scopes of the theme the highlights are numbers of.
+    scopes: Arc<Vec<String>>,
+    /// The theme's number of rainbow colors (0 for the syntax highlights).
+    rainbow_length: usize,
+}
+
+impl PartialEq for ViewSyntaxKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.doc == other.doc
+            && self.syntax == other.syntax
+            && self.range == other.range
+            && Arc::ptr_eq(&self.loader, &other.loader)
+            && Arc::ptr_eq(&self.scopes, &other.scopes)
+            && self.rainbow_length == other.rainbow_length
     }
 }

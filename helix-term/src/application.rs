@@ -2409,6 +2409,22 @@ impl Application {
         Ok(())
     }
 
+    /// Forgets what the editor kept from the frames before (the highlights of the lines in
+    /// view), and draws a frame without it.
+    #[cfg(feature = "integration")]
+    pub async fn render_without_caches(&mut self) {
+        if let Some(editor_view) = self.compositor.find::<ui::EditorView>() {
+            editor_view.forget_render_caches();
+        }
+        self.render().await;
+    }
+
+    /// The cells of the last frame drawn to the (test) terminal.
+    #[cfg(feature = "integration")]
+    pub fn rendered_cells(&self) -> Vec<tui::buffer::Cell> {
+        self.terminal.backend().buffer().content.clone()
+    }
+
     /// A cell of the last frame drawn to the (test) terminal.
     #[cfg(feature = "integration")]
     pub fn rendered_cell(&self, x: u16, y: u16) -> &tui::buffer::Cell {

@@ -36,7 +36,7 @@ pub fn render_document(
     doc: &Document,
     offset: ViewPosition,
     doc_annotations: &TextAnnotations,
-    syntax_highlighter: Option<Highlighter<'_>>,
+    syntax_highlighter: Option<SyntaxHighlights<'_>>,
     overlay_highlights: Vec<syntax::OverlayHighlights>,
     theme: &Theme,
     decorations: DecorationManager,
@@ -68,7 +68,7 @@ pub fn render_text(
     anchor: usize,
     text_fmt: &TextFormat,
     text_annotations: &TextAnnotations,
-    syntax_highlighter: Option<Highlighter<'_>>,
+    syntax_highlighter: Option<SyntaxHighlights<'_>>,
     overlay_highlights: Vec<syntax::OverlayHighlights>,
     theme: &Theme,
     mut decorations: DecorationManager,
@@ -508,8 +508,113 @@ impl<'a> TextRenderer<'a> {
     }
 }
 
+/// The syntax highlights of the text drawn: from the highlighter, or as recorded from one
+/// before (see [`RecordedHighlights`]).
+pub enum SyntaxHighlights<'h> {
+    Live(Highlighter<'h>),
+    Recorded {
+        highlights: std::sync::Arc<RecordedHighlights>,
+        /// The next event.
+        next: usize,
+    },
+}
+
+impl<'h> From<Highlighter<'h>> for SyntaxHighlights<'h> {
+    fn from(highlighter: Highlighter<'h>) -> Self {
+        Self::Live(highlighter)
+    }
+}
+
+impl From<std::sync::Arc<RecordedHighlights>> for SyntaxHighlights<'_> {
+    fn from(highlights: std::sync::Arc<RecordedHighlights>) -> Self {
+        Self::Recorded {
+            highlights,
+            next: 0,
+        }
+    }
+}
+
+impl SyntaxHighlights<'_> {
+    fn next_event_offset(&self) -> u32 {
+        match self {
+            Self::Live(highlighter) => highlighter.next_event_offset(),
+            Self::Recorded { highlights, next } => highlights
+                .events
+                .get(*next)
+                .map_or(u32::MAX, |event| event.offset),
+        }
+    }
+
+    /// The next event and the highlights it sets, as the highlighter's `advance`.
+    fn advance(
+        &mut self,
+        mut each: impl FnMut(HighlightEvent, &mut dyn Iterator<Item = syntax::Highlight>),
+    ) {
+        match self {
+            Self::Live(highlighter) => {
+                let (event, mut highlights) = highlighter.advance();
+                each(event, &mut highlights);
+            }
+            Self::Recorded { highlights, next } => {
+                let Some(event) = highlights.events.get(*next) else {
+                    return;
+                };
+                *next += 1;
+                let list = &highlights.highlights[event.highlights.clone()];
+                each(event.event, &mut list.iter().copied());
+            }
+        }
+    }
+}
+
+/// The events of a highlighter over a range of the text, all of them: drawn again and again
+/// while the text, its syntax tree and the range stay the same (a cursor moving within the
+/// lines in view), without running the queries again.
+#[derive(Debug, Default)]
+pub struct RecordedHighlights {
+    events: Vec<RecordedEvent>,
+    /// The highlights of every event, one after the other.
+    highlights: Vec<syntax::Highlight>,
+}
+
+#[derive(Debug)]
+struct RecordedEvent {
+    /// Where it happens (a byte of the text).
+    offset: u32,
+    event: HighlightEvent,
+    /// Its highlights in [`RecordedHighlights::highlights`].
+    highlights: std::ops::Range<usize>,
+}
+
+impl RecordedHighlights {
+    /// Most events kept: a range that never ends is not recorded forever.
+    const MAX_EVENTS: usize = 1 << 20;
+
+    /// Runs `highlighter` to its end. `None` when it has too many events (drawn live then).
+    pub fn record(mut highlighter: Highlighter<'_>) -> Option<Self> {
+        let mut recorded = Self::default();
+        loop {
+            let offset = highlighter.next_event_offset();
+            if offset == u32::MAX {
+                return Some(recorded);
+            }
+            if recorded.events.len() >= Self::MAX_EVENTS {
+                return None;
+            }
+            let (event, highlights) = highlighter.advance();
+            let start = recorded.highlights.len();
+            recorded.highlights.extend(highlights);
+            recorded.events.push(RecordedEvent {
+                offset,
+                event,
+                highlights: start..recorded.highlights.len(),
+            });
+        }
+    }
+}
+
 struct SyntaxHighlighter<'h, 'r, 't> {
-    inner: Option<Highlighter<'h>>,
+    inner: Option<SyntaxHighlights<'h>>,
     text: RopeSlice<'r>,
     /// The character index of the next highlight event, or `usize::MAX` if the highlighter is
     /// finished.
@@ -521,7 +626,7 @@ struct SyntaxHighlighter<'h, 'r, 't> {
 
 impl<'h, 'r, 't> SyntaxHighlighter<'h, 'r, 't> {
     fn new(
-        inner: Option<Highlighter<'h>>,
+        inner: Option<SyntaxHighlights<'h>>,
         text: RopeSlice<'r>,
         theme: &'t Theme,
         text_style: Style,
@@ -559,14 +664,13 @@ impl<'h, 'r, 't> SyntaxHighlighter<'h, 'r, 't> {
             return;
         };
 
-        let (event, highlights) = highlighter.advance();
-        let base = match event {
-            HighlightEvent::Refresh => self.text_style,
-            HighlightEvent::Push => self.style,
-        };
-
-        self.style = highlights.fold(base, |acc, highlight| {
-            acc.patch(self.theme.highlight(highlight))
+        let (text_style, style, theme) = (self.text_style, &mut self.style, self.theme);
+        highlighter.advance(|event, highlights| {
+            let base = match event {
+                HighlightEvent::Refresh => text_style,
+                HighlightEvent::Push => *style,
+            };
+            *style = highlights.fold(base, |acc, highlight| acc.patch(theme.highlight(highlight)));
         });
         self.update_pos();
     }

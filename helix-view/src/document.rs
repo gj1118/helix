@@ -430,6 +430,9 @@ pub struct Document {
     pub line_ending: LineEnding,
 
     pub syntax: Option<Syntax>,
+    /// Changes whenever the syntax tree does (an edit reparsed, the language set): what is
+    /// worked out from the tree can be kept until it changes (see [`Self::syntax_generation`]).
+    syntax_generation: u64,
     /// Corresponding language scope name. Usually `source.<lang>`.
     pub language: Option<Arc<LanguageConfiguration>>,
 
@@ -1316,6 +1319,7 @@ impl Document {
             line_ending,
             restore_cursor: false,
             syntax: None,
+            syntax_generation: 0,
             language: None,
             changes,
             old_state,
@@ -2117,6 +2121,7 @@ impl Document {
         loader: &syntax::Loader,
     ) {
         self.language = language_config;
+        self.syntax_generation += 1;
         self.syntax = self.language.as_ref().and_then(|config| {
             Syntax::new(self.text.slice(..), config.language(), loader)
                 .map_err(|err| {
@@ -2449,6 +2454,7 @@ impl Document {
 
         // update tree-sitter syntax tree
         if let Some(syntax) = &mut self.syntax {
+            self.syntax_generation += 1;
             let loader = self.syn_loader.load();
             if let Err(err) = syntax.update(
                 old_doc.slice(..),
@@ -3103,6 +3109,17 @@ impl Document {
 
     #[inline]
     /// Tree-sitter AST tree
+    /// Replaces the syntax tree (a picker's preview of a file parsed in the background).
+    pub fn set_syntax(&mut self, syntax: Option<Syntax>) {
+        self.syntax = syntax;
+        self.syntax_generation += 1;
+    }
+
+    /// A number that changes whenever the syntax tree does: the same number, the same tree.
+    pub fn syntax_generation(&self) -> u64 {
+        self.syntax_generation
+    }
+
     pub fn syntax(&self) -> Option<&Syntax> {
         self.syntax.as_ref()
     }
