@@ -78,7 +78,11 @@ async fn the_kept_highlights_are_the_highlights() -> anyhow::Result<()> {
     let path = file.path().with_extension("rs");
     std::fs::copy(file.path(), &path)?;
     let config = Config::load(
-        Ok(&"[editor]\nrainbow-brackets = true\ncursorline = true\n".to_owned()),
+        // No smooth scrolling: a frame in the middle of a glide and the frame after it differ
+        // by where the glide is, not by their highlights.
+        Ok(&"[editor]\nrainbow-brackets = true\ncursorline = true\n\
+              [editor.smooth-scroll]\nenable = false\n"
+            .to_owned()),
         Err(ConfigLoadError::default()),
     )
     .unwrap();
