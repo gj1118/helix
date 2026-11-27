@@ -1425,7 +1425,7 @@ pub enum BufferLineRenderMode {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case", default, deny_unknown_fields)]
 pub struct SmoothScrollConfig {
-    /// Off by default.
+    /// On by default (`enable = false` turns it off).
     pub enable: bool,
     /// How long a scroll takes, in milliseconds (whatever its distance). 0 turns it off.
     pub duration: u64,
@@ -1436,7 +1436,7 @@ pub struct SmoothScrollConfig {
 impl Default for SmoothScrollConfig {
     fn default() -> Self {
         Self {
-            enable: false,
+            enable: true,
             duration: 150,
             easing: ScrollEasing::EaseOut,
         }

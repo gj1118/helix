@@ -1541,18 +1541,20 @@ The theme key is `ui.highlight.yank` (falling back to `ui.highlight`, then `ui.s
 ## Smooth Scrolling
 
 `C-d` / `C-u`, `C-f` / `C-b`, `PageDown` / `PageUp`, `zz` / `zt` / `zb` and the view menu's
-counted `j` / `k` glide to their position instead of jumping, like Neovim's neoscroll. It is off by default:
+counted `j` / `k` glide to their position instead of jumping, like Neovim's neoscroll. It is on by
+default; the settings, with their defaults:
 
 ```toml
 [editor.smooth-scroll]
-enable = true
-duration = 150        # milliseconds per scroll, whatever the distance
+enable = true         # false: the scroll commands jump, as in upstream Helix
+duration = 150        # milliseconds per scroll, whatever the distance (0 also turns it off)
 easing = "ease-out"   # or "linear", "ease-in-out"
 ```
 
 Only the drawing is animated: the cursor is where the command puts it at once, so you can keep
 typing during the animation. It draws about 60 frames a second. To see the difference, try
-`:set smooth-scroll.duration 1000` and `:toggle smooth-scroll.enable` while the editor runs. See [`[editor.smooth-scroll]`](book/src/editor.md#editorsmooth-scroll-section)
+`:toggle smooth-scroll.enable`, or slow it down with `:set smooth-scroll.duration 1000`, while
+the editor runs. See [`[editor.smooth-scroll]`](book/src/editor.md#editorsmooth-scroll-section)
 in the book.
 
 ## Scrollbar

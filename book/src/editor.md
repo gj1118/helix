@@ -1518,17 +1518,18 @@ bar every frame and picks terminal colours itself).
 ### `[editor.smooth-scroll]` Section
 
 Makes the scroll commands glide to their position instead of jumping, like Neovim's neoscroll.
-It is off by default.
+It is on by default: `enable = false` makes them jump, as in upstream Helix (worth it over a
+slow connection, where every frame of the glide has to travel).
 
 | Key | Description | Default |
 |--|--|---------|
-| `enable` | Turn smooth scrolling on | `false` |
+| `enable` | Smooth scrolling (`false`: the scroll commands jump) | `true` |
 | `duration` | How long a scroll takes, in milliseconds, whatever its distance. `0` turns it off | `150` |
 | `easing` | How the speed changes along the way: `"linear"` (the same speed all along), `"ease-out"` (fast at first, slowing down at the end) or `"ease-in-out"` (slow at both ends) | `"ease-out"` |
 
 ```toml
 [editor.smooth-scroll]
-enable = true
+enable = true        # the default
 duration = 150
 easing = "ease-out"
 ```

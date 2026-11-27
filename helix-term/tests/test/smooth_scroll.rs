@@ -154,12 +154,12 @@ async fn smooth_scroll_frames_are_not_held_back() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The setting: off by default, with its duration and easing.
+/// The setting: on by default, with its duration and easing; `enable = false` turns it off.
 #[test]
 fn smooth_scroll_setting() {
     use helix_view::editor::{ScrollEasing, SmoothScrollConfig};
     let default = SmoothScrollConfig::default();
-    assert!(!default.enable);
+    assert!(default.enable);
     assert_eq!(default.duration, 150_u64);
     assert_eq!(default.easing, ScrollEasing::EaseOut);
     let config = config("enable = true\nduration = 250\neasing = \"ease-in-out\"");
@@ -167,6 +167,9 @@ fn smooth_scroll_setting() {
     assert!(smooth.enable);
     assert_eq!(smooth.duration, 250_u64);
     assert_eq!(smooth.easing, ScrollEasing::EaseInOut);
+    // a config without the section has it on; turned off in it
+    assert!(self::config("").editor.smooth_scroll.enable);
+    assert!(!self::config("enable = false").editor.smooth_scroll.enable);
     // an unknown easing is refused
     let raw: helix_term::config::ConfigRaw =
         toml::from_str("[editor.smooth-scroll]\neasing = \"bounce\"\n").unwrap();
