@@ -1540,9 +1540,11 @@ The theme key is `ui.highlight.yank` (falling back to `ui.highlight`, then `ui.s
 
 ## Smooth Scrolling
 
-`C-d` / `C-u`, `C-f` / `C-b`, `PageDown` / `PageUp`, `zz` / `zt` / `zb` and the view menu's
-counted `j` / `k` glide to their position instead of jumping, like Neovim's neoscroll. It is on by
-default; the settings, with their defaults:
+The scroll commands glide to their position instead of jumping, like Neovim's neoscroll. It is on
+by default and uses the keys you already have, nothing to bind: the default ones are `C-d` /
+`C-u`, `C-f` / `C-b`, `PageDown` / `PageUp`, `zz` / `zt` / `zb` and the view menu's counted
+`j` / `k`, and a key you bound to one of those commands glides too. Jumps (`gg`, a search, a
+picker) stay instant. The settings, with their defaults:
 
 ```toml
 [editor.smooth-scroll]

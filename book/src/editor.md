@@ -1534,7 +1534,8 @@ duration = 150
 easing = "ease-out"
 ```
 
-The commands that glide: half a page and a page down and up (`C-d` / `C-u`, `C-f` / `C-b`,
+There is nothing to bind: the scroll commands glide, on their default keys or any key you bound
+them to. The commands that glide: half a page and a page down and up (`C-d` / `C-u`, `C-f` / `C-b`,
 `PageDown` / `PageUp`, and `space` / `backspace` in the `z` / `Z` view menus), centering or
 aligning the view on the cursor (`z z` / `z c`, `z t`, `z b`), and the view menus' `j` / `k`
 with a count (`z 10j`). One row at a time, the mouse wheel and jumps (`gg`, a search, a picker)
