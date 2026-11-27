@@ -158,3 +158,92 @@ async fn the_kept_highlights_are_the_highlights() -> anyhow::Result<()> {
     std::fs::remove_file(&path)?;
     Ok(())
 }
+
+/// A message of a language server, as it comes.
+fn lsp_message(method: &str, params: serde_json::Value) -> helix_lsp::Call {
+    serde_json::from_value(serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": method,
+        "params": params,
+    }))
+    .unwrap()
+}
+
+fn progress(kind: &str, percentage: u32) -> helix_lsp::Call {
+    let mut value = serde_json::json!({ "kind": kind, "percentage": percentage });
+    if kind == "begin" {
+        value["title"] = "Indexing".into();
+    }
+    lsp_message(
+        "$/progress",
+        serde_json::json!({ "token": "t", "value": value }),
+    )
+}
+
+async fn handle(
+    app: &mut helix_term::application::Application,
+    call: helix_lsp::Call,
+) -> helix_term::application::LspRedraw {
+    app.handle_editor_event(helix_view::editor::EditorEvent::LanguageServerMessage((
+        helix_lsp::LanguageServerId::default(),
+        call,
+    )))
+    .await;
+    app.lsp_redraw()
+}
+
+/// The messages of a language server ask for a frame by what they change on screen: a
+/// message shown, at once; how far some work is (a server indexing sends hundreds of
+/// reports), with a frame a few times a second, shared by all the reports meanwhile; a
+/// message that is only logged, or not understood, none.
+#[tokio::test(flavor = "multi_thread")]
+async fn language_server_messages_draw_by_what_they_change() -> anyhow::Result<()> {
+    use helix_term::application::LspRedraw;
+    let mut app = helpers::AppBuilder::new().build()?;
+    let info = serde_json::json!({ "type": 3, "message": "indexing crate" });
+    assert_eq!(
+        handle(&mut app, lsp_message("window/logMessage", info.clone())).await,
+        LspRedraw::Never
+    );
+    assert_eq!(
+        handle(&mut app, lsp_message("window/showMessage", info)).await,
+        LspRedraw::Now
+    );
+    assert_eq!(
+        handle(
+            &mut app,
+            lsp_message("experimental/serverStatus", serde_json::json!({}))
+        )
+        .await,
+        LspRedraw::Never
+    );
+    assert_eq!(handle(&mut app, progress("begin", 0)).await, LspRedraw::Now);
+    assert_eq!(
+        handle(&mut app, progress("report", 10)).await,
+        LspRedraw::Later
+    );
+
+    // reports every 10 ms for 400 ms: a frame every 100 ms or so, not one every 33 ms
+    let (_tx, rx) = tokio::sync::mpsc::unbounded_channel::<std::io::Result<termina::Event>>();
+    let mut input = tokio_stream::wrappers::UnboundedReceiverStream::new(rx);
+    helpers::send_keys(&mut app, "").await?;
+    let before = app.frames_drawn();
+    for percentage in 0..40 {
+        handle(&mut app, progress("report", percentage)).await;
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_millis(10),
+            app.event_loop_until_idle(&mut input),
+        )
+        .await;
+    }
+    let frames = app.frames_drawn() - before;
+    assert!((1..=7).contains(&frames), "{frames} frames");
+    // and the last report is drawn
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_millis(150),
+        app.event_loop_until_idle(&mut input),
+    )
+    .await;
+    assert!(app.frames_drawn() - before > frames);
+    Ok(())
+}

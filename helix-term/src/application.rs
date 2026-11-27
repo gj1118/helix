@@ -99,6 +99,11 @@ pub struct Application {
     signals: Signals,
     jobs: Jobs,
     lsp_progress: LspProgressMap,
+    /// What the language server message being handled changes on screen (see [`LspRedraw`]).
+    lsp_redraw: LspRedraw,
+    /// A frame is on its way for the messages that change only the background (see
+    /// [`LspRedraw::Later`]).
+    lsp_redraw_later: Arc<std::sync::atomic::AtomicBool>,
     plugin_manager: Arc<PluginManager>,
     /// The language servers each document was last seen attached to, for `lsp_attach`.
     /// Finds the plugin events without a hook of their own (windows, renames, theme...).
@@ -523,6 +528,8 @@ impl Application {
             signals,
             jobs,
             lsp_progress: LspProgressMap::new(),
+            lsp_redraw: LspRedraw::Now,
+            lsp_redraw_later: Default::default(),
             plugin_manager,
             plugin_watch,
             base_keys,
@@ -1547,9 +1554,14 @@ impl Application {
                 self.render().await;
             }
             EditorEvent::LanguageServerMessage((id, call)) => {
+                self.lsp_redraw = LspRedraw::Now;
                 self.handle_language_server_message(call, id).await;
-                // limit render calls for fast language server messages
-                helix_event::request_redraw();
+                match self.lsp_redraw {
+                    // (frames are limited to ~30 a second for a flood of messages)
+                    LspRedraw::Now => helix_event::request_redraw(),
+                    LspRedraw::Later => self.redraw_later(),
+                    LspRedraw::Never => (),
+                }
             }
             EditorEvent::DebuggerEvent((id, payload)) => {
                 let needs_render = self.editor.handle_debugger_message(id, payload).await;
@@ -1751,6 +1763,27 @@ impl Application {
         }
     }
 
+    /// A frame in [`LspRedraw::LATER`], for all the messages that come meanwhile.
+    fn redraw_later(&self) {
+        use std::sync::atomic::Ordering;
+        if self.lsp_redraw_later.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let pending = Arc::clone(&self.lsp_redraw_later);
+        let redraw = helix_event::redraw_requester();
+        tokio::spawn(async move {
+            tokio::time::sleep(LspRedraw::LATER).await;
+            pending.store(false, Ordering::Release);
+            redraw();
+        });
+    }
+
+    /// What the last language server message handled changes on screen.
+    #[cfg(feature = "integration")]
+    pub fn lsp_redraw(&self) -> LspRedraw {
+        self.lsp_redraw
+    }
+
     pub async fn handle_language_server_message(
         &mut self,
         call: helix_lsp::Call,
@@ -1776,6 +1809,7 @@ impl Application {
                     Ok(notification) => notification,
                     Err(helix_lsp::Error::Unhandled) => {
                         info!("Ignoring Unhandled notification from Language Server");
+                        self.lsp_redraw = LspRedraw::Never;
                         return;
                     }
                     Err(err) => {
@@ -1783,6 +1817,7 @@ impl Application {
                             "Ignoring unknown notification from Language Server: {}",
                             err
                         );
+                        self.lsp_redraw = LspRedraw::Never;
                         return;
                     }
                 };
@@ -1820,6 +1855,11 @@ impl Application {
                             server_id,
                             identifier: None,
                         };
+                        // The diagnostics of a file not in a window (rust-analyzer sends them
+                        // for the whole workspace) only change counts and pickers.
+                        if !self.shown_in_a_window(&uri) {
+                            self.lsp_redraw = LspRedraw::Later;
+                        }
                         self.editor.handle_lsp_diagnostics(
                             &provider,
                             uri,
@@ -1832,15 +1872,19 @@ impl Application {
                     }
                     Notification::LogMessage(params) => {
                         log::debug!("window/logMessage: {:?}", params);
+                        // only logged, unless shown below
+                        self.lsp_redraw = LspRedraw::Never;
 
                         // Also show as notification if enabled
                         if self.config.load().editor.lsp.display_messages {
                             match params.typ {
                                 lsp::MessageType::ERROR => {
                                     self.editor.notify_error(params.message);
+                                    self.lsp_redraw = LspRedraw::Now;
                                 }
                                 lsp::MessageType::WARNING => {
                                     self.editor.notify_warning(params.message);
+                                    self.lsp_redraw = LspRedraw::Now;
                                 }
                                 // Skip info messages to reduce noise from background operations
                                 _ => {}
@@ -1871,7 +1915,13 @@ impl Application {
                                 message,
                                 percentage,
                                 ..
-                            }) => (None, message, percentage),
+                            }) => {
+                                // How far the work is: the spinner turns and the message (if
+                                // shown) changes, a few times a second at most, not with every
+                                // report (an indexing server sends hundreds).
+                                self.lsp_redraw = LspRedraw::Later;
+                                (None, message, percentage)
+                            }
                             lsp::WorkDoneProgress::End(lsp::WorkDoneProgressEnd { message }) => {
                                 if message.is_some() {
                                     (None, message, &None)
@@ -1937,6 +1987,7 @@ impl Application {
                     }
                     Notification::ProgressMessage(_params) => {
                         // do nothing
+                        self.lsp_redraw = LspRedraw::Never;
                     }
                     Notification::Exit => {
                         let status =
@@ -2189,6 +2240,20 @@ impl Application {
             }
             Call::Invalid { id } => log::error!("LSP invalid method call id={:?}", id),
         }
+    }
+
+    /// Whether the file of `uri` is open in a window.
+    fn shown_in_a_window(&self, uri: &helix_core::Uri) -> bool {
+        let Some(path) = uri.as_path() else {
+            return true;
+        };
+        let Some(doc) = self.editor.document_by_path(path) else {
+            return false;
+        };
+        self.editor
+            .tree
+            .views()
+            .any(|(view, _)| view.doc == doc.id())
     }
 
     fn handle_show_message(&mut self, message_type: lsp::MessageType, message: String) {
@@ -2653,4 +2718,23 @@ mod frame_tests {
         let ignored: bool = needs_frame(&mouse(MouseEventKind::Down(MouseButton::Left)), false);
         assert!(!ignored);
     }
+}
+
+/// What a message of a language server changes on screen, and so when it is drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LspRedraw {
+    /// Something in view (the diagnostics of a file in a window, a message, an edit): with the
+    /// next frame.
+    Now,
+    /// Only what is not in view, or only how far some work is (the spinner, the status of a
+    /// server indexing): with a frame in [`Self::LATER`], shared by all the messages that come
+    /// meanwhile, instead of a frame for each of them.
+    Later,
+    /// Nothing on screen (a log message): no frame.
+    Never,
+}
+
+impl LspRedraw {
+    /// How long [`Self::Later`] waits: about the spinner's pace.
+    pub const LATER: std::time::Duration = std::time::Duration::from_millis(100);
 }
