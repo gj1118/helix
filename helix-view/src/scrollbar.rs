@@ -254,19 +254,32 @@ impl Layout {
         }
     }
 
-    /// The handle of the lines `first..=last` on screen, in eighths of rows: from the top of
-    /// the first to the bottom of the last (the top of the next), at least a row.
+    /// The handle of a screen showing the lines `first..=last`, in eighths of rows. Its length
+    /// is the share of the lines a screen holds (as many lines as it has rows, at least a
+    /// row of the bar), the same wherever it is: not the lines actually on screen, which are
+    /// fewer where lines are wrapped or have diagnostics under them, so a handle of those
+    /// would shrink and grow as it moves. Its top is at the first line, and at the bottom of
+    /// the lines once the last one is on screen.
     pub fn handle(&self, first: usize, last: usize) -> (usize, usize) {
-        let end = self.rows * EIGHTHS;
-        let after_last = self.counted(last).min(self.lines - 1) + 1;
-        let bottom = if self.lines <= self.rows {
-            after_last * EIGHTHS
+        // the eighths the lines take on the bar: all of it, or a row each when they fit
+        let span = if self.lines <= self.rows {
+            self.lines * EIGHTHS
         } else {
-            after_last * self.rows * EIGHTHS / self.lines
+            self.rows * EIGHTHS
         };
-        let top = self.eighth(first).min(end.saturating_sub(EIGHTHS));
-        let bottom = bottom.clamp(top + EIGHTHS, end.max(top + EIGHTHS));
-        (top, bottom.min(end))
+        let length = if self.lines <= self.rows {
+            self.rows.min(self.lines) * EIGHTHS
+        } else {
+            (self.rows * self.rows * EIGHTHS + self.lines / 2) / self.lines
+        }
+        .clamp(EIGHTHS.min(span), span);
+        let at_end = self.counted(last) + 1 >= self.lines;
+        let top = if at_end {
+            span - length
+        } else {
+            self.eighth(first).min(span - length)
+        };
+        (top, top + length)
     }
 
     /// The line whose top is at `eighth` of the bar (the first one at or past it).
@@ -558,17 +571,41 @@ mod test {
 
     #[test]
     fn the_handle_moves_by_eighths_of_rows() {
-        // 1000 lines on 10 rows: 12.5 lines an eighth
+        // 1000 lines on 10 rows: 12.5 lines an eighth, a screen of 10 lines a tenth of a row,
+        // made a row
         let layout = Layout::new(10, 1000, []);
-        // lines 1 to 50: half a row, made a row
-        assert_eq!(layout.handle(0, 49), (0, 8));
+        assert_eq!(layout.handle(0, 9), (0, 8));
         // 25 lines further: two eighths further
-        assert_eq!(layout.handle(25, 124), (2, 10));
+        assert_eq!(layout.handle(25, 34), (2, 10));
         // the last lines: at the bottom
-        assert_eq!(layout.handle(950, 999), (72, 80));
-        // lines that fit: whole rows
+        assert_eq!(layout.handle(990, 999), (72, 80));
+        // lines that fit: a row each, the handle as long as the screen
         let fits = Layout::new(10, 6, []);
-        assert_eq!(fits.handle(1, 3), (8, 32));
+        assert_eq!(fits.handle(0, 5), (0, 48));
+    }
+
+    /// The handle is as long wherever it is, whatever the lines on screen: fewer where they
+    /// are wrapped (or have diagnostics under them) than where they are not.
+    #[test]
+    fn the_handle_keeps_its_length_as_it_moves() {
+        // 40 rows, 300 lines: a screen is 40 / 300 of the bar, 42.67 eighths: 43
+        let layout = Layout::new(40, 300, []);
+        let lengths: std::collections::HashSet<usize> = (0..260)
+            .map(|first| {
+                // a screen of 40 lines, or of 25 (wrapped ones)
+                let last = first + if first % 3 == 0 { 24 } else { 39 };
+                let (top, bottom) = layout.handle(first, last.min(299));
+                assert!(bottom <= 320, "{first}: {top}..{bottom}");
+                bottom - top
+            })
+            .collect();
+        assert_eq!(lengths, [43].into());
+        // and it moves down with the first line, to the bottom at the end
+        let tops: Vec<usize> = (0..260)
+            .map(|first| layout.handle(first, first + 39).0)
+            .collect();
+        assert!(tops.windows(2).all(|pair| pair[0] <= pair[1]));
+        assert_eq!(layout.handle(260, 299), (320 - 43, 320));
     }
 
     #[test]

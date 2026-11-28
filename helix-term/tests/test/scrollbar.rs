@@ -558,3 +558,69 @@ async fn closed_windows_leave_nothing_behind() -> anyhow::Result<()> {
     assert_eq!(kept(&mut app), 1_usize);
     Ok(())
 }
+
+/// The eighths of a row the handle covers on the bar: a red cell is all of it, a block
+/// character in red the part of its row it is as tall as (at the top end), and one in
+/// reverse video the part above it (at the bottom end).
+fn handle_eighths(app: &Application) -> usize {
+    const BLOCKS: [&str; 9] = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
+    let (view, doc) = helix_view::current_ref!(app.editor);
+    let inner = view.inner_area(doc);
+    (inner.top()..inner.bottom())
+        .map(|y| {
+            let cell = app.rendered_cell(inner.right(), y);
+            let block = BLOCKS
+                .iter()
+                .position(|block| *block == cell.symbol.as_str());
+            match block {
+                _ if cell.bg == RED => 8,
+                Some(eighths) if cell.fg == RED => {
+                    if cell
+                        .modifier
+                        .contains(helix_view::graphics::Modifier::REVERSED)
+                    {
+                        8 - eighths
+                    } else {
+                        eighths
+                    }
+                }
+                _ => 0,
+            }
+        })
+        .sum()
+}
+
+/// The handle is as long wherever it is: lines wrapped on the screen (fewer lines on it)
+/// made it shorter, and longer again past them, so that it crawled down the bar.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_handle_keeps_its_length_over_wrapped_lines() -> anyhow::Result<()> {
+    let toml = coloured_with(
+        "[editor.scrollbar.handlers]\ncursor = false\n[editor.smooth-scroll]\nenable = false\n[editor.soft-wrap]\nenable = true\n",
+    );
+    // a long line every few lines, more and more of them further down
+    let text: String = (0..300)
+        .map(|i| {
+            if i > 100 && i % (1 + i / 100) == 0 {
+                format!("{i} {}\n", "wrapped ".repeat(12))
+            } else {
+                format!("line {i}\n")
+            }
+        })
+        .collect();
+    let (mut app, _dir) = app_with(&toml, &text, "a.txt").await?;
+    let mut lengths = std::collections::BTreeSet::new();
+    let mut tops = Vec::new();
+    for _ in 0..140 {
+        send_keys(&mut app, "jj").await?;
+        lengths.insert(handle_eighths(&app));
+        let first = bar(&app)
+            .iter()
+            .position(|(symbol, fg, bg)| *bg == RED || (*fg == RED && symbol != " "));
+        tops.push(first.expect("a handle"));
+    }
+    assert_eq!(lengths.len(), 1, "{lengths:?}");
+    // it went down the bar, never up
+    assert!(tops.windows(2).all(|pair| pair[0] <= pair[1]), "{tops:?}");
+    assert!(tops.last() > tops.first());
+    Ok(())
+}

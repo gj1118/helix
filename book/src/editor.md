@@ -1402,7 +1402,11 @@ enable = true
 
 The bar takes the rightmost column of the view (the text is a column narrower, and soft-wrapped
 lines wrap a column earlier). A buffer that fits gets a row per line; a longer one is spread
-out over the rows. The handle covers the lines on screen; its ends move by eighths of a row
+out over the rows. The handle starts at the first line on screen and is as long as the share
+of the buffer a screen holds (as many lines as the view has rows, at least a row of the bar),
+the same wherever it is: it does not shrink over wrapped lines, or lines with diagnostics under
+them, which leave fewer lines on screen. Once the last line is on screen it is at the bottom of
+the bar. Its ends move by eighths of a row
 (block characters as tall as the part of the row they cover), so it shows small scrolls and
 glides with [smooth scrolling](#editorsmooth-scroll-section). Of the marks on one row, the one
 of the lowest `priority` is drawn, with its type's next text when the row has more than one
